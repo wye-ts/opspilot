@@ -3,12 +3,13 @@
 | Field | Value |
 |---|---|
 | Document | Technical Design Document |
-| Version | 1.0 |
+| Version | 1.1 |
 | Status | Proposed |
 | Project | OpsPilot — AI Support and Incident Resolution Agent |
 | Primary audience | Project owner, reviewers, contributors, and interviewers |
 | Last updated | July 2026 |
 | Related documents | `docs/01-prd.md`, `docs/02-mvp-scope.md` |
+| Revision note | Adds a transactional outbox and at-least-once delivery model for PostgreSQL-to-BullMQ consistency |
 
 ---
 
@@ -20,7 +21,7 @@ The MVP is designed as a deployable TypeScript monorepo with four runtime compon
 
 1. A React web application for ticket review, trace inspection, and approval.
 2. A NestJS API for HTTP endpoints, validation, persistence, and event delivery.
-3. A NestJS background worker for long-running agent jobs.
+3. A NestJS background worker that relays transactional outbox events and executes long-running agent jobs.
 4. PostgreSQL and Redis infrastructure for durable state, vector retrieval, and job orchestration.
 
 Claude is used as the reasoning and tool-selection model. The application owns the agent loop, executes tools, validates every tool request, records observable trace events, and enforces approval boundaries. The model never receives direct access to the database or infrastructure.
@@ -88,6 +89,7 @@ The design should not add infrastructure solely to imitate a large company. Ever
 - The application must not store or expose hidden model reasoning.
 - Trace records must contain observable actions and concise rationale summaries only.
 - Deployment-specific values must be configured through environment variables.
+- Creating an agent run must not rely on a non-transactional database write followed by a direct queue publish.
 - The repository must remain usable without a proprietary agent framework.
 
 ---
@@ -98,9 +100,18 @@ The design should not add infrastructure solely to imitate a large company. Ever
 
 The application, not the model, controls execution. Claude may request a tool call, but application code validates the request, checks permissions, executes the tool, stores the result, and decides whether another model round trip is allowed.
 
-### 5.2 Durable State Before Side Effects
+### 5.2 Transactional Outbox for Database-to-Queue Delivery
 
-Important state transitions are written to PostgreSQL before queued work or simulated actions proceed. The database is the system of record.
+PostgreSQL is the system of record. The API must create the `AgentRun` and an `OutboxEvent` in the same database transaction. It must not write the database and then publish directly to Redis/BullMQ in the request path.
+
+An outbox relay publishes committed events to BullMQ asynchronously. Delivery is **at least once**, not exactly once. Duplicate queue delivery is expected and is made safe through deterministic job identifiers, conditional database state transitions, and idempotent worker behavior.
+
+This design guarantees:
+
+- A rolled-back database transaction produces neither an agent run nor a queue event.
+- A Redis outage cannot lose a committed investigation request; the outbox event remains pending.
+- A crash after queue publication but before the event is marked published may cause duplicate delivery, but execution leases prevent concurrent ownership and transactional action controls prevent duplicate state-changing effects.
+- Queue state is operational transport state, while PostgreSQL remains the durable source of truth.
 
 ### 5.3 Asynchronous Long-Running Work
 
@@ -130,8 +141,8 @@ The UI displays events such as classification, retrieval, tool selection, tool e
 
 - **Support engineer:** Reviews tickets, starts investigations, reviews evidence, and approves or rejects actions.
 - **OpsPilot web client:** Presents product state and subscribes to run progress.
-- **OpsPilot API:** Validates requests, reads and writes application data, and enqueues work.
-- **OpsPilot worker:** Runs the bounded agent workflow and invokes tools.
+- **OpsPilot API:** Validates requests and atomically writes application state plus outbox events to PostgreSQL. It does not publish queue jobs directly.
+- **OpsPilot worker:** Runs the outbox relay, consumes BullMQ jobs, executes the bounded agent workflow, and invokes tools.
 - **Claude API:** Selects tools and produces structured outputs.
 - **Embedding provider:** Creates vectors for runbook ingestion and retrieval.
 - **PostgreSQL:** Stores application state, trace records, and vectors.
@@ -143,13 +154,19 @@ The UI displays events such as classification, retrieval, tool selection, tool e
 flowchart LR
     User[Support Engineer] --> Web[React Web App]
     Web -->|REST + SSE| API[NestJS API]
-    API --> DB[(PostgreSQL + pgvector)]
-    API --> Queue[(Redis / BullMQ)]
-    Queue --> Worker[NestJS Agent Worker]
-    Worker --> DB
-    Worker --> Claude[Claude API]
-    Worker --> Embed[Embedding Provider]
-    Worker --> Tools[Mock Diagnostic Tools]
+    API -->|AgentRun + OutboxEvent in one transaction| DB[(PostgreSQL + pgvector)]
+    DB --> Relay[Outbox Relay]
+    Relay --> Queue[(Redis / BullMQ)]
+    Queue --> Processor[Agent Job Processor]
+    Processor --> DB
+    Processor --> Claude[Claude API]
+    Processor --> Embed[Embedding Provider]
+    Processor --> Tools[Mock Diagnostic Tools]
+
+    subgraph WorkerProcess[NestJS Worker Process]
+        Relay
+        Processor
+    end
 ```
 
 ---
@@ -161,8 +178,8 @@ flowchart LR
 | Component | Responsibility | Runtime |
 |---|---|---|
 | `apps/web` | Ticket UI, run trace, report view, approval UI | Static React/Vite deployment |
-| `apps/api` | REST API, SSE, validation, persistence, queue producer | Node.js web service |
-| `apps/worker` | Agent execution, retrieval, tool execution, eval jobs | Node.js background worker |
+| `apps/api` | REST API, SSE, validation, persistence, and transactional outbox writes | Node.js web service |
+| `apps/worker` | Outbox relay, BullMQ consumption, agent execution, retrieval, tool execution, and eval jobs | Node.js background worker |
 | PostgreSQL | Durable relational data and vector storage | Managed PostgreSQL with pgvector |
 | Redis | Job queue, retries, distributed locks, queue events | Managed Redis-compatible service |
 
@@ -182,11 +199,11 @@ flowchart TB
         AgentRunController
         ActionController
         SseController
-        QueueProducer
         ApplicationServices
     end
 
     subgraph WorkerService[Worker Service]
+        OutboxRelay
         JobProcessor
         AgentOrchestrator
         RetrievalService
@@ -198,7 +215,7 @@ flowchart TB
 
     subgraph Data
         Postgres[(PostgreSQL)]
-        Redis[(Redis)]
+        Redis[(Redis / BullMQ)]
     end
 
     UI --> TicketController
@@ -209,10 +226,10 @@ flowchart TB
     TicketController --> ApplicationServices
     AgentRunController --> ApplicationServices
     ActionController --> ApplicationServices
-    ApplicationServices --> Postgres
-    ApplicationServices --> QueueProducer
-    QueueProducer --> Redis
+    ApplicationServices -->|Domain rows + OutboxEvent in one transaction| Postgres
 
+    Postgres --> OutboxRelay
+    OutboxRelay --> Redis
     Redis --> JobProcessor
     JobProcessor --> AgentOrchestrator
     AgentOrchestrator --> RetrievalService
@@ -235,7 +252,7 @@ Agent investigations can include several provider round trips, retrieval queries
 - API capacity would be tied up by long-lived requests.
 - Horizontal scaling would mix interactive and background workloads.
 
-The API therefore creates an `AgentRun`, enqueues a job, and returns `202 Accepted`.
+The API therefore creates an `AgentRun` and an `OutboxEvent` in one PostgreSQL transaction, then returns `202 Accepted`. A relay inside the worker process publishes the committed outbox event to BullMQ. This removes the database/queue dual-write from the HTTP request path.
 
 ---
 
@@ -249,19 +266,31 @@ sequenceDiagram
     participant Web
     participant API
     participant DB
+    participant Relay as Outbox Relay
     participant Queue
-    participant Worker
+    participant Worker as Agent Job Processor
     participant Claude
     participant Tool
 
     User->>Web: Click Analyze Ticket
     Web->>API: POST /v1/tickets/{ticketId}/agent-runs
-    API->>DB: Create AgentRun(status=QUEUED)
-    API->>Queue: Enqueue run with agentRunId
+    API->>DB: BEGIN
+    API->>DB: Insert AgentRun(status=QUEUED)
+    API->>DB: Insert OutboxEvent(AGENT_RUN_REQUESTED)
+    API->>DB: COMMIT
     API-->>Web: 202 { agentRunId }
+
     Web->>API: GET /v1/agent-runs/{id}/events (SSE)
-    Queue->>Worker: Deliver job
-    Worker->>DB: Mark run RUNNING
+
+    loop Poll unpublished outbox events
+        Relay->>DB: Lease pending event
+        Relay->>Queue: Add job with deterministic jobId
+        Queue-->>Relay: Accepted or already exists
+        Relay->>DB: Mark outbox event PUBLISHED
+    end
+
+    Queue->>Worker: Deliver job at least once
+    Worker->>DB: Claim or reclaim an expiring execution lease
     Worker->>DB: Append run_started step
     Worker->>Claude: Ticket context + tools + policy
     Claude-->>Worker: Tool request
@@ -277,6 +306,8 @@ sequenceDiagram
     Web-->>User: Display report and approval request
 ```
 
+`202 Accepted` means the request is durably stored in PostgreSQL. It does not require Redis to have accepted the job before the API responds.
+
 ### 8.2 Approval Sequence
 
 ```mermaid
@@ -285,19 +316,19 @@ sequenceDiagram
     participant Web
     participant API
     participant DB
-    participant ActionExecutor
 
     User->>Web: Approve suggested action
     Web->>API: POST /v1/pending-actions/{id}/approve
-    API->>DB: Atomically transition PENDING to APPROVED
-    API->>ActionExecutor: Execute simulated action
-    ActionExecutor->>DB: Update mock ticket or escalation
-    ActionExecutor->>DB: Mark action SUCCEEDED
-    ActionExecutor->>DB: Append action_executed trace step
+    API->>DB: BEGIN
+    API->>DB: Lock action and verify status=PENDING
+    API->>DB: Apply simulated ticket or escalation change
+    API->>DB: Mark action SUCCEEDED
+    API->>DB: Append action_executed trace step
+    API->>DB: COMMIT
     API-->>Web: Updated action and ticket
 ```
 
-For the MVP, the simulated action may execute inside the API after approval because it is fast and deterministic. If real integrations are added later, approved actions should use a separate queue.
+For the MVP, all simulated actions are PostgreSQL-only changes and execute in one database transaction. If a future action calls an external system, the approval transaction must create an `ACTION_EXECUTION_REQUESTED` outbox event and a separate idempotent action worker must perform the integration. The API must not update approval state and then publish directly to a queue.
 
 ---
 
@@ -339,6 +370,7 @@ opspilot/
 │   └── worker/
 │       ├── src/
 │       │   ├── bootstrap/
+│       │   ├── outbox/
 │       │   ├── jobs/
 │       │   ├── agent/
 │       │   ├── retrieval/
@@ -401,6 +433,7 @@ Contains:
 - Migrations
 - Database client lifecycle
 - Repositories that require raw SQL
+- Transactional outbox creation, leasing, publication state, and reconciliation queries
 - Seed data
 
 Prisma should handle normal relational CRUD. Vector columns and similarity queries should use explicit SQL because vector extension types are not fully represented by Prisma ORM.
@@ -549,7 +582,11 @@ Represents one investigation attempt.
 | `model` | String | Exact Claude model identifier |
 | `promptVersion` | String | Versioned prompt identifier |
 | `idempotencyKey` | String nullable unique | Prevents accidental duplicate submission |
-| `startedAt` | Timestamp nullable | Worker start |
+| `executionAttempt` | Integer | Number of worker ownership attempts |
+| `leaseOwner` | String nullable | Current worker/job execution identifier |
+| `leaseExpiresAt` | Timestamp nullable | Ownership lease deadline |
+| `lastHeartbeatAt` | Timestamp nullable | Last worker heartbeat |
+| `startedAt` | Timestamp nullable | First worker start |
 | `completedAt` | Timestamp nullable | Terminal time |
 | `latencyMs` | Integer nullable | Total run latency |
 | `inputTokens` | Integer nullable | Provider usage |
@@ -560,6 +597,33 @@ Represents one investigation attempt.
 | `errorCode` | String nullable | Stable application error code |
 | `errorMessage` | Text nullable | Sanitized failure detail |
 | `createdAt` | Timestamp | Submission time |
+
+
+#### OutboxEvent
+
+Represents a durable message that must be delivered from PostgreSQL to BullMQ.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | UUID | Primary key and deterministic BullMQ `jobId` |
+| `eventType` | Enum | Initially `AGENT_RUN_REQUESTED`; future external actions may add `ACTION_EXECUTION_REQUESTED` |
+| `aggregateType` | String | Initially `AgentRun` |
+| `aggregateId` | UUID | The related durable aggregate identifier |
+| `payload` | JSONB | Versioned queue payload containing identifiers only |
+| `payloadVersion` | Integer | Enables backward-compatible consumers |
+| `status` | Enum | `PENDING`, `PROCESSING`, `PUBLISHED`, `DEAD_LETTER` |
+| `attemptCount` | Integer | Number of publication attempts |
+| `availableAt` | Timestamp | Earliest retry time |
+| `lockedAt` | Timestamp nullable | Relay lease start |
+| `lockedBy` | String nullable | Relay instance identifier |
+| `publishedAt` | Timestamp nullable | Successful queue publication time |
+| `lastError` | Text nullable | Sanitized publication failure |
+| `createdAt` | Timestamp | Transaction commit order reference |
+| `updatedAt` | Timestamp | Last state change |
+
+The outbox event is created in the same transaction as the `AgentRun`. It is not deleted after publication; retention cleanup may archive or delete old published rows after a configured period.
+
+For the MVP, `aggregateType` and `aggregateId` are application-level references so the outbox can later support other aggregate types. The creation service must still verify that the referenced `AgentRun` exists inside the same transaction.
 
 #### AgentStep
 
@@ -626,6 +690,7 @@ erDiagram
     SERVICE ||--o{ TICKET : affects
     SERVICE ||--o{ INCIDENT : has
     TICKET ||--o{ AGENT_RUN : investigated_by
+    AGENT_RUN ||--o{ OUTBOX_EVENT : dispatches
     AGENT_RUN ||--o{ AGENT_STEP : contains
     AGENT_RUN ||--o{ TOOL_EXECUTION : invokes
     AGENT_RUN ||--o{ PENDING_ACTION : proposes
@@ -638,7 +703,11 @@ erDiagram
 - Unique index on `Ticket.externalRef`.
 - Composite index on `Ticket(status, priority, createdAt DESC)`.
 - Index on `AgentRun(ticketId, createdAt DESC)`.
+- Index on `AgentRun(status, leaseExpiresAt)`.
 - Unique index on non-null `AgentRun.idempotencyKey`.
+- Index on `OutboxEvent(status, availableAt, createdAt)`.
+- Index on `OutboxEvent(aggregateType, aggregateId)`.
+- Published outbox rows are retained for a bounded period to support debugging and duplicate-delivery analysis.
 - Unique index on `AgentStep(agentRunId, sequence)`.
 - Index on `ToolExecution(agentRunId, createdAt)`.
 - Index on `PendingAction(ticketId, status)`.
@@ -709,7 +778,7 @@ Suggested list filters:
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/v1/tickets/:ticketId/agent-runs` | Create and enqueue an investigation |
+| `POST` | `/v1/tickets/:ticketId/agent-runs` | Atomically create an investigation and its outbox event |
 | `GET` | `/v1/agent-runs/:agentRunId` | Get current run, report, steps, and actions |
 | `GET` | `/v1/agent-runs/:agentRunId/events` | Stream trace events over SSE |
 | `GET` | `/v1/tickets/:ticketId/agent-runs` | List prior runs |
@@ -1202,9 +1271,105 @@ The application validates that:
 
 ---
 
-## 16. Queue and Worker Design
+## 16. Queue, Outbox, and Worker Design
 
-### 16.1 Queue
+### 16.1 Consistency Model
+
+PostgreSQL and Redis/BullMQ cannot participate in one local ACID transaction. A request path that performs:
+
+```text
+1. INSERT AgentRun in PostgreSQL
+2. ADD job to BullMQ
+```
+
+has an unavoidable failure window:
+
+- The database commit may succeed while queue publication fails, leaving a run that is never processed.
+- Queue publication may succeed while the API reports failure or the database update is rolled back, creating orphaned or duplicate work.
+
+OpsPilot resolves this with the **transactional outbox pattern**.
+
+The consistency contract is:
+
+- `AgentRun` and `OutboxEvent` are committed atomically in PostgreSQL.
+- The outbox relay publishes committed events to BullMQ asynchronously.
+- Delivery is at least once.
+- The consumer is idempotent.
+- PostgreSQL is authoritative for business state.
+- Redis/BullMQ is transport and retry infrastructure, not the source of truth.
+
+Exactly-once delivery is not claimed.
+
+### 16.2 Transactional Creation Flow
+
+The API supports an `Idempotency-Key`.
+
+Creation flow:
+
+1. Begin a PostgreSQL transaction.
+2. Look up an existing `AgentRun` by `Idempotency-Key`.
+3. If one exists, return it without creating another event.
+4. Insert `AgentRun(status=QUEUED)`.
+5. Insert `OutboxEvent` with:
+   - `eventType = AGENT_RUN_REQUESTED`
+   - `aggregateType = AgentRun`
+   - `aggregateId = agentRunId`
+   - a versioned identifier-only payload
+6. Commit the transaction.
+7. Return `202 Accepted`.
+
+The API does not call BullMQ in this flow.
+
+`QUEUED` means the run has been durably accepted and is awaiting or has completed transport dispatch. Detailed dispatch state belongs to the outbox record.
+
+### 16.3 Outbox Relay
+
+The relay runs inside `apps/worker` as a separate background loop from the BullMQ consumer.
+
+Recommended relay behavior:
+
+1. Poll for `PENDING` events where `availableAt <= now()`.
+2. Atomically lease a small batch:
+   - transition to `PROCESSING`
+   - set `lockedAt`
+   - set `lockedBy`
+3. Commit the lease transaction before making network calls.
+4. Publish each event to BullMQ using `OutboxEvent.id` as the deterministic `jobId`.
+5. On success, mark the event `PUBLISHED` and set `publishedAt`.
+6. On transient failure:
+   - increment `attemptCount`
+   - clear the lease
+   - return to `PENDING`
+   - set `availableAt` using exponential backoff with jitter
+7. After the configured maximum publication attempts, mark the event `DEAD_LETTER`.
+8. Reclaim stale `PROCESSING` leases after a configured timeout.
+
+Multiple relay replicas may run concurrently. Leasing must use a conditional update or `FOR UPDATE SKIP LOCKED` so one event is not intentionally published by two healthy relay instances.
+
+Recommended defaults:
+
+| Setting | Default |
+|---|---:|
+| Poll interval | 500 ms |
+| Batch size | 20 |
+| Lease timeout | 30 seconds |
+| Maximum publish attempts | 20 |
+| Published retention | 7 days |
+| Dead-letter retention | Until manually reviewed |
+
+### 16.4 Failure Scenarios
+
+| Failure | Durable outcome | Recovery |
+|---|---|---|
+| Database transaction rolls back | Neither run nor outbox event exists | Client may retry with the same idempotency key |
+| Database commit succeeds and Redis is unavailable | Run and pending outbox event exist | Relay retries after Redis recovery |
+| Queue publish succeeds and relay crashes before marking published | Event may be published again | Deterministic `jobId` and idempotent worker make duplicate delivery safe |
+| Outbox event is leased and relay crashes before publish | Event remains `PROCESSING` temporarily | Lease timeout returns it to eligible work |
+| Queue delivers the same job more than once | Multiple consumers may observe it | Conditional execution lease permits one active owner; stale leases are reclaimable |
+| Queue metadata is lost after a published event | PostgreSQL still records the run and event | Operational reconciliation can republish non-terminal runs if required |
+| Event repeatedly fails publication | Event becomes `DEAD_LETTER` | Alert and manual replay after fixing the cause |
+
+### 16.5 Queue
 
 Queue name:
 
@@ -1216,20 +1381,27 @@ Job payload:
 
 ```json
 {
+  "eventId": "outbox-event-uuid",
+  "eventType": "AGENT_RUN_REQUESTED",
+  "payloadVersion": 1,
   "agentRunId": "uuid",
   "ticketId": "uuid",
   "requestedAt": "ISO timestamp"
 }
 ```
 
-The job payload contains identifiers, not full ticket content. The worker loads the current durable state from PostgreSQL.
+The payload contains identifiers, not full ticket content. The worker loads current durable state from PostgreSQL.
 
-### 16.2 Job Options
+BullMQ `jobId` must be the outbox event ID. A duplicate add should be treated as successful publication when the same job already exists.
+
+### 16.6 Job Options
 
 Recommended defaults:
 
 - Attempts: `3`
-- Backoff: exponential with jitter
+- Backoff: exponential with jitter and a delay compatible with the execution lease
+- Execution lease: `30 seconds`
+- Lease heartbeat: every `10 seconds`
 - Remove completed queue metadata after a retention period
 - Retain failed job metadata long enough for debugging
 - Timeout: `90 seconds`
@@ -1237,43 +1409,97 @@ Recommended defaults:
 
 Provider 4xx errors, schema incompatibilities, and safety-policy failures are unrecoverable. Network failures, 429 responses, and provider 5xx responses may be retried.
 
-### 16.3 Idempotency
+Queue retries and outbox publication retries solve different problems:
 
-The API supports an `Idempotency-Key`.
+- Outbox retries deliver a committed event to the queue.
+- BullMQ retries recover a job that reached a worker but failed transiently.
+- Before a handled BullMQ retry, the worker returns the durable run to `QUEUED` and clears its execution lease.
+- After an unhandled process crash, the next attempt may reclaim the run only after the lease expires.
 
-Creation flow:
+### 16.7 Consumer Idempotency, Execution Leases, and Duplicate Delivery
 
-1. Begin a database transaction.
-2. If the key already exists, return the existing run.
-3. Create the `AgentRun`.
-4. Commit.
-5. Enqueue a job using `agentRunId` as the BullMQ job identifier.
+The worker must assume any queue message can be delivered more than once and that a process may crash after claiming a run.
 
-The worker checks the durable run state before executing. If the run is already terminal, it acknowledges the duplicate job without rerunning the model.
+A durable execution lease prevents concurrent ownership while allowing a later retry to recover a crashed run.
 
-### 16.4 Cancellation
+Claim example:
+
+```sql
+UPDATE agent_runs
+SET status = 'RUNNING',
+    execution_attempt = execution_attempt + 1,
+    lease_owner = $2,
+    lease_expires_at = now() + interval '30 seconds',
+    last_heartbeat_at = now(),
+    started_at = COALESCE(started_at, now())
+WHERE id = $1
+  AND (
+    status = 'QUEUED'
+    OR (
+      status = 'RUNNING'
+      AND lease_expires_at < now()
+    )
+  )
+RETURNING id, execution_attempt;
+```
+
+Worker behavior:
+
+- Heartbeat the lease every 10 seconds while the job is active.
+- Set a lease duration longer than the heartbeat interval.
+- A duplicate consumer that finds an active lease must not execute the run.
+- A retry after a process crash may reclaim the run only after the prior lease expires.
+- Before throwing a handled retriable error back to BullMQ, transition the run to `QUEUED`, clear the lease, and persist a retry trace step.
+- On successful or terminal completion, clear lease fields and commit the terminal state.
+- If the final queue attempt is exhausted, persist `FAILED` through a failure handler or reconciliation path.
+
+The model may be called again after an unexpected crash because remote model requests cannot participate in the database transaction. This is acceptable for the MVP because investigation tools are read-only and final state transitions are idempotent. The design guarantees one active owner and prevents duplicate state-changing actions; it does not claim exactly-once execution of external model calls.
+### 16.8 Cancellation
 
 Cancellation is best effort.
 
-- API changes `QUEUED` or `RUNNING` to `CANCELLED` when allowed.
+- API conditionally changes `QUEUED` or `RUNNING` to `CANCELLED`.
+- If cancellation happens before outbox publication, the event may still be dispatched, but the consumer exits because the run is no longer `QUEUED`.
 - The worker checks cancellation before every provider call and tool execution.
 - An in-flight provider request may complete, but its result is not used after cancellation.
 - Cancellation is recorded as a trace step.
 
-### 16.5 Concurrency and Locking
+The outbox event does not need to be deleted when a queued run is cancelled. Delivering and safely discarding the event preserves the simple at-least-once contract.
 
-BullMQ prevents normal duplicate processing, but database state transitions must still be conditional.
+### 16.9 Reconciliation
 
-Example:
+A periodic reconciliation command should detect:
+
+- `QUEUED` runs with no associated outbox event.
+- Non-terminal runs whose outbox event is `DEAD_LETTER`.
+- `QUEUED` runs older than the dispatch threshold.
+- `PROCESSING` outbox leases older than the lease timeout.
+- Published events with no queue or run progress beyond the operational threshold.
+
+For the MVP this may be a developer/admin command:
 
 ```text
-UPDATE agent_runs
-SET status = 'RUNNING', started_at = now()
-WHERE id = $1 AND status = 'QUEUED'
-RETURNING id;
+pnpm outbox:reconcile
 ```
 
-If no row is returned, the worker exits because another worker or terminal transition already owns the run.
+Automatic repair should be conservative:
+
+- Reclaim stale relay leases.
+- Republish an existing outbox event with the same deterministic `jobId`.
+- Never create a second agent run.
+- Never reset a `RUNNING` or terminal run without explicit operator review.
+
+### 16.10 Concurrency and Locking
+
+BullMQ reduces normal duplicate processing, but database state transitions remain the correctness boundary.
+
+Required concurrency controls:
+
+- Outbox leasing uses conditional updates or `FOR UPDATE SKIP LOCKED`.
+- Agent execution uses a conditional claim plus an expiring heartbeat lease; retries may reclaim stale `RUNNING` rows.
+- Approval uses row locking or conditional `PENDING -> APPROVED/REJECTED`.
+- Simulated action execution and terminal action state are committed atomically.
+- Unique idempotency keys prevent duplicate run creation.
 
 ---
 
@@ -1286,6 +1512,7 @@ stateDiagram-v2
     [*] --> QUEUED
     QUEUED --> RUNNING
     QUEUED --> CANCELLED
+    RUNNING --> QUEUED: retriable failure
     RUNNING --> COMPLETED
     RUNNING --> FAILED
     RUNNING --> CANCELLED
@@ -1294,9 +1521,24 @@ stateDiagram-v2
     CANCELLED --> [*]
 ```
 
-Only explicit service methods may transition states.
+Only explicit service methods may transition states. `QUEUED` represents durable acceptance in PostgreSQL; the outbox record provides detailed dispatch status.
 
-### 17.2 Pending Action State
+### 17.2 Outbox Event State
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING
+    PENDING --> PROCESSING
+    PROCESSING --> PUBLISHED
+    PROCESSING --> PENDING: transient failure or stale lease
+    PROCESSING --> DEAD_LETTER: attempts exhausted
+    PUBLISHED --> [*]
+    DEAD_LETTER --> PENDING: manual replay
+```
+
+The `PROCESSING` state is a renewable lease, not proof of queue publication. Only `PUBLISHED` indicates that BullMQ accepted the event or confirmed an existing job with the same deterministic identifier.
+
+### 17.3 Pending Action State
 
 ```mermaid
 stateDiagram-v2
@@ -1502,6 +1744,7 @@ Use JSON logs with fields such as:
 - `requestId`
 - `agentRunId`
 - `jobId`
+- `outboxEventId`
 - `toolExecutionId`
 - `event`
 - `durationMs`
@@ -1541,6 +1784,12 @@ Record or derive:
 - Tool calls per run
 - Run success/failure/cancellation rate
 - Provider retry count
+- Outbox pending count
+- Outbox dispatch lag
+- Outbox publication retry count
+- Dead-letter outbox count
+- Active and stale agent execution leases
+- Agent execution attempt count
 - Citation count
 - Approval acceptance/rejection rate
 
@@ -1550,13 +1799,20 @@ The MVP can expose metrics in an internal JSON endpoint or eval summary rather t
 
 `/health/live` verifies that the process event loop is responsive.
 
-`/health/ready` verifies:
+API readiness requires:
+
+- PostgreSQL connectivity
+- Required API configuration
+
+The API does not require a Redis connection in the request path. Queue health is observed through worker health, outbox dispatch lag, and dead-letter metrics.
+
+Worker readiness requires:
 
 - PostgreSQL connectivity
 - Redis connectivity
-- Required configuration presence
+- Required provider and worker configuration
 
-It should not call paid model providers on every readiness request.
+Neither readiness endpoint should call paid model providers on every request. A separate manual or scheduled provider smoke check verifies external credentials.
 
 ---
 
@@ -1586,9 +1842,16 @@ Cover:
 - Repositories against PostgreSQL
 - Vector insertion and retrieval
 - API endpoints with a test database
-- Queue producer and worker using test Redis
+- Transactional creation of `AgentRun` and `OutboxEvent`
+- Outbox relay against PostgreSQL and test Redis
+- Queue consumer and worker using test Redis
 - Agent loop using a deterministic fake LLM provider
 - Action approval transaction and duplicate-click protection
+- Database commit with Redis unavailable, followed by eventual dispatch
+- Relay crash after publish but before marking the outbox event published
+- Duplicate queue delivery with exactly one active execution lease owner
+- Agent worker crash followed by stale execution-lease recovery
+- Stale outbox lease recovery and dead-letter behavior
 - SSE event replay
 
 Use Docker-based PostgreSQL with pgvector and Redis in CI where practical.
@@ -1721,7 +1984,7 @@ Commit messages should describe one meaningful change.
 7. Run TypeScript checks.
 8. Start test PostgreSQL and Redis services.
 9. Apply migrations.
-10. Run backend unit and integration tests.
+10. Run backend unit and integration tests, including outbox failure scenarios.
 11. Run frontend tests.
 12. Build all packages and applications.
 13. Optionally build the API/worker Docker image.
@@ -1743,7 +2006,7 @@ On merge to `main`:
 - Vercel builds and deploys `apps/web`.
 - Render builds the repository image.
 - Render runs the API command for the web service.
-- Render runs the worker command for the background worker.
+- Render runs the worker command for the outbox relay and BullMQ consumer.
 - A migration command runs before the new services handle traffic.
 - Smoke checks verify health endpoints and the ticket list.
 
@@ -1789,6 +2052,7 @@ pnpm infra:up
 pnpm db:migrate
 pnpm db:seed
 pnpm runbooks:ingest
+pnpm outbox:reconcile
 pnpm dev
 pnpm test
 pnpm test:integration
@@ -1824,12 +2088,18 @@ flowchart LR
     Browser --> Vercel[Vercel: React/Vite]
     Vercel --> RenderAPI[Render: NestJS API]
     Browser -->|SSE| RenderAPI
-    RenderAPI --> Neon[(Neon PostgreSQL + pgvector)]
-    RenderAPI --> Upstash[(Upstash Redis)]
-    Upstash --> RenderWorker[Render: Background Worker]
-    RenderWorker --> Neon
-    RenderWorker --> Claude[Claude API]
-    RenderWorker --> Voyage[Voyage Embeddings]
+    RenderAPI -->|Domain rows + OutboxEvent| Neon[(Neon PostgreSQL + pgvector)]
+    Neon --> Relay[Render Worker: Outbox Relay]
+    Relay --> Upstash[(Upstash Redis / BullMQ)]
+    Upstash --> Processor[Render Worker: Agent Job Processor]
+    Processor --> Neon
+    Processor --> Claude[Claude API]
+    Processor --> Voyage[Voyage Embeddings]
+
+    subgraph RenderWorker[Same Render Worker Deployment]
+        Relay
+        Processor
+    end
 ```
 
 ### 25.2 Service Configuration
@@ -1851,7 +2121,6 @@ flowchart LR
 - Health check: `/v1/health/ready`
 - Environment:
   - `DATABASE_URL`
-  - `REDIS_URL`
   - `CORS_ALLOWED_ORIGINS`
   - `LOG_LEVEL`
   - API-specific rate-limit settings
@@ -1859,6 +2128,9 @@ flowchart LR
 #### Render Worker
 
 - Background worker using the same repository and image
+- Runs two coordinated loops:
+  - transactional outbox relay
+  - BullMQ agent-job consumer
 - Start command: `pnpm --filter @opspilot/worker start:prod`
 - Environment:
   - `DATABASE_URL`
@@ -1866,7 +2138,9 @@ flowchart LR
   - `ANTHROPIC_API_KEY`
   - `ANTHROPIC_MODEL`
   - `VOYAGE_API_KEY`
-  - embedding and agent limit settings
+  - embedding, agent-limit, and outbox-relay settings
+
+The worker must continue retrying pending outbox rows after a Redis interruption. Multiple worker replicas are safe when outbox leases and agent-run state transitions use the documented database concurrency controls.
 
 The API does not require model credentials unless it performs a model-backed endpoint. Keeping model keys only in the worker narrows the secret exposure surface.
 
@@ -1916,8 +2190,9 @@ After deployment:
 3. Web app loads.
 4. SSE endpoint establishes a connection.
 5. One deterministic fake-provider run completes.
-6. Optional live provider smoke run validates current credentials and model configuration.
-7. Approval action updates the mock ticket exactly once.
+6. A run submitted during a temporary Redis outage remains in the outbox and dispatches after recovery.
+7. Optional live provider smoke run validates current credentials and model configuration.
+8. Approval action updates the mock ticket exactly once.
 
 ---
 
@@ -1931,7 +2206,7 @@ After deployment:
 | `PORT` | API | HTTP port |
 | `DATABASE_URL` | API, worker | Application PostgreSQL connection |
 | `DIRECT_DATABASE_URL` | Migration jobs | Direct database connection when required |
-| `REDIS_URL` | API, worker | TLS Redis connection |
+| `REDIS_URL` | Worker | TLS Redis connection |
 | `CORS_ALLOWED_ORIGINS` | API | Comma-separated web origins |
 | `ANTHROPIC_API_KEY` | Worker | Claude API key |
 | `ANTHROPIC_MODEL` | Worker | Configured model identifier |
@@ -1942,7 +2217,13 @@ After deployment:
 | `AGENT_MAX_TURNS` | Worker | Bounded model turns |
 | `AGENT_MAX_TOOL_CALLS` | Worker | Bounded tool calls |
 | `AGENT_TIMEOUT_MS` | Worker | Run deadline |
-| `WORKER_CONCURRENCY` | Worker | Parallel jobs |
+| `WORKER_CONCURRENCY` | Worker | Parallel agent jobs |
+| `AGENT_LEASE_DURATION_MS` | Worker | Durable execution lease duration |
+| `AGENT_LEASE_HEARTBEAT_MS` | Worker | Execution lease heartbeat interval |
+| `OUTBOX_POLL_INTERVAL_MS` | Worker | Relay polling interval |
+| `OUTBOX_BATCH_SIZE` | Worker | Maximum events leased per poll |
+| `OUTBOX_LEASE_TIMEOUT_MS` | Worker | Stale relay lease threshold |
+| `OUTBOX_MAX_ATTEMPTS` | Worker | Publication attempts before dead letter |
 | `LOG_LEVEL` | API, worker | Structured log level |
 | `DEMO_ACCESS_TOKEN` | API | Optional public-demo protection |
 
@@ -1959,6 +2240,7 @@ These targets are appropriate for a portfolio MVP, not an enterprise SLA.
 | Ticket list API p95 | Under 300 ms excluding cold start |
 | Ticket detail API p95 | Under 300 ms excluding cold start |
 | Agent run submission | Under 500 ms |
+| Outbox dispatch lag p95 | Under 2 seconds when Redis is healthy |
 | Time to first trace event | Under 2 seconds after worker pickup |
 | Agent run p50 | Under 15 seconds |
 | Agent run p95 | Under 30 seconds under normal provider conditions |
@@ -1979,13 +2261,14 @@ Cost is measured, not guessed. Store provider usage and calculate an estimate us
 | Model selects an irrelevant tool | Lower resolution quality | Clear tool descriptions, eval cases, bounded retries, tool-selection metrics |
 | Model invents evidence | Trust failure | Evidence schema, citation validation, untrusted-data policy, unsupported-claim evals |
 | Prompt injection in runbooks or logs | Unsafe behavior | No generic tools, strict registry, data boundaries, approval policy in code |
+| Database/queue dual-write failure | Committed runs can be lost or orphaned | Transactional outbox, deterministic job IDs, at-least-once delivery, and lease-based idempotent consumer |
 | Duplicate run submission | Cost and confusing state | Idempotency key and UI disable state |
 | Duplicate action approval | Repeated side effect | Conditional transactional status transition |
 | Long model latency | Poor demo experience | Background jobs, SSE, timeouts, trace progress, model configurability |
 | Provider outage or rate limit | Failed investigations | Retry with jitter, clear failed state, deterministic demo mode |
 | Prisma vector limitations | Retrieval implementation friction | Raw parameterized SQL in a dedicated repository |
 | Embedding model dimension change | Invalid mixed vectors | Persist model and dimension; migration and re-ingestion |
-| Redis interruption | New work cannot be queued | Readiness failure, durable run state, safe retry after recovery |
+| Redis interruption | Agent execution is delayed | API persists requests to the outbox; relay retries after recovery; worker readiness reports failure |
 | Public demo abuse | Unexpected cost | Access control, rate limits, run budget, fake-provider mode |
 | Overengineering | Project not completed | Follow MVP scope and phase gates |
 
@@ -2021,15 +2304,20 @@ Exit criteria:
 
 ### Phase 3 — Asynchronous Basic Agent
 
-- Add AgentRun and AgentStep models.
-- Add run creation endpoint and BullMQ job.
+- Add AgentRun, AgentStep, and OutboxEvent models.
+- Add run creation endpoint that atomically writes the run and outbox event.
+- Implement the outbox relay and deterministic BullMQ job publication.
+- Add failure tests for Redis outage, relay restart, and duplicate delivery.
 - Implement fake LLM provider.
 - Implement Claude provider for one structured analysis turn.
 - Add SSE progress and report UI.
 
 Exit criteria:
 
-- A run is queued, processed by the worker, persisted, streamed, and displayed.
+- A run is durably accepted even when Redis is temporarily unavailable.
+- The relay eventually publishes the committed event.
+- Duplicate delivery results in one active execution owner.
+- The run is processed by the worker, persisted, streamed, and displayed.
 
 ### Phase 4 — Tool Calling
 
@@ -2090,6 +2378,10 @@ The technical MVP is done when:
 - Web, API, worker, PostgreSQL, Redis, Claude, and embeddings are connected.
 - A seeded ticket can complete the entire investigation flow.
 - Agent execution occurs in a background worker.
+- `AgentRun` and `OutboxEvent` are created atomically.
+- A Redis outage cannot lose a committed investigation request.
+- Duplicate queue delivery cannot create concurrent run owners or duplicate state-changing effects.
+- Stale relay leases and dead-letter events are observable and recoverable.
 - The UI receives and displays durable trace events.
 - Tools are typed, registered, validated, and permission-classified.
 - Runbook retrieval returns valid citations.
@@ -2136,12 +2428,13 @@ A second bullet should include real eval and performance results after they exis
 Create focused ADRs if implementation decisions change or need deeper justification:
 
 - `ADR-001`: Separate API and agent worker processes.
-- `ADR-002`: Application-controlled Claude tool loop instead of an agent framework.
-- `ADR-003`: PostgreSQL and pgvector instead of a separate vector database.
-- `ADR-004`: SSE instead of WebSockets.
-- `ADR-005`: Simulated approval actions for the public MVP.
-- `ADR-006`: Provider interfaces for LLM and embeddings.
-- `ADR-007`: Prisma for relational data and raw SQL for vector operations.
+- `ADR-002`: Transactional outbox for PostgreSQL-to-BullMQ delivery.
+- `ADR-003`: Application-controlled Claude tool loop instead of an agent framework.
+- `ADR-004`: PostgreSQL and pgvector instead of a separate vector database.
+- `ADR-005`: SSE instead of WebSockets.
+- `ADR-006`: Simulated approval actions for the public MVP.
+- `ADR-007`: Provider interfaces for LLM and embeddings.
+- `ADR-008`: Prisma for relational data and raw SQL for vector operations.
 
 ---
 
@@ -2152,11 +2445,12 @@ These questions should be resolved before or during implementation:
 1. Which current Claude model gives the best quality-to-cost result on the project eval set?
 2. Which embedding dimension will be used for the first stable database schema?
 3. Will the public demo require a shared access code or use fake-provider mode by default?
-4. Should the API poll PostgreSQL for SSE events or use Redis notifications as an optimization?
-5. What daily model-call and cost budget is acceptable for the public deployment?
-6. Should a reranker be added after baseline retrieval metrics are measured?
-7. At what dataset size does an HNSW index improve the actual project workload?
-8. Should approved actions remain synchronous or move to a second queue when real integrations are introduced?
+4. Should the outbox relay remain inside the worker deployment or become a separate process after load measurements?
+5. Should the API poll PostgreSQL for SSE events or use Redis notifications as an optimization?
+6. What daily model-call and cost budget is acceptable for the public deployment?
+7. Should a reranker be added after baseline retrieval metrics are measured?
+8. At what dataset size does an HNSW index improve the actual project workload?
+9. Should approved actions remain synchronous or move to a second queue when real integrations are introduced?
 
 None of these questions should block the ticket vertical slice.
 
