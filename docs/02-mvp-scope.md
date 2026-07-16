@@ -53,8 +53,8 @@ The MVP should follow these principles:
    - Every agent run should produce trace logs showing what happened.
 
 4. **Actions must be safe**
-   - Read-only tools can run automatically.
-   - State-changing tools require human approval.
+   - Read-only diagnostic tools can run automatically.
+   - Approval-required actions are never directly executable tools — they are proposed as part of the final report and require human approval before any simulated effect (`§4.6`).
 
 5. **RAG should be grounded**
    - The agent should retrieve relevant runbook sections and include citations when possible.
@@ -129,9 +129,11 @@ The agent should not perform unlimited reasoning or unlimited tool calls.
 
 Recommended limits:
 
-- Maximum tool calls per investigation: 5
+- Maximum diagnostic tool calls per investigation: 5
 - Maximum retrieved runbook chunks: 5
 - Maximum agent runtime target: under 30 seconds for local/demo usage
+
+The full turn/finalization/repair budget breakdown (investigation turns, a reserved forced-finalization turn, and a bounded schema-repair attempt, each independently configured — not a single combined turn limit) is defined in `docs/03-technical-design.md §13.2`–`§13.3`.
 
 ### 4.4 Agent Trace Panel
 
@@ -189,11 +191,11 @@ Each retrieved chunk should include:
 - Chunk text
 - Similarity score
 
-### 4.6 Diagnostic Tools
+### 4.6 Diagnostic Tools and Approval-Required Actions
 
-The MVP should include mock diagnostic tools.
+The MVP should include mock read-only diagnostic tools and a fixed set of approval-required actions.
 
-Read-only tools:
+Read-only diagnostic tools (directly executable by the agent):
 
 - `search_runbooks`
 - `search_logs`
@@ -201,15 +203,13 @@ Read-only tools:
 - `find_similar_incidents`
 - `lookup_customer_account`
 
-State-changing tools:
+Approval-required actions (proposed by the agent as part of its final report — never directly executed as tools):
 
-- `update_ticket_status`
-- `create_escalation`
-- `draft_customer_reply`
+- `UPDATE_TICKET_STATUS`
+- `CREATE_ESCALATION`
+- `DRAFT_CUSTOMER_REPLY`
 
-Read-only tools may execute automatically.
-
-State-changing tools must create a pending approval request before execution.
+Read-only diagnostic tools may execute automatically. Approval-required actions create a pending approval request only after the agent's investigation has produced its final resolution report; the agent never executes one directly, and none is applied before a human approves it.
 
 ### 4.7 Resolution Report
 
@@ -307,6 +307,8 @@ CI should run:
 
 The first CI version does not need full deployment automation.
 
+The exact required MVP test set (core unit tests, PostgreSQL job integration test, RAG retrieval integration test, fake-provider agent integration test, one Playwright happy-path flow, and initial agent eval cases) is defined in `docs/03-technical-design.md §22.1`. That required set includes **deterministic** concurrency testing against a real PostgreSQL instance — concurrent claim attempts, an artificially expired lease driving the maintenance sweep, and a stale-token write rejection — which must pass in CI. Only **real-process** fault injection is a stretch goal, not required for CI to pass: killing or crashing an actual worker process mid-run, racing genuinely separate worker processes, and other full process-level chaos testing (`docs/03-technical-design.md §22.2`).
+
 ---
 
 ## 5. Out of Scope
@@ -396,9 +398,12 @@ Basic eval results and trace data are enough for the MVP.
 
 ### 5.7 Production Deployment Automation
 
-The MVP does not require full production deployment.
+This project uses two completion milestones, defined in `docs/03-technical-design.md §30 Definition of Done`:
 
-Optional deployment is acceptable, but the MVP is considered complete if it runs locally with clear setup instructions.
+- **Feature Complete** — the project runs locally with clear setup instructions and passes the required MVP test set (`docs/03-technical-design.md §22.1`). Production deployment automation is not required to reach this milestone.
+- **Portfolio Ready** — additionally requires a protected public deployment, documentation, screenshots, a demo, and measured eval results (see `docs/01-prd.md §4 Goals` and `docs/03-technical-design.md §25`).
+
+Reaching Feature Complete does not require public deployment. Reaching Portfolio Ready does. The acceptance criteria in `§8` below describe Feature Complete; the demo-readiness criteria in `§9` describe Portfolio Ready.
 
 ---
 
@@ -412,7 +417,7 @@ The first vertical slice includes:
 2. Display tickets in the frontend.
 3. Open a ticket detail page.
 4. Click `Analyze Ticket`.
-5. Backend calls Claude with ticket content.
+5. Backend calls the deterministic fake LLM provider with ticket content.
 6. Agent returns a basic structured analysis.
 7. Frontend displays the analysis result.
 
@@ -423,8 +428,9 @@ This first slice does not need:
 - Approval flow
 - Eval runner
 - Full trace logging
+- A live Claude API call — the vertical slice proves the frontend/backend/database/provider-interface wiring using the deterministic fake provider (`docs/03-technical-design.md §22.4`). Live Claude integration is added in Phase 4 (`§7`), after the structured-output spike selects the production model.
 
-The purpose of the first vertical slice is to connect the frontend, backend, database, and LLM call.
+The purpose of the first vertical slice is to connect the frontend, backend, database, and LLM provider interface.
 
 ---
 
@@ -462,14 +468,40 @@ The recommended build order is:
 - Ticket inbox UI
 - Ticket detail UI
 - Basic frontend-backend integration
+- Minimal `LlmProvider` interface
+- Deterministic fake `LlmProvider` implementation
+- Basic deterministic structured response
+- Frontend/backend/provider-interface wiring end to end through the fake provider (`§6`)
+
+This phase is self-contained: it does not depend on anything built in Phase 4. The fake provider used by the vertical slice is built here, not borrowed from a later phase.
 
 ### Phase 4: Basic Agent
 
-- Claude client
-- Agent run model
+- `AgentRun` and `AgentJob` models
+- `AgentStep` model, including the `RUN_QUEUED` type
+- Atomic `AgentRun` + `AgentJob` + `RUN_QUEUED` creation transaction
+- Worker claim loop
+- `withExecutionOwnership` (active-worker writes)
+- `withLockedRunState` (claim, sweep, cancellation)
+- 60-second maintenance sweep
+- Cancellation
+- Minimal `PendingAction` model (enough to persist a `PENDING` proposal at report completion — not the approval workflow itself, see Phase 7)
+- Canonical `actionType` values (`UPDATE_TICKET_STATUS`, `CREATE_ESCALATION`, `DRAFT_CUSTOMER_REPLY`) and `ActionDefinition` payload schemas
+- Validation of `suggestedActions` from the final report before persistence
+- Atomic successful finalization (`completeAgentRunWithReport`), including inserting zero or more `PENDING` `PendingAction` rows in the same transaction as completion
+- Atomic owning-worker failure transition (`failOwnedAgentRun`)
+- Deterministic claim, sweep, ownership, cancellation, and finalization (including `PendingAction` insertion and rollback) integration tests
+- Structured-output spike: force the `submit_resolution_report` tool against candidate Claude models and select the baseline model (`docs/03-technical-design.md §13.5`, `§13.8`)
+- Baseline Claude model selection, recorded per run (D20)
+- Live Claude `LlmProvider` adapter, added after the spike selects the model
+- `submit_resolution_report` protocol
+- Forced finalization phase
+- Schema repair (one bounded attempt)
 - Basic ticket analysis endpoint
 - Structured JSON output
 - Simple agent result UI
+
+Phase 4 can **persist** proposed actions as `PENDING`; it does not yet let a human approve, reject, or execute them — that interactive and executable half is Phase 7. Full detail for the atomic-transaction design, both repository patterns, and all required tests: `docs/03-technical-design.md §16`, `§22.1`, and Phase 4 of its implementation plan (`§29`). Demo access tokens and rate limiting are **not** part of this phase — they belong to Phase 8.
 
 ### Phase 5: Tools
 
@@ -491,34 +523,52 @@ The recommended build order is:
 
 ### Phase 7: Approval Flow
 
-- Pending action model
-- Approval UI
-- Approve/reject endpoint
+Phase 4 already persists proposed actions as `PENDING` records. This phase adds the interactive and executable half: approving, rejecting, and executing those already-persisted proposals.
+
+- Extend the pending-action model with its full state machine (`PENDING` → `APPROVED`/`REJECTED`, `APPROVED` → `EXECUTING` → `SUCCEEDED`/`FAILED`)
+- Approve/reject endpoints, with conditional `PENDING`-only transitions
 - Simulated action execution
-- Approval trace logging
+- Duplicate-approval protection
+- Approval/rejection/execution trace logging (`ACTION_APPROVED`, `ACTION_REJECTED`, `ACTION_EXECUTED`)
+- Approval UI
 
-### Phase 8: Evals and CI
+### Phase 8: Evals, Demo Protection, and CI
 
+- `DemoAccessToken` and `DemoUsageBucket` models
+- Live-provider demo-token verification (hashed lookup, expiry/enabled checks)
+- Global-daily and per-token-hourly rate limiting, with the atomic bucket-increment built into run creation
+- Required deterministic rate-limit concurrency tests (`docs/03-technical-design.md §22.1`) — implemented here, in the same phase as the functionality they test, not deferred to Phase 9
+- Required Playwright happy-path test, in fake-provider mode: open ticket → start run → observe trace → view report → approve action → verify updated ticket
+- CI execution (or documented CI integration) of the Playwright test
 - Eval case format
 - Eval runner
 - Basic scoring
 - GitHub Actions CI
 - Tests and build validation
 
+The full required MVP test set — including demo-rate-limit concurrency and the Playwright happy-path flow — passes in CI by the end of this phase. This is the Feature Complete testing bar; no required test implementation is left for Phase 9.
+
 ### Phase 9: Portfolio Polish
 
+This phase is documentation, presentation, and deployment work. Cancellation, demo access tokens, rate limiting, and the required Playwright test are already implemented and tested by Phase 4 and Phase 8; nothing functionally required to pass the MVP test set is left for this phase.
+
+- Deployment configuration
+- Public demo setup
+- Deployment validation spikes
+- Smoke checks
 - README
 - Architecture diagram
 - Agent workflow diagram
 - Screenshots
 - Demo script
-- Resume bullets
+- Measured eval and performance results
+- Resume-ready evidence
 
 ---
 
-## 8. MVP Acceptance Criteria
+## 8. MVP Acceptance Criteria (Feature Complete)
 
-The MVP is complete when all of the following are true:
+These criteria define the **Feature Complete** milestone (`§5.7`, `docs/03-technical-design.md §30`). The MVP is complete when all of the following are true:
 
 - A user can view seeded support tickets.
 - A user can open a ticket detail page.
@@ -540,9 +590,9 @@ The MVP is complete when all of the following are true:
 
 ---
 
-## 9. Demo-Ready Requirements
+## 9. Demo-Ready Requirements (Portfolio Ready)
 
-The project is demo-ready when a reviewer can:
+These requirements describe the **Portfolio Ready** milestone (`§5.7`, `docs/03-technical-design.md §30`), which builds on Feature Complete (`§8`) by adding a protected public deployment. The project is demo-ready when a reviewer can:
 
 1. Start the app locally using documented commands.
 2. Open the frontend.
