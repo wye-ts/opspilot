@@ -46,6 +46,8 @@ Engineering managers use OpsPilot to review incident patterns, agent performance
 
 The MVP should demonstrate that OpsPilot can:
 
+*Note: this project uses two completion milestones, defined in `docs/03-technical-design.md §30`. **Feature Complete** means the project runs locally and passes its required tests. **Portfolio Ready** additionally requires the public deployment referenced below. The goals in this section describe the full Portfolio Ready vision; reaching Feature Complete does not itself require public deployment.*
+
 1. Classify incoming support tickets by issue type.
 2. Retrieve relevant runbook documentation using RAG.
 3. Call diagnostic tools to gather evidence.
@@ -163,7 +165,7 @@ The report should include:
 * Internal engineering note
 * Suggested action
 
-If the suggested action modifies ticket state, creates an escalation, or sends a message, it must require human approval.
+If the suggested action modifies ticket state, creates an escalation, or drafts a customer-facing reply, it must require human approval. `DRAFT_CUSTOMER_REPLY` produces a draft only — the MVP does not send a real email or message to the customer; see `§9.2`.
 
 ---
 
@@ -190,6 +192,8 @@ If the suggested action modifies ticket state, creates an escalation, or sends a
 4. User clicks “Approve” or “Reject.”
 5. If approved, the backend executes the simulated action.
 6. The action result is saved in the agent trace.
+
+Approval always occurs after the investigation has produced its final resolution report (Flow 1, step 7). The agent does not pause mid-investigation and wait for a decision before continuing — a suggested action is a field inside the completed report, not an interactive checkpoint inside the agent loop. See `docs/03-technical-design.md §13.1`.
 
 ---
 
@@ -225,23 +229,25 @@ The agent retrieves relevant runbook chunks using semantic search.
 
 The final answer should cite retrieved runbook sections when possible.
 
-### 8.3 Tool Calling
+### 8.3 Tool Calling and Proposed Actions
 
-The agent can call diagnostic tools to gather additional evidence.
-
-Initial tools:
+The agent can call read-only diagnostic tools to gather additional evidence during an investigation:
 
 * `search_runbooks`
 * `search_logs`
 * `check_service_status`
 * `find_similar_incidents`
 * `lookup_customer_account`
-* `create_escalation`
-* `update_ticket_status`
 
-Read-only tools may run automatically.
+These are the only tools the agent can directly execute, and they may run automatically.
 
-State-changing tools must require human approval.
+Separately, the agent may propose approval-required actions as part of its final resolution report (see `§8.4`, `§9.2`):
+
+* `UPDATE_TICKET_STATUS`
+* `CREATE_ESCALATION`
+* `DRAFT_CUSTOMER_REPLY`
+
+These are not tools the agent executes directly — they are typed proposals inside the completed report, and each requires human approval before the application performs the corresponding simulated action. See `docs/03-technical-design.md §14.4`.
 
 ### 8.4 Resolution Generation
 
@@ -256,13 +262,13 @@ The agent generates a structured resolution report based on:
 
 ---
 
-## 9. Tool Safety Model
+## 9. Tool and Action Safety Model
 
-OpsPilot separates tools into two categories.
+OpsPilot separates agent-executable read-only diagnostic tools from agent-proposed approval-required actions. Only the former are directly executable by the agent; the latter are always proposals requiring human approval, never directly executable tools.
 
-### 9.1 Safe Read-Only Tools
+### 9.1 Safe Read-Only Diagnostic Tools
 
-These tools can run automatically:
+These tools can run automatically, directly executed by the agent:
 
 * Search runbooks
 * Search logs
@@ -270,17 +276,17 @@ These tools can run automatically:
 * Find similar incidents
 * Look up customer account
 
-### 9.2 State-Changing Tools
+### 9.2 Approval-Required Actions
 
-These tools require human approval:
+These are **not directly executable agent tools**. They are typed proposals the agent includes in its final resolution report, and each requires human approval before the application performs the corresponding simulated action:
 
-* Update ticket status
-* Create escalation
-* Send customer reply
-* Assign ticket owner
-* Mark ticket as resolved
+* `UPDATE_TICKET_STATUS`
+* `CREATE_ESCALATION`
+* `DRAFT_CUSTOMER_REPLY`
 
-The MVP will simulate state-changing tools instead of calling real external services.
+This is the canonical MVP action set and matches `docs/03-technical-design.md §14.4` and `§8.3` above. Earlier drafts of this document additionally listed "assign ticket owner," "mark ticket as resolved," and "send customer reply" as separate action types; those are superseded by this list and are not part of the MVP.
+
+The MVP will simulate these actions instead of calling real external services.
 
 ---
 
@@ -446,8 +452,7 @@ Core tools, APIs, and agent workflows should be testable through automated tests
 * Prisma
 * PostgreSQL
 * pgvector
-* Redis
-* BullMQ
+* PostgreSQL-backed job execution (`AgentJob`) — see `docs/03-technical-design.md §16`. Redis and BullMQ were evaluated and are not part of the MVP; see `docs/10-engineering-challenges.md` Challenge 1.
 
 ### AI
 
@@ -463,7 +468,6 @@ Core tools, APIs, and agent workflows should be testable through automated tests
 * Vercel for frontend
 * Render, Railway, or Fly.io for backend
 * Neon or Supabase for PostgreSQL
-* Upstash for Redis
 
 ---
 
@@ -495,12 +499,12 @@ After the MVP, possible enhancements include:
 4. Datadog or OpenTelemetry log ingestion
 5. Multi-agent investigation workflow
 6. Admin dashboard for agent performance
-7. Prompt injection detection
+7. A dedicated prompt-injection detection model or classifier (structural defenses — data boundaries, tool restriction, approval enforced in code — are already required in the MVP; see `docs/03-technical-design.md §19.3`)
 8. Better access control
 9. Automated regression evals in CI
 10. Model comparison dashboard
 11. Fine-tuned ticket classification model
-12. Real deployment with demo environment
+12. Production-grade deployment hardening (multi-region availability, formal SLAs, dedicated observability and alerting) and real external integrations that replace the MVP's simulated actions with actual API calls — requiring the separate idempotent action design described in `docs/03-technical-design.md §8.2` and `§33` (open question 6), not merely swapping mock data for real credentials
 
 ---
 
@@ -508,16 +512,18 @@ After the MVP, possible enhancements include:
 
 This project should be positioned as a production-style AI agent system, not a chatbot.
 
-Suggested resume description:
+**These are templates, not current claims.** The project has not been implemented yet. Every description and bullet below is a target for use *after* the corresponding functionality has been implemented and validated — do not publish or claim any of this text before the underlying work, tests, and measurements actually exist (see `docs/03-technical-design.md §31 Portfolio and Resume Deliverables`, which requires resume claims to use measured results from the finished project, never invented numbers).
+
+Planned resume description:
 
 **OpsPilot — AI Support & Incident Resolution Agent**
 
-Built a production-style AI agent using Claude, NestJS, React, PostgreSQL, pgvector, Redis, and tool-calling workflows to triage support tickets, retrieve operational runbooks, inspect simulated logs, generate resolution plans, and require human approval before state-changing actions.
+Built a production-style AI agent using Claude, NestJS, React, PostgreSQL, and pgvector, with tool-calling workflows to triage support tickets, retrieve operational runbooks, inspect simulated logs, generate resolution plans, and require human approval before state-changing actions.
 
-Potential resume bullets:
+Potential future resume bullets:
 
 * Built an AI support operations agent with Claude tool calling, RAG, and structured agent traces to investigate support tickets and generate resolution plans.
 * Implemented runbook retrieval with PostgreSQL, pgvector, document chunking, embeddings, and citation-grounded responses.
-* Designed modular diagnostic tools for log search, service health checks, customer lookup, similar incident search, escalation creation, and ticket status updates.
+* Designed modular read-only diagnostic tools for log search, service health checks, account lookup, runbook retrieval, and similar-incident search, plus typed human-approved action proposals for escalations, ticket updates, and customer-response drafts.
 * Added human-in-the-loop approval controls for state-changing actions to improve agent safety and production readiness.
 * Created eval cases to measure classification accuracy, tool selection quality, citation correctness, hallucination risk, latency, and token cost.
