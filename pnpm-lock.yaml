@@ -18,6 +18,15 @@ importers:
         specifier: ^4.1.10
         version: 4.1.10(@types/node@26.1.1)(vite@8.1.4(@types/node@26.1.1))
 
+  apps/worker:
+    dependencies:
+      '@opspilot/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+
   packages/contracts:
     dependencies:
       zod:
