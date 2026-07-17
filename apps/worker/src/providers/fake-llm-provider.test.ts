@@ -33,14 +33,14 @@ describe("FakeLlmProvider", () => {
   it("normalizes a single diagnostic tool request, then a report submission", async () => {
     const provider = new FakeLlmProvider(toolThenReportScenario);
 
-    const first = await provider.runAgentTurn({ turnIndex: 0 });
+    const first = await provider.runAgentTurn({ turnIndex: 0, conversation: [] });
     expect(first.type).toBe("diagnostic_tool_request");
     if (first.type !== "diagnostic_tool_request") {
       throw new Error("unreachable");
     }
     expect(first.request.toolName).toBe("check_service_status");
 
-    const second = await provider.runAgentTurn({ turnIndex: 1 });
+    const second = await provider.runAgentTurn({ turnIndex: 1, conversation: [] });
     expect(second.type).toBe("report_submission");
     if (second.type !== "report_submission") {
       throw new Error("unreachable");
@@ -54,8 +54,8 @@ describe("FakeLlmProvider", () => {
   it("deterministically replays the same scenario turn", async () => {
     const provider = new FakeLlmProvider(toolThenReportScenario);
 
-    const first = await provider.runAgentTurn({ turnIndex: 0 });
-    const second = await provider.runAgentTurn({ turnIndex: 0 });
+    const first = await provider.runAgentTurn({ turnIndex: 0, conversation: [] });
+    const second = await provider.runAgentTurn({ turnIndex: 0, conversation: [] });
 
     expect(second).toEqual(first);
   });
@@ -84,7 +84,7 @@ describe("FakeLlmProvider", () => {
     };
     const provider = new FakeLlmProvider(scenario);
 
-    const result = await provider.runAgentTurn({ turnIndex: 0 });
+    const result = await provider.runAgentTurn({ turnIndex: 0, conversation: [] });
 
     expect(result.type).toBe("protocol_error");
     if (result.type !== "protocol_error") {
