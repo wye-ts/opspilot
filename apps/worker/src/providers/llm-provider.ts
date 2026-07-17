@@ -35,13 +35,47 @@ export type AgentConversationMessage =
   | DiagnosticToolRequestEntry
   | DiagnosticToolResultEntry;
 
+// docs/04-agent-design.md §9 defines a richer per-turn contract (availableTools,
+// toolChoice, deadlineAtMs, promptVersion, ...). phase and maxOutputTokens are
+// pulled forward from that contract because a live provider adapter cannot
+// correctly select tools/tool_choice or bound its request without them —
+// unlike turnIndex, which is an orchestrator-internal loop counter a provider
+// must not need to interpret.
+export type AgentTurnPhase = "INVESTIGATION" | "FINALIZATION";
+
 export interface AgentTurnInput {
   readonly turnIndex: number;
+  readonly phase: AgentTurnPhase;
+  readonly maxOutputTokens: number;
   readonly conversation: readonly AgentConversationMessage[];
 }
 
 export interface LlmProvider {
   runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResult>;
+}
+
+// Distinct from protocol_error: this covers SDK/transport-level failures
+// (auth, rate limit, connectivity, timeout, server errors) that never
+// produced a parseable model response, so they must not be laundered into an
+// AgentTurnResult. A live provider throws this instead; callers that want to
+// surface it (e.g. a demo/spike runner) catch it explicitly.
+export type LlmProviderErrorCategory =
+  | "AUTHENTICATION"
+  | "RATE_LIMIT"
+  | "CONNECTION"
+  | "TIMEOUT"
+  | "SERVER_ERROR"
+  | "REQUEST_INVALID"
+  | "UNKNOWN";
+
+export class LlmProviderError extends Error {
+  constructor(
+    readonly category: LlmProviderErrorCategory,
+    message: string,
+  ) {
+    super(message);
+    this.name = "LlmProviderError";
+  }
 }
 
 export interface RawProviderTurnContext {

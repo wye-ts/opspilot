@@ -7,6 +7,7 @@ import {
 
 import type {
   AgentConversationMessage,
+  AgentTurnPhase,
   LlmProvider,
 } from "../providers/llm-provider";
 import type { ToolRegistry } from "../tools/diagnostic-tool";
@@ -17,6 +18,11 @@ import type { ToolRegistry } from "../tools/diagnostic-tool";
 // instead of wiring the full budget/deadline machinery: at most one
 // diagnostic tool call, then a required report submission.
 const MAX_PROVIDER_TURNS = 2;
+
+// A provider must not infer this from turnIndex itself (see
+// docs/04-agent-design.md §9's phase concept) — only the orchestrator's own
+// bounded-loop policy maps turn positions to a phase.
+const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
 
 // docs/04-agent-design.md §16.1: only these three trace event kinds are
 // wired in this slice (no RUN_STARTED/RETRIEVAL/persistence — no AgentRun
@@ -39,6 +45,7 @@ export interface AgentOrchestratorParams {
   readonly toolRegistry: ToolRegistry;
   readonly initialConversation: readonly AgentConversationMessage[];
   readonly allowedRagChunkIds?: ReadonlySet<string>;
+  readonly maxOutputTokens?: number;
 }
 
 export type AgentOrchestratorResult =
@@ -62,7 +69,7 @@ function failed(
   return { status: "failed", code, message, trace };
 }
 
-function findInvalidEvidence(
+export function findInvalidEvidence(
   evidence: readonly EvidenceReference[],
   allowedRagChunkIds: ReadonlySet<string>,
   successfulToolExecutionIds: ReadonlySet<string>,
@@ -81,13 +88,21 @@ export async function runAgentOrchestrator(
     provider,
     toolRegistry,
     allowedRagChunkIds = new Set<string>(),
+    maxOutputTokens = DEFAULT_MAX_OUTPUT_TOKENS,
   } = params;
   let conversation = [...params.initialConversation];
   const trace: AgentTraceEvent[] = [];
   const successfulToolExecutionIds = new Set<string>();
 
   for (let turnIndex = 0; turnIndex < MAX_PROVIDER_TURNS; turnIndex++) {
-    const result = await provider.runAgentTurn({ turnIndex, conversation });
+    const phase: AgentTurnPhase =
+      turnIndex === MAX_PROVIDER_TURNS - 1 ? "FINALIZATION" : "INVESTIGATION";
+    const result = await provider.runAgentTurn({
+      turnIndex,
+      phase,
+      maxOutputTokens,
+      conversation,
+    });
 
     if (result.type === "protocol_error") {
       return failed(result.code, result.message, trace);

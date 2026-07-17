@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { FakeLlmProvider, type FakeAgentScenario } from "./fake-llm-provider";
 
 const usage = { inputTokens: 100, outputTokens: 20 };
+const maxOutputTokens = 4096;
 
 const toolThenReportScenario: FakeAgentScenario = {
   id: "tool-then-report",
@@ -33,14 +34,24 @@ describe("FakeLlmProvider", () => {
   it("normalizes a single diagnostic tool request, then a report submission", async () => {
     const provider = new FakeLlmProvider(toolThenReportScenario);
 
-    const first = await provider.runAgentTurn({ turnIndex: 0, conversation: [] });
+    const first = await provider.runAgentTurn({
+      turnIndex: 0,
+      phase: "INVESTIGATION",
+      maxOutputTokens,
+      conversation: [],
+    });
     expect(first.type).toBe("diagnostic_tool_request");
     if (first.type !== "diagnostic_tool_request") {
       throw new Error("unreachable");
     }
     expect(first.request.toolName).toBe("check_service_status");
 
-    const second = await provider.runAgentTurn({ turnIndex: 1, conversation: [] });
+    const second = await provider.runAgentTurn({
+      turnIndex: 1,
+      phase: "FINALIZATION",
+      maxOutputTokens,
+      conversation: [],
+    });
     expect(second.type).toBe("report_submission");
     if (second.type !== "report_submission") {
       throw new Error("unreachable");
@@ -54,8 +65,18 @@ describe("FakeLlmProvider", () => {
   it("deterministically replays the same scenario turn", async () => {
     const provider = new FakeLlmProvider(toolThenReportScenario);
 
-    const first = await provider.runAgentTurn({ turnIndex: 0, conversation: [] });
-    const second = await provider.runAgentTurn({ turnIndex: 0, conversation: [] });
+    const first = await provider.runAgentTurn({
+      turnIndex: 0,
+      phase: "INVESTIGATION",
+      maxOutputTokens,
+      conversation: [],
+    });
+    const second = await provider.runAgentTurn({
+      turnIndex: 0,
+      phase: "INVESTIGATION",
+      maxOutputTokens,
+      conversation: [],
+    });
 
     expect(second).toEqual(first);
   });
@@ -84,7 +105,12 @@ describe("FakeLlmProvider", () => {
     };
     const provider = new FakeLlmProvider(scenario);
 
-    const result = await provider.runAgentTurn({ turnIndex: 0, conversation: [] });
+    const result = await provider.runAgentTurn({
+      turnIndex: 0,
+      phase: "INVESTIGATION",
+      maxOutputTokens,
+      conversation: [],
+    });
 
     expect(result.type).toBe("protocol_error");
     if (result.type !== "protocol_error") {
