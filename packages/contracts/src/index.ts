@@ -25,3 +25,7 @@ export type {
   DiagnosticToolRequest,
   TokenUsage,
 } from "./agent-turn";
+
+export { AgentOrchestratorErrorCodeSchema } from "./agent-orchestrator";
+
+export type { AgentOrchestratorErrorCode } from "./agent-orchestrator";
