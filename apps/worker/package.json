@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "demo": "tsx src/demo/run-agent-demo.ts"
   },
   "dependencies": {
     "@opspilot/contracts": "workspace:*",
