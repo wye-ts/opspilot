@@ -6,9 +6,11 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "demo": "tsx src/demo/run-agent-demo.ts"
+    "demo": "tsx src/demo/run-agent-demo.ts",
+    "spike:claude": "tsx src/demo/run-claude-agent-spike.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.112.0",
     "@opspilot/contracts": "workspace:*",
     "zod": "^4.4.3"
   }
