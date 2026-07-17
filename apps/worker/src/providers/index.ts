@@ -1,8 +1,12 @@
 export { normalizeDiagnosticToolRequests } from "./llm-provider";
 export type {
+  AgentConversationMessage,
   AgentTurnInput,
+  DiagnosticToolRequestEntry,
+  DiagnosticToolResultEntry,
   LlmProvider,
   RawProviderTurnContext,
+  TicketContextEntry,
 } from "./llm-provider";
 
 export {

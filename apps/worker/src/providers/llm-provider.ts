@@ -4,8 +4,40 @@ import type {
   TokenUsage,
 } from "@opspilot/contracts";
 
+// docs/04-agent-design.md §8.2 defines the full AgentMessage union
+// (SystemPolicyMessage / UserContextMessage / AssistantTurnMessage /
+// DiagnosticToolResultMessage / ReportValidationErrorMessage). This is the
+// narrower subset the vertical-slice orchestrator actually builds — enough
+// to prove the conversation-feedback loop — not a redefinition of the
+// eventual message model.
+export interface TicketContextEntry {
+  readonly role: "ticket_context";
+  readonly ticketId: string;
+  readonly summary: string;
+}
+
+export interface DiagnosticToolRequestEntry {
+  readonly role: "diagnostic_tool_request";
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly input: unknown;
+}
+
+export interface DiagnosticToolResultEntry {
+  readonly role: "diagnostic_tool_result";
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly output: unknown;
+}
+
+export type AgentConversationMessage =
+  | TicketContextEntry
+  | DiagnosticToolRequestEntry
+  | DiagnosticToolResultEntry;
+
 export interface AgentTurnInput {
   readonly turnIndex: number;
+  readonly conversation: readonly AgentConversationMessage[];
 }
 
 export interface LlmProvider {
