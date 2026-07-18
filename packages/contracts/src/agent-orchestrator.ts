@@ -6,6 +6,9 @@ import { z } from "zod";
 // protocol errors) so far; extend it as more of the orchestrator is
 // implemented.
 export const AgentOrchestratorErrorCodeSchema = z.enum([
+  "RETRIEVAL_PARAMS_INVALID",
+  "RETRIEVAL_FAILED",
+  "RETRIEVAL_RESPONSE_INVALID",
   "TOOL_NOT_FOUND",
   "TOOL_INPUT_INVALID",
   "TOOL_OUTPUT_INVALID",

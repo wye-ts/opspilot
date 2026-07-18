@@ -7,11 +7,14 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "demo": "tsx src/demo/run-agent-demo.ts",
-    "spike:claude": "tsx src/demo/run-claude-agent-spike.ts"
+    "demo:rag": "tsx src/demo/run-rag-agent-demo.ts",
+    "spike:claude": "tsx src/demo/run-claude-agent-spike.ts",
+    "spike:rag": "tsx src/demo/run-rag-live-spike.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.0",
     "@opspilot/contracts": "workspace:*",
+    "voyageai": "^0.4.0",
     "zod": "^4.4.3"
   }
 }

@@ -30,10 +30,31 @@ export interface DiagnosticToolResultEntry {
   readonly output: unknown;
 }
 
+// Populated once, before the first investigation turn, when the orchestrator
+// is given a RunbookRetriever (see agent-orchestrator.ts) and that retrieval
+// returned at least one chunk. entries are pre-validated, application-
+// controlled values built by ../rag/rag-context-formatting.ts's
+// formatRagContext, which imports this type as its return shape's source of
+// truth (this module never imports from ../rag, keeping the dependency
+// one-directional).
+export interface RagContextEntry {
+  readonly evidenceId: string;
+  readonly sourceType: "RAG_CHUNK";
+  readonly runbookId: string;
+  readonly title: string;
+  readonly content: string;
+}
+
+export interface RagContextMessage {
+  readonly role: "rag_context";
+  readonly entries: readonly RagContextEntry[];
+}
+
 export type AgentConversationMessage =
   | TicketContextEntry
   | DiagnosticToolRequestEntry
-  | DiagnosticToolResultEntry;
+  | DiagnosticToolResultEntry
+  | RagContextMessage;
 
 // docs/04-agent-design.md §9 defines a richer per-turn contract (availableTools,
 // toolChoice, deadlineAtMs, promptVersion, ...). phase and maxOutputTokens are
