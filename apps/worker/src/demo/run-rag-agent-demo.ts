@@ -11,6 +11,7 @@ import {
   type FakeAgentScenario,
 } from "../providers/fake-llm-provider";
 import type { AgentConversationMessage } from "../providers/llm-provider";
+import { InMemoryKeywordRunbookRetriever, RUNBOOK_CORPUS } from "../rag";
 import { InMemoryToolRegistry, getServiceStatusTool } from "../tools";
 
 export interface DemoTicket {
@@ -18,17 +19,26 @@ export interface DemoTicket {
   readonly subject: string;
 }
 
-// Kept as the single source of truth for both the seeded ticket_context
-// message and the printed header, so the two can't drift apart.
 export const DEMO_TICKET: DemoTicket = {
-  id: "TICKET-1001",
-  subject: "Notification emails are delayed",
+  id: "TICKET-2001",
+  subject: "Notification emails are delayed after a service degradation",
 };
 
 const DEMO_TOOL_CALL_ID = "call-1";
+const DEMO_RAG_CHUNK_ID = "runbook-notification-degradation-001";
+// topK=2 keeps retrieval unambiguous for this fixed query: the two genuinely
+// relevant chunks score well above every other chunk (verified in
+// in-memory-runbook-retriever.test.ts's scoring assertions), so the demo
+// never has to explain a tie-break or an incidental irrelevant hit.
+const DEMO_RETRIEVAL_INPUT = {
+  query: "notification service degradation delayed emails",
+  topK: 2,
+};
 
+// Exactly two provider turns, matching MAX_PROVIDER_TURNS: turn 0 is a
+// diagnostic_tool_request, turn 1 is the required report_submission.
 function buildDemoScenario(): FakeAgentScenario {
-  const usage = { inputTokens: 120, outputTokens: 40 };
+  const usage = { inputTokens: 150, outputTokens: 50 };
 
   const report: ResolutionReport = {
     category: "SERVICE_DEGRADATION",
@@ -45,6 +55,11 @@ function buildDemoScenario(): FakeAgentScenario {
         sourceType: "TOOL_EXECUTION",
         finding: "notification-service reported status DEGRADED.",
       },
+      {
+        evidenceId: DEMO_RAG_CHUNK_ID,
+        sourceType: "RAG_CHUNK",
+        finding: "Runbook confirms notification-service degradation is a known failure mode.",
+      },
     ],
     suggestedActions: [
       {
@@ -59,7 +74,7 @@ function buildDemoScenario(): FakeAgentScenario {
   };
 
   return {
-    id: "opspilot-demo",
+    id: "opspilot-rag-demo",
     turns: [
       {
         kind: "diagnostic_tool_requests",
@@ -77,7 +92,7 @@ function buildDemoScenario(): FakeAgentScenario {
   };
 }
 
-export async function runDemoScenario(): Promise<AgentOrchestratorResult> {
+export async function runRagDemoScenario(): Promise<AgentOrchestratorResult> {
   const ticketContext: AgentConversationMessage = {
     role: "ticket_context",
     ticketId: DEMO_TICKET.id,
@@ -86,11 +101,14 @@ export async function runDemoScenario(): Promise<AgentOrchestratorResult> {
 
   const provider = new FakeLlmProvider(buildDemoScenario());
   const toolRegistry = new InMemoryToolRegistry([getServiceStatusTool]);
+  const retriever = new InMemoryKeywordRunbookRetriever(RUNBOOK_CORPUS);
 
   return runAgentOrchestrator({
     provider,
     toolRegistry,
     initialConversation: [ticketContext],
+    retriever,
+    retrievalInput: DEMO_RETRIEVAL_INPUT,
   });
 }
 
@@ -100,10 +118,12 @@ function formatTraceLine(
 ): string {
   switch (event.type) {
     case "RETRIEVAL_COMPLETED":
-      // This demo never supplies a retriever, so this case is unreachable
-      // here in practice — handled only to keep this switch exhaustive
-      // against the shared AgentTraceEvent union.
-      return `${index}. RETRIEVAL_COMPLETED — ${event.chunks.length} chunk(s)`;
+      return (
+        `${index}. RETRIEVAL_COMPLETED — ${event.chunks.length} chunk(s): ` +
+        event.chunks
+          .map((chunk) => `${chunk.chunkId} (rank ${chunk.rank}, score ${chunk.score})`)
+          .join(", ")
+      );
     case "TOOL_REQUESTED":
       return `${index}. TOOL_REQUESTED — ${event.toolName}`;
     case "TOOL_COMPLETED":
@@ -118,10 +138,12 @@ export function formatDemoOutput(
   result: AgentOrchestratorResult,
 ): string {
   const lines: string[] = [
-    "OpsPilot Agent Demo",
+    "OpsPilot RAG Agent Demo",
     "",
     `Ticket: ${ticket.id}`,
     `Subject: ${ticket.subject}`,
+    `Retrieval query: ${DEMO_RETRIEVAL_INPUT.query}`,
+    `Retrieval topK: ${DEMO_RETRIEVAL_INPUT.topK}`,
     "",
     "Trace",
     ...result.trace.map((event, index) => formatTraceLine(index + 1, event)),
@@ -155,6 +177,10 @@ export function formatDemoOutput(
             return `- DRAFT_CUSTOMER_REPLY: ${action.payload.subject}`;
         }
       }),
+      "",
+      "Evidence Validation",
+      "PASSED — all cited evidenceId values were validated against this run's " +
+        "successful tool executions and retrieved RAG chunks.",
     );
   } else {
     lines.push("", "Demo Failed", `Code: ${result.code}`, `Message: ${result.message}`);
@@ -168,7 +194,7 @@ export function getExitCode(result: AgentOrchestratorResult): number {
 }
 
 async function main(): Promise<void> {
-  const result = await runDemoScenario();
+  const result = await runRagDemoScenario();
   console.log(formatDemoOutput(DEMO_TICKET, result));
   process.exitCode = getExitCode(result);
 }
