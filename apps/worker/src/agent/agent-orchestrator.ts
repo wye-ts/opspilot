@@ -10,6 +10,14 @@ import type {
   AgentTurnPhase,
   LlmProvider,
 } from "../providers/llm-provider";
+import { formatRagContext } from "../rag/rag-context-formatting";
+import { validateRetrievalInput, validateRetrievedChunks } from "../rag/retrieval-validation";
+import {
+  RetrieverError,
+  type RetrievalInput,
+  type RetrievedRunbookChunk,
+  type RunbookRetriever,
+} from "../rag/runbook-retriever";
 import type { ToolRegistry } from "../tools/diagnostic-tool";
 
 // docs/04-agent-design.md §11 runs an unbounded investigation loop governed
@@ -24,10 +32,27 @@ const MAX_PROVIDER_TURNS = 2;
 // bounded-loop policy maps turn positions to a phase.
 const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
 
-// docs/04-agent-design.md §16.1: only these three trace event kinds are
-// wired in this slice (no RUN_STARTED/RETRIEVAL/persistence — no AgentRun
-// exists yet to attach them to).
+// A safe, structurally-limited retrieval summary — chunkId/rank/score only,
+// never content/title/runbookId, and never raw embedding vectors. Both the
+// deterministic demo and the live spike must read this from
+// AgentOrchestratorResult.trace rather than calling a retriever a second
+// time themselves, so what's printed can never diverge from what was
+// actually validated and used.
+export interface RetrievalSummaryEntry {
+  readonly chunkId: string;
+  readonly rank: number;
+  readonly score: number;
+}
+
+// docs/04-agent-design.md §16.1: only these trace event kinds are wired in
+// this slice (no RUN_STARTED/persistence — no AgentRun exists yet to attach
+// them to). RETRIEVAL_COMPLETED is pushed at most once, only after both
+// retrieval-input and retrieval-output validation succeed.
 export type AgentTraceEvent =
+  | {
+      readonly type: "RETRIEVAL_COMPLETED";
+      readonly chunks: readonly RetrievalSummaryEntry[];
+    }
   | {
       readonly type: "TOOL_REQUESTED";
       readonly toolCallId: string;
@@ -45,6 +70,8 @@ export interface AgentOrchestratorParams {
   readonly toolRegistry: ToolRegistry;
   readonly initialConversation: readonly AgentConversationMessage[];
   readonly allowedRagChunkIds?: ReadonlySet<string>;
+  readonly retriever?: RunbookRetriever;
+  readonly retrievalInput?: RetrievalInput;
   readonly maxOutputTokens?: number;
 }
 
@@ -81,17 +108,94 @@ export function findInvalidEvidence(
   );
 }
 
+// Caller-contract-level validity: retriever and retrievalInput must both be
+// present or both absent, and a retriever's allowedRagChunkIds must never be
+// supplied by the caller — it is derived exclusively from that retriever's
+// own results (see the "no merge" comment below). Both violations are
+// RETRIEVAL_PARAMS_INVALID, matching invalid-topK/empty-query (also a
+// caller-contract violation) rather than RETRIEVAL_RESPONSE_INVALID, which is
+// reserved for a retriever that ran and returned structurally invalid data.
+function validateOrchestratorParams(params: AgentOrchestratorParams): string | null {
+  const hasRetriever = params.retriever !== undefined;
+  const hasRetrievalInput = params.retrievalInput !== undefined;
+
+  if (hasRetriever !== hasRetrievalInput) {
+    return "retriever and retrievalInput must both be provided or both omitted.";
+  }
+
+  if (hasRetriever && (params.allowedRagChunkIds?.size ?? 0) > 0) {
+    return (
+      "allowedRagChunkIds must not be supplied together with a retriever; " +
+      "it is derived exclusively from that retriever's results."
+    );
+  }
+
+  return null;
+}
+
 export async function runAgentOrchestrator(
   params: AgentOrchestratorParams,
 ): Promise<AgentOrchestratorResult> {
-  const {
-    provider,
-    toolRegistry,
-    allowedRagChunkIds = new Set<string>(),
-    maxOutputTokens = DEFAULT_MAX_OUTPUT_TOKENS,
-  } = params;
-  let conversation = [...params.initialConversation];
+  const paramsError = validateOrchestratorParams(params);
+  if (paramsError) {
+    return failed("RETRIEVAL_PARAMS_INVALID", paramsError, []);
+  }
+
+  const { provider, toolRegistry, maxOutputTokens = DEFAULT_MAX_OUTPUT_TOKENS } = params;
   const trace: AgentTraceEvent[] = [];
+  let conversation = [...params.initialConversation];
+
+  // Manual mode (no retriever): allowedRagChunkIds is exactly what the
+  // caller passed, unchanged from today's behavior — the preserved baseline.
+  // Retrieval mode (retriever present): allowedRagChunkIds is entirely
+  // overwritten below by the Set built from validated retrieval results.
+  // params.allowedRagChunkIds is never read in that branch — no merge.
+  let allowedRagChunkIds: ReadonlySet<string> = params.allowedRagChunkIds ?? new Set<string>();
+
+  if (params.retriever) {
+    const retrievalInput = params.retrievalInput as RetrievalInput;
+
+    const inputError = validateRetrievalInput(retrievalInput);
+    if (inputError) {
+      return failed("RETRIEVAL_PARAMS_INVALID", inputError, trace);
+    }
+
+    let chunks: readonly RetrievedRunbookChunk[];
+    try {
+      chunks = await params.retriever.retrieve(retrievalInput);
+    } catch (error) {
+      const category = error instanceof RetrieverError ? error.category : "UNKNOWN";
+      return failed("RETRIEVAL_FAILED", `Runbook retrieval failed (${category}).`, trace);
+    }
+
+    const outputError = validateRetrievedChunks(chunks, retrievalInput.topK);
+    if (outputError) {
+      return failed("RETRIEVAL_RESPONSE_INVALID", outputError, trace);
+    }
+
+    // Only now — after both validations pass — build the Set, trace event,
+    // and rag_context message. Chunks are already order-validated
+    // (chunks[i].rank === i + 1), so the array order, the model-visible
+    // context order, and the trace order all agree by construction.
+    allowedRagChunkIds = new Set(chunks.map((chunk) => chunk.chunkId));
+
+    trace.push({
+      type: "RETRIEVAL_COMPLETED",
+      chunks: chunks.map((chunk) => ({
+        chunkId: chunk.chunkId,
+        rank: chunk.rank,
+        score: chunk.score,
+      })),
+    });
+
+    if (chunks.length > 0) {
+      conversation = [
+        ...conversation,
+        { role: "rag_context", entries: formatRagContext(chunks) },
+      ];
+    }
+  }
+
   const successfulToolExecutionIds = new Set<string>();
 
   for (let turnIndex = 0; turnIndex < MAX_PROVIDER_TURNS; turnIndex++) {
