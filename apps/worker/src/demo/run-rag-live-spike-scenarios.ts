@@ -8,9 +8,10 @@ import {
 } from "../providers/llm-provider";
 import {
   INJECTION_PROBE_CHUNK,
-  RUNBOOK_CORPUS,
   RetrieverError,
   VoyageRunbookRetriever,
+  type RunbookCorpusLoadResult,
+  type StoredRunbookChunk,
   type VoyageEmbeddingClient,
 } from "../rag";
 import {
@@ -96,6 +97,28 @@ export async function runSelectedScenarios(
     results.push(name === "baseline" ? await callbacks.runBaseline() : await callbacks.runInjection());
   }
   return results;
+}
+
+// Wires lazy, scenario-isolated corpus loading: `runBaseline` only loads the
+// normal Markdown corpus (via `deps.loadCorpus`) inside its own closure, so
+// it is only ever invoked if "baseline" is actually selected (see
+// runSelectedScenarios above, which only calls the callback(s) for selected
+// scenario name(s)). Selecting "injection" alone never calls
+// `deps.loadCorpus` at all — a malformed or missing normal runbooks
+// directory cannot affect an injection-only run. `runInjection` is passed
+// through unchanged; it never touches the normal corpus.
+export function buildScenarioCallbacks(deps: {
+  readonly loadCorpus: () => Promise<RunbookCorpusLoadResult>;
+  readonly runBaseline: (corpus: readonly StoredRunbookChunk[]) => Promise<SpikeScenarioResult>;
+  readonly runInjection: () => Promise<SpikeScenarioResult>;
+}): ScenarioCallbacks {
+  return {
+    runBaseline: async () => {
+      const { chunks } = await deps.loadCorpus();
+      return deps.runBaseline(chunks);
+    },
+    runInjection: deps.runInjection,
+  };
 }
 
 type RetrievalCompletedEvent = Extract<
@@ -257,6 +280,7 @@ export async function runBaselineRagScenario(
   voyageClient: VoyageEmbeddingClient,
   model: string,
   dimensions: number,
+  corpus: readonly StoredRunbookChunk[],
 ): Promise<SpikeScenarioResult> {
   console.log("\n=== Scenario A: baseline-rag (real seven-chunk corpus only) ===");
 
@@ -264,7 +288,7 @@ export async function runBaselineRagScenario(
     client: voyageClient,
     model,
     dimensions,
-    corpus: RUNBOOK_CORPUS,
+    corpus,
   });
   const toolRegistry = new InMemoryToolRegistry([getServiceStatusTool]);
   const ticketContext: AgentConversationMessage = {

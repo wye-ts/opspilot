@@ -1,7 +1,8 @@
 import type { StoredRunbookChunk } from "./runbook-retriever";
 
-// A deliberately adversarial fixture, kept out of RUNBOOK_CORPUS on purpose
-// so the demo corpus and its retrieval metrics stay clean and predictable.
+// A deliberately adversarial fixture, kept out of the Markdown-file-backed
+// corpus (runbooks/*.md) on purpose so the real corpus and its retrieval
+// metrics stay clean and predictable.
 // Its content is shaped like a prompt-injection attempt against the
 // resolution-report evidence flow. Automated tests use it to prove
 // structurally that runbook content is rendered as inert data (see

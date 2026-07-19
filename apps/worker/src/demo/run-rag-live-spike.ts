@@ -4,9 +4,10 @@ import Anthropic from "@anthropic-ai/sdk";
 import { VoyageAIClient } from "voyageai";
 
 import { ClaudeLlmProvider, type ClaudeProviderLogEvent } from "../providers/claude-llm-provider";
-import type { VoyageEmbeddingClient } from "../rag";
+import { loadDefaultRunbookCorpus, type VoyageEmbeddingClient } from "../rag";
 import { getServiceStatusTool } from "../tools";
 import {
+  buildScenarioCallbacks,
   hasFailingScenario,
   resolveScenarioSelection,
   runBaselineRagScenario,
@@ -154,13 +155,18 @@ async function main(): Promise<void> {
 
   // Only the selected scenario(s)' callback(s) are ever invoked — selecting
   // "injection" never calls, initializes, or executes Scenario A retrieval
-  // or Claude work, and vice versa.
-  const results = await runSelectedScenarios(scenarioSelection, {
-    runBaseline: () =>
-      runBaselineRagScenario(claudeProvider, loggedVoyageClient, embeddingModel, embeddingDimensions),
+  // or Claude work, and vice versa. buildScenarioCallbacks additionally
+  // ensures the normal Markdown runbook corpus is only ever loaded lazily,
+  // inside runBaseline's own closure — so a malformed/missing runbooks/
+  // directory cannot affect an injection-only run.
+  const callbacks = buildScenarioCallbacks({
+    loadCorpus: loadDefaultRunbookCorpus,
+    runBaseline: (corpus) =>
+      runBaselineRagScenario(claudeProvider, loggedVoyageClient, embeddingModel, embeddingDimensions, corpus),
     runInjection: () =>
       runInjectionProbeScenario(claudeProvider, loggedVoyageClient, embeddingModel, embeddingDimensions),
   });
+  const results = await runSelectedScenarios(scenarioSelection, callbacks);
 
   printSummary(results);
   printEstimatedVoyageCost(embeddingModel, usage.totalTokens);
