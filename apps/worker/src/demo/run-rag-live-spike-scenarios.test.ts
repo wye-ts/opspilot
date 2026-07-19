@@ -6,6 +6,7 @@ import { getServiceStatusTool } from "../tools";
 import {
   EXPECTED_BASELINE_RANK_ONE_CHUNK_ID,
   EXPECTED_INJECTION_PROBE_CHUNK_ID,
+  buildScenarioCallbacks,
   createRecordingServiceStatusTool,
   evaluateBaselineRagScenario,
   evaluateInjectionProbeScenario,
@@ -370,5 +371,92 @@ describe("createRecordingServiceStatusTool", () => {
     const wrapped = createRecordingServiceStatusTool(getServiceStatusTool, recorded);
     await expect(wrapped.execute({ nope: true })).rejects.toThrow();
     expect(recorded).toEqual([]);
+  });
+});
+
+describe("buildScenarioCallbacks (scenario isolation)", () => {
+  function fakeDeps() {
+    let loadCorpusCalls = 0;
+    return {
+      loadCorpusCalls: () => loadCorpusCalls,
+      deps: {
+        loadCorpus: async () => {
+          loadCorpusCalls++;
+          return { chunks: [], sourceFileCount: 0 };
+        },
+        runBaseline: async () => ({ name: "baseline-rag", passed: true }) as SpikeScenarioResult,
+        runInjection: async () => ({ name: "injection-probe", passed: true }) as SpikeScenarioResult,
+      },
+    };
+  }
+
+  it("does not invoke the corpus loader when only injection is selected", async () => {
+    const { deps, loadCorpusCalls } = fakeDeps();
+    const callbacks = buildScenarioCallbacks(deps);
+
+    await runSelectedScenarios(["injection"], callbacks);
+
+    expect(loadCorpusCalls()).toBe(0);
+  });
+
+  it("invokes the corpus loader exactly once when only baseline is selected", async () => {
+    const { deps, loadCorpusCalls } = fakeDeps();
+    const callbacks = buildScenarioCallbacks(deps);
+
+    await runSelectedScenarios(["baseline"], callbacks);
+
+    expect(loadCorpusCalls()).toBe(1);
+  });
+
+  it("invokes the corpus loader exactly once for 'all' (baseline then injection)", async () => {
+    const { deps, loadCorpusCalls } = fakeDeps();
+    const callbacks = buildScenarioCallbacks(deps);
+
+    const results = await runSelectedScenarios(["baseline", "injection"], callbacks);
+
+    expect(loadCorpusCalls()).toBe(1);
+    expect(results.map((result) => result.name)).toEqual(["baseline-rag", "injection-probe"]);
+  });
+
+  it("passes the loaded chunks through to runBaseline", async () => {
+    const chunk = { chunkId: "x-001", runbookId: "r", title: "T", content: "C" };
+    const callbacks = buildScenarioCallbacks({
+      loadCorpus: async () => ({ chunks: [chunk], sourceFileCount: 1 }),
+      runBaseline: async (corpus) => {
+        expect(corpus).toEqual([chunk]);
+        return { name: "baseline-rag", passed: true };
+      },
+      runInjection: async () => ({ name: "injection-probe", passed: true }),
+    });
+
+    await runSelectedScenarios(["baseline"], callbacks);
+  });
+
+  it("does not let a loadCorpus rejection affect an injection-only run", async () => {
+    const callbacks = buildScenarioCallbacks({
+      loadCorpus: async () => {
+        throw new Error("runbooks directory is malformed");
+      },
+      runBaseline: async () => ({ name: "baseline-rag", passed: true }),
+      runInjection: async () => ({ name: "injection-probe", passed: true }),
+    });
+
+    await expect(runSelectedScenarios(["injection"], callbacks)).resolves.toEqual([
+      { name: "injection-probe", passed: true },
+    ]);
+  });
+
+  it("propagates a loadCorpus rejection when baseline is selected", async () => {
+    const callbacks = buildScenarioCallbacks({
+      loadCorpus: async () => {
+        throw new Error("runbooks directory is malformed");
+      },
+      runBaseline: async () => ({ name: "baseline-rag", passed: true }),
+      runInjection: async () => ({ name: "injection-probe", passed: true }),
+    });
+
+    await expect(runSelectedScenarios(["baseline"], callbacks)).rejects.toThrow(
+      "runbooks directory is malformed",
+    );
   });
 });

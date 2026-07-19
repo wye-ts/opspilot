@@ -705,7 +705,7 @@ Considered and rejected for both the Voyage and Claude adapters: raw payload log
 
 - `apps/worker/src/rag/runbook-retriever.ts` — `RunbookRetriever`, `RetrievalInput`, `StoredRunbookChunk`, `RetrievedRunbookChunk`, `RetrieverError`/`RetrieverErrorCategory`.
 - `apps/worker/src/rag/retrieval-validation.ts` — `validateRetrievalInput`, `validateRetrievedChunks`; shared by both retriever implementations and by `agent-orchestrator.ts`.
-- `apps/worker/src/rag/runbook-corpus.ts` — the seven-chunk seeded corpus, with a construction-time duplicate-`chunkId` assertion.
+- `apps/worker/src/rag/markdown-runbook-loader.ts` — the fence-aware, heading-delimited Markdown parser and `MarkdownRunbookCorpusLoader`, with fail-closed root/symlink/nested-directory checks and a duplicate-`chunkId` assertion. `apps/worker/src/rag/load-default-runbook-corpus.ts` wires it to the repository-level `runbooks/*.md` files, the seven-chunk corpus's actual source.
 - `apps/worker/src/rag/injection-probe-fixture.ts` — `INJECTION_PROBE_CHUNK`, deliberately excluded from the main corpus array.
 - `apps/worker/src/rag/in-memory-runbook-retriever.ts` — deterministic keyword/token-overlap retriever used by all automated tests and the deterministic demo.
 - `apps/worker/src/rag/voyage-embedding-client.ts`, `voyage-runbook-retriever.ts` — the live embedding-backed retriever; a narrow seam interface (mirroring `AnthropicMessagesClient`) isolates the `voyageai` SDK to these two files plus the manual spike composition root.
