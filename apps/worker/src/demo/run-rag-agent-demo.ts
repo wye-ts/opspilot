@@ -11,7 +11,12 @@ import {
   type FakeAgentScenario,
 } from "../providers/fake-llm-provider";
 import type { AgentConversationMessage } from "../providers/llm-provider";
-import { InMemoryKeywordRunbookRetriever, RUNBOOK_CORPUS } from "../rag";
+import {
+  InMemoryKeywordRunbookRetriever,
+  RunbookLoadError,
+  loadDefaultRunbookCorpus,
+  type RunbookCorpusLoadResult,
+} from "../rag";
 import { InMemoryToolRegistry, getServiceStatusTool } from "../tools";
 
 export interface DemoTicket {
@@ -92,7 +97,17 @@ function buildDemoScenario(): FakeAgentScenario {
   };
 }
 
-export async function runRagDemoScenario(): Promise<AgentOrchestratorResult> {
+export interface RagDemoScenarioResult {
+  readonly agentResult: AgentOrchestratorResult;
+  readonly corpusLoad: RunbookCorpusLoadResult;
+}
+
+// Loads the real Markdown corpus (see load-default-runbook-corpus.ts) before
+// any provider/tool call — a RunbookLoadError here propagates to the caller
+// (see main(), below) without ever constructing a provider or tool registry.
+export async function runRagDemoScenario(): Promise<RagDemoScenarioResult> {
+  const corpusLoad = await loadDefaultRunbookCorpus();
+
   const ticketContext: AgentConversationMessage = {
     role: "ticket_context",
     ticketId: DEMO_TICKET.id,
@@ -101,15 +116,17 @@ export async function runRagDemoScenario(): Promise<AgentOrchestratorResult> {
 
   const provider = new FakeLlmProvider(buildDemoScenario());
   const toolRegistry = new InMemoryToolRegistry([getServiceStatusTool]);
-  const retriever = new InMemoryKeywordRunbookRetriever(RUNBOOK_CORPUS);
+  const retriever = new InMemoryKeywordRunbookRetriever(corpusLoad.chunks);
 
-  return runAgentOrchestrator({
+  const agentResult = await runAgentOrchestrator({
     provider,
     toolRegistry,
     initialConversation: [ticketContext],
     retriever,
     retrievalInput: DEMO_RETRIEVAL_INPUT,
   });
+
+  return { agentResult, corpusLoad };
 }
 
 function formatTraceLine(
@@ -135,22 +152,23 @@ function formatTraceLine(
 
 export function formatDemoOutput(
   ticket: DemoTicket,
-  result: AgentOrchestratorResult,
+  { agentResult, corpusLoad }: RagDemoScenarioResult,
 ): string {
   const lines: string[] = [
     "OpsPilot RAG Agent Demo",
     "",
     `Ticket: ${ticket.id}`,
     `Subject: ${ticket.subject}`,
+    `Loaded ${corpusLoad.chunks.length} chunks from ${corpusLoad.sourceFileCount} Markdown runbooks.`,
     `Retrieval query: ${DEMO_RETRIEVAL_INPUT.query}`,
     `Retrieval topK: ${DEMO_RETRIEVAL_INPUT.topK}`,
     "",
     "Trace",
-    ...result.trace.map((event, index) => formatTraceLine(index + 1, event)),
+    ...agentResult.trace.map((event, index) => formatTraceLine(index + 1, event)),
   ];
 
-  if (result.status === "completed") {
-    const { report } = result;
+  if (agentResult.status === "completed") {
+    const { report } = agentResult;
     lines.push(
       "",
       "Resolution Report",
@@ -183,7 +201,7 @@ export function formatDemoOutput(
         "successful tool executions and retrieved RAG chunks.",
     );
   } else {
-    lines.push("", "Demo Failed", `Code: ${result.code}`, `Message: ${result.message}`);
+    lines.push("", "Demo Failed", `Code: ${agentResult.code}`, `Message: ${agentResult.message}`);
   }
 
   return lines.join("\n");
@@ -194,9 +212,21 @@ export function getExitCode(result: AgentOrchestratorResult): number {
 }
 
 async function main(): Promise<void> {
-  const result = await runRagDemoScenario();
+  let result: RagDemoScenarioResult;
+  try {
+    result = await runRagDemoScenario();
+  } catch (error) {
+    if (error instanceof RunbookLoadError) {
+      // Sanitized: category only, never the underlying message's raw path
+      // details beyond what RunbookLoadError itself already guarantees.
+      console.error(`[rag-demo] Failed to load runbook corpus (${error.category}): ${error.message}`);
+      process.exitCode = 1;
+      return;
+    }
+    throw error;
+  }
   console.log(formatDemoOutput(DEMO_TICKET, result));
-  process.exitCode = getExitCode(result);
+  process.exitCode = getExitCode(result.agentResult);
 }
 
 const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
