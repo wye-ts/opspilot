@@ -8,6 +8,7 @@
     "test": "vitest run",
     "demo": "tsx src/demo/run-agent-demo.ts",
     "demo:rag": "tsx src/demo/run-rag-agent-demo.ts",
+    "eval": "tsx src/evaluation/run-eval.ts",
     "spike:claude": "tsx src/demo/run-claude-agent-spike.ts",
     "spike:rag": "tsx src/demo/run-rag-live-spike.ts"
   },
