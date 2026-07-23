@@ -1,8 +1,10 @@
 import {
   ResolutionReportSchema,
   type AgentOrchestratorErrorCode,
+  type AgentTraceEvent,
   type EvidenceReference,
   type ResolutionReport,
+  type RetrievalSummaryEntry,
 } from "@opspilot/contracts";
 
 import type {
@@ -32,38 +34,15 @@ const MAX_PROVIDER_TURNS = 2;
 // bounded-loop policy maps turn positions to a phase.
 const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
 
-// A safe, structurally-limited retrieval summary — chunkId/rank/score only,
-// never content/title/runbookId, and never raw embedding vectors. Both the
-// deterministic demo and the live spike must read this from
-// AgentOrchestratorResult.trace rather than calling a retriever a second
-// time themselves, so what's printed can never diverge from what was
-// actually validated and used.
-export interface RetrievalSummaryEntry {
-  readonly chunkId: string;
-  readonly rank: number;
-  readonly score: number;
-}
-
-// docs/04-agent-design.md §16.1: only these trace event kinds are wired in
-// this slice (no RUN_STARTED/persistence — no AgentRun exists yet to attach
-// them to). RETRIEVAL_COMPLETED is pushed at most once, only after both
-// retrieval-input and retrieval-output validation succeed.
-export type AgentTraceEvent =
-  | {
-      readonly type: "RETRIEVAL_COMPLETED";
-      readonly chunks: readonly RetrievalSummaryEntry[];
-    }
-  | {
-      readonly type: "TOOL_REQUESTED";
-      readonly toolCallId: string;
-      readonly toolName: string;
-    }
-  | {
-      readonly type: "TOOL_COMPLETED";
-      readonly toolCallId: string;
-      readonly toolName: string;
-    }
-  | { readonly type: "REPORT_GENERATED" };
+// RetrievalSummaryEntry and AgentTraceEvent now live in @opspilot/contracts
+// (Zod-backed — see docs/11-agent-run-persistence.md) so packages/database
+// can type its repository functions against the real trace-event shape
+// without depending on apps/worker. Re-exported here so every existing
+// import site keeps working unchanged — a type relocation, not a behavior
+// change. docs/04-agent-design.md §16.1: only these trace event kinds are
+// wired in this slice; RETRIEVAL_COMPLETED is pushed at most once, only
+// after both retrieval-input and retrieval-output validation succeed.
+export type { AgentTraceEvent, RetrievalSummaryEntry };
 
 export interface AgentOrchestratorParams {
   readonly provider: LlmProvider;
