@@ -46,6 +46,9 @@ pnpm-debug.log*
 packages/database/prisma/dev.db
 packages/database/prisma/dev.db-journal
 
+# Prisma generated client (regenerated via `prisma generate`, not committed)
+packages/database/src/generated/
+
 # Temporary files
 tmp/
 temp/
