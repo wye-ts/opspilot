@@ -1,0 +1,53 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma-client"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model AgentJob {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ticketContext    Json     @map("ticket_context")
+  externalTicketId String   @map("external_ticket_id")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  runs AgentRun[]
+
+  @@map("agent_jobs")
+}
+
+model AgentRun {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  jobId           String    @map("job_id") @db.Uuid
+  attemptNumber   Int       @map("attempt_number")
+  status          String
+  providerMode    String    @map("provider_mode")
+  modelIdentifier String?   @map("model_identifier")
+  report          Json?
+  failureCode     String?   @map("failure_code")
+  startedAt       DateTime  @map("started_at") @db.Timestamptz(6)
+  finishedAt      DateTime? @map("finished_at") @db.Timestamptz(6)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  job         AgentJob          @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  traceEvents AgentTraceEvent[]
+
+  @@unique([jobId, attemptNumber])
+  @@map("agent_runs")
+}
+
+model AgentTraceEvent {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  runId          String   @map("run_id") @db.Uuid
+  sequenceNumber Int      @map("sequence_number")
+  eventType      String   @map("event_type")
+  payload        Json
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  run AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, sequenceNumber])
+  @@map("agent_trace_events")
+}

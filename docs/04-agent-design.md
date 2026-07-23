@@ -628,6 +628,8 @@ If the repaired submission is invalid, call `failOwnedAgentRun(...)` with a stab
 
 ## 16. Persistence Mapping
 
+**What actually exists today:** the persistence layer implemented in `packages/database` (see `docs/11-agent-run-persistence.md`) persists only the four trace event types the orchestrator currently produces (`RETRIEVAL_COMPLETED`, `TOOL_REQUESTED`, `TOOL_COMPLETED`, `REPORT_GENERATED`) in one batch after the orchestrator completes (Option A, persist-after) — there is no intermediate per-event write, no `AgentStep`/`ToolExecution` table, and no `withExecutionOwnership`. §16.1–§16.2 below remain the target design for a later milestone with a real queue-claiming worker.
+
 ### 16.1 Intermediate Worker Writes
 
 | Runtime event | Durable write |

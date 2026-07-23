@@ -1482,6 +1482,8 @@ The application validates that:
 
 ## 16. AgentJob and Worker Design
 
+**What actually exists today:** a smaller, deliberately simpler PostgreSQL persistence slice — `agent_jobs`/`agent_runs`/`agent_trace_events`, no queue-claiming, no execution-token fencing, no `PENDING` state, no maintenance sweep — is implemented and documented in full in `docs/11-agent-run-persistence.md`. This section (§16) remains the target design for a *later* milestone that adds a real queue-claiming worker; it is not yet built. Read `docs/11-agent-run-persistence.md` for what is actually running.
+
 This section replaces the transactional-outbox-based queue design from earlier revisions of this document. The evaluated alternative — a Redis/BullMQ transactional outbox — is preserved in full in `docs/10-engineering-challenges.md` Challenge 1, clearly marked as not selected for the MVP.
 
 ### 16.1 Consistency Model

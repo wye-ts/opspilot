@@ -7,7 +7,19 @@
     "build": "pnpm -r --if-present run build",
     "typecheck": "pnpm -r --if-present run typecheck",
     "test": "pnpm -r --if-present run test",
-    "lint": "pnpm -r --if-present run lint"
+    "lint": "pnpm -r --if-present run lint",
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down",
+    "infra:down:reset": "docker compose down -v",
+    "db:test:ensure": "bash scripts/ensure-test-database.sh",
+    "db:generate": "pnpm --filter @opspilot/database run db:generate",
+    "db:migrate:dev": "pnpm --filter @opspilot/database run db:migrate:dev",
+    "db:migrate:deploy": "pnpm --filter @opspilot/database run db:migrate:deploy",
+    "db:migrate:status": "pnpm --filter @opspilot/database run db:migrate:status",
+    "db:migrate:drift": "pnpm --filter @opspilot/database run db:migrate:drift",
+    "db:migrate:test": "pnpm --filter @opspilot/database run db:migrate:test",
+    "db:reset:dev": "pnpm --filter @opspilot/database run db:reset:dev",
+    "db:reset:test": "pnpm --filter @opspilot/database run db:reset:test"
   },
   "packageManager": "pnpm@11.13.1",
   "devDependencies": {
