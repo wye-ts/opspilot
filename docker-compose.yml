@@ -1,0 +1,28 @@
+name: opspilot
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: opspilot-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: opspilot
+      POSTGRES_PASSWORD: opspilot_local_dev_only
+      POSTGRES_DB: opspilot
+    ports:
+      # Host 55432, not the default 5432: this developer's machine already
+      # has something else bound to 5432 (deviation from the approved plan's
+      # 5432:5432 mapping — see docs/11-agent-run-persistence.md). The
+      # container's own internal port is unaffected.
+      - "55432:5432"
+    volumes:
+      - opspilot_postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opspilot -d opspilot"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  opspilot_postgres_data:

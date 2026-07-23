@@ -29,3 +29,7 @@ export type {
 export { AgentOrchestratorErrorCodeSchema } from "./agent-orchestrator";
 
 export type { AgentOrchestratorErrorCode } from "./agent-orchestrator";
+
+export { AgentTraceEventSchema, RetrievalSummaryEntrySchema } from "./agent-trace-event";
+
+export type { AgentTraceEvent, RetrievalSummaryEntry } from "./agent-trace-event";
