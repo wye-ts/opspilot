@@ -1,20 +1,16 @@
-import { z, type ZodType } from "zod";
+import { TicketContextSchema as _TicketContextSchema } from "@opspilot/contracts";
+import type { ZodType } from "zod";
 
 import { PersistenceError } from "./errors";
 
-// No exported ticket-context contract exists yet (see
-// apps/worker/src/providers/llm-provider.ts's local TicketContextEntry
-// interface, which additionally carries a role discriminant that is not
-// meaningful as a standalone persisted shape — every row in agent_jobs is a
-// ticket context by definition). This is the narrowest schema matching the
-// real { ticketId, summary } input, not a duplicate of a broader product
-// model.
-export const TicketContextSchema = z
-  .object({
-    ticketId: z.string().min(1),
-    summary: z.string().min(1),
-  })
-  .strict();
+// TicketContextSchema now lives in @opspilot/contracts (a shared domain
+// contract used by the API request shape, this persistence layer, and the
+// orchestrator's ticket_context conversation entry alike) — re-exported here
+// as a plain const (not `export { TicketContextSchema }`, which compiles to
+// a live-binding getter that Vite-node's CJS interop does not reliably
+// forward — see packages/agent-runtime/src/index.ts) for backward
+// compatibility of existing internal import sites.
+export const TicketContextSchema = _TicketContextSchema;
 
 export function validateOrThrow<T>(schema: ZodType<T>, value: unknown, context: string): T {
   const result = schema.safeParse(value);

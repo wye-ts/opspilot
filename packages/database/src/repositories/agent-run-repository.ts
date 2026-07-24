@@ -19,6 +19,7 @@ import {
 import type {
   AgentJobRecord,
   AgentRunRecord,
+  PersistedAgentJob,
   PersistedAgentRun,
   ProviderMode,
   StartedAgentRun,
@@ -212,6 +213,39 @@ export function finalizeFailed(
   code: unknown,
 ): Promise<AgentRunRecord> {
   return finalizeTerminal(prisma, runId, trace, { kind: "FAILED", code });
+}
+
+// Explicit interactive transaction with RepeatableRead — not a bare Prisma
+// nested `include` — so the job row and its run rows are guaranteed to be
+// read from one consistent snapshot under concurrent writes, matching
+// getAgentRun's own consistency guarantee below. Never returns trace events
+// or reports: this is a job-summary read model only (see
+// docs/11-agent-run-persistence.md); callers use getAgentRun for a single
+// run's full detail.
+export async function getAgentJob(prisma: PrismaClient, jobId: string): Promise<PersistedAgentJob> {
+  try {
+    const result = await prisma.$transaction(
+      async (tx) => {
+        const jobRow = await tx.agentJob.findUnique({ where: { id: jobId } });
+        if (!jobRow) {
+          throw new PersistenceError("PERSISTENCE_NOT_FOUND", `AgentJob ${jobId} not found`);
+        }
+        const runRows = await tx.agentRun.findMany({
+          where: { jobId },
+          orderBy: { attemptNumber: "asc" },
+        });
+        return { jobRow, runRows };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+
+    return {
+      job: fromAgentJobRow(result.jobRow),
+      runs: result.runRows.map(fromAgentRunRow),
+    };
+  } catch (error) {
+    throw normalizeDatabaseError(error, "getAgentJob");
+  }
 }
 
 export async function getAgentRun(prisma: PrismaClient, runId: string): Promise<PersistedAgentRun> {

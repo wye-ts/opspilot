@@ -2,11 +2,16 @@
   "name": "@opspilot/database",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
   },
   "scripts": {
+    "build:deps": "pnpm --filter \"@opspilot/database^...\" -r --workspace-concurrency=1 run build",
     "db:generate": "node --env-file-if-exists=../../.env scripts/run-prisma.mjs generate",
     "db:migrate:dev": "node --env-file-if-exists=../../.env scripts/run-prisma.mjs migrate dev",
     "db:migrate:deploy": "node --env-file-if-exists=../../.env scripts/run-prisma.mjs migrate deploy",
@@ -15,10 +20,11 @@
     "db:reset:dev": "node --env-file-if-exists=../../.env scripts/run-prisma.mjs migrate reset --force",
     "db:migrate:test": "node --env-file-if-exists=../../.env scripts/run-prisma-against-test-database.mjs migrate deploy",
     "db:reset:test": "node --env-file-if-exists=../../.env scripts/run-prisma-against-test-database.mjs migrate reset --force",
-    "typecheck": "pnpm run db:generate && tsc --noEmit",
-    "build": "pnpm run db:generate && tsc -p tsconfig.json",
-    "test": "pnpm run db:generate && vitest run",
-    "test:integration": "pnpm run db:generate && node --env-file-if-exists=../../.env scripts/with-test-database-url.mjs pnpm exec vitest run --config vitest.integration.config.ts"
+    "typecheck": "pnpm run build:deps && pnpm run db:generate && tsc -p tsconfig.json",
+    "build": "pnpm run build:deps && pnpm run db:generate && tsc -p tsconfig.build.json",
+    "test": "pnpm run build:deps && pnpm run db:generate && vitest run",
+    "test:integration": "pnpm run build:deps && pnpm run db:generate && node --env-file-if-exists=../../.env ../../scripts/with-test-database-url.mjs pnpm exec vitest run --config vitest.integration.config.ts",
+    "clean": "rm -rf dist src/generated/prisma-client"
   },
   "dependencies": {
     "@prisma/client": "7.9.0",
