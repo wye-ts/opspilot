@@ -6,7 +6,7 @@
 | Status | Implemented |
 | Project | OpsPilot |
 | Purpose | Document the actual, implemented PostgreSQL persistence slice for `AgentJob`/`AgentRun`/`AgentTraceEvent` — schema, invariants, transactions, validation, test lifecycle, and current limitations |
-| Related documents | `docs/03-technical-design.md` §16, `docs/04-agent-design.md` §16, `docs/10-engineering-challenges.md` Challenge 3, `.plans/agent-run-persistence-plan.md` (the approved design this implements) |
+| Related documents | `docs/03-technical-design.md` §16, `docs/04-agent-design.md` §16, `docs/10-engineering-challenges.md` Challenge 3, `.plans/agent-run-persistence-plan.md` (the approved design this implements), `docs/12-agent-run-api.md` (the HTTP API layer built on top of this persistence slice) |
 
 ---
 
@@ -24,6 +24,8 @@ create AgentJob
 ```
 
 It does **not** add a queue, a claim-worker, execution-token fencing, cancellation, a maintenance sweep, live progress streaming, an API layer, or a UI. `docs/03-technical-design.md` §16 and `docs/04-agent-design.md` §16 describe a larger *future* production design with all of that; this document describes what is actually built today, and is explicitly a simpler precursor to that design — not an implementation of it. See §9 for exactly how they relate.
+
+The API layer this document explicitly excludes is now built — see `docs/12-agent-run-api.md` for `apps/api`, the local-only synchronous NestJS API that calls `createAgentRunService`/`createPrismaAgentRunRepository` from `@opspilot/agent-runtime` exactly as `apps/worker`'s persisted demo does, over the same repository functions and schema described below.
 
 ---
 
