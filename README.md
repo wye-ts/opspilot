@@ -46,3 +46,18 @@ pnpm --filter @opspilot/worker run eval        # 15-case deterministic evaluatio
 ```
 
 `spike:claude` and `spike:rag` require real `ANTHROPIC_API_KEY`/`VOYAGE_API_KEY` values and make live network calls — see `apps/worker/.env.example`.
+
+### Agent Run API (`apps/api`)
+
+A local-only, synchronous NestJS API over the persistence layer above — four endpoints, no auth, no queue, no live model calls (every run executes against a deterministic fake provider). Requires the local PostgreSQL setup above.
+
+```bash
+pnpm --filter @opspilot/api run build
+pnpm --filter @opspilot/api run start     # Terminal A — blocks; http://127.0.0.1:3000
+```
+
+```bash
+pnpm api:demo                             # Terminal B — POST job, POST run, GET job, GET run
+```
+
+See `docs/12-agent-run-api.md` for the full endpoint/error/envelope reference.

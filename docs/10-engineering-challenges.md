@@ -3,12 +3,12 @@
 | Field | Value |
 |---|---|
 | Document | Engineering Challenges and Design Decisions |
-| Version | 1.5 |
+| Version | 1.7 |
 | Status | Living Document |
 | Project | OpsPilot |
 | Purpose | Capture difficult engineering problems, design decisions, tradeoffs, and interview-ready explanations |
-| Related Documents | `docs/03-technical-design.md`, `docs/04-agent-design.md`, `docs/reviews/03-technical-design-feasibility-review.md`, `docs/reviews/03-technical-design-review-decisions.md`, `docs/reviews/04-agent-design-claude-spike-results.md` |
-| Revision note | v1.2 aligns Challenge 1 with `docs/03-technical-design.md` v1.3: `AgentJob` now includes `CANCELLED`; the maintenance sweep sets `AgentRun.completedAt`; the corrected write-safety design is presented as two distinct repository transaction patterns (`withExecutionOwnership`, `withLockedRunState`) sharing one global lock order (`AgentJob` → `AgentRun` → child rows), not a single "ownership-fenced" pattern; and language implying the design has already been implemented or shipped has been replaced with language accurate to the project's current (pre-implementation) stage. v1.1's PostgreSQL-as-system-of-record-and-queue decision (D1, D2) and the corrected write-safety mechanism (D12) remain unchanged in substance. This entry is further updated within v1.2 to document concurrency-safe `AgentStep` sequence allocation (`AgentRun.nextStepSequence`, the shared `appendAgentStep(...)` helper, and why `SELECT MAX(sequence) + 1` is unsafe) and the `completeAgentRunWithReport` invariant that every `PendingAction` created during finalization has exactly one matching `APPROVAL_CREATED` trace event, created in the same transaction — still describing planned design, not implemented behavior. v1.3 adds Challenge 2, documenting the minimal RAG vertical slice's evidence-grounding and retriever-isolation design — unlike Challenge 1, this describes code that has actually been implemented and unit-tested in this revision, though the manual live spike against a real embedding provider and live Claude has not yet been run. v1.4 corrects that last clause: the manual live spike has now been run. Both the baseline-RAG scenario and the isolated injection-probe scenario passed against a real Voyage embedding provider and a real Claude model, with repeated rate limiting observed (and worked around via a scenario selector) but no RAG-correctness or evidence-grounding failure in any attempt — see `docs/05-rag-design.md` and `docs/reviews/05-rag-design-spike-results.md` for the full design record and measured results. This does not change any of Challenge 2's design, validation, or testing content below, which described planned/already-implemented behavior accurately; it only updates the one clause that described the live spike as not yet run. v1.5 adds Challenge 3, documenting the implemented Agent Run / Trace Persistence milestone (`packages/database`) — a deliberately smaller, already-built precursor to Challenge 1's full queue-claiming design, described in full in `docs/11-agent-run-persistence.md`. |
+| Related Documents | `docs/03-technical-design.md`, `docs/04-agent-design.md`, `docs/reviews/03-technical-design-feasibility-review.md`, `docs/reviews/03-technical-design-review-decisions.md`, `docs/reviews/04-agent-design-claude-spike-results.md`, `docs/12-agent-run-api.md` |
+| Revision note | v1.2 aligns Challenge 1 with `docs/03-technical-design.md` v1.3: `AgentJob` now includes `CANCELLED`; the maintenance sweep sets `AgentRun.completedAt`; the corrected write-safety design is presented as two distinct repository transaction patterns (`withExecutionOwnership`, `withLockedRunState`) sharing one global lock order (`AgentJob` → `AgentRun` → child rows), not a single "ownership-fenced" pattern; and language implying the design has already been implemented or shipped has been replaced with language accurate to the project's current (pre-implementation) stage. v1.1's PostgreSQL-as-system-of-record-and-queue decision (D1, D2) and the corrected write-safety mechanism (D12) remain unchanged in substance. This entry is further updated within v1.2 to document concurrency-safe `AgentStep` sequence allocation (`AgentRun.nextStepSequence`, the shared `appendAgentStep(...)` helper, and why `SELECT MAX(sequence) + 1` is unsafe) and the `completeAgentRunWithReport` invariant that every `PendingAction` created during finalization has exactly one matching `APPROVAL_CREATED` trace event, created in the same transaction — still describing planned design, not implemented behavior. v1.3 adds Challenge 2, documenting the minimal RAG vertical slice's evidence-grounding and retriever-isolation design — unlike Challenge 1, this describes code that has actually been implemented and unit-tested in this revision, though the manual live spike against a real embedding provider and live Claude has not yet been run. v1.4 corrects that last clause: the manual live spike has now been run. Both the baseline-RAG scenario and the isolated injection-probe scenario passed against a real Voyage embedding provider and a real Claude model, with repeated rate limiting observed (and worked around via a scenario selector) but no RAG-correctness or evidence-grounding failure in any attempt — see `docs/05-rag-design.md` and `docs/reviews/05-rag-design-spike-results.md` for the full design record and measured results. This does not change any of Challenge 2's design, validation, or testing content below, which described planned/already-implemented behavior accurately; it only updates the one clause that described the live spike as not yet run. v1.5 adds Challenge 3, documenting the implemented Agent Run / Trace Persistence milestone (`packages/database`) — a deliberately smaller, already-built precursor to Challenge 1's full queue-claiming design, described in full in `docs/11-agent-run-persistence.md`. v1.6 adds Challenge 4, documenting a real implementation-time discovery in the Agent Run API milestone (`apps/api`, `docs/12-agent-run-api.md`): `nest build`/`nest start --watch` are architecturally incompatible with this monorepo's pinned `typescript@^7.0.2` (a native rewrite whose public npm export no longer exposes the classic TypeScript Compiler API `@nestjs/cli` depends on internally), resolved by bypassing the Nest CLI's build wrapper in favor of the same plain-`tsc` pattern already used successfully by every other package in this monorepo, rather than downgrading TypeScript. v1.7 revises Challenge 4's Decision/Tradeoffs/Implementation Notes at a focused pre-commit review pass: `@nestjs/cli`/`@nestjs/schematics` and `apps/api/nest-cli.json`, originally kept as an unused "possible future use" placeholder, are now removed entirely as dead configuration/dependencies with no actual justification to keep; `apps/api`'s `build` script now cleans stale `dist/` output before every build, and `start:dev` is now a reliable `pnpm run build && pnpm run start` (no automatic reload — deferred, not silently dropped) rather than the previously untested concurrent `tsc --watch`/`node --watch` pair. |
 
 ---
 
@@ -844,3 +844,72 @@ This problem demonstrates:
 - Correctly distinguishing infrastructure failure, agent-domain failure, and unexpected-crash failure as three separate error models that must never be conflated
 - Adapting a design to real, version-specific tooling behavior (Prisma 7's driver-adapter model, `migrate diff`'s shadow-database requirement) discovered only by actually running it, and documenting the deviation
 - Consistent sanitized-output discipline (no raw errors, connection strings, or stack traces surfaced anywhere) carried through a third subsystem after Challenge 1 and Challenge 2
+
+---
+
+## 6. Challenge 4 — `nest build` Is Incompatible with This Project's Pinned TypeScript
+
+### Context
+
+`apps/api` (`docs/12-agent-run-api.md`) is a new local-only NestJS API built on top of Challenge 3's persistence layer. The approved plan pinned exact `@nestjs/*` 11.x versions and specified `nest-cli.json` + `nest build`/`nest start --watch` as the build/dev commands, matching ordinary NestJS project conventions.
+
+### Problem
+
+`pnpm --filter @opspilot/api run build` (`nest build`) failed immediately with `tsBinary.getParsedCommandLineOfConfigFile is not a function` — not a bug in any of this milestone's own code, but a hard incompatibility between `@nestjs/cli@11.0.5` and this monorepo's pinned `typescript@^7.0.2`. `@nestjs/cli`'s internal build pipeline (`TsConfigProvider`, `TypeScriptBinaryLoader`) resolves whatever `typescript` package the consuming project has installed and calls into the classic TypeScript Compiler API (`ts.getParsedCommandLineOfConfigFile`, `ts.createProgram`, …) to read `tsconfig.build.json` and drive compilation. This project's `typescript@7.0.2` is a new native-rewrite package whose npm distribution no longer exposes that API surface via `require("typescript")` at all — its `"."` export resolves to `lib/version.cjs`, a small module that exports only a version string, alongside a separate `tsc` CLI binary (`bin/tsc`). Plain `tsc -p tsconfig.build.json` — which is all `packages/contracts`, `packages/database`, and `packages/agent-runtime` already use successfully under this exact TypeScript version — only needs that `tsc` binary, so it is unaffected. `nest build`'s wrapper needs the JS Compiler API, which simply is not there.
+
+### Why It Is Difficult
+
+This is not a version-pinning mistake to fix by bumping a patch number: no `@nestjs/cli` 11.x release could plausibly restore compatibility, because the incompatibility is architectural — an entire class of Compiler-API-consuming tools (and, likely, most of the `ts-loader`/`ts-jest`/`ts-morph`-adjacent ecosystem) will not be reachable from a `typescript` package that only ships a version stub and a CLI binary through its public npm export surface. Verifying this required actually reading `@nestjs/cli`'s installed source (`tsconfig-provider.js`, `typescript-loader.js`) and the installed `typescript@7.0.2` package's own `exports` map — the failure is not explained anywhere in either package's public documentation.
+
+### Failure Modes
+
+- `nest build` fails outright (`tsBinary.getParsedCommandLineOfConfigFile is not a function`), so `apps/api/dist/main.js` is never produced.
+- `nest start --watch` shares the same internal compiler pipeline and fails identically — a working `build` script alone would not have implied a working dev-watch script.
+- Silently downgrading `typescript` for the whole monorepo to make `nest build` pass would have contradicted the approved technology decision (pinned `^7.0.2`) and this milestone's own explicit constraint not to silently downgrade TypeScript.
+
+### Decision
+
+Stop and report the exact error before proceeding, per this milestone's own first-checkpoint instruction, then get an explicit choice on how to proceed rather than deciding unilaterally. The selected fix: change `apps/api/package.json`'s `build`/`start:dev` scripts to call `tsc -p tsconfig.build.json` directly instead of `nest build`/`nest start --watch` — the same pattern every other package in this monorepo (`contracts`, `database`, `agent-runtime`) already uses successfully under this TypeScript version. `emitDecoratorMetadata`/`experimentalDecorators` (what NestJS actually needs from the compiler) are ordinary `tsconfig.build.json` compiler options, entirely independent of which tool invokes `tsc`.
+
+**Revised at pre-commit review:** the initial version of this decision kept `@nestjs/cli`/`@nestjs/schematics` as pinned devDependencies and kept `nest-cli.json` in the repository, reasoning that they cost nothing to leave as a placeholder for a possible future `nest generate` use. A pre-commit review correctly flagged this as dead configuration/dependencies with no actual use, not a genuinely justified placeholder — nothing in this milestone or its immediate roadmap uses Nest's schematics generator, and unused tooling that no longer even functions for its original purpose (Nest CLI build/start) is a maintenance liability, not a convenience. `apps/api/nest-cli.json` was deleted, and `@nestjs/cli`/`@nestjs/schematics` were removed from `apps/api/package.json`'s devDependencies (`pnpm install --filter @opspilot/api`, removing ~197 packages from the lockfile — the CLI's own transitive dependency tree). The Nest **runtime** packages actually used by the application (`@nestjs/common`, `@nestjs/core`, `@nestjs/platform-express`) and the testing package (`@nestjs/testing`) are unaffected and remain exactly as pinned.
+
+### Alternatives Considered
+
+#### Alternative A — Downgrade `typescript` for the whole monorepo
+
+Rejected outright — contradicts the approved, pinned technology decision and this milestone's explicit "do not silently downgrade TypeScript" constraint.
+
+#### Alternative B — Scope a downgraded `typescript` to `apps/api` only (a per-package override)
+
+Would keep `nest build`/`nest start --watch` literally working as specified, at the cost of a permanent per-package TypeScript version split in the workspace — one more thing to keep synchronized, and a strange asymmetry where the newest application package in the monorepo runs an older compiler than every package it depends on. Deferred in favor of Alternative C, which needed no version change at all.
+
+#### Alternative C — Bypass the Nest CLI's compiler wrapper, keep plain `tsc` (Selected)
+
+No version changes anywhere, and matches a pattern already proven to work in this exact monorepo under this exact TypeScript version for three other packages. The only cost is losing `nest build`'s and `nest start --watch`'s own incremental-build/file-watch conveniences — replaced by a `tsc --watch` + `node --watch` pair for `start:dev` (see `docs/12-agent-run-api.md`).
+
+### Tradeoffs
+
+- `apps/api` no longer benefits from any Nest-CLI-specific build behavior (asset copying, plugin-based transforms) — none of which this milestone actually needed, since `emitDecoratorMetadata` is a plain `tsc` compiler option.
+- No hot reload / incremental watch mode: `start:dev` is now a full clean `build` followed by `start`, not a file-watcher — see Implementation Notes below and `docs/12-agent-run-api.md` §8. Deferred deliberately rather than adding a process-management dependency (`nodemon`/`concurrently`) in this pass.
+- This is a monorepo-wide risk, not an `apps/api`-only one: any *future* package that wants to add a Compiler-API-consuming dev tool (a different framework CLI, a codegen tool, certain ESLint/Jest configurations) should expect the same class of failure under this pinned TypeScript version, and should check the tool's actual `require("typescript")` usage before assuming it works. If a future milestone genuinely needs Nest's schematics generator, `@nestjs/schematics` can be reinstalled as a devDependency at that point — it does not need to be kept pre-emptively.
+
+### Implementation Notes
+
+`apps/api/package.json`: `"build": "pnpm run build:deps && pnpm run clean && tsc -p tsconfig.build.json"` (cleans stale `dist/` output before every build, so a removed source file can never leave a stale compiled artifact behind), `"start:dev": "pnpm run build && pnpm run start"` (a full clean rebuild plus a normal blocking start — no file-watching, no automatic reload; a developer re-runs it after each change). No Nest CLI files or dependencies remain: `apps/api/nest-cli.json` was deleted, and `@nestjs/cli`/`@nestjs/schematics` were removed from devDependencies.
+
+### Testing Strategy
+
+Verified directly: `pnpm --filter @opspilot/api run build` produces `apps/api/dist/main.js` from a clean `dist/` (and no `*.test.js`/`test/` under `dist`); `pnpm --filter @opspilot/api run start` binds `127.0.0.1` and serves all four endpoints correctly; a full `SIGINT`/`SIGTERM` shutdown cycle closes cleanly with no hanging process — see `docs/12-agent-run-api.md` §8 for the exact commands.
+
+### Interview Explanation
+
+> I hit a build failure in a brand-new NestJS app that had nothing to do with any code I'd written — `nest build` crashed inside the Nest CLI itself. Rather than guessing, I read the installed CLI's source and found it calls into the classic TypeScript Compiler API to parse `tsconfig.build.json`, and then checked what our pinned TypeScript package actually exports — turned out to be a new native rewrite whose public npm surface is just a version stub and a `tsc` binary, no Compiler API at all. That's not a version mismatch you fix by bumping a patch number, it's a real architecture change upstream. Since three other packages in the same monorepo already used plain `tsc` successfully under that same TypeScript version, I proposed bypassing the Nest CLI's build wrapper entirely rather than downgrading TypeScript project-wide, confirmed it with the person I was building this for instead of just deciding on my own, and shipped the same plain-`tsc` pattern the rest of the repo already used.
+
+### Resume Relevance
+
+This problem demonstrates:
+
+- Diagnosing a third-party tool failure by reading its actual installed source rather than guessing or reflexively downgrading a dependency
+- Recognizing when a failure is architectural (an upstream package's public API surface changed) rather than a simple version mismatch
+- Stopping at an explicit decision point and getting a scoped answer instead of silently choosing a workaround with monorepo-wide consequences
+- Reusing an already-proven pattern from elsewhere in the same codebase instead of inventing a new one
