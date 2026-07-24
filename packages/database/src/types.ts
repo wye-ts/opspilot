@@ -1,11 +1,13 @@
 import type {
   AgentOrchestratorErrorCode,
   AgentTraceEvent,
+  ApprovalDecision,
+  RecordApprovalDecisionInput,
   ResolutionReport,
   TicketContext,
 } from "@opspilot/contracts";
 
-export type { TicketContext };
+export type { ApprovalDecision, TicketContext };
 
 export type AgentRunStatus = "RUNNING" | "COMPLETED" | "FAILED";
 export type ProviderMode = "FAKE" | "LIVE";
@@ -63,4 +65,45 @@ export interface PersistedAgentJob {
 export interface StartedAgentRun {
   readonly job: AgentJobRecord;
   readonly run: AgentRunRecord;
+}
+
+// The schema-derived type IS the single source of truth — not an
+// independently maintained interface. `note` is OPTIONAL (present-or-absent),
+// never `null`, exactly mirroring RecordApprovalDecisionInputSchema's parsed
+// output.
+export type RecordApprovalDecisionParams = RecordApprovalDecisionInput;
+
+// Database write shape — what actually gets bound into the INSERT/comparison.
+// NOT the same type as RecordApprovalDecisionParams: `note` here is
+// `string | null`, never `undefined`, because SQL has no "absent" — only NULL.
+export interface AgentRunApprovalWrite {
+  readonly decision: ApprovalDecision;
+  readonly reviewerName: string;
+  readonly note: string | null;
+}
+
+// Persisted-row shape; always fully populated (decided_at is NOT NULL).
+export interface AgentRunApprovalRecord {
+  readonly id: string;
+  readonly runId: string;
+  readonly decision: ApprovalDecision;
+  readonly reviewerName: string;
+  readonly note: string | null;
+  readonly decidedAt: Date;
+}
+
+export type AgentRunApprovalStatus = "NOT_ELIGIBLE" | "PENDING" | "APPROVED" | "REJECTED";
+
+// GET-time (and POST-response-time) computed read model.
+export interface AgentRunApprovalView {
+  readonly runId: string;
+  readonly status: AgentRunApprovalStatus;
+  readonly reviewerName: string | null;
+  readonly note: string | null;
+  readonly decidedAt: Date | null;
+}
+
+export interface RecordApprovalDecisionResult {
+  readonly view: AgentRunApprovalView;
+  readonly outcome: "created" | "replayed";
 }

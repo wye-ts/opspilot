@@ -19,5 +19,5 @@ export async function createTestPrismaClient(): Promise<PrismaClientHandle> {
 }
 
 export async function truncateAllTables(handle: PrismaClientHandle): Promise<void> {
-  await handle.prisma.$executeRaw`TRUNCATE TABLE agent_jobs, agent_runs, agent_trace_events RESTART IDENTITY CASCADE`;
+  await handle.prisma.$executeRaw`TRUNCATE TABLE agent_jobs, agent_runs, agent_trace_events, agent_run_approvals RESTART IDENTITY CASCADE`;
 }
