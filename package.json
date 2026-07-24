@@ -4,9 +4,10 @@
   "private": true,
   "description": "AI support and incident resolution agent",
   "scripts": {
-    "build": "pnpm -r --if-present run build",
-    "typecheck": "pnpm -r --if-present run typecheck",
-    "test": "pnpm -r --if-present run test",
+    "build": "pnpm -r --workspace-concurrency=1 --if-present run build",
+    "typecheck": "pnpm -r --workspace-concurrency=1 --if-present run typecheck",
+    "test": "pnpm -r --workspace-concurrency=1 --if-present run test",
+    "clean": "pnpm -r --workspace-concurrency=1 --if-present run clean",
     "lint": "pnpm -r --if-present run lint",
     "infra:up": "docker compose up -d",
     "infra:down": "docker compose down",
