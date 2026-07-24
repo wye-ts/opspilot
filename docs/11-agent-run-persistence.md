@@ -163,6 +163,8 @@ agent_trace_events_event_type_chk             event_type IN (<4 exact variants>)
 agent_trace_events_event_type_matches_chk     event_type = payload ->> 'type'
 ```
 
+Milestone 6C (persistence implemented, HTTP API pending — see `docs/13-approval-workflow.md`) adds 2 more named constraints on the new `agent_run_approvals` table (`agent_run_approvals_decision_chk`, `agent_run_approvals_reviewer_name_not_blank_chk`), bringing the project total to 14.
+
 Terminal-outcome invariant (`agent_runs_terminal_outcome_chk`):
 ```sql
 (status = 'RUNNING'   AND finished_at IS NULL     AND report IS NULL     AND failure_code IS NULL) OR
@@ -181,6 +183,8 @@ Enforced by Postgres itself — any `UPDATE` that bypasses the repository and tr
 ## 5. Transactions
 
 Lock order: `AgentJob` -> `AgentRun` -> `AgentTraceEvent`, consistent everywhere. `agent_jobs` has no mutable state in this milestone (no claim/lease/token fields), so only `startRun` locks it; finalize transactions lock only the target `AgentRun` row.
+
+Milestone 6C (persistence implemented, HTTP API pending — see `docs/13-approval-workflow.md`) adds a second, independent child-row branch under `AgentRun`, sibling to `AgentTraceEvent`: `agent_run_approvals`, recording a human approve/reject decision, locked/written only after the same `AgentRun` row lock, never touching `AgentJob`.
 
 ### `startRun` — one atomic transaction, no `PENDING`, the sole source of a run's ticket context
 
