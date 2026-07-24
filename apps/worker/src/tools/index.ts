@@ -1,7 +1,8 @@
-export { InMemoryToolRegistry } from "./diagnostic-tool";
+import opspilotAgentRuntime from "@opspilot/agent-runtime";
+
+export const { InMemoryToolRegistry, getServiceStatusTool } = opspilotAgentRuntime;
+
 export type {
   DiagnosticToolDefinition,
   ToolRegistry,
-} from "./diagnostic-tool";
-
-export { getServiceStatusTool } from "./get-service-status";
+} from "@opspilot/agent-runtime";

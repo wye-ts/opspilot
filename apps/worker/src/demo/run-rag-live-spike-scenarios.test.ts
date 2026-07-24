@@ -1,7 +1,7 @@
+import type { AgentOrchestratorResult } from "@opspilot/agent-runtime";
 import type { AgentOrchestratorErrorCode, ResolutionReport } from "@opspilot/contracts";
 import { describe, expect, it } from "vitest";
 
-import type { AgentOrchestratorResult } from "../agent/agent-orchestrator";
 import { getServiceStatusTool } from "../tools";
 import {
   EXPECTED_BASELINE_RANK_ONE_CHUNK_ID,

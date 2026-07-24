@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import type { AgentOrchestratorResult } from "@opspilot/agent-runtime";
 import type { AgentOrchestratorErrorCode, ResolutionReport } from "@opspilot/contracts";
-
-import type { AgentOrchestratorResult } from "../agent/agent-orchestrator";
 import {
   evaluateCase,
   evaluateFailure,

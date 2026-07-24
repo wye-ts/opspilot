@@ -1,10 +1,12 @@
+import opspilotAgentRuntime from "@opspilot/agent-runtime";
 import { VoyageAIError, VoyageAITimeoutError, type EmbedRequest, type EmbedResponse } from "voyageai";
 import { describe, expect, it, vi } from "vitest";
 
-import { validateRetrievedChunks } from "./retrieval-validation";
-import { RetrieverError, type StoredRunbookChunk } from "./runbook-retriever";
+import type { StoredRunbookChunk } from "@opspilot/agent-runtime";
 import type { VoyageEmbeddingClient } from "./voyage-embedding-client";
 import { VoyageRunbookRetriever } from "./voyage-runbook-retriever";
+
+const { RetrieverError, validateRetrievedChunks } = opspilotAgentRuntime;
 
 const corpus: readonly StoredRunbookChunk[] = [
   { chunkId: "a", runbookId: "r1", title: "A", content: "Content A" },
@@ -291,7 +293,12 @@ describe("VoyageRunbookRetriever", () => {
     }
 
     expect(thrown).toBeInstanceOf(RetrieverError);
-    expect((thrown as RetrieverError).category).toBe(expectedCategory);
+    // RetrieverError is destructured from the default-imported
+    // opspilotAgentRuntime object above (value namespace only); a parallel
+    // same-named type import would collide with it (TS2440), so
+    // InstanceType<typeof X> is intentionally retained — see
+    // packages/agent-runtime/src/index.ts.
+    expect((thrown as InstanceType<typeof RetrieverError>).category).toBe(expectedCategory);
   });
 
   it("never leaks the raw SDK error message/body into the thrown RetrieverError", async () => {
@@ -312,7 +319,8 @@ describe("VoyageRunbookRetriever", () => {
     }
 
     expect(thrown).toBeInstanceOf(RetrieverError);
-    expect((thrown as RetrieverError).message).not.toContain("leaked-secret-detail-9f3a");
+    // See the InstanceType<typeof X> note above (TS2440 avoidance).
+    expect((thrown as InstanceType<typeof RetrieverError>).message).not.toContain("leaked-secret-detail-9f3a");
     expect(JSON.stringify(thrown)).not.toContain("leaked-secret-detail-9f3a");
   });
 });

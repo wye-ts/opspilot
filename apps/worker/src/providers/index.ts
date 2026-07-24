@@ -1,4 +1,12 @@
-export { LlmProviderError, normalizeDiagnosticToolRequests } from "./llm-provider";
+import opspilotAgentRuntime from "@opspilot/agent-runtime";
+
+export const {
+  LlmProviderError,
+  normalizeDiagnosticToolRequests,
+  FakeLlmProvider,
+  FakeScenarioTurnNotFoundError,
+} = opspilotAgentRuntime;
+
 export type {
   AgentConversationMessage,
   AgentTurnInput,
@@ -9,10 +17,6 @@ export type {
   LlmProviderErrorCategory,
   RawProviderTurnContext,
   TicketContextEntry,
-} from "./llm-provider";
-
-export {
-  FakeLlmProvider,
-  FakeScenarioTurnNotFoundError,
-} from "./fake-llm-provider";
-export type { FakeAgentScenario, FakeProviderTurn } from "./fake-llm-provider";
+  FakeAgentScenario,
+  FakeProviderTurn,
+} from "@opspilot/agent-runtime";

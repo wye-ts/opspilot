@@ -1,6 +1,5 @@
+import type { DiagnosticToolDefinition } from "@opspilot/agent-runtime";
 import { z } from "zod";
-
-import type { DiagnosticToolDefinition } from "../../tools/diagnostic-tool";
 
 // Evaluation-only fixture — never registered in production/demo/live-spike
 // tool wiring. Its input schema accepts only `{}`, matching case 13's

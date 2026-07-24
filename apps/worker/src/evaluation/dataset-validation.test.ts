@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { StoredRunbookChunk } from "../rag/runbook-retriever";
+import type { StoredRunbookChunk } from "@opspilot/agent-runtime";
 import {
   CASE_ID_PATTERN,
   MAX_CASE_ID_LENGTH,

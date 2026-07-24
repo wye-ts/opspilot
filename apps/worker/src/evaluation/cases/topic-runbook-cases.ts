@@ -1,6 +1,6 @@
+import type { FakeAgentScenario } from "@opspilot/agent-runtime";
 import type { ResolutionReport } from "@opspilot/contracts";
 
-import type { FakeAgentScenario } from "../../providers/fake-llm-provider";
 import type { EvaluationCase } from "../types";
 
 const USAGE = { inputTokens: 100, outputTokens: 20 };

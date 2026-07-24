@@ -1,16 +1,19 @@
 import { fileURLToPath } from "node:url";
 
-import { createPrismaClient } from "@opspilot/database";
+import opspilotAgentRuntime from "@opspilot/agent-runtime";
+import type { AgentOrchestratorResult, FakeAgentScenario } from "@opspilot/agent-runtime";
+import opspilotDatabase from "@opspilot/database";
 import type { ResolutionReport } from "@opspilot/contracts";
 
-import type { AgentOrchestratorResult } from "../agent/agent-orchestrator";
-import { FakeLlmProvider, type FakeAgentScenario } from "../providers/fake-llm-provider";
-import {
+const { createPrismaClient } = opspilotDatabase;
+const {
+  FakeLlmProvider,
   createAgentRunService,
   createPrismaAgentRunRepository,
-} from "../persistence/agent-run-service";
-import { AgentRunServiceError } from "../persistence/agent-run-service-error";
-import { InMemoryToolRegistry, getServiceStatusTool } from "../tools";
+  AgentRunServiceError,
+  InMemoryToolRegistry,
+  getServiceStatusTool,
+} = opspilotAgentRuntime;
 
 export interface DemoTicket {
   readonly id: string;
@@ -121,7 +124,7 @@ async function main(): Promise<void> {
       result = await service.executeAndPersist({
         jobId: job.id,
         providerMode: "FAKE",
-        provider,
+        createProvider: () => provider,
         toolRegistry,
       });
     } catch (error) {

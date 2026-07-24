@@ -1,15 +1,16 @@
+import opspilotAgentRuntime from "@opspilot/agent-runtime";
 import { VoyageAIError, VoyageAITimeoutError, type EmbedRequest, type EmbedResponse } from "voyageai";
 
-import { validateRetrievalInput } from "./retrieval-validation";
-import {
-  RetrieverError,
-  type RetrievalInput,
-  type RetrieverErrorCategory,
-  type RetrievedRunbookChunk,
-  type RunbookRetriever,
-  type StoredRunbookChunk,
-} from "./runbook-retriever";
+import type {
+  RetrievalInput,
+  RetrieverErrorCategory,
+  RetrievedRunbookChunk,
+  RunbookRetriever,
+  StoredRunbookChunk,
+} from "@opspilot/agent-runtime";
 import type { VoyageEmbeddingClient } from "./voyage-embedding-client";
+
+const { RetrieverError, validateRetrievalInput } = opspilotAgentRuntime;
 
 export interface VoyageRunbookRetrieverOptions {
   readonly client: VoyageEmbeddingClient;
@@ -133,7 +134,13 @@ function classifyVoyageError(error: unknown): RetrieverErrorCategory {
   return "UNKNOWN";
 }
 
-function toRetrieverError(error: unknown): RetrieverError {
+// RetrieverError is destructured from the default-imported opspilotAgentRuntime
+// object above, which binds it only in the value namespace (destructuring
+// cannot carry type information). A parallel `import type { RetrieverError }`
+// under the same name would collide with that local binding (TS2440), so
+// InstanceType<typeof X> is intentionally retained here — see
+// packages/agent-runtime/src/index.ts.
+function toRetrieverError(error: unknown): InstanceType<typeof RetrieverError> {
   if (error instanceof RetrieverError) return error;
   return new RetrieverError(classifyVoyageError(error), "Voyage embedding request failed.");
 }

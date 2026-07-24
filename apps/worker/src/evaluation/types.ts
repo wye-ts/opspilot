@@ -1,6 +1,5 @@
+import type { FakeAgentScenario } from "@opspilot/agent-runtime";
 import type { AgentOrchestratorErrorCode, SuggestedAction } from "@opspilot/contracts";
-
-import type { FakeAgentScenario } from "../providers/fake-llm-provider";
 
 // The runner is the single place that builds a RetrievalInput from a case's
 // retrievalQuery; no case may override topK (see docs/07-evaluation-plan.md).

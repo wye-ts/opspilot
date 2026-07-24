@@ -4,17 +4,20 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "demo": "tsx src/demo/run-agent-demo.ts",
-    "demo:rag": "tsx src/demo/run-rag-agent-demo.ts",
-    "demo:persisted": "node --env-file-if-exists=../../.env --import tsx src/demo/run-persisted-agent-demo.ts",
-    "eval": "tsx src/evaluation/run-eval.ts",
-    "spike:claude": "tsx src/demo/run-claude-agent-spike.ts",
-    "spike:rag": "tsx src/demo/run-rag-live-spike.ts"
+    "build:deps": "pnpm --filter \"@opspilot/worker^...\" -r --workspace-concurrency=1 run build",
+    "typecheck": "pnpm run build:deps && tsc --noEmit",
+    "test": "pnpm run build:deps && vitest run",
+    "smoke:cjs-interop": "pnpm run build:deps && tsx src/smoke/cjs-interop-smoke.ts",
+    "demo": "pnpm run build:deps && tsx src/demo/run-agent-demo.ts",
+    "demo:rag": "pnpm run build:deps && tsx src/demo/run-rag-agent-demo.ts",
+    "demo:persisted": "pnpm run build:deps && node --env-file-if-exists=../../.env --import tsx src/demo/run-persisted-agent-demo.ts",
+    "eval": "pnpm run build:deps && tsx src/evaluation/run-eval.ts",
+    "spike:claude": "pnpm run build:deps && tsx src/demo/run-claude-agent-spike.ts",
+    "spike:rag": "pnpm run build:deps && tsx src/demo/run-rag-live-spike.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.0",
+    "@opspilot/agent-runtime": "workspace:*",
     "@opspilot/contracts": "workspace:*",
     "@opspilot/database": "workspace:*",
     "voyageai": "^0.4.0",

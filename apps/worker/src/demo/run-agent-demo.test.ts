@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { AgentOrchestratorResult } from "../agent/agent-orchestrator";
+import type { AgentOrchestratorResult } from "@opspilot/agent-runtime";
 import {
   DEMO_TICKET,
   formatDemoOutput,

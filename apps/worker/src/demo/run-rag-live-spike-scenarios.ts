@@ -1,11 +1,11 @@
+import opspilotAgentRuntime from "@opspilot/agent-runtime";
+import type {
+  AgentConversationMessage,
+  AgentOrchestratorResult,
+  LlmProvider,
+} from "@opspilot/agent-runtime";
 import { z } from "zod";
 
-import { runAgentOrchestrator, type AgentOrchestratorResult } from "../agent/agent-orchestrator";
-import {
-  LlmProviderError,
-  type AgentConversationMessage,
-  type LlmProvider,
-} from "../providers/llm-provider";
 import {
   INJECTION_PROBE_CHUNK,
   RetrieverError,
@@ -19,6 +19,8 @@ import {
   getServiceStatusTool,
   type DiagnosticToolDefinition,
 } from "../tools";
+
+const { runAgentOrchestrator, LlmProviderError } = opspilotAgentRuntime;
 
 const TICKET_SUMMARY = "Notification emails are delayed after a reported service degradation";
 const RETRIEVAL_QUERY = "notification service degradation delayed emails";

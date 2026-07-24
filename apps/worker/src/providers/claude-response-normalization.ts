@@ -1,8 +1,11 @@
 import type Anthropic from "@anthropic-ai/sdk";
+import opspilotAgentRuntime from "@opspilot/agent-runtime";
+import type { RawProviderTurnContext } from "@opspilot/agent-runtime";
 import type { AgentTurnResult, DiagnosticToolRequest } from "@opspilot/contracts";
 
 import { SUBMIT_RESOLUTION_REPORT_TOOL_NAME } from "./claude-tool-schemas";
-import { normalizeDiagnosticToolRequests, type RawProviderTurnContext } from "./llm-provider";
+
+const { normalizeDiagnosticToolRequests } = opspilotAgentRuntime;
 
 function isToolUseBlock(block: Anthropic.ContentBlock): block is Anthropic.ToolUseBlock {
   return block.type === "tool_use";

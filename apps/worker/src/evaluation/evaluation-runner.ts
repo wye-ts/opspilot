@@ -1,14 +1,14 @@
-import { runAgentOrchestrator } from "../agent/agent-orchestrator";
-import { FakeLlmProvider } from "../providers/fake-llm-provider";
-import type { AgentConversationMessage } from "../providers/llm-provider";
+import opspilotAgentRuntime from "@opspilot/agent-runtime";
+import type { AgentConversationMessage, StoredRunbookChunk } from "@opspilot/agent-runtime";
+
 import { InMemoryKeywordRunbookRetriever } from "../rag/in-memory-runbook-retriever";
-import type { StoredRunbookChunk } from "../rag/runbook-retriever";
-import { getServiceStatusTool } from "../tools/get-service-status";
 import { resolveCorpus } from "./dataset-validation";
 import { evaluateCase } from "./evaluation-evaluator";
 import { alwaysFailsTool } from "./fixtures/always-fails-tool";
 import { createRecordingToolRegistry, type RecordedToolExecution } from "./recording-tool-registry";
 import { EVALUATION_TOP_K, type EvaluationCase, type EvaluationCaseResult, type ToolProfile } from "./types";
+
+const { runAgentOrchestrator, FakeLlmProvider, getServiceStatusTool } = opspilotAgentRuntime;
 
 function resolveTools(profile: ToolProfile) {
   switch (profile) {

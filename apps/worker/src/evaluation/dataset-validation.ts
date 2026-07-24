@@ -1,4 +1,4 @@
-import type { StoredRunbookChunk } from "../rag/runbook-retriever";
+import type { StoredRunbookChunk } from "@opspilot/agent-runtime";
 import type { CorpusProfile, EvaluationCase } from "./types";
 
 // Bounded slug format for case ids — enforced before any case executes, so

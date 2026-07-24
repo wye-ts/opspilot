@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
+import type { StoredRunbookChunk } from "@opspilot/agent-runtime";
+
 import { RunbookLoadError } from "../rag/markdown-runbook-loader";
-import type { StoredRunbookChunk } from "../rag/runbook-retriever";
 import {
   getExitCode,
   renderEvaluationOutput,
