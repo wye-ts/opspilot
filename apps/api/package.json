@@ -1,0 +1,39 @@
+{
+  "name": "@opspilot/api",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build:deps": "pnpm --filter \"@opspilot/api^...\" -r --workspace-concurrency=1 run build",
+    "typecheck": "pnpm run build:deps && tsc -p tsconfig.json",
+    "build": "pnpm run build:deps && pnpm run clean && tsc -p tsconfig.build.json",
+    "start": "node ../../scripts/run-with-root-env.mjs node dist/main.js",
+    "start:dev": "pnpm run build && pnpm run start",
+    "test": "pnpm run build:deps && vitest run",
+    "test:integration": "pnpm run build:deps && node ../../scripts/run-with-root-env.mjs node ../../scripts/with-test-database-url.mjs vitest run --config vitest.integration.config.ts",
+    "demo": "node ../../scripts/run-with-root-env.mjs tsx scripts/run-api-demo.ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@nestjs/common": "11.0.13",
+    "@nestjs/core": "11.0.13",
+    "@nestjs/platform-express": "11.0.13",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.1",
+    "express": "5.1.0",
+    "@opspilot/contracts": "workspace:*",
+    "@opspilot/database": "workspace:*",
+    "@opspilot/agent-runtime": "workspace:*",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@nestjs/testing": "11.0.13",
+    "@types/express": "5.0.1",
+    "supertest": "7.0.0",
+    "@types/supertest": "6.0.2",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  },
+  "engines": {
+    "node": ">=22.21.0"
+  }
+}
