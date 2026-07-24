@@ -20,9 +20,16 @@
     "db:migrate:drift": "pnpm --filter @opspilot/database run db:migrate:drift",
     "db:migrate:test": "pnpm --filter @opspilot/database run db:migrate:test",
     "db:reset:dev": "pnpm --filter @opspilot/database run db:reset:dev",
-    "db:reset:test": "pnpm --filter @opspilot/database run db:reset:test"
+    "db:reset:test": "pnpm --filter @opspilot/database run db:reset:test",
+    "api:start": "pnpm --filter @opspilot/api run start",
+    "api:start:dev": "pnpm --filter @opspilot/api run start:dev",
+    "api:demo": "pnpm --filter @opspilot/api run demo",
+    "test:integration:sequential": "pnpm --filter @opspilot/database run test:integration && pnpm --filter @opspilot/api run test:integration"
   },
   "packageManager": "pnpm@11.13.1",
+  "engines": {
+    "node": ">=22.21.0"
+  },
   "devDependencies": {
     "@types/node": "^26.1.1",
     "tsx": "^4.23.1",

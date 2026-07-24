@@ -2,6 +2,7 @@ packages:
   - "apps/*"
   - "packages/*"
 allowBuilds:
+  '@nestjs/core': false
   '@prisma/engines': true
   esbuild: true
   prisma: true
