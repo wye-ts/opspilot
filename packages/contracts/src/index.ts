@@ -7,6 +7,10 @@
 // `export type {...} from "./y"` form.
 
 import {
+  ApprovalDecisionSchema as _ApprovalDecisionSchema,
+  RecordApprovalDecisionInputSchema as _RecordApprovalDecisionInputSchema,
+} from "./agent-run-approval";
+import {
   EvidenceReferenceSchema as _EvidenceReferenceSchema,
   IncidentCategorySchema as _IncidentCategorySchema,
   ResolutionReportSchema as _ResolutionReportSchema,
@@ -25,6 +29,8 @@ import {
 } from "./agent-trace-event";
 import { TicketContextSchema as _TicketContextSchema } from "./ticket-context";
 
+export const ApprovalDecisionSchema = _ApprovalDecisionSchema;
+export const RecordApprovalDecisionInputSchema = _RecordApprovalDecisionInputSchema;
 export const EvidenceReferenceSchema = _EvidenceReferenceSchema;
 export const IncidentCategorySchema = _IncidentCategorySchema;
 export const ResolutionReportSchema = _ResolutionReportSchema;
@@ -38,6 +44,7 @@ export const AgentTraceEventSchema = _AgentTraceEventSchema;
 export const RetrievalSummaryEntrySchema = _RetrievalSummaryEntrySchema;
 export const TicketContextSchema = _TicketContextSchema;
 
+export type { ApprovalDecision, RecordApprovalDecisionInput } from "./agent-run-approval";
 export type {
   EvidenceReference,
   IncidentCategory,
