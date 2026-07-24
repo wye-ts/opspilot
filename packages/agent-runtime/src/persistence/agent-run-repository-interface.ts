@@ -2,6 +2,7 @@ import type { AgentTraceEvent } from "@opspilot/contracts";
 import type {
   AgentJobRecord,
   AgentRunRecord,
+  PersistedAgentJob,
   PersistedAgentRun,
   ProviderMode,
   StartedAgentRun,
@@ -33,4 +34,5 @@ export interface AgentRunRepositoryInterface {
     code: unknown,
   ): Promise<AgentRunRecord>;
   getAgentRun(runId: string): Promise<PersistedAgentRun>;
+  getAgentJob(jobId: string): Promise<PersistedAgentJob>;
 }

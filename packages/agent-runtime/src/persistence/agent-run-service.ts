@@ -2,10 +2,12 @@ import {
   createJob as dbCreateJob,
   finalizeCompleted as dbFinalizeCompleted,
   finalizeFailed as dbFinalizeFailed,
+  getAgentJob as dbGetAgentJob,
   getAgentRun as dbGetAgentRun,
   PersistenceError,
   startRun as dbStartRun,
   type AgentJobRecord,
+  type PersistedAgentJob,
   type PersistedAgentRun,
   type PrismaClient,
   type ProviderMode,
@@ -17,9 +19,17 @@ import {
   type AgentOrchestratorParams,
   type AgentOrchestratorResult,
 } from "../agent/agent-orchestrator";
-import type { AgentConversationMessage } from "../providers/llm-provider";
+import type { AgentConversationMessage, LlmProvider } from "../providers/llm-provider";
 import { AgentRunServiceError } from "./agent-run-service-error";
 import type { AgentRunRepositoryInterface } from "./agent-run-repository-interface";
+
+// @opspilot/database's index.ts exports PersistenceError as BOTH a plain-const
+// value and a local `export type PersistenceError = InstanceType<typeof _PersistenceError>`
+// alias (see that file's comment). This is an ordinary named import — not a
+// destructured default import — so the bare name `PersistenceError` resolves
+// correctly in both a value position (`new PersistenceError(...)`,
+// `error instanceof PersistenceError`) and a type position (`readonly error:
+// PersistenceError`) without any InstanceType<typeof X> workaround.
 
 // The real, Prisma-backed implementation of AgentRunRepositoryInterface —
 // a thin adapter binding @opspilot/database's free functions to one
@@ -33,6 +43,7 @@ export function createPrismaAgentRunRepository(prisma: PrismaClient): AgentRunRe
     finalizeCompleted: (runId, trace, report) => dbFinalizeCompleted(prisma, runId, trace, report),
     finalizeFailed: (runId, trace, code) => dbFinalizeFailed(prisma, runId, trace, code),
     getAgentRun: (runId) => dbGetAgentRun(prisma, runId),
+    getAgentJob: (jobId) => dbGetAgentJob(prisma, jobId),
   };
 }
 
@@ -44,9 +55,19 @@ export function createPrismaAgentRunRepository(prisma: PrismaClient): AgentRunRe
 // ticket context is loaded from PostgreSQL by repository.startRun, under
 // the same row lock used to allocate attempt_number — see
 // docs/11-agent-run-persistence.md.
-export interface ExecuteAndPersistParams extends Omit<AgentOrchestratorParams, "initialConversation"> {
+//
+// createProvider replaces a plain `provider` field: it is invoked with the
+// exact AgentJobRecord repository.startRun returns (see executeAndPersist
+// below), so a provider parameterized by the ticket being investigated
+// (e.g. a deterministic scenario derived from the real ticket summary) can
+// be constructed from that one authoritative, locked read — never from a
+// second, separately-timed read that could in principle observe different
+// data.
+export interface ExecuteAndPersistParams
+  extends Omit<AgentOrchestratorParams, "initialConversation" | "provider"> {
   readonly jobId: string;
   readonly providerMode: ProviderMode;
+  readonly createProvider: (job: AgentJobRecord) => LlmProvider;
   readonly modelIdentifier?: string | null;
 }
 
@@ -80,6 +101,7 @@ export interface AgentRunService {
   // docs/11-agent-run-persistence.md.
   retryFinalization(runId: string, agentResult: AgentOrchestratorResult): Promise<ExecuteAndPersistResult>;
   getAgentRun(runId: string): Promise<PersistedAgentRun>;
+  getAgentJob(jobId: string): Promise<PersistedAgentJob>;
 }
 
 async function finalize(
@@ -135,11 +157,29 @@ export function createAgentRunService(repository: AgentRunRepositoryInterface): 
       // runAgentOrchestrator remains completely unchanged and persistence-free
       // (see agent-orchestrator.ts) — this is Option A, persist-after: the
       // orchestrator runs fully in memory before any trace/outcome is written.
+      //
+      // createProvider(started.job) runs INSIDE this same try/catch — a
+      // factory failure is indistinguishable, from the caller's perspective,
+      // from an orchestrator crash: both leave the run RUNNING and both
+      // surface only as AgentRunServiceError("AGENT_EXECUTION_CRASHED",
+      // started.run.id), never a raw error.
       let agentResult: AgentOrchestratorResult;
       try {
+        const provider = params.createProvider(started.job);
         agentResult = await runAgentOrchestrator({
-          ...params,
+          provider,
+          toolRegistry: params.toolRegistry,
           initialConversation: [ticketContextMessage],
+          // Conditional spreads — exactOptionalPropertyTypes:true means an
+          // optional property must be either fully absent or a real value,
+          // never an explicit `undefined`; AgentOrchestratorParams's
+          // optional fields do not include `| undefined` in their declared
+          // type, so unconditionally forwarding params.X (which may itself
+          // be undefined) would fail to typecheck.
+          ...(params.allowedRagChunkIds !== undefined ? { allowedRagChunkIds: params.allowedRagChunkIds } : {}),
+          ...(params.retriever !== undefined ? { retriever: params.retriever } : {}),
+          ...(params.retrievalInput !== undefined ? { retrievalInput: params.retrievalInput } : {}),
+          ...(params.maxOutputTokens !== undefined ? { maxOutputTokens: params.maxOutputTokens } : {}),
         });
       } catch (rawError) {
         // Not a PersistenceError (persistence worked correctly up to this
@@ -156,5 +196,6 @@ export function createAgentRunService(repository: AgentRunRepositoryInterface): 
     retryFinalization: (runId, agentResult) => finalize(repository, runId, agentResult),
 
     getAgentRun: (runId) => repository.getAgentRun(runId),
+    getAgentJob: (jobId) => repository.getAgentJob(jobId),
   };
 }

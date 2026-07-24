@@ -1,0 +1,29 @@
+{
+  "name": "@opspilot/agent-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build:deps": "pnpm --filter \"@opspilot/agent-runtime^...\" -r --workspace-concurrency=1 run build",
+    "typecheck": "pnpm run build:deps && tsc -p tsconfig.json",
+    "build": "pnpm run build:deps && tsc -p tsconfig.build.json",
+    "test": "pnpm run build:deps && vitest run",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@opspilot/contracts": "workspace:*",
+    "@opspilot/database": "workspace:*",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}
