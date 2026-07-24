@@ -1,14 +1,16 @@
+import opspilotAgentRuntime from "@opspilot/agent-runtime";
+import type { AgentTurnInput, FakeAgentScenario, LlmProvider } from "@opspilot/agent-runtime";
 import type { AgentTurnResult, ResolutionReport } from "@opspilot/contracts";
 import { describe, expect, it } from "vitest";
 
-import { FakeLlmProvider, type FakeAgentScenario } from "../providers/fake-llm-provider";
-import { LlmProviderError, type AgentTurnInput, type LlmProvider } from "../providers/llm-provider";
 import {
   hasFailingScenario,
   runForcedFinalizationProbe,
   runToolThenReportScenario,
   type SpikeScenarioResult,
 } from "./claude-agent-spike-scenarios";
+
+const { FakeLlmProvider, LlmProviderError } = opspilotAgentRuntime;
 
 const usage = { inputTokens: 100, outputTokens: 20 };
 

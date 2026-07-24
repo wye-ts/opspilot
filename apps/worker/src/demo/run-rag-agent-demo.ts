@@ -1,16 +1,13 @@
 import { fileURLToPath } from "node:url";
 
+import opspilotAgentRuntime from "@opspilot/agent-runtime";
+import type {
+  AgentConversationMessage,
+  AgentOrchestratorResult,
+  FakeAgentScenario,
+} from "@opspilot/agent-runtime";
 import type { ResolutionReport } from "@opspilot/contracts";
 
-import {
-  runAgentOrchestrator,
-  type AgentOrchestratorResult,
-} from "../agent/agent-orchestrator";
-import {
-  FakeLlmProvider,
-  type FakeAgentScenario,
-} from "../providers/fake-llm-provider";
-import type { AgentConversationMessage } from "../providers/llm-provider";
 import {
   InMemoryKeywordRunbookRetriever,
   RunbookLoadError,
@@ -18,6 +15,8 @@ import {
   type RunbookCorpusLoadResult,
 } from "../rag";
 import { InMemoryToolRegistry, getServiceStatusTool } from "../tools";
+
+const { runAgentOrchestrator, FakeLlmProvider } = opspilotAgentRuntime;
 
 export interface DemoTicket {
   readonly id: string;

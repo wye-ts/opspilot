@@ -3,7 +3,7 @@ import type {
   RetrievedRunbookChunk,
   RunbookRetriever,
   StoredRunbookChunk,
-} from "./runbook-retriever";
+} from "@opspilot/agent-runtime";
 
 function tokenize(text: string): ReadonlySet<string> {
   return new Set(text.toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length > 0));

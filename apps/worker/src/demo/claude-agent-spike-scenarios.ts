@@ -1,8 +1,10 @@
+import opspilotAgentRuntime from "@opspilot/agent-runtime";
+import type { AgentConversationMessage, LlmProvider } from "@opspilot/agent-runtime";
 import { ResolutionReportSchema } from "@opspilot/contracts";
 
-import { findInvalidEvidence, runAgentOrchestrator } from "../agent/agent-orchestrator";
-import { LlmProviderError, type AgentConversationMessage, type LlmProvider } from "../providers/llm-provider";
 import { InMemoryToolRegistry, getServiceStatusTool } from "../tools";
+
+const { findInvalidEvidence, runAgentOrchestrator, LlmProviderError } = opspilotAgentRuntime;
 
 const TICKET_ID = "TICKET-1001";
 const TICKET_SUMMARY = "Notification emails are delayed";
