@@ -11,6 +11,7 @@
 // at compile time) and keep the ordinary `export type {...} from "./y"` form.
 
 import { createPrismaClient as _createPrismaClient } from "./client";
+import { AgentRunApprovalError as _AgentRunApprovalError } from "./approval-errors";
 import { PersistenceError as _PersistenceError, normalizeDatabaseError as _normalizeDatabaseError } from "./errors";
 import { FAILURE_DISPLAY_MESSAGES as _FAILURE_DISPLAY_MESSAGES } from "./failure-messages";
 import { TicketContextSchema as _TicketContextSchema, validateOrThrow as _validateOrThrow } from "./validation";
@@ -22,8 +23,13 @@ import {
   getAgentRun as _getAgentRun,
   startRun as _startRun,
 } from "./repositories/agent-run-repository";
+import {
+  getApprovalDecision as _getApprovalDecision,
+  recordApprovalDecision as _recordApprovalDecision,
+} from "./repositories/agent-run-approval-repository";
 
 export const createPrismaClient = _createPrismaClient;
+export const AgentRunApprovalError = _AgentRunApprovalError;
 export const PersistenceError = _PersistenceError;
 export const normalizeDatabaseError = _normalizeDatabaseError;
 export const FAILURE_DISPLAY_MESSAGES = _FAILURE_DISPLAY_MESSAGES;
@@ -35,6 +41,8 @@ export const finalizeFailed = _finalizeFailed;
 export const getAgentJob = _getAgentJob;
 export const getAgentRun = _getAgentRun;
 export const startRun = _startRun;
+export const recordApprovalDecision = _recordApprovalDecision;
+export const getApprovalDecision = _getApprovalDecision;
 
 export type { PrismaClient, PrismaClientHandle } from "./client";
 // A re-exported `export type { PersistenceError } from "./errors"` would
@@ -46,14 +54,24 @@ export type { PrismaClient, PrismaClientHandle } from "./client";
 // `readonly error: PersistenceError`) without `InstanceType<typeof X>`.
 export type PersistenceError = InstanceType<typeof PersistenceError>;
 export type { PersistenceErrorCode } from "./errors";
+// Same TS2323-avoidance pattern as PersistenceError above.
+export type AgentRunApprovalError = InstanceType<typeof AgentRunApprovalError>;
+export type { AgentRunApprovalErrorCode } from "./approval-errors";
 export type {
   AgentJobRecord,
+  AgentRunApprovalRecord,
+  AgentRunApprovalStatus,
+  AgentRunApprovalView,
+  AgentRunApprovalWrite,
   AgentRunOutcome,
   AgentRunRecord,
   AgentRunStatus,
+  ApprovalDecision,
   PersistedAgentJob,
   PersistedAgentRun,
   ProviderMode,
+  RecordApprovalDecisionParams,
+  RecordApprovalDecisionResult,
   StartedAgentRun,
   TicketContext,
 } from "./types";
