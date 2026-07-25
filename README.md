@@ -49,7 +49,7 @@ pnpm --filter @opspilot/worker run eval        # 15-case deterministic evaluatio
 
 ### Agent Run API (`apps/api`)
 
-A local-only, synchronous NestJS API over the persistence layer above — four endpoints, no auth, no queue, no live model calls (every run executes against a deterministic fake provider). Requires the local PostgreSQL setup above.
+A local-only, synchronous NestJS API over the persistence layer above — six endpoints, no auth, no queue, no live model calls (every run executes against a deterministic fake provider). Requires the local PostgreSQL setup above.
 
 ```bash
 pnpm --filter @opspilot/api run build
@@ -64,3 +64,15 @@ pnpm api:demo                             # Terminal B — POST job, POST run, G
 See `docs/12-agent-run-api.md` for the full endpoint/error/envelope reference.
 
 An approval workflow adding `POST`/`GET /v1/agent-runs/:runId/approval` — recording a human approve/reject decision against a completed run's suggested actions, without executing them — is implemented; see `docs/13-approval-workflow.md`. The shipped deterministic demo (`pnpm --filter @opspilot/worker run demo`) always produces zero suggested actions, so nothing is ever approval-eligible there; `apps/api`'s own deterministic scenario adds one opt-in exception — a job created with `ticketId: "TICKET-APPROVAL-DEMO"` completes with one suggested action, exercising the full `PENDING` → `APPROVED`/`REJECTED` flow end to end via `pnpm api:demo`.
+
+### Web UI (`apps/web`)
+
+A local-only React + Vite UI over the Agent Run API above — describe an issue, run an investigation with one click, and read the resulting trace timeline and generated report in the browser. Requires the API running (previous section).
+
+```bash
+pnpm --filter @opspilot/web run dev       # Terminal C — blocks; http://127.0.0.1:5173
+```
+
+There is no editable Ticket ID field — an ordinary investigation generates one internally (`DEMO-<uuid>`), shown only as read-only metadata after the fact. Check **Approval workflow demo** before clicking **Run Investigation** to route the exact ticket ID `TICKET-APPROVAL-DEMO` and see the one `DRAFT_CUSTOMER_REPLY` suggested action described above.
+
+Browser requests are relative `/v1/...` paths only, proxied by Vite to the API — no CORS configuration was needed or added. See `docs/14-web-ui.md` for the full design record. **Approval decisions are not yet recordable from the browser** — the panel and its `POST`/`GET /v1/agent-runs/:runId/approval` calls are a follow-up milestone; use `pnpm api:demo` to exercise that flow today.
