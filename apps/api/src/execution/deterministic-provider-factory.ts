@@ -18,6 +18,13 @@ const FALLBACK_SERVICE_SLUG = "unspecified-service";
 // contract-level max lengths (ResolutionReportSchema).
 const SUMMARY_TRUNCATE_LENGTH = 200;
 
+// Opt-in approval-workflow demo ticket (docs/13-approval-workflow.md §14).
+// An exact, case-sensitive equality match only — never a substring match —
+// so this scenario cannot be triggered by accident. Every other ticketId
+// keeps the unconditional suggestedActions: [] behavior shipped in
+// Milestone 6B, unchanged.
+const APPROVAL_DEMO_TICKET_ID = "TICKET-APPROVAL-DEMO";
+
 const FIXED_TOKEN_USAGE = { inputTokens: 120, outputTokens: 40 };
 
 function deriveServiceSlug(summary: string): string {
@@ -75,7 +82,26 @@ export function createDeterministicScenario(job: AgentJobRecord): FakeAgentScena
         finding: `get_service_status completed successfully for ${serviceSlug}. Its returned status value is not persisted by this milestone.`,
       },
     ],
-    suggestedActions: [],
+    // Opt-in only (docs/13-approval-workflow.md §14): an exact, case-sensitive
+    // match on APPROVAL_DEMO_TICKET_ID produces one DRAFT_CUSTOMER_REPLY
+    // suggested action so the approval workflow can be exercised end to end
+    // against a real deterministic run. DRAFT_CUSTOMER_REPLY (not
+    // CREATE_ESCALATION) is deliberate — it makes no operational claim based
+    // on the tool's returned status, which this scenario never evaluates
+    // (see the report fields above). Every other ticketId keeps
+    // suggestedActions: [] exactly as shipped in Milestone 6B.
+    suggestedActions:
+      job.ticketContext.ticketId === APPROVAL_DEMO_TICKET_ID
+        ? [
+            {
+              type: "DRAFT_CUSTOMER_REPLY",
+              payload: {
+                subject: `Update on your report — ${truncatedSummary}`,
+                body: `Thanks for reaching out about ${serviceSlug}. A diagnostic check ran, but this milestone does not evaluate or persist the tool's returned status, so no specific finding can be shared yet. A human will follow up after reviewing this run.`,
+              },
+            },
+          ]
+        : [],
   };
 
   return {
