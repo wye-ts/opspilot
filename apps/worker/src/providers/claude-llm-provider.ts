@@ -11,7 +11,14 @@ import {
   UnprocessableEntityError,
 } from "@anthropic-ai/sdk";
 import type Anthropic from "@anthropic-ai/sdk";
-import type { TokenUsage } from "@opspilot/contracts";
+import opspilotAgentRuntime from "@opspilot/agent-runtime";
+import type {
+  AgentTurnInput,
+  LlmProvider,
+  LlmProviderErrorCategory,
+  RawProviderTurnContext,
+} from "@opspilot/agent-runtime";
+import type { AgentTurnResult, TokenUsage } from "@opspilot/contracts";
 
 import { buildClaudeMessages, buildSystemPrompt } from "./claude-message-mapping";
 import { normalizeClaudeMessage } from "./claude-response-normalization";
@@ -21,14 +28,8 @@ import {
   toClaudeDiagnosticTool,
   type DiagnosticToolWithDescription,
 } from "./claude-tool-schemas";
-import {
-  LlmProviderError,
-  type AgentTurnInput,
-  type LlmProvider,
-  type LlmProviderErrorCategory,
-  type RawProviderTurnContext,
-} from "./llm-provider";
-import type { AgentTurnResult } from "@opspilot/contracts";
+
+const { LlmProviderError } = opspilotAgentRuntime;
 
 // The seam ClaudeLlmProvider depends on instead of a concrete Anthropic
 // client, so tests can inject a fake with zero live calls. A real

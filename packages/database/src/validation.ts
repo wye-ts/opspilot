@@ -1,20 +1,16 @@
+import { ApprovalDecisionSchema, TicketContextSchema as _TicketContextSchema } from "@opspilot/contracts";
 import { z, type ZodType } from "zod";
 
 import { PersistenceError } from "./errors";
 
-// No exported ticket-context contract exists yet (see
-// apps/worker/src/providers/llm-provider.ts's local TicketContextEntry
-// interface, which additionally carries a role discriminant that is not
-// meaningful as a standalone persisted shape — every row in agent_jobs is a
-// ticket context by definition). This is the narrowest schema matching the
-// real { ticketId, summary } input, not a duplicate of a broader product
-// model.
-export const TicketContextSchema = z
-  .object({
-    ticketId: z.string().min(1),
-    summary: z.string().min(1),
-  })
-  .strict();
+// TicketContextSchema now lives in @opspilot/contracts (a shared domain
+// contract used by the API request shape, this persistence layer, and the
+// orchestrator's ticket_context conversation entry alike) — re-exported here
+// as a plain const (not `export { TicketContextSchema }`, which compiles to
+// a live-binding getter that Vite-node's CJS interop does not reliably
+// forward — see packages/agent-runtime/src/index.ts) for backward
+// compatibility of existing internal import sites.
+export const TicketContextSchema = _TicketContextSchema;
 
 export function validateOrThrow<T>(schema: ZodType<T>, value: unknown, context: string): T {
   const result = schema.safeParse(value);
@@ -30,3 +26,36 @@ export function validateOrThrow<T>(schema: ZodType<T>, value: unknown, context: 
   }
   return result.data;
 }
+
+// Revalidates a stored agent_run_approvals row on every read. This schema
+// VALIDATES, it does not NORMALIZE: a stored value with leading/trailing
+// whitespace (e.g. " jacky ") must be rejected, not silently trimmed back to
+// "jacky" — trimming here would mask exactly the kind of write-path bug or
+// manual-INSERT corruption this schema exists to catch. Request-time
+// normalization (RecordApprovalDecisionInputSchema, @opspilot/contracts)
+// still uses .trim() — that is a different concern (normalizing a fresh
+// caller's input), not this one (revalidating what is already stored).
+const isCanonicallyTrimmed = (value: string): boolean => value === value.trim();
+
+const CanonicalReviewerNameSchema = z
+  .string()
+  .min(1)
+  .max(100)
+  .refine(isCanonicallyTrimmed, { message: "reviewerName must not have leading or trailing whitespace" });
+
+const CanonicalNoteSchema = z
+  .string()
+  .min(1)
+  .max(1000)
+  .refine(isCanonicallyTrimmed, { message: "note must not have leading or trailing whitespace" });
+
+export const AgentRunApprovalRowSchema = z
+  .object({
+    id: z.string().uuid(),
+    runId: z.string().uuid(),
+    decision: ApprovalDecisionSchema,
+    reviewerName: CanonicalReviewerNameSchema,
+    note: z.union([z.null(), CanonicalNoteSchema]),
+    decidedAt: z.date(),
+  })
+  .strict();
