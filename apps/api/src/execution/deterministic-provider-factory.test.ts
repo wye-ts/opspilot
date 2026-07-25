@@ -244,6 +244,38 @@ describe("report content does not overclaim what the persisted trace/evidence co
   });
 });
 
+describe("opt-in TICKET-APPROVAL-DEMO suggested action (docs/13-approval-workflow.md §14)", () => {
+  it("returns suggestedActions: [] for an ordinary ticketId — unchanged from today's shipped behavior", () => {
+    const job = buildJob({ ticketContext: { ticketId: "TICKET-2001", summary: "billing errors reported" } });
+    const report = extractReport(job) as unknown as { suggestedActions: unknown[] };
+    expect(report.suggestedActions).toEqual([]);
+  });
+
+  it("returns exactly one DRAFT_CUSTOMER_REPLY suggested action when ticketId is exactly TICKET-APPROVAL-DEMO", () => {
+    const job = buildJob({ ticketContext: { ticketId: "TICKET-APPROVAL-DEMO", summary: "Approval workflow demo" } });
+    const report = extractReport(job) as unknown as {
+      suggestedActions: Array<{ type: string; payload: { subject: string; body: string } }>;
+    };
+    expect(report.suggestedActions).toHaveLength(1);
+    expect(report.suggestedActions[0]?.type).toBe("DRAFT_CUSTOMER_REPLY");
+    expect(report.suggestedActions[0]?.payload.subject).toBeTruthy();
+    expect(report.suggestedActions[0]?.payload.body).toBeTruthy();
+  });
+
+  it("treats the opt-in ticketId as an exact, case-sensitive match — a substring or case mismatch does not activate it", () => {
+    const substringJob = buildJob({
+      ticketContext: { ticketId: "PREFIX-TICKET-APPROVAL-DEMO-SUFFIX", summary: "s" },
+    });
+    const caseMismatchJob = buildJob({ ticketContext: { ticketId: "ticket-approval-demo", summary: "s" } });
+
+    const substringReport = extractReport(substringJob) as unknown as { suggestedActions: unknown[] };
+    const caseMismatchReport = extractReport(caseMismatchJob) as unknown as { suggestedActions: unknown[] };
+
+    expect(substringReport.suggestedActions).toEqual([]);
+    expect(caseMismatchReport.suggestedActions).toEqual([]);
+  });
+});
+
 describe("createDeterministicProviderFactory", () => {
   it("defaults to FAKE mode when AGENT_RUN_PROVIDER_MODE is undefined", () => {
     expect(() => createDeterministicProviderFactory(undefined)).not.toThrow();
