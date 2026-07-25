@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { validateStoredRunbookChunks } from "./runbook-corpus-validation";
-import type { StoredRunbookChunk } from "./runbook-retriever";
+import type { StoredRunbookChunk } from "@opspilot/agent-runtime";
 
 export interface RunbookCorpusLoadResult {
   readonly chunks: readonly StoredRunbookChunk[];

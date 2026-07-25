@@ -1,7 +1,8 @@
 import { beforeAll, describe, expect, it } from "vitest";
 
+import type { StoredRunbookChunk } from "@opspilot/agent-runtime";
+
 import { INJECTION_PROBE_CHUNK, loadDefaultRunbookCorpus } from "../rag";
-import type { StoredRunbookChunk } from "../rag/runbook-retriever";
 import { FABRICATED_TOOL_EVIDENCE_CASE } from "./cases/evidence-grounding-cases";
 import { PROTOCOL_AND_FAILURE_CASES } from "./cases/protocol-and-failure-cases";
 import { EVALUATION_CASES } from "./evaluation-dataset";

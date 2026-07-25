@@ -1,6 +1,7 @@
 import {
   AgentOrchestratorErrorCodeSchema,
   AgentTraceEventSchema,
+  RecordApprovalDecisionInputSchema,
   ResolutionReportSchema,
   type AgentOrchestratorErrorCode,
   type AgentTraceEvent,
@@ -11,13 +12,16 @@ import { PersistenceError } from "./errors";
 import { FAILURE_DISPLAY_MESSAGES } from "./failure-messages";
 import type {
   AgentJobRecord,
+  AgentRunApprovalRecord,
+  AgentRunApprovalView,
+  AgentRunApprovalWrite,
   AgentRunOutcome,
   AgentRunRecord,
   AgentRunStatus,
   ProviderMode,
   TicketContext,
 } from "./types";
-import { TicketContextSchema, validateOrThrow } from "./validation";
+import { AgentRunApprovalRowSchema, TicketContextSchema, validateOrThrow } from "./validation";
 
 const AgentTraceEventArraySchema = AgentTraceEventSchema.array();
 
@@ -142,4 +146,57 @@ export function buildOutcome(row: {
     return { type: "FAILED", code, message: FAILURE_DISPLAY_MESSAGES[code] };
   }
   return { type: "RUNNING" };
+}
+
+// The SOLE parse boundary for the approval write path. Accepts `unknown`, not
+// a pre-typed RecordApprovalDecisionParams — this function IS the runtime
+// validation boundary, not a post-parse formatter. Reuses validateOrThrow
+// exactly like every other toXWrite mapper in this file, so a Zod failure
+// becomes PersistenceError("PERSISTENCE_VALIDATION_FAILED",
+// "Approval decision input failed contract validation.", { cause }) — not a
+// raw, unnormalized ZodError. The repository calls only this function and
+// never separately parses RecordApprovalDecisionInputSchema itself.
+export function toRecordApprovalDecisionWrite(input: unknown): AgentRunApprovalWrite {
+  const parsed = validateOrThrow(RecordApprovalDecisionInputSchema, input, "Approval decision input");
+  return {
+    decision: parsed.decision,
+    reviewerName: parsed.reviewerName,
+    note: parsed.note ?? null, // the one and only undefined -> null conversion
+  };
+}
+
+// Revalidates a stored row on every read (INSERT...RETURNING, the
+// replay-match read inside recordApprovalDecision, and getApprovalDecision's
+// read alike). z.infer<typeof AgentRunApprovalRowSchema> is structurally
+// identical to AgentRunApprovalRecord, so this is a direct pass-through of
+// the parsed value.
+export function fromAgentRunApprovalRow(row: {
+  id: string;
+  runId: string;
+  decision: string;
+  reviewerName: string;
+  note: string | null;
+  decidedAt: Date;
+}): AgentRunApprovalRecord {
+  return validateOrThrow(AgentRunApprovalRowSchema, row, "Stored agent run approval");
+}
+
+// Assembles the GET-time (and POST-response-time) read model. `eligible` is
+// always computed by the caller from the same agent_runs read that produced
+// (or didn't produce) `record` — this function does not re-derive it.
+export function buildApprovalView(
+  runId: string,
+  eligible: boolean,
+  record: AgentRunApprovalRecord | null,
+): AgentRunApprovalView {
+  if (record) {
+    return {
+      runId,
+      status: record.decision,
+      reviewerName: record.reviewerName,
+      note: record.note,
+      decidedAt: record.decidedAt,
+    };
+  }
+  return { runId, status: eligible ? "PENDING" : "NOT_ELIGIBLE", reviewerName: null, note: null, decidedAt: null };
 }

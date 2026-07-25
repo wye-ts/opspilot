@@ -6,6 +6,7 @@ import {
   createJob,
   finalizeCompleted,
   finalizeFailed,
+  getAgentJob,
   getAgentRun,
   startRun,
 } from "../repositories/agent-run-repository";
@@ -419,6 +420,60 @@ describe("getAgentRun", () => {
     await finalizeCompleted(prisma, run.id, SAMPLE_TRACE, VALID_REPORT);
     const persisted = await getAgentRun(prisma, run.id);
     expect(persisted.trace).toEqual(SAMPLE_TRACE);
+  });
+});
+
+describe("getAgentJob", () => {
+  it("returns the job snapshot with zero runs when no run has ever been started", async () => {
+    const job = await createJob(prisma, { ticketId: "TKT-zero-runs", summary: "No runs yet" });
+    const persisted = await getAgentJob(prisma, job.id);
+    expect(persisted.job).toEqual(job);
+    expect(persisted.runs).toEqual([]);
+  });
+
+  it("returns run summaries ordered by attemptNumber ASC, regardless of creation order interleaving", async () => {
+    const job = await createJob(prisma, { ticketId: "TKT-multi-attempt", summary: "Multiple attempts" });
+    const first = await startRun(prisma, job.id, "FAKE", null);
+    const second = await startRun(prisma, job.id, "FAKE", null);
+    const third = await startRun(prisma, job.id, "FAKE", null);
+
+    const persisted = await getAgentJob(prisma, job.id);
+
+    expect(persisted.runs.map((run) => run.attemptNumber)).toEqual([1, 2, 3]);
+    expect(persisted.runs.map((run) => run.id)).toEqual([first.run.id, second.run.id, third.run.id]);
+  });
+
+  it("does not include trace events or report/failureCode fields in the run summaries", async () => {
+    const job = await createJob(prisma, { ticketId: "TKT-no-trace", summary: "No trace in job read" });
+    const { run } = await startRun(prisma, job.id, "FAKE", null);
+    await finalizeCompleted(prisma, run.id, SAMPLE_TRACE, VALID_REPORT);
+
+    const persisted = await getAgentJob(prisma, job.id);
+
+    expect(persisted.runs).toHaveLength(1);
+    const runSummary = persisted.runs[0];
+    expect(runSummary).not.toHaveProperty("trace");
+    expect(runSummary).not.toHaveProperty("report");
+    expect(runSummary).not.toHaveProperty("failureCode");
+    expect(runSummary?.status).toBe("COMPLETED");
+  });
+
+  it("returns PERSISTENCE_NOT_FOUND for a nonexistent job", async () => {
+    await expect(getAgentJob(prisma, "00000000-0000-0000-0000-000000000000")).rejects.toMatchObject({
+      code: "PERSISTENCE_NOT_FOUND",
+    });
+  });
+
+  it("revalidates the job and every run through the existing runtime mappers (rejects a malformed stored ticket context)", async () => {
+    const [insertedRow] = await prisma.$queryRaw<{ id: string }[]>`
+      INSERT INTO agent_jobs (ticket_context, external_ticket_id)
+      VALUES ('{"ticketId": "TKT-malformed-job-read"}'::jsonb, 'TKT-malformed-job-read')
+      RETURNING id`;
+    if (!insertedRow) throw new Error("expected the raw INSERT to return the new row's id");
+
+    await expect(getAgentJob(prisma, insertedRow.id)).rejects.toMatchObject({
+      code: "PERSISTENCE_VALIDATION_FAILED",
+    });
   });
 });
 

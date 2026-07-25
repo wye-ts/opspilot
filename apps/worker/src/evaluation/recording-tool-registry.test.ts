@@ -1,9 +1,11 @@
+import opspilotAgentRuntime from "@opspilot/agent-runtime";
+import type { DiagnosticToolDefinition } from "@opspilot/agent-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import type { DiagnosticToolDefinition } from "../tools/diagnostic-tool";
-import { getServiceStatusTool } from "../tools/get-service-status";
 import { createRecordingToolRegistry, type RecordedToolExecution } from "./recording-tool-registry";
+
+const { getServiceStatusTool } = opspilotAgentRuntime;
 
 const throwingTool: DiagnosticToolDefinition = {
   name: "throwing_tool",

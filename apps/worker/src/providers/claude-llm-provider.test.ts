@@ -6,14 +6,16 @@ import {
   InternalServerError,
   RateLimitError,
 } from "@anthropic-ai/sdk";
+import opspilotAgentRuntime from "@opspilot/agent-runtime";
+import type { AgentTurnInput, RawProviderTurnContext } from "@opspilot/agent-runtime";
 import { describe, expect, it, vi } from "vitest";
 
 import { buildClaudeMessages, buildSystemPrompt } from "./claude-message-mapping";
 import { ClaudeLlmProvider, type AnthropicMessagesClient } from "./claude-llm-provider";
 import { normalizeClaudeMessage } from "./claude-response-normalization";
 import { SUBMIT_RESOLUTION_REPORT_TOOL_NAME } from "./claude-tool-schemas";
-import { LlmProviderError, type AgentTurnInput, type RawProviderTurnContext } from "./llm-provider";
-import { getServiceStatusTool } from "../tools/get-service-status";
+
+const { LlmProviderError, getServiceStatusTool } = opspilotAgentRuntime;
 
 type FakeMessage = Anthropic.Message & { readonly _request_id?: string | null };
 
@@ -463,7 +465,13 @@ describe("ClaudeLlmProvider", () => {
     }
 
     expect(thrown).toBeInstanceOf(LlmProviderError);
-    const providerError = thrown as LlmProviderError;
+    // LlmProviderError is destructured from the default-imported
+    // opspilotAgentRuntime object above, which binds it only in the value
+    // namespace (destructuring cannot carry type information). A parallel
+    // `import type { LlmProviderError }` under the same name would collide
+    // with that local binding (TS2440), so InstanceType<typeof X> is
+    // intentionally retained here — see packages/agent-runtime/src/index.ts.
+    const providerError = thrown as InstanceType<typeof LlmProviderError>;
     expect(providerError.category).toBe(expectedCategory);
     expect(providerError.message).not.toContain("bad key");
     expect(providerError.message).not.toContain("slow down");

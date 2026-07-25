@@ -1,8 +1,7 @@
-import {
-  InMemoryToolRegistry,
-  type DiagnosticToolDefinition,
-  type ToolRegistry,
-} from "../tools/diagnostic-tool";
+import opspilotAgentRuntime from "@opspilot/agent-runtime";
+import type { DiagnosticToolDefinition, ToolRegistry } from "@opspilot/agent-runtime";
+
+const { InMemoryToolRegistry } = opspilotAgentRuntime;
 
 export interface RecordedToolExecution {
   readonly toolName: string;

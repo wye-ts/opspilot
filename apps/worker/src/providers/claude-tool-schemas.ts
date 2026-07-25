@@ -1,8 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
+import type { DiagnosticToolDefinition } from "@opspilot/agent-runtime";
 import { ResolutionReportSchema } from "@opspilot/contracts";
 import { z } from "zod";
-
-import type { DiagnosticToolDefinition } from "../tools/diagnostic-tool";
 
 export interface DiagnosticToolWithDescription {
   readonly tool: DiagnosticToolDefinition;

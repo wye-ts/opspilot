@@ -1,4 +1,4 @@
-import type { AgentOrchestratorResult } from "../agent/agent-orchestrator";
+import type { AgentOrchestratorResult } from "@opspilot/agent-runtime";
 import type { RecordedToolExecution } from "./recording-tool-registry";
 import type {
   EvaluationCase,

@@ -1,6 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
-
-import type { AgentConversationMessage, AgentTurnPhase } from "./llm-provider";
+import type { AgentConversationMessage, AgentTurnPhase } from "@opspilot/agent-runtime";
 
 // Claude's API is stateless, so every call rebuilds the full messages array
 // from AgentConversationMessage[]. This is minimal, protocol-faithful

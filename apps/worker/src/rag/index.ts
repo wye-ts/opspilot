@@ -1,12 +1,22 @@
-export {
+import opspilotAgentRuntime from "@opspilot/agent-runtime";
+
+export const {
   RetrieverError,
-  type RetrievalInput,
-  type RetrievedRunbookChunk,
-  type RetrieverErrorCategory,
-  type RunbookRetriever,
-  type StoredRunbookChunk,
-} from "./runbook-retriever";
-export { validateRetrievalInput, validateRetrievedChunks } from "./retrieval-validation";
+  validateRetrievalInput,
+  validateRetrievedChunks,
+  formatRagContext,
+  INJECTION_PROBE_CHUNK,
+} = opspilotAgentRuntime;
+
+export type {
+  RetrievalInput,
+  RetrievedRunbookChunk,
+  RetrieverErrorCategory,
+  RunbookRetriever,
+  StoredRunbookChunk,
+  RagContextEntry,
+} from "@opspilot/agent-runtime";
+
 export { validateStoredRunbookChunks } from "./runbook-corpus-validation";
 export {
   MarkdownRunbookCorpusLoader,
@@ -17,8 +27,6 @@ export {
   type RunbookLoadErrorCategory,
 } from "./markdown-runbook-loader";
 export { loadDefaultRunbookCorpus, resolveDefaultRunbooksDir } from "./load-default-runbook-corpus";
-export { INJECTION_PROBE_CHUNK } from "./injection-probe-fixture";
 export { InMemoryKeywordRunbookRetriever } from "./in-memory-runbook-retriever";
-export { formatRagContext, type RagContextEntry } from "./rag-context-formatting";
 export { type VoyageEmbeddingClient } from "./voyage-embedding-client";
 export { VoyageRunbookRetriever } from "./voyage-runbook-retriever";

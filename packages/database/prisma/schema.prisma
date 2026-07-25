@@ -1,6 +1,7 @@
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma-client"
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma-client"
+  moduleFormat = "cjs"
 }
 
 datasource db {
@@ -33,9 +34,23 @@ model AgentRun {
 
   job         AgentJob          @relation(fields: [jobId], references: [id], onDelete: Cascade)
   traceEvents AgentTraceEvent[]
+  approval    AgentRunApproval?
 
   @@unique([jobId, attemptNumber])
   @@map("agent_runs")
+}
+
+model AgentRunApproval {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  runId        String   @unique @map("run_id") @db.Uuid
+  decision     String
+  reviewerName String   @map("reviewer_name")
+  note         String?
+  decidedAt    DateTime @default(now()) @map("decided_at") @db.Timestamptz(6)
+
+  run AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@map("agent_run_approvals")
 }
 
 model AgentTraceEvent {

@@ -1,4 +1,4 @@
-import { PersistenceError, type AgentJobRecord } from "@opspilot/database";
+import { PersistenceError, type AgentJobRecord, type PersistedAgentJob } from "@opspilot/database";
 import type { ResolutionReport } from "@opspilot/contracts";
 import { describe, expect, it, vi } from "vitest";
 
@@ -81,9 +81,15 @@ interface FakeRepositoryOptions {
 
 function createFakeRepository(options: FakeRepositoryOptions = {}) {
   let nextRunId = 1;
-  const calls = { startRun: 0, finalizeCompleted: 0, finalizeFailed: 0, getAgentRun: 0 };
+  const calls = { startRun: 0, finalizeCompleted: 0, finalizeFailed: 0, getAgentRun: 0, getAgentJob: 0 };
   const persistedRuns = new Map<string, unknown>();
   const jobSnapshot = options.jobSnapshot ?? DEFAULT_JOB_SNAPSHOT;
+  // The exact AgentJobRecord object instances startRun returned, in call
+  // order — exposed so tests can assert identity (===) against whatever
+  // executeAndPersist actually passed to createProvider, not just structural
+  // equality (see the "invokes createProvider with the exact AgentJobRecord
+  // instance" test below).
+  const startedJobs: AgentJobRecord[] = [];
 
   const repository: AgentRunRepositoryInterface = {
     createJob: async (ticketContext) => ({
@@ -96,11 +102,15 @@ function createFakeRepository(options: FakeRepositoryOptions = {}) {
       calls.startRun += 1;
       if (options.startRunError) throw options.startRunError;
       const id = `run-${nextRunId++}`;
+      // The "database row" for this jobId — deliberately independent of
+      // anything a caller could have supplied, since callers only ever
+      // pass jobId, never a job object. Constructed once and reused (never
+      // rebuilt) so `startedJobs` and the returned `job` field are the same
+      // object reference.
+      const startedJob: AgentJobRecord = { ...jobSnapshot, id: jobId };
+      startedJobs.push(startedJob);
       return {
-        // The "database row" for this jobId — deliberately independent of
-        // anything a caller could have supplied, since callers only ever
-        // pass jobId, never a job object.
-        job: { ...jobSnapshot, id: jobId },
+        job: startedJob,
         run: {
           id,
           jobId,
@@ -165,9 +175,13 @@ function createFakeRepository(options: FakeRepositoryOptions = {}) {
         outcome: { type: "COMPLETED", report: VALID_REPORT },
       };
     },
+    getAgentJob: async (jobId): Promise<PersistedAgentJob> => {
+      calls.getAgentJob += 1;
+      return { job: { ...jobSnapshot, id: jobId }, runs: [] };
+    },
   };
 
-  return { repository, calls };
+  return { repository, calls, startedJobs };
 }
 
 describe("executeAndPersist", () => {
@@ -191,7 +205,7 @@ describe("executeAndPersist", () => {
     await service.executeAndPersist({
       jobId: JOB_ID,
       providerMode: "FAKE",
-      provider,
+      createProvider: () => provider,
       toolRegistry: toolRegistryWithServiceStatus(),
     });
 
@@ -207,33 +221,80 @@ describe("executeAndPersist", () => {
     ]);
   });
 
+  it("invokes createProvider with the exact AgentJobRecord instance startRun returned, not a clone, reconstruction, or separately-read value", async () => {
+    const jobSnapshot: AgentJobRecord = {
+      id: JOB_ID,
+      ticketContext: { ticketId: "TKT-factory-input", summary: "Factory input summary" },
+      externalTicketId: "TKT-factory-input",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const { repository, startedJobs } = createFakeRepository({ jobSnapshot });
+    const service = createAgentRunService(repository);
+    const provider = reportSubmittingProvider();
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+    // Typed with an explicit (job: AgentJobRecord) parameter — a zero-arg
+    // `vi.fn(() => provider)` would infer an empty-tuple call-args type,
+    // making `.mock.calls[0][0]` fail to typecheck rather than assert on it.
+    const createProvider = vi.fn((_job: AgentJobRecord) => provider);
+
+    await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "FAKE",
+      createProvider,
+      toolRegistry: toolRegistryWithServiceStatus(),
+    });
+
+    expect(createProvider).toHaveBeenCalledTimes(1);
+    const startedJob = startedJobs[0];
+    if (!startedJob) throw new Error("expected startRun to have recorded the started job");
+    // Identity (toBe), not structural equality (toHaveBeenCalledWith/toEqual)
+    // — this fails if executeAndPersist ever clones, reconstructs, or
+    // separately re-reads the job before invoking createProvider, since any
+    // of those would produce a distinct object reference that is
+    // structurally identical but not ===.
+    expect(createProvider.mock.calls[0]?.[0]).toBe(startedJob);
+
+    // The initial conversation is derived from that exact same snapshot.
+    const firstCall = runAgentTurnSpy.mock.calls[0];
+    if (!firstCall) throw new Error("expected runAgentTurn to have been called at least once");
+    expect(firstCall[0].conversation).toEqual([
+      {
+        role: "ticket_context",
+        ticketId: startedJob.ticketContext.ticketId,
+        summary: startedJob.ticketContext.summary,
+      },
+    ]);
+  });
+
   it("returns persisted on the happy path", async () => {
     const { repository } = createFakeRepository();
     const service = createAgentRunService(repository);
     const result = await service.executeAndPersist({
       jobId: JOB_ID,
       providerMode: "FAKE",
-      provider: reportSubmittingProvider(),
+      createProvider: () => reportSubmittingProvider(),
       toolRegistry: toolRegistryWithServiceStatus(),
     });
     expect(result.persistence).toBe("persisted");
   });
 
-  it("returns stage: run-creation when startRun fails, without ever calling the orchestrator", async () => {
+  it("returns stage: run-creation when startRun fails, without ever calling createProvider or the orchestrator", async () => {
     const startRunError = new PersistenceError("PERSISTENCE_UNAVAILABLE", "db down");
     const { repository, calls } = createFakeRepository({ startRunError });
     const service = createAgentRunService(repository);
     const provider = reportSubmittingProvider();
     const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+    const createProvider = vi.fn(() => provider);
 
     const result = await service.executeAndPersist({
       jobId: JOB_ID,
       providerMode: "FAKE",
-      provider,
+      createProvider,
       toolRegistry: toolRegistryWithServiceStatus(),
     });
 
     expect(result).toMatchObject({ persistence: "unavailable", stage: "run-creation", error: startRunError });
+    expect(createProvider).not.toHaveBeenCalled();
     expect(runAgentTurnSpy).not.toHaveBeenCalled();
     expect(calls.startRun).toBe(1);
   });
@@ -246,7 +307,7 @@ describe("executeAndPersist", () => {
     const result = await service.executeAndPersist({
       jobId: JOB_ID,
       providerMode: "FAKE",
-      provider: reportSubmittingProvider(),
+      createProvider: () => reportSubmittingProvider(),
       toolRegistry: toolRegistryWithServiceStatus(),
     });
 
@@ -274,7 +335,7 @@ describe("executeAndPersist", () => {
       await service.executeAndPersist({
         jobId: JOB_ID,
         providerMode: "FAKE",
-        provider: throwingProvider(sentinelText),
+        createProvider: () => throwingProvider(sentinelText),
         toolRegistry: toolRegistryWithServiceStatus(),
       });
     } catch (error) {
@@ -302,6 +363,41 @@ describe("executeAndPersist", () => {
     expect(calls.finalizeCompleted).toBe(0);
     expect(calls.finalizeFailed).toBe(0);
   });
+
+  it("throws only a stable AgentRunServiceError when createProvider itself throws, leaving the run RUNNING and never leaking the raw factory error", async () => {
+    const sentinelText = "factory-internal-detail: sk-live-DO-NOT-LEAK";
+    const { repository, calls } = createFakeRepository();
+    const service = createAgentRunService(repository);
+
+    let caught: unknown;
+    try {
+      await service.executeAndPersist({
+        jobId: JOB_ID,
+        providerMode: "FAKE",
+        createProvider: () => {
+          throw new Error(sentinelText);
+        },
+        toolRegistry: toolRegistryWithServiceStatus(),
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(AgentRunServiceError);
+    const serviceError = caught as AgentRunServiceError;
+    expect(serviceError.code).toBe("AGENT_EXECUTION_CRASHED");
+    expect(serviceError.message).toBe("The agent execution terminated unexpectedly.");
+    expect(serviceError.runId).toBe("run-1");
+    expect(serviceError.message).not.toContain(sentinelText);
+    expect(JSON.stringify(serviceError)).not.toContain("sk-live-");
+    expect((serviceError.cause as Error).message).toBe(sentinelText);
+
+    // The run stays RUNNING — no finalize call was ever attempted, matching
+    // the currently documented recovery limitation (no reaper/recovery in
+    // this milestone; see docs/11-agent-run-persistence.md).
+    expect(calls.finalizeCompleted).toBe(0);
+    expect(calls.finalizeFailed).toBe(0);
+  });
 });
 
 describe("retryFinalization", () => {
@@ -313,7 +409,7 @@ describe("retryFinalization", () => {
     const first = await service.executeAndPersist({
       jobId: JOB_ID,
       providerMode: "FAKE",
-      provider: reportSubmittingProvider(),
+      createProvider: () => reportSubmittingProvider(),
       toolRegistry: toolRegistryWithServiceStatus(),
     });
     expect(first.persistence).toBe("unavailable");
@@ -339,7 +435,7 @@ describe("retryFinalization", () => {
     const runResult = await service.executeAndPersist({
       jobId: JOB_ID,
       providerMode: "FAKE",
-      provider: reportSubmittingProvider(),
+      createProvider: () => reportSubmittingProvider(),
       toolRegistry: toolRegistryWithServiceStatus(),
     });
     expect(runResult.persistence).toBe("persisted");
@@ -353,5 +449,18 @@ describe("retryFinalization", () => {
     });
     expect(retry.persistence).toBe("persisted");
     expect(calls.startRun).toBe(1);
+  });
+});
+
+describe("getAgentJob", () => {
+  it("passes through to repository.getAgentJob", async () => {
+    const { repository, calls } = createFakeRepository();
+    const service = createAgentRunService(repository);
+
+    const result = await service.getAgentJob(JOB_ID);
+
+    expect(calls.getAgentJob).toBe(1);
+    expect(result.job.id).toBe(JOB_ID);
+    expect(result.runs).toEqual([]);
   });
 });
