@@ -12,14 +12,18 @@
 
 ## 1. Scope
 
-`apps/api` is a new local-only NestJS application exposing exactly four HTTP endpoints over the persistence and agent-runtime packages built in the prior milestone:
+`apps/api` is a local-only NestJS application exposing six HTTP endpoints over the persistence and agent-runtime packages built in this and the prior milestone:
 
 ```text
 POST /v1/agent-jobs
 POST /v1/agent-jobs/:jobId/runs
 GET  /v1/agent-jobs/:jobId
 GET  /v1/agent-runs/:runId
+POST /v1/agent-runs/:runId/approval
+GET  /v1/agent-runs/:runId/approval
 ```
+
+Milestone 6C (see `docs/13-approval-workflow.md`) adds the last two: `POST /v1/agent-runs/:runId/approval` and `GET /v1/agent-runs/:runId/approval`, recording a human approve/reject decision against a completed run's suggested actions. The workflow records a decision only — it never executes, simulates executing, or schedules execution of the approved action.
 
 Every request runs synchronously, end to end:
 
@@ -31,7 +35,7 @@ HTTP request
 → stable HTTP response
 ```
 
-This milestone does **not** add an approval workflow, a React UI, a job queue, CI/CD, deployment configuration, authentication/authorization, or streaming (SSE/WebSockets). It also does not call any live model or embedding provider — every run executes against a deterministic, in-process fake LLM provider (see §7).
+This milestone (6B) does **not** add a React UI, a job queue, CI/CD, deployment configuration, authentication/authorization, or streaming (SSE/WebSockets). It also does not call any live model or embedding provider — every run executes against a deterministic, in-process fake LLM provider (see §7). The human-approval workflow — recording only, never executing an approved action — is a later, additive milestone (6C, `docs/13-approval-workflow.md`), documented in §3 and §4 below.
 
 ### Why synchronous `201`, not queue-backed `202`
 
@@ -94,7 +98,41 @@ Returns the job snapshot plus its run summaries, ordered by `attemptNumber` asce
 
 ### `GET /v1/agent-runs/:runId`
 
-Returns the full persisted run projection: `job`, `run`, `trace` (in stored order — never re-sorted at the API layer), and `outcome` (`RUNNING` / `COMPLETED` with `report` / `FAILED` with `code` + `message`).
+Returns the full persisted run projection: `job`, `run`, `trace` (in stored order — never re-sorted at the API layer), and `outcome` (`RUNNING` / `COMPLETED` with `report` / `FAILED` with `code` + `message`). Approval state is **not** embedded here — see the two endpoints below.
+
+### `POST /v1/agent-runs/:runId/approval`
+
+Records a human approve/reject decision against a `COMPLETED` run's `suggestedActions`. Records a decision only — never executes, simulates executing, or schedules execution of the approved action. Full design in `docs/13-approval-workflow.md`.
+
+Request body — validated against `RecordApprovalDecisionInputSchema` from `@opspilot/contracts`; `note` may be omitted entirely (never sent as `null`):
+```json
+{ "decision": "APPROVED", "reviewerName": "jacky", "note": "Escalation looks correct, ship it." }
+```
+
+**First recording** — `201 Created`, `Location: /v1/agent-runs/<runId>/approval`:
+```json
+{ "data": { "runId": "8f14e45f-...", "status": "APPROVED", "reviewerName": "jacky", "note": "Escalation looks correct, ship it.", "decidedAt": "2026-07-23T10:15:00.000Z" } }
+```
+
+**Idempotent replay** of an identical `(decision, reviewerName, note)` — `200 OK`, same body, **no `Location` header** (signals "not newly created"):
+```json
+{ "data": { "runId": "8f14e45f-...", "status": "APPROVED", "reviewerName": "jacky", "note": "Escalation looks correct, ship it.", "decidedAt": "2026-07-23T10:15:00.000Z" } }
+```
+
+Run not approval-eligible (`RUNNING`, `FAILED`, or `COMPLETED` with zero `suggestedActions`) — `409 AGENT_RUN_NOT_APPROVAL_ELIGIBLE`. A conflicting decision already recorded (opposite decision, or the same decision with a different `reviewerName`/`note`) — `409 AGENT_RUN_APPROVAL_ALREADY_DECIDED`. See §4.
+
+### `GET /v1/agent-runs/:runId/approval`
+
+Always `200 OK` for an existing run — `NOT_ELIGIBLE` is a legitimate, informative read-model state, never a 404/409 purely because the run isn't eligible. Four possible `status` values:
+
+```json
+{ "data": { "runId": "8f14e45f-...", "status": "NOT_ELIGIBLE", "reviewerName": null, "note": null, "decidedAt": null } }
+{ "data": { "runId": "8f14e45f-...", "status": "PENDING", "reviewerName": null, "note": null, "decidedAt": null } }
+{ "data": { "runId": "8f14e45f-...", "status": "APPROVED", "reviewerName": "jacky", "note": "Escalation looks correct, ship it.", "decidedAt": "2026-07-23T10:15:00.000Z" } }
+{ "data": { "runId": "8f14e45f-...", "status": "REJECTED", "reviewerName": "jacky", "note": null, "decidedAt": "2026-07-23T10:20:00.000Z" } }
+```
+
+`decidedAt` is `null` for `NOT_ELIGIBLE`/`PENDING` (no decision recorded yet), and an ISO-8601 string for `APPROVED`/`REJECTED` — the response mapper is the sole `Date -> string` conversion point; a raw Prisma record or `Date` object is never returned.
 
 ---
 
@@ -118,6 +156,8 @@ Every error response uses one envelope shape:
 | `INTERNAL_DATA_INVALID` | 500 | The server encountered invalid persisted data and could not complete the request. |
 | `AGENT_EXECUTION_CRASHED` | 500 | The agent execution terminated unexpectedly. |
 | `INTERNAL_ERROR` | 500 | An unexpected internal error occurred. |
+| `AGENT_RUN_NOT_APPROVAL_ELIGIBLE` | 409 | The agent run is not eligible for an approval decision. (Milestone 6C — see `docs/13-approval-workflow.md`.) |
+| `AGENT_RUN_APPROVAL_ALREADY_DECIDED` | 409 | The agent run already has a recorded approval decision that does not match this request. (Milestone 6C — see `docs/13-approval-workflow.md`.) |
 
 `PersistenceError` is mapped by both its own code and the operation that produced it (`errors/map-domain-error.ts`) — the same underlying `PERSISTENCE_NOT_FOUND` code means `AGENT_JOB_NOT_FOUND` on a job read, `AGENT_RUN_NOT_FOUND` on a run read, `AGENT_JOB_NOT_FOUND` when `startRun` can't find the job, and `INTERNAL_DATA_INVALID` if a run row vanishes mid-finalization. Any value that isn't a recognized `PersistenceError`/`AgentRunServiceError` — including a non-`Error` throw — maps to a fixed `INTERNAL_ERROR`.
 
@@ -166,7 +206,8 @@ pnpm --filter @opspilot/api run start     # Terminal A — blocks; binds to http
 
 In a second terminal, once Terminal A prints `OpsPilot API listening on http://127.0.0.1:3000`:
 ```bash
-pnpm api:demo                             # Terminal B — POST job, POST run, GET job, GET run
+pnpm api:demo                             # Terminal B — POST job, POST run, GET job, GET run,
+                                           # plus the TICKET-APPROVAL-DEMO approval-workflow flow
 ```
 Stop Terminal A with `Ctrl+C` once the demo finishes — `main.ts` registers `SIGINT`/`SIGTERM` shutdown hooks that close the Prisma client and pg pool cleanly.
 
@@ -187,6 +228,7 @@ pnpm run test:integration:sequential                # packages/database's suite,
 
 - A job queue (BullMQ or similar) and `202 Accepted` + polling/SSE for run status, once run latency no longer fits comfortably inside one HTTP request/response cycle.
 - Idempotency keys on `POST /v1/agent-jobs/:jobId/runs` for safe client-side retry.
-- An approval workflow gating suggested actions before they take effect.
 - Authentication/authorization, once this API is exposed beyond a local developer machine.
 - A live model provider path (`AGENT_RUN_PROVIDER_MODE=LIVE`), currently rejected outright.
+
+The human-approval workflow — `POST`/`GET /v1/agent-runs/:runId/approval`, recording a decision only, never executing it — was future work as of Milestone 6B; it is implemented as of Milestone 6C. See §3/§4 above and `docs/13-approval-workflow.md` for the full design and implementation record.
