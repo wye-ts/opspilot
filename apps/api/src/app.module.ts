@@ -2,6 +2,7 @@ import { type DynamicModule, Module } from "@nestjs/common";
 import type { PrismaClientHandle } from "@opspilot/database";
 
 import { AgentJobsModule } from "./agent-jobs/agent-jobs.module";
+import { AgentRunApprovalsModule } from "./agent-run-approvals/agent-run-approvals.module";
 import { AgentRunsModule } from "./agent-runs/agent-runs.module";
 import { NotFoundModule } from "./common/not-found.module";
 import { PrismaModule } from "./persistence/prisma.module";
@@ -17,7 +18,13 @@ export class AppModule {
       // NotFoundModule's catch-all route must be registered LAST so every
       // specific endpoint route is matched first — see
       // common/not-found.controller.ts.
-      imports: [PrismaModule.forRoot(handle, safeClose), AgentJobsModule, AgentRunsModule, NotFoundModule],
+      imports: [
+        PrismaModule.forRoot(handle, safeClose),
+        AgentJobsModule,
+        AgentRunsModule,
+        AgentRunApprovalsModule,
+        NotFoundModule,
+      ],
     };
   }
 }

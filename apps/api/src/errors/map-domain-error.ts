@@ -1,5 +1,5 @@
 import { AgentRunServiceError } from "@opspilot/agent-runtime";
-import { PersistenceError } from "@opspilot/database";
+import { AgentRunApprovalError, PersistenceError } from "@opspilot/database";
 
 import { ApiError } from "./api-error";
 
@@ -12,7 +12,9 @@ export type DomainErrorContext =
   | "getAgentJob"
   | "getAgentRun"
   | "run-creation"
-  | "finalization";
+  | "finalization"
+  | "recordApprovalDecision"
+  | "getApprovalDecision";
 
 // Maps a PersistenceError based on operation context:
 //   create/write conflict            -> 409 PERSISTENCE_CONFLICT
@@ -22,10 +24,23 @@ export type DomainErrorContext =
 //   run read not found               -> 404 AGENT_RUN_NOT_FOUND
 //   run-creation stage not found     -> 404 AGENT_JOB_NOT_FOUND
 //   finalization-stage not found     -> 500 INTERNAL_DATA_INVALID
-// AgentRunServiceError always maps to 500 AGENT_EXECUTION_CRASHED with its
-// stable runId attached. Every other thrown value maps to a fixed
+//   approval read/write not found    -> 404 AGENT_RUN_NOT_FOUND
+// AgentRunApprovalError is a separate, closed error type for domain-level
+// approval facts discovered from valid data (not eligible / already
+// decided) — never a PersistenceError code (docs/13-approval-workflow.md
+// §9). AgentRunServiceError always maps to 500 AGENT_EXECUTION_CRASHED with
+// its stable runId attached. Every other thrown value maps to a fixed
 // INTERNAL_ERROR — never a raw exception is allowed to reach a response.
 export function mapDomainError(error: unknown, context: DomainErrorContext): ApiError {
+  if (error instanceof AgentRunApprovalError) {
+    switch (error.code) {
+      case "RUN_NOT_APPROVAL_ELIGIBLE":
+        return new ApiError("AGENT_RUN_NOT_APPROVAL_ELIGIBLE", { runId: error.runId, cause: error });
+      case "APPROVAL_ALREADY_DECIDED":
+        return new ApiError("AGENT_RUN_APPROVAL_ALREADY_DECIDED", { runId: error.runId, cause: error });
+    }
+  }
+
   if (error instanceof PersistenceError) {
     switch (error.code) {
       case "PERSISTENCE_CONFLICT":
@@ -38,7 +53,7 @@ export function mapDomainError(error: unknown, context: DomainErrorContext): Api
         if (context === "getAgentJob" || context === "run-creation") {
           return new ApiError("AGENT_JOB_NOT_FOUND", { cause: error });
         }
-        if (context === "getAgentRun") {
+        if (context === "getAgentRun" || context === "recordApprovalDecision" || context === "getApprovalDecision") {
           return new ApiError("AGENT_RUN_NOT_FOUND", { cause: error });
         }
         if (context === "finalization") {

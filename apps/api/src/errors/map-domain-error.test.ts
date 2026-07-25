@@ -1,5 +1,5 @@
 import { AgentRunServiceError } from "@opspilot/agent-runtime";
-import { PersistenceError } from "@opspilot/database";
+import { AgentRunApprovalError, PersistenceError } from "@opspilot/database";
 import { describe, expect, it } from "vitest";
 
 import { mapDomainError } from "./map-domain-error";
@@ -80,4 +80,63 @@ describe("mapDomainError", () => {
     const apiError = mapDomainError(error, "getAgentJob");
     expect(apiError.message).toBe("The database is temporarily unavailable.");
   });
+
+  it("maps AgentRunApprovalError(RUN_NOT_APPROVAL_ELIGIBLE) to 409 AGENT_RUN_NOT_APPROVAL_ELIGIBLE regardless of context", () => {
+    const error = new AgentRunApprovalError("RUN_NOT_APPROVAL_ELIGIBLE", "run-1");
+    const apiError = mapDomainError(error, "recordApprovalDecision");
+    expect(apiError.code).toBe("AGENT_RUN_NOT_APPROVAL_ELIGIBLE");
+    expect(apiError.status).toBe(409);
+  });
+
+  it("maps AgentRunApprovalError(APPROVAL_ALREADY_DECIDED) to 409 AGENT_RUN_APPROVAL_ALREADY_DECIDED, preserving runId", () => {
+    const error = new AgentRunApprovalError("APPROVAL_ALREADY_DECIDED", "run-1");
+    const apiError = mapDomainError(error, "recordApprovalDecision");
+    expect(apiError.code).toBe("AGENT_RUN_APPROVAL_ALREADY_DECIDED");
+    expect(apiError.status).toBe(409);
+    expect(apiError.runId).toBe("run-1");
+  });
+
+  it("maps PERSISTENCE_NOT_FOUND with context recordApprovalDecision to 404 AGENT_RUN_NOT_FOUND", () => {
+    const error = new PersistenceError("PERSISTENCE_NOT_FOUND", "no run");
+    const apiError = mapDomainError(error, "recordApprovalDecision");
+    expect(apiError.code).toBe("AGENT_RUN_NOT_FOUND");
+    expect(apiError.status).toBe(404);
+  });
+
+  it("maps PERSISTENCE_NOT_FOUND with context getApprovalDecision to 404 AGENT_RUN_NOT_FOUND", () => {
+    const error = new PersistenceError("PERSISTENCE_NOT_FOUND", "no run");
+    const apiError = mapDomainError(error, "getApprovalDecision");
+    expect(apiError.code).toBe("AGENT_RUN_NOT_FOUND");
+    expect(apiError.status).toBe(404);
+  });
+
+  it.each(["recordApprovalDecision", "getApprovalDecision"] as const)(
+    "maps PERSISTENCE_VALIDATION_FAILED with context %s to 500 INTERNAL_DATA_INVALID (existing context-independent case)",
+    (context) => {
+      const error = new PersistenceError("PERSISTENCE_VALIDATION_FAILED", "bad stored data");
+      const apiError = mapDomainError(error, context);
+      expect(apiError.code).toBe("INTERNAL_DATA_INVALID");
+      expect(apiError.status).toBe(500);
+    },
+  );
+
+  it.each(["recordApprovalDecision", "getApprovalDecision"] as const)(
+    "maps PERSISTENCE_UNAVAILABLE with context %s to 503 PERSISTENCE_UNAVAILABLE (existing context-independent case)",
+    (context) => {
+      const error = new PersistenceError("PERSISTENCE_UNAVAILABLE", "down");
+      const apiError = mapDomainError(error, context);
+      expect(apiError.code).toBe("PERSISTENCE_UNAVAILABLE");
+      expect(apiError.status).toBe(503);
+    },
+  );
+
+  it.each(["recordApprovalDecision", "getApprovalDecision"] as const)(
+    "maps PERSISTENCE_CONFLICT with context %s to 409 PERSISTENCE_CONFLICT (existing context-independent case, defense-in-depth backstop)",
+    (context) => {
+      const error = new PersistenceError("PERSISTENCE_CONFLICT", "conflict");
+      const apiError = mapDomainError(error, context);
+      expect(apiError.code).toBe("PERSISTENCE_CONFLICT");
+      expect(apiError.status).toBe(409);
+    },
+  );
 });
