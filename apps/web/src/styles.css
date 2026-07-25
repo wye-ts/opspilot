@@ -1,0 +1,389 @@
+:root {
+  --color-bg: #f7f8fa;
+  --color-surface: #ffffff;
+  --color-border: #d7dbe0;
+  --color-text: #1a1d21;
+  --color-text-muted: #565c66;
+  --color-accent: #1857b8;
+  --color-focus: #0b57d0;
+
+  --color-success-bg: #e3f5e9;
+  --color-success-text: #0f6b3a;
+  --color-danger-bg: #fbe6e6;
+  --color-danger-text: #9a2323;
+  --color-info-bg: #e6eefc;
+  --color-info-text: #1a4faa;
+  --color-neutral-bg: #ecedf0;
+  --color-neutral-text: #3b3f45;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+
+  --radius: 0.5rem;
+}
+
+/* Dark mode is an explicit non-goal for this milestone (docs/14-web-ui.md).
+   No prefers-color-scheme override exists here — the light palette above is
+   the only theme, so it also guarantees the button contrast checked below. */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  line-height: 1.5;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.875em;
+  overflow-wrap: anywhere;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  background: var(--color-accent);
+  color: white;
+  border: none;
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-4);
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.app-shell {
+  max-width: 84rem;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.app-header-note {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+}
+
+.notice-region {
+  min-height: 1.25rem;
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+}
+
+.error-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-3);
+  background: var(--color-danger-bg);
+  color: var(--color-danger-text);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+}
+
+.error-banner-message {
+  margin: 0;
+  font-weight: 600;
+}
+
+.error-banner-meta {
+  margin: var(--space-1) 0 0;
+  font-size: 0.85rem;
+  opacity: 0.85;
+}
+
+.error-banner-dismiss {
+  background: transparent;
+  color: inherit;
+  font-size: 1.25rem;
+  line-height: 1;
+  padding: var(--space-1) var(--space-2);
+}
+
+.investigation-form,
+.investigation-summary,
+.investigation-content section {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-5);
+}
+
+.investigation-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.form-field label {
+  font-weight: 600;
+}
+
+.form-field textarea {
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-bg);
+  color: var(--color-text);
+  resize: vertical;
+}
+
+.form-field-checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.form-field-checkbox label {
+  font-weight: 400;
+}
+
+.investigation-form button[type="submit"] {
+  align-self: flex-start;
+}
+
+.investigation-summary h2 {
+  margin: 0 0 var(--space-3);
+  font-size: 1.1rem;
+}
+
+.investigation-summary-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  border-radius: 999px;
+  padding: var(--space-1) var(--space-3);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.status-badge-success {
+  background: var(--color-success-bg);
+  color: var(--color-success-text);
+}
+
+.status-badge-danger {
+  background: var(--color-danger-bg);
+  color: var(--color-danger-text);
+}
+
+.status-badge-info {
+  background: var(--color-info-bg);
+  color: var(--color-info-text);
+}
+
+.status-badge-neutral {
+  background: var(--color-neutral-bg);
+  color: var(--color-neutral-text);
+}
+
+dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3) var(--space-5);
+}
+
+dl div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+dt {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+dd {
+  margin: 0;
+}
+
+.investigation-summary-details {
+  margin-bottom: var(--space-4);
+}
+
+.investigation-summary-ids {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+
+.investigation-content {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-5);
+}
+
+@media (min-width: 64rem) {
+  .investigation-content {
+    grid-template-columns: 1fr 1fr;
+    align-items: start;
+  }
+}
+
+/* Grid/flex items default to min-width: auto (their content's intrinsic
+   minimum), which lets the nowrap tool-call-id text (below) force these
+   ancestors wider than their track/row at narrow viewports and cause real
+   page overflow. min-width: 0 lets them shrink to the track/row width
+   instead — the id itself still ellipsizes and its full value stays
+   available via its title attribute. */
+.investigation-content > section {
+  min-width: 0;
+}
+
+.trace-timeline-content {
+  min-width: 0;
+}
+
+.investigation-content h2,
+.report-panel h2 {
+  margin: 0 0 var(--space-3);
+  font-size: 1.1rem;
+}
+
+.report-panel h3 {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: 0.95rem;
+}
+
+.trace-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.trace-timeline-item {
+  display: flex;
+  gap: var(--space-3);
+}
+
+.trace-timeline-step {
+  flex: none;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: var(--color-info-bg);
+  color: var(--color-info-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.trace-timeline-label {
+  margin: 0;
+  font-weight: 600;
+}
+
+.trace-timeline-detail {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+}
+
+.trace-timeline-tool-call-id {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+  max-width: 28rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trace-timeline-chunks {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-4);
+  color: var(--color-text-muted);
+}
+
+.trace-timeline-empty {
+  color: var(--color-text-muted);
+}
+
+.report-panel-fields {
+  grid-template-columns: 1fr;
+}
+
+.report-panel-evidence,
+.report-panel-actions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.suggested-action-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+}
+
+.suggested-action-card h4 {
+  margin: 0 0 var(--space-2);
+}
+
+.suggested-action-body {
+  margin-top: var(--space-2);
+  max-height: 12rem;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  background: var(--color-bg);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+}
