@@ -1,22 +1,27 @@
 import { useEffect, useRef, useState } from "react";
 
-import { createAgentJob, getAgentRun, startAgentRun } from "./api/endpoints";
+import { createAgentJob, getAgentRun, getApproval, recordApproval, startAgentRun } from "./api/endpoints";
 import { ApiRequestError } from "./api/http-client";
-import type { AgentJobResponse, AgentRunDetail } from "./api/types";
+import type { AgentJobResponse, AgentRunDetail, ApprovalView, RecordApprovalDecisionInput } from "./api/types";
+import { ApprovalPanel } from "./components/ApprovalPanel";
 import { ErrorBanner, type DisplayableError } from "./components/ErrorBanner";
 import { InvestigationForm, type InvestigationFormSubmission } from "./components/InvestigationForm";
 import { InvestigationSummary } from "./components/InvestigationSummary";
 import { ReportPanel } from "./components/ReportPanel";
 import { TraceTimeline } from "./components/TraceTimeline";
 
-type Phase = "idle" | "creating-job" | "running-agent" | "refreshing-run";
+type Phase = "idle" | "creating-job" | "running-agent" | "loading-approval" | "refreshing-run" | "submitting-approval";
 
 const PHASE_LABELS: Record<Phase, string> = {
   idle: "Run Investigation",
   "creating-job": "Creating investigation…",
   "running-agent": "Running agent…",
+  "loading-approval": "Loading approval…",
   "refreshing-run": "Refreshing…",
+  "submitting-approval": "Recording decision…",
 };
+
+const CONFLICT_APPROVAL_ERROR_CODES = new Set(["AGENT_RUN_APPROVAL_ALREADY_DECIDED", "AGENT_RUN_NOT_APPROVAL_ELIGIBLE"]);
 
 const APPROVAL_DEMO_TICKET_ID = "TICKET-APPROVAL-DEMO";
 
@@ -48,6 +53,7 @@ export function App() {
   const [ticketId, setTicketId] = useState<string | null>(null);
   const [job, setJob] = useState<AgentJobResponse | null>(null);
   const [run, setRun] = useState<AgentRunDetail | null>(null);
+  const [approval, setApproval] = useState<ApprovalView | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<DisplayableError | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -73,6 +79,32 @@ export function App() {
     return generation !== generationRef.current;
   }
 
+  // Never throws — a failed approval fetch must not unwind the run that was
+  // already committed to the page. Reuses the caller's signal/generation
+  // rather than calling beginWorkflow() again, since it is a continuation of
+  // the caller's workflow, not a new one.
+  async function loadApproval(
+    runId: string,
+    signal: AbortSignal,
+    generation: number,
+    options: { readonly reportError: boolean },
+  ) {
+    try {
+      const result = await getApproval(runId, signal);
+      if (isStale(generation)) return;
+      setApproval(result.data);
+    } catch (thrown) {
+      if (isAbortError(thrown) || isStale(generation)) return;
+      if (options.reportError) {
+        setError(toDisplayableError(thrown));
+        setApproval(null);
+      }
+      // reportError: false is the 409-convergence path — the server's 409
+      // message stays on screen instead of being overwritten by this GET's
+      // error, and `approval` is left untouched rather than inventing state.
+    }
+  }
+
   async function runInvestigation(submission: InvestigationFormSubmission) {
     const { signal, generation } = beginWorkflow();
     const nextTicketId = submission.approvalDemo ? APPROVAL_DEMO_TICKET_ID : generateOrdinaryTicketId();
@@ -80,6 +112,7 @@ export function App() {
     setTicketId(nextTicketId);
     setJob(null);
     setRun(null);
+    setApproval(null);
     setError(null);
     setNotice(null);
     setPhase("creating-job");
@@ -98,16 +131,23 @@ export function App() {
     }
 
     setPhase("running-agent");
+    let createdRun: AgentRunDetail;
     try {
       const result = await startAgentRun(createdJob.id, signal);
       if (isStale(generation)) return;
-      setRun(result.data);
-      setPhase("idle");
+      createdRun = result.data;
+      setRun(createdRun);
     } catch (thrown) {
       if (isAbortError(thrown) || isStale(generation)) return;
       setError(toDisplayableError(thrown));
       setPhase("idle");
+      return;
     }
+
+    setPhase("loading-approval");
+    await loadApproval(createdRun.run.id, signal, generation, { reportError: true });
+    if (isStale(generation)) return;
+    setPhase("idle");
   }
 
   async function retryRun() {
@@ -115,16 +155,23 @@ export function App() {
     const { signal, generation } = beginWorkflow();
     setError(null);
     setPhase("running-agent");
+    let startedRun: AgentRunDetail;
     try {
       const result = await startAgentRun(job.id, signal);
       if (isStale(generation)) return;
-      setRun(result.data);
-      setPhase("idle");
+      startedRun = result.data;
+      setRun(startedRun);
     } catch (thrown) {
       if (isAbortError(thrown) || isStale(generation)) return;
       setError(toDisplayableError(thrown));
       setPhase("idle");
+      return;
     }
+
+    setPhase("loading-approval");
+    await loadApproval(startedRun.run.id, signal, generation, { reportError: true });
+    if (isStale(generation)) return;
+    setPhase("idle");
   }
 
   async function refreshRun() {
@@ -132,15 +179,49 @@ export function App() {
     const { signal, generation } = beginWorkflow();
     setError(null);
     setPhase("refreshing-run");
+    let refreshedRun: AgentRunDetail;
     try {
       const result = await getAgentRun(run.run.id, signal);
       if (isStale(generation)) return;
-      setRun(result.data);
-      setNotice("Run refreshed.");
+      refreshedRun = result.data;
+      setRun(refreshedRun);
+    } catch (thrown) {
+      if (isAbortError(thrown) || isStale(generation)) return;
+      setError(toDisplayableError(thrown));
+      setPhase("idle");
+      return;
+    }
+
+    setPhase("loading-approval");
+    await loadApproval(refreshedRun.run.id, signal, generation, { reportError: true });
+    if (isStale(generation)) return;
+    setNotice("Run refreshed.");
+    setPhase("idle");
+  }
+
+  async function recordDecision(input: RecordApprovalDecisionInput) {
+    if (run === null) return;
+    const runId = run.run.id;
+    const { signal, generation } = beginWorkflow();
+    setError(null);
+    setNotice(null);
+    setPhase("submitting-approval");
+    try {
+      const result = await recordApproval(runId, input, signal);
+      if (isStale(generation)) return;
+      setApproval(result.data);
+      setNotice(
+        result.status === 201 ? "Decision recorded." : "This decision was already recorded — nothing changed.",
+      );
       setPhase("idle");
     } catch (thrown) {
       if (isAbortError(thrown) || isStale(generation)) return;
       setError(toDisplayableError(thrown));
+      if (thrown instanceof ApiRequestError && CONFLICT_APPROVAL_ERROR_CODES.has(thrown.code)) {
+        setPhase("loading-approval");
+        await loadApproval(runId, signal, generation, { reportError: false });
+        if (isStale(generation)) return;
+      }
       setPhase("idle");
     }
   }
@@ -182,7 +263,18 @@ export function App() {
             <h2 id="timeline-heading">Investigation timeline</h2>
             <TraceTimeline trace={run.trace} />
           </section>
-          <ReportPanel outcome={run.outcome} onRefresh={refreshRun} refreshDisabled={isBusy} />
+          <div className="investigation-report-column">
+            <ReportPanel outcome={run.outcome} onRefresh={refreshRun} refreshDisabled={isBusy} />
+            {approval !== null ? (
+              <ApprovalPanel
+                approval={approval}
+                suggestedActionCount={run.outcome.type === "COMPLETED" ? run.outcome.report.suggestedActions.length : 0}
+                decisionDisabled={isBusy}
+                submittingDecision={phase === "submitting-approval"}
+                onDecide={recordDecision}
+              />
+            ) : null}
+          </div>
         </div>
       ) : null}
     </div>

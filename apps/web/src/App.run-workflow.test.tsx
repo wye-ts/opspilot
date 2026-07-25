@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
-import type { AgentJobResponse, AgentRunDetail } from "./api/types";
+import type { AgentJobResponse, AgentRunDetail, ApprovalView } from "./api/types";
 
 const UUID_A = "11111111-1111-1111-1111-111111111111";
 const UUID_B = "22222222-2222-2222-2222-222222222222";
@@ -58,6 +58,22 @@ function runDetail(overrides: Partial<AgentRunDetail> = {}): AgentRunDetail {
   };
 }
 
+// PR 4B: every successful run triggers a chained approval GET (App.tsx's
+// runInvestigation/retryRun/refreshRun). These PR 4A tests don't assert on
+// approval state — approval.test.tsx owns that — but a successful run mock
+// chain needs one more response, or the extra fetch call resolves to
+// `undefined` and surfaces a spurious error banner.
+function approvalView(overrides: Partial<ApprovalView> = {}): ApprovalView {
+  return {
+    runId: "run-1",
+    status: "NOT_ELIGIBLE",
+    reviewerName: null,
+    note: null,
+    decidedAt: null,
+    ...overrides,
+  };
+}
+
 function errorEnvelope(code: string, message: string, requestId = "req-1") {
   return { error: { code, message, requestId } };
 }
@@ -83,16 +99,18 @@ describe("App investigation workflow", () => {
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
-      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }));
+      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
     await submit(user, "Elevated error rate");
     await screen.findByText("Investigation timeline");
 
     const calls = vi.mocked(fetch).mock.calls;
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(3);
     expect(calls[0]?.[0]).toBe("/v1/agent-jobs");
     expect(calls[1]?.[0]).toBe("/v1/agent-jobs/job-1/runs");
+    expect(calls[2]?.[0]).toBe("/v1/agent-runs/run-1/approval");
   });
 
   it("ordinary mode sends exactly DEMO-<stubbed UUID>", async () => {
@@ -101,7 +119,8 @@ describe("App investigation workflow", () => {
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
-      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }));
+      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
     await submit(user, "Elevated error rate");
@@ -118,7 +137,8 @@ describe("App investigation workflow", () => {
     uuidSpy.mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ id: "job-1", ticketId: `DEMO-${UUID_A}` }) }))
-      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail({ job: jobResponse({ id: "job-1" }) }) }));
+      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail({ job: jobResponse({ id: "job-1" }) }) }))
+      .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
     await submit(user, "First issue");
@@ -128,12 +148,13 @@ describe("App investigation workflow", () => {
     uuidSpy.mockReturnValueOnce(UUID_B);
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ id: "job-2", ticketId: `DEMO-${UUID_B}` }) }))
-      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail({ job: jobResponse({ id: "job-2" }) }) }));
+      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail({ job: jobResponse({ id: "job-2" }) }) }))
+      .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     await user.clear(screen.getByLabelText("Issue Summary"));
     await submit(user, "Second issue");
-    await waitFor(() => expect(vi.mocked(fetch).mock.calls).toHaveLength(4));
-    const secondTicketId = vi.mocked(fetch).mock.calls[2]?.[1]?.body as string;
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls).toHaveLength(6));
+    const secondTicketId = vi.mocked(fetch).mock.calls[3]?.[1]?.body as string;
 
     expect(firstTicketId).toContain(UUID_A);
     expect(secondTicketId).toContain(UUID_B);
@@ -145,7 +166,8 @@ describe("App investigation workflow", () => {
     vi.stubGlobal("fetch", vi.fn());
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
-      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail({ job: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }) }));
+      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail({ job: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }) }))
+      .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
     await submit(user, "Approval demo issue", true);
@@ -161,7 +183,8 @@ describe("App investigation workflow", () => {
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
-      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }));
+      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
     await submit(user, "Elevated error rate");
@@ -179,7 +202,8 @@ describe("App investigation workflow", () => {
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
-      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }));
+      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
     await submit(user, "Elevated error rate");
@@ -197,7 +221,8 @@ describe("App investigation workflow", () => {
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
-      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }));
+      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
     await submit(user, "Elevated error rate");
@@ -227,7 +252,8 @@ describe("App investigation workflow", () => {
     });
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
-      .mockResolvedValueOnce(jsonResponse(201, { data: demoRun }));
+      .mockResolvedValueOnce(jsonResponse(201, { data: demoRun }))
+      .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
     await submit(user, "Approval demo issue", true);
@@ -268,13 +294,16 @@ describe("App investigation workflow", () => {
     const retryButton = screen.getByRole("button", { name: "Retry Run" });
     expect(retryButton).toBeInTheDocument();
 
-    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }));
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
     await user.click(retryButton);
     await screen.findByText("Investigation timeline");
 
     const calls = vi.mocked(fetch).mock.calls;
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(4);
     expect(calls[2]?.[0]).toBe("/v1/agent-jobs/job-1/runs");
+    expect(calls[3]?.[0]).toBe("/v1/agent-runs/run-1/approval");
     expect(calls.filter((call) => call[0] === "/v1/agent-jobs")).toHaveLength(1);
   });
 
@@ -285,7 +314,8 @@ describe("App investigation workflow", () => {
     uuidSpy.mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ id: "job-1" }) }))
-      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail({ job: jobResponse({ id: "job-1" }) }) }));
+      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail({ job: jobResponse({ id: "job-1" }) }) }))
+      .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
     await submit(user, "First issue");
@@ -307,7 +337,9 @@ describe("App investigation workflow", () => {
     expect(screen.queryByText("job-1")).toBeNull();
 
     resolveSecondJob(jsonResponse(201, { data: jobResponse({ id: "job-2", ticketId: `DEMO-${UUID_B}` }) }));
-    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(201, { data: runDetail({ job: jobResponse({ id: "job-2" }) }) }));
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail({ job: jobResponse({ id: "job-2" }) }) }))
+      .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     await screen.findByText("job-2");
   });
@@ -349,7 +381,8 @@ describe("App investigation workflow", () => {
         jsonResponse(201, {
           data: runDetail({ outcome: { type: "FAILED", code: "RETRIEVAL_FAILED", message: "Runbook retrieval failed." } }),
         }),
-      );
+      )
+      .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
     await submit(user, "Elevated error rate");
@@ -365,14 +398,17 @@ describe("App investigation workflow", () => {
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
-      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail({ outcome: { type: "RUNNING" } }) }));
+      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail({ outcome: { type: "RUNNING" } }) }))
+      .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
     await submit(user, "Elevated error rate");
 
     await screen.findByText("This run has not produced a report yet.");
 
-    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(200, { data: runDetail() }));
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(200, { data: runDetail() }))
+      .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
     const refreshButtons = screen.getAllByRole("button", { name: "Refresh" });
     await user.click(refreshButtons[0]!);
 
@@ -385,14 +421,15 @@ describe("App investigation workflow", () => {
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
-      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }));
+      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
     await user.type(screen.getByLabelText("Issue Summary"), "Elevated error rate");
     await user.dblClick(screen.getByRole("button", { name: "Run Investigation" }));
 
     await screen.findByText("Investigation timeline");
-    expect(vi.mocked(fetch).mock.calls).toHaveLength(2);
+    expect(vi.mocked(fetch).mock.calls).toHaveLength(3);
     expect(vi.mocked(fetch).mock.calls.filter((call) => call[0] === "/v1/agent-jobs")).toHaveLength(1);
   });
 });
