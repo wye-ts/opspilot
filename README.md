@@ -67,12 +67,12 @@ An approval workflow adding `POST`/`GET /v1/agent-runs/:runId/approval` — reco
 
 ### Web UI (`apps/web`)
 
-A local-only React + Vite UI over the Agent Run API above — describe an issue, run an investigation with one click, and read the resulting trace timeline and generated report in the browser. Requires the API running (previous section).
+A local-only React + Vite UI over the Agent Run API above — describe an issue, run an investigation with one click, read the resulting trace timeline and generated report, and record an approve/reject decision, all in the browser. Requires the API running (previous section).
 
 ```bash
 pnpm --filter @opspilot/web run dev       # Terminal C — blocks; http://127.0.0.1:5173
 ```
 
-There is no editable Ticket ID field — an ordinary investigation generates one internally (`DEMO-<uuid>`), shown only as read-only metadata after the fact. Check **Approval workflow demo** before clicking **Run Investigation** to route the exact ticket ID `TICKET-APPROVAL-DEMO` and see the one `DRAFT_CUSTOMER_REPLY` suggested action described above.
+There is no editable Ticket ID field — an ordinary investigation generates one internally (`DEMO-<uuid>`), shown only as read-only metadata after the fact. To exercise the full approval demo: check **Approval workflow demo** before clicking **Run Investigation** to route the exact ticket ID `TICKET-APPROVAL-DEMO`; the report shows the one `DRAFT_CUSTOMER_REPLY` suggested action described above, and the approval panel below it shows `PENDING` with a decision form. Enter a reviewer name (and, optionally, a note) and click **Approve** or **Reject** to record a terminal decision — the panel becomes a read-only record of the reviewer, note, and decision time, with no edit or revoke control. An ordinary (unchecked) investigation always shows `NOT_ELIGIBLE`, since it never produces a suggested action.
 
-Browser requests are relative `/v1/...` paths only, proxied by Vite to the API — no CORS configuration was needed or added. See `docs/14-web-ui.md` for the full design record. **Approval decisions are not yet recordable from the browser** — the panel and its `POST`/`GET /v1/agent-runs/:runId/approval` calls are a follow-up milestone; use `pnpm api:demo` to exercise that flow today.
+Browser requests are relative `/v1/...` paths only, proxied by Vite to the API — no CORS configuration was needed or added. See `docs/14-web-ui.md` for the full design record.

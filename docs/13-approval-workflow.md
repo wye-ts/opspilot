@@ -1008,6 +1008,7 @@ This proves both halves the design must demonstrate — "a normal deterministic 
 - `docs/11-agent-run-persistence.md` §5's lock-order description is updated to note the branch into two sibling child-row classes (`AgentTraceEvent`, `AgentRunApproval`) under `AgentRun`; §4's constraint table gains the 2 new constraint rows (12 → 14).
 - `README.md` gains one short paragraph pointing at this document.
 - `docs/10-engineering-challenges.md` gains a new revision-note entry (v1.8) and a short pointer near Challenge 1's aspirational `pending_actions`/`APPROVAL_CREATED` sketch, clarifying that this milestone's real, much simpler design lives in `docs/13-approval-workflow.md` and is not an implementation of Challenge 1's richer, still-unbuilt concept — the same "deliberately smaller precursor, not a partial implementation" relationship `docs/11-agent-run-persistence.md` §9 already draws for the persistence layer generally.
+- `docs/14-web-ui.md` — the browser-facing surface for this workflow (the `ApprovalPanel`, its four statuses, and the decision form) is documented there, not in this file.
 
 ## 15. Alternatives Considered
 
