@@ -1,5 +1,5 @@
 import { request } from "./http-client";
-import type { AgentJobResponse, AgentRunDetail } from "./types";
+import type { AgentJobResponse, AgentRunDetail, ApprovalView, RecordApprovalDecisionInput } from "./types";
 
 export interface CreateAgentJobInput {
   readonly ticketId: string;
@@ -20,4 +20,12 @@ export function startAgentRun(jobId: string, signal?: AbortSignal) {
 
 export function getAgentRun(runId: string, signal?: AbortSignal) {
   return request<AgentRunDetail>(`/v1/agent-runs/${runId}`, { signal });
+}
+
+export function getApproval(runId: string, signal?: AbortSignal) {
+  return request<ApprovalView>(`/v1/agent-runs/${runId}/approval`, { signal });
+}
+
+export function recordApproval(runId: string, input: RecordApprovalDecisionInput, signal?: AbortSignal) {
+  return request<ApprovalView>(`/v1/agent-runs/${runId}/approval`, { method: "POST", body: input, signal });
 }
