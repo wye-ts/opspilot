@@ -1,0 +1,36 @@
+{
+  "name": "@opspilot/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:deps": "pnpm --filter \"@opspilot/web^...\" -r --workspace-concurrency=1 run build",
+    "typecheck": "pnpm run build:deps && tsc -p tsconfig.json",
+    "build": "pnpm run build:deps && pnpm run clean && vite build",
+    "dev": "vite",
+    "preview": "vite preview",
+    "test": "pnpm run build:deps && vitest run",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@opspilot/contracts": "workspace:*",
+    "react": "^19",
+    "react-dom": "^19"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10",
+    "@testing-library/jest-dom": "^6",
+    "@testing-library/react": "^16",
+    "@testing-library/user-event": "^14",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^6",
+    "jsdom": "^29",
+    "typescript": "^7.0.2",
+    "vite": "^8",
+    "vitest": "^4.1.10"
+  },
+  "engines": {
+    "node": ">=22.21.0"
+  }
+}
