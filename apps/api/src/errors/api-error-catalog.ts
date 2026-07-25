@@ -9,7 +9,9 @@ export type ApiErrorCode =
   | "PERSISTENCE_UNAVAILABLE"
   | "INTERNAL_DATA_INVALID"
   | "AGENT_EXECUTION_CRASHED"
-  | "INTERNAL_ERROR";
+  | "INTERNAL_ERROR"
+  | "AGENT_RUN_NOT_APPROVAL_ELIGIBLE"
+  | "AGENT_RUN_APPROVAL_ALREADY_DECIDED";
 
 interface ApiErrorCatalogEntry {
   readonly status: number;
@@ -62,5 +64,13 @@ export const API_ERROR_CATALOG: Readonly<Record<ApiErrorCode, ApiErrorCatalogEnt
   INTERNAL_ERROR: {
     status: 500,
     message: "An unexpected internal error occurred.",
+  },
+  AGENT_RUN_NOT_APPROVAL_ELIGIBLE: {
+    status: 409,
+    message: "The agent run is not eligible for an approval decision.",
+  },
+  AGENT_RUN_APPROVAL_ALREADY_DECIDED: {
+    status: 409,
+    message: "The agent run already has a recorded approval decision that does not match this request.",
   },
 };
