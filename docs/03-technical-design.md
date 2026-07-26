@@ -2293,6 +2293,10 @@ Both modes are selected via a single environment flag switching the `LlmProvider
 
 ---
 
+> These sections reflect the original deployment proposal and are retained for historical context.
+> The implemented CI/CD and deployment architecture is documented in
+> `docs/08-cicd-deployment.md`, which is the current source of truth.
+
 ## 23. CI/CD Design
 
 ### 23.1 Branch and Pull Request Workflow
