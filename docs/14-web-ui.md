@@ -5,14 +5,14 @@
 | Document | React Timeline UI — Implementation Record |
 | Status | Implemented |
 | Project | OpsPilot |
-| Purpose | Document the `apps/web` React UI — its scope, the one-action investigation workflow, the timeline/report rendering model, the approval interaction, and how to run it locally |
-| Related documents | `docs/reviews/14-react-timeline-implementation-plan.md` (the approved plan this implements), `docs/12-agent-run-api.md` (the HTTP API this UI consumes), `docs/13-approval-workflow.md` (the approval semantics this UI's approval panel renders) |
+| Purpose | Document the `apps/web` React UI — its scope, the one-action investigation workflow, the timeline/report rendering model, the two-column run-detail layout and approval interaction, and how to run it locally |
+| Related documents | `docs/12-agent-run-api.md` (the HTTP API this UI consumes), `docs/13-approval-workflow.md` (the approval semantics this UI's approval panel renders) |
 
 ---
 
 ## 1. Scope and non-goals
 
-`apps/web` is a local-only React SPA that consumes the existing `apps/api` HTTP API to demonstrate the OpsPilot backend end to end in a browser: describe an issue, run an investigation, read the resulting trace timeline and generated report, and — when the run produced at least one suggested action — record a human approve/reject decision against it.
+`apps/web` is a React SPA that supports local development and same-origin production serving through `apps/api`, consuming the existing `apps/api` HTTP API to demonstrate the OpsPilot backend end to end in a browser: describe an issue, run an investigation, read the resulting trace timeline and generated report, and — when the run produced at least one suggested action — record a human approve/reject decision against it.
 
 **Implemented:**
 
@@ -25,6 +25,11 @@ the "Approval workflow demo" checkbox and its report-level effect
 partial-failure recovery via Retry Run
 the four-state approval panel (NOT_ELIGIBLE / PENDING / APPROVED / REJECTED)
 recording an approve/reject decision, with 201/200/409 handling
+a reusable two-column run-detail layout (PR 5C): a flexible main reading
+  surface (timeline + report) beside a constrained, sticky Run Context Panel
+a top-of-page "Action required" banner, shown only while a decision is PENDING
+an accessible, wording-accurate notice for a pending decision, distinguishing
+  a fresh completion/retry from an explicit refresh
 ```
 
 **Non-goals for this milestone:** authentication, RBAC, multi-user support, a job queue, SSE/WebSockets/live streaming, background polling, deployment/production observability, a design-system package, dark mode, internationalization, live LLM/embedding provider calls, editing or revoking a recorded approval decision, **executing an approved action**, routing, run deep links, and browser storage.
@@ -56,12 +61,19 @@ apps/web/
       trace-presentation.ts, trace-presentation.test.ts
     approval/
       approval-presentation.ts, approval-presentation.test.ts
+    run/
+      run-overview-presentation.ts, run-overview-presentation.test.ts
+        (shared run-status badge mapping — PR 5C, moved out of
+        InvestigationSummary so RunOverviewPanel can share it verbatim)
     components/
       InvestigationForm, InvestigationSummary, TraceTimeline, ReportPanel,
       SuggestedActionCard, StatusBadge, ErrorBanner,
-      ApprovalPanel, ApprovalDecisionForm (+ .test.tsx for most of the above)
+      ApprovalPanel, ApprovalDecisionForm,
+      RunContextPanel, RunOverviewPanel, ActionRequiredBanner (PR 5C)
+      (+ .test.tsx for most of the above)
     App.run-workflow.test.tsx
     App.approval.test.tsx
+    App.run-context-layout.test.tsx (PR 5C)
     test/setup.ts
 ```
 
@@ -139,9 +151,63 @@ Browser code calls only relative paths (`/v1/agent-jobs`, `/v1/agent-jobs/:jobId
 
 ---
 
-## 8. Approval UX
+## 8. Run-detail layout and approval UX
 
-`ApprovalPanel` renders in the report column, below the report's suggested actions, driven entirely by the `status` returned from `GET`/`POST /v1/agent-runs/:runId/approval`. **The UI never computes eligibility itself** — it only presents whatever status the backend returns (`docs/13-approval-workflow.md` §4 owns the eligibility rule: a run is approvable only once it is `COMPLETED` and has at least one suggested action).
+### 8.1 The problem this layout solves
+
+Before PR 5C, `ApprovalPanel` was the literal last DOM node on the run-detail page, stacked below the entire report in a 50/50-width column. A completed run looked finished — full report, status badge — even when it was only *execution*-complete and still needed a human decision (`PENDING`). Discovering that a decision was outstanding meant scrolling past the whole report. PR 5C fixes this without touching the backend contract at all: `ApprovalStatus`, `ApprovalView`, `presentApproval`'s inputs/outputs, and the `201`/`200`/`409`×2 handling described below are all unchanged from Milestone 7.
+
+### 8.2 Two-column run-detail layout
+
+At the existing `64rem` (1024px) breakpoint, `.investigation-content` becomes a 2-column grid:
+
+```css
+grid-template-columns: minmax(0, 1fr) minmax(18rem, 22rem);
+```
+
+- **Main reading surface** (`role="region" aria-label="Run detail"`, a `<div>` — not a `<section>`, so it does not itself pick up the `.investigation-content section` card-styling rule that its nested timeline/report sections already use) — flexible, visually dominant, holds the unchanged `TraceTimeline` and `ReportPanel`.
+- **Run Context Panel** (`<aside aria-label="Run context">`) — constrained to 18–22rem so it never competes with the report for width, and `position: sticky; top: var(--space-5)` on desktop so it stays visible while the reviewer scrolls a long report. Below `64rem` it returns to plain document flow (no sticky, single column).
+
+### 8.3 The reusable Run Context Panel
+
+`RunContextPanel` is a thin, stateless switch — not an approval-only component — so it can host a future historical-run detail view unmodified:
+
+| Input | Rendered |
+|---|---|
+| `approval === null` | `RunOverviewPanel` — run facts only (status, started/finished, duration, trace-event count, suggested-action count, jump links to the timeline/report sections). **No eligibility claim of any kind** — `null` means "no approval data yet" (still loading, or the last fetch failed), never "not eligible," and conflating the two would misinform a reviewer. |
+| `approval.status === "NOT_ELIGIBLE"` | The same `RunOverviewPanel` run facts, **plus** the reused `presentApproval("NOT_ELIGIBLE", …)` badge/copy/hint — the exact same "Approval workflow demo" hint text as before, not a duplicated string. |
+| `approval.status === "PENDING"` | `ApprovalPanel`, whose decision semantics remain unchanged, showing the one active decision form. |
+| `approval.status === "APPROVED"` / `"REJECTED"` | `ApprovalPanel`, whose decision semantics remain unchanged, showing the read-only terminal record. |
+
+`ApprovalPanel` itself needed only two small additions for this PR — `tabIndex={-1}` on its heading (§8.5) and a `className` on the terminal note `<dd>` for safe wrapping (§8.6) — its decision semantics, `201`/`200`/`409` handling, and double-submit guard are exactly as documented below, unchanged.
+
+### 8.4 The pending-decision banner
+
+A stateless `ActionRequiredBanner`, rendered by `App.tsx` only when `approval?.status === "PENDING"` (a condition derived from existing state — no new `useState`), appears between the Investigation summary and the run-detail grid:
+
+```tsx
+<a className="action-required-banner" href="#approval-heading">
+  Investigation completed. Human action required — review the proposed action.
+</a>
+```
+
+It is a native in-page link to `#approval-heading` — never a duplicate of the Approve/Reject buttons, and never rendered on mobile as anything but this same link. `ApprovalPanel`'s existing `<h2 id="approval-heading">` gained `tabIndex={-1}`, making it programmatically focusable — the native fragment link is the baseline mechanism, requiring zero JavaScript. Real-browser confirmation that activating it both scrolls to and visibly focuses the heading remains a manual verification item (§11), not yet performed as of this implementation session. The banner never triggers a scroll or focus change automatically on its own — it only navigates in direct response to an explicit click.
+
+### 8.5 Accessible pending announcement
+
+The existing `role="status" aria-live="polite"` notice region (§4, §9) is the only live region — no second one was added. Its exact text depends on which flow produced a `PENDING` result, so an explicit refresh is never described as if the investigation just completed:
+
+| Flow | Resulting notice |
+|---|---|
+| A fresh investigation or Retry Run resolves to `PENDING` | `"Investigation completed. Human approval required."` |
+| An explicit Refresh resolves to `PENDING` | `"Run refreshed. Human approval required."` |
+| An explicit Refresh resolves to anything else | `"Run refreshed."` (unchanged) |
+
+`loadApproval()` returns the fetched `ApprovalView | null` (previously `void`); `runInvestigation`/`retryRun`/`refreshRun` each choose the right notice text from that return value, immediately before returning to `idle`. This is the only behavior change in `App.tsx` beyond the JSX restructure — the `phase`/race-safety/`409`-convergence logic is untouched.
+
+### 8.6 Long content
+
+A long terminal reviewer note (up to 1000 characters) is allowed to make the read-only terminal panel taller and rely on ordinary page scrolling — `white-space: pre-wrap; overflow-wrap: anywhere;` on the note `<dd>`, deliberately **not** a nested `overflow-y: auto` scroll region, since a decision is read-only once terminal and a second, internally-scrollable region inside an already-sticky column would need its own focus/keyboard handling to stay accessible for no real benefit. The Approve/Reject button row (`.approval-decision-actions`) gains `flex-wrap: wrap` so it never overflows the panel's 18–22rem width.
 
 ### The four statuses
 
@@ -172,13 +238,23 @@ A required **Reviewer name** input (`maxLength 100`) and an optional **Note** te
 
 ### Approval-fetch failure
 
-If `GET .../approval` fails — after a run completes, after Retry Run, or after Refresh — the safe error is shown, but the run, timeline, report, evidence, and suggested actions **stay exactly as rendered**. Approval is an annotation on an already-successful run, not a precondition for showing one.
+If `GET .../approval` fails — after a run completes, after Retry Run, or after Refresh — the safe error is shown, but the run, timeline, report, evidence, and suggested actions **stay exactly as rendered**. Approval is an annotation on an already-successful run, not a precondition for showing one. In the run-detail layout, this is also the case where `RunContextPanel` falls back to `RunOverviewPanel` with `eligibilityNote={null}` (§8.3) — the reviewer still gets useful run context even when the approval fetch itself failed.
+
+### 8.7 Test coverage
+
+Structural/DOM-order regressions are covered in `apps/web/src/App.run-context-layout.test.tsx` (banner presence per status, the banner-precedes-Run-detail-region source-order check, exactly one Approve/one Reject button while `PENDING`, the `RunContextPanel` three-way switch, all three notice-wording variants, `tabindex="-1"` on the timeline/report/approval headings, and that a long reviewer note stays a single, non-duplicated `<dd>`); `apps/web/src/run/run-overview-presentation.test.ts` covers the extracted `runStatusBadge` helper's four branches. The one `compareDocumentPosition()` assertion in that file is a structural DOM-order regression check on two elements otherwise located by `getByRole` — not a simulation of user-perceived visual order, since jsdom has no real layout engine. Real `position: sticky` behavior, no-scroll initial visibility on a real viewport, real fragment scrolling/focus, and `prefers-reduced-motion` are exactly the things jsdom cannot prove; they remain open manual-verification items (§11), not yet performed as of this implementation session, and are recorded here as such rather than assumed or claimed as done. All pre-existing suites (`App.approval.test.tsx`, `App.run-workflow.test.tsx`, `components/ApprovalPanel.test.tsx`, `components/ApprovalDecisionForm.test.tsx`, `approval/approval-presentation.test.ts`) pass unmodified — none of their assertions depend on `ApprovalPanel`'s DOM ancestry, any CSS class name, or the notice-region's exact text.
+
+### 8.8 Future historical-run compatibility
+
+`RunContextPanel` and `RunOverviewPanel` take only `run`/`trace`/`approval`/decision-callback props — nothing about them depends on the current single-page, no-router architecture. A future historical-run list's "open a run" action can render the same `.investigation-content` grid (main region + Run Context Panel) per selected run, unmodified. This PR does not implement that list (out of scope), but does not foreclose it either.
 
 ---
 
 ## 9. Accessibility baseline
 
-One `<h1>`; ordered heading levels per section, including the "Approval" `<h2>` at the same level as "Generated report". Every control has a real, associated `<label>` — no placeholder-as-label, including the reviewer-name and note fields. Native `<button>`/`<textarea>`/`<input>` only, so keyboard operation works without a key handler. `role="alert"` for the error banner; a persistent `aria-live="polite"` region for workflow progress and notices, including the replay/decision-recorded notices. `aria-busy` on both the investigation form and the decision form while their respective workflow is active. A visible `:focus-visible` outline. Status is never color-only — `StatusBadge` always renders a text label plus a glyph (`✓` approved, `✕` rejected, `●` pending, `—` not eligible), reused unchanged from run status. WCAG-AA-readable contrast. No horizontal page scroll at 360px width. The timeline is `<ol>`; evidence and suggested actions are `<ul>`; identifiers, report fields, and the terminal approval record are `<dl>`. Terminal approval states are visually and structurally read-only — no button is rendered at all, so there is nothing for a screen reader to announce as an editable control.
+One `<h1>`; ordered heading levels per section, including the "Approval" `<h2>` at the same level as "Generated report". Every control has a real, associated `<label>` — no placeholder-as-label, including the reviewer-name and note fields. Native `<button>`/`<textarea>`/`<input>` only, so keyboard operation works without a key handler. `role="alert"` for the error banner; a persistent `aria-live="polite"` region for workflow progress and notices, including the replay/decision-recorded notices and, since PR 5C, the pending-decision announcement (§8.5). `aria-busy` on both the investigation form and the decision form while their respective workflow is active. A visible `:focus-visible` outline. Status is never color-only — `StatusBadge` always renders a text label plus a glyph (`✓` approved, `✕` rejected, `●` pending, `—` not eligible), reused unchanged from run status. WCAG-AA-readable contrast. No horizontal page scroll at 360px width. The timeline is `<ol>`; evidence and suggested actions are `<ul>`; identifiers, report fields, and the terminal approval record are `<dl>`. Terminal approval states are visually and structurally read-only — no button is rendered at all, so there is nothing for a screen reader to announce as an editable control.
+
+**Since PR 5C:** two named landmarks structure the run-detail page — `role="region" aria-label="Run detail"` (main reading surface) and `<aside aria-label="Run context">` (the Run Context Panel), giving screen-reader users a second, independent path to the decision beyond the visual banner. The timeline, report, and approval headings all carry `tabIndex={-1}`, making them valid native fragment-navigation targets. `html { scroll-behavior: smooth; }` is disabled under `@media (prefers-reduced-motion: reduce)`. No focus is ever forced automatically on page load or run completion — the only new focus behavior is native fragment-navigation focus triggered by an explicit click on the `Action required` banner.
 
 ---
 
@@ -219,15 +295,30 @@ In the browser:
 
 ```text
 1. Type an Issue Summary and click Run Investigation (checkbox unchecked)
-   -> the approval panel renders NOT_ELIGIBLE, with no controls
+   -> the Run Context Panel renders NOT_ELIGIBLE, with no controls
+   -> no "Action required" banner appears
 2. Check "Approval workflow demo" and click Run Investigation again
    -> the report shows exactly one DRAFT_CUSTOMER_REPLY suggested action
-   -> the approval panel renders PENDING with the decision form
+   -> the "Action required" banner appears above the run-detail grid
+   -> the notice region reads "Investigation completed. Human approval required."
+   -> the Run Context Panel renders PENDING with the decision form, sticky on
+      a desktop-width viewport
+   -> clicking the banner should scroll to and focus the Approval heading — the
+      target heading is programmatically focusable (`tabIndex={-1}`) and this is
+      the native fragment-link baseline; confirm the actual scroll/focus result
+      in your browser, since it was not verified in this implementation session
 3. Enter a reviewer name (and, optionally, a note), click Approve
    -> "Decision recorded."; the panel becomes the read-only APPROVED record
-   -> no edit or revoke control exists
+   -> the banner disappears; no edit or revoke control exists
 4. Run a fresh "Approval workflow demo" investigation and click Reject instead
    -> the symmetric terminal REJECTED state
+5. Click Refresh on a PENDING run
+   -> the notice region reads "Run refreshed. Human approval required." —
+      never the fresh-completion wording, since the run itself was not new
+6. Resize the browser below 1024px width
+   -> the layout collapses to a single column; the banner still appears near
+      the top when PENDING, but no raw Approve/Reject button is ever pinned
+      before the full decision card
 ```
 
 ```bash
@@ -242,3 +333,5 @@ pnpm --filter @opspilot/web run preview  # serves the production build at http:/
 ## 12. Future direction
 
 **Executing an approved action** — actually performing `UPDATE_TICKET_STATUS`, `CREATE_ESCALATION`, or `DRAFT_CUSTOMER_REPLY` against a real downstream system once a decision is `APPROVED` — is unbuilt anywhere in OpsPilot, not only in `apps/web`. It would need its own design: target systems, credentials, retry/idempotency semantics, and an audit trail distinct from the approval record itself, none of which this milestone specifies. Editing or revoking a terminal decision remains an explicit non-goal (§1) for the same reason `docs/13-approval-workflow.md` §5 gives: there is no product requirement motivating it yet, and adding one silently would let a "decision" stop meaning what an auditor expects it to mean.
+
+**A historical-run list** (browse past investigations, reopen an old run's report and decision) is not implemented in PR 5C. §8.8 documents why the Run Context Panel's props were deliberately kept generic (`run`/`trace`/`approval`/decision-callback only) so this future list can reuse the same run-detail grid per selected row without another layout redesign. Live-deployment evidence, screenshots, and cold-start observations for this milestone are tracked separately (PR 5D), not in this document.

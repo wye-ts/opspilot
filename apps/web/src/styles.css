@@ -79,6 +79,16 @@ button:disabled {
   outline-offset: 2px;
 }
 
+html {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
 .app-shell {
   max-width: 84rem;
   margin: 0 auto;
@@ -267,8 +277,16 @@ dd {
 
 @media (min-width: 64rem) {
   .investigation-content {
-    grid-template-columns: 1fr 1fr;
+    /* The main reading surface (timeline + report) stays flexible and
+       visually dominant; the Run Context Panel is constrained to a readable
+       18-22rem so it never grows to compete with the report for width. */
+    grid-template-columns: minmax(0, 1fr) minmax(18rem, 22rem);
     align-items: start;
+  }
+
+  .run-context-column {
+    position: sticky;
+    top: var(--space-5);
   }
 }
 
@@ -278,18 +296,20 @@ dd {
    page overflow. min-width: 0 lets them shrink to the track/row width
    instead — the id itself still ellipsizes and its full value stays
    available via its title attribute. */
-.investigation-content > section {
+.investigation-main-column,
+.run-context-column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
   min-width: 0;
 }
 
-/* Direct grid child in place of the report section (which now nests one
-   level deeper alongside ApprovalPanel) — carries the same min-width: 0 fix
-   so the responsive-overflow rule above still holds for this track. */
-.investigation-report-column {
-  display: grid;
-  gap: var(--space-5);
-  align-content: start;
-  min-width: 0;
+/* Inside the narrower context column, a two-per-row <dl> (the global default)
+   cramps a "Decided at" timestamp or a multi-word reviewer name; one pair per
+   row reads more comfortably at 18-22rem without touching the shared `dl`
+   rule used elsewhere (report fields, investigation summary). */
+.run-context-column dl {
+  grid-template-columns: 1fr;
 }
 
 .trace-timeline-content {
@@ -412,6 +432,15 @@ dd {
   border-top: 1px solid var(--color-border);
 }
 
+/* Terminal reviewer note: a decision is read-only once terminal, so an
+   unusually long note is allowed to make this panel taller and rely on
+   normal page scrolling rather than a nested, internally-scrollable region
+   (which would need its own focus/keyboard handling to stay accessible). */
+.approval-decision-note {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .approval-decision-form {
   display: flex;
   flex-direction: column;
@@ -435,4 +464,42 @@ dd {
 .approval-decision-actions {
   display: flex;
   gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.action-required-banner {
+  display: block;
+  background: var(--color-info-bg);
+  color: var(--color-info-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.action-required-banner:hover,
+.action-required-banner:focus-visible {
+  text-decoration: underline;
+}
+
+.run-overview-status {
+  margin: 0 0 var(--space-3);
+}
+
+.run-overview-details {
+  margin-bottom: var(--space-4);
+}
+
+.run-overview-eligibility {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+
+.run-overview-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
 }
