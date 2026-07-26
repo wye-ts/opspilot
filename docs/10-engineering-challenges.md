@@ -3,12 +3,12 @@
 | Field | Value |
 |---|---|
 | Document | Engineering Challenges and Design Decisions |
-| Version | 1.8 |
+| Version | 1.9 |
 | Status | Living Document |
 | Project | OpsPilot |
 | Purpose | Capture difficult engineering problems, design decisions, tradeoffs, and interview-ready explanations |
-| Related Documents | `docs/03-technical-design.md`, `docs/04-agent-design.md`, `docs/reviews/03-technical-design-feasibility-review.md`, `docs/reviews/03-technical-design-review-decisions.md`, `docs/reviews/04-agent-design-claude-spike-results.md`, `docs/12-agent-run-api.md`, `docs/13-approval-workflow.md` |
-| Revision note | v1.8 adds a pointer, at the end of Challenge 1's "Idempotent State Changes" subsection, to `docs/13-approval-workflow.md` (Milestone 6C) — the actual, much simpler approval-workflow design now on record. It is **not** an implementation of Challenge 1's aspirational `pending_actions`/`PendingAction`/`APPROVAL_CREATED` concept (which remains exactly as described below: planned, unimplemented design tied to the future `AgentJob`-as-queue/`AgentStep` architecture); it is a standalone, deliberately smaller mechanism built directly on the actually-shipped `agent_jobs`/`agent_runs`/`agent_trace_events` schema (`docs/11-agent-run-persistence.md`), following the same "deliberately smaller precursor, not a partial implementation" relationship `docs/11` §9 already draws between that shipped persistence slice and this same aspirational future design — see `docs/13-approval-workflow.md` §2 for the exact reasoning. v1.2 aligns Challenge 1 with `docs/03-technical-design.md` v1.3: `AgentJob` now includes `CANCELLED`; the maintenance sweep sets `AgentRun.completedAt`; the corrected write-safety design is presented as two distinct repository transaction patterns (`withExecutionOwnership`, `withLockedRunState`) sharing one global lock order (`AgentJob` → `AgentRun` → child rows), not a single "ownership-fenced" pattern; and language implying the design has already been implemented or shipped has been replaced with language accurate to the project's current (pre-implementation) stage. v1.1's PostgreSQL-as-system-of-record-and-queue decision (D1, D2) and the corrected write-safety mechanism (D12) remain unchanged in substance. This entry is further updated within v1.2 to document concurrency-safe `AgentStep` sequence allocation (`AgentRun.nextStepSequence`, the shared `appendAgentStep(...)` helper, and why `SELECT MAX(sequence) + 1` is unsafe) and the `completeAgentRunWithReport` invariant that every `PendingAction` created during finalization has exactly one matching `APPROVAL_CREATED` trace event, created in the same transaction — still describing planned design, not implemented behavior. v1.3 adds Challenge 2, documenting the minimal RAG vertical slice's evidence-grounding and retriever-isolation design — unlike Challenge 1, this describes code that has actually been implemented and unit-tested in this revision, though the manual live spike against a real embedding provider and live Claude has not yet been run. v1.4 corrects that last clause: the manual live spike has now been run. Both the baseline-RAG scenario and the isolated injection-probe scenario passed against a real Voyage embedding provider and a real Claude model, with repeated rate limiting observed (and worked around via a scenario selector) but no RAG-correctness or evidence-grounding failure in any attempt — see `docs/05-rag-design.md` and `docs/reviews/05-rag-design-spike-results.md` for the full design record and measured results. This does not change any of Challenge 2's design, validation, or testing content below, which described planned/already-implemented behavior accurately; it only updates the one clause that described the live spike as not yet run. v1.5 adds Challenge 3, documenting the implemented Agent Run / Trace Persistence milestone (`packages/database`) — a deliberately smaller, already-built precursor to Challenge 1's full queue-claiming design, described in full in `docs/11-agent-run-persistence.md`. v1.6 adds Challenge 4, documenting a real implementation-time discovery in the Agent Run API milestone (`apps/api`, `docs/12-agent-run-api.md`): `nest build`/`nest start --watch` are architecturally incompatible with this monorepo's pinned `typescript@^7.0.2` (a native rewrite whose public npm export no longer exposes the classic TypeScript Compiler API `@nestjs/cli` depends on internally), resolved by bypassing the Nest CLI's build wrapper in favor of the same plain-`tsc` pattern already used successfully by every other package in this monorepo, rather than downgrading TypeScript. v1.7 revises Challenge 4's Decision/Tradeoffs/Implementation Notes at a focused pre-commit review pass: `@nestjs/cli`/`@nestjs/schematics` and `apps/api/nest-cli.json`, originally kept as an unused "possible future use" placeholder, are now removed entirely as dead configuration/dependencies with no actual justification to keep; `apps/api`'s `build` script now cleans stale `dist/` output before every build, and `start:dev` is now a reliable `pnpm run build && pnpm run start` (no automatic reload — deferred, not silently dropped) rather than the previously untested concurrent `tsc --watch`/`node --watch` pair. |
+| Related Documents | `docs/03-technical-design.md`, `docs/04-agent-design.md`, `docs/reviews/03-technical-design-feasibility-review.md`, `docs/reviews/03-technical-design-review-decisions.md`, `docs/reviews/04-agent-design-claude-spike-results.md`, `docs/12-agent-run-api.md`, `docs/13-approval-workflow.md`, `docs/08-cicd-deployment.md` |
+| Revision note | v1.9 adds Challenges 5–7 from the production deployment milestone (PR 5B, `docs/08-cicd-deployment.md`): Challenge 5 documents the single-origin SPA-fallback design and a repository-verified correction to the design plan's stated claim about how far NestJS's catch-all route actually reaches under this exact NestJS 11 / Express 5 / path-to-regexp v8 combination; Challenge 6 documents two implementation-time bugs found only by running the real built container — a JavaScript default-parameter closure trap in web-dist path resolution, and a Prisma 7.9 CLI validation quirk around an unconditionally-declared `shadowDatabaseUrl` — neither caught by the existing source-level tests, both discovered by running the built image; Challenge 7 documents why the migration startup retry belongs in `docker/entrypoint.sh` rather than `PrismaLifecycleService`, and why an earlier draft's placement there would have been unreachable dead code. v1.8 adds a pointer, at the end of Challenge 1's "Idempotent State Changes" subsection, to `docs/13-approval-workflow.md` (Milestone 6C) — the actual, much simpler approval-workflow design now on record. It is **not** an implementation of Challenge 1's aspirational `pending_actions`/`PendingAction`/`APPROVAL_CREATED` concept (which remains exactly as described below: planned, unimplemented design tied to the future `AgentJob`-as-queue/`AgentStep` architecture); it is a standalone, deliberately smaller mechanism built directly on the actually-shipped `agent_jobs`/`agent_runs`/`agent_trace_events` schema (`docs/11-agent-run-persistence.md`), following the same "deliberately smaller precursor, not a partial implementation" relationship `docs/11` §9 already draws between that shipped persistence slice and this same aspirational future design — see `docs/13-approval-workflow.md` §2 for the exact reasoning. v1.2 aligns Challenge 1 with `docs/03-technical-design.md` v1.3: `AgentJob` now includes `CANCELLED`; the maintenance sweep sets `AgentRun.completedAt`; the corrected write-safety design is presented as two distinct repository transaction patterns (`withExecutionOwnership`, `withLockedRunState`) sharing one global lock order (`AgentJob` → `AgentRun` → child rows), not a single "ownership-fenced" pattern; and language implying the design has already been implemented or shipped has been replaced with language accurate to the project's current (pre-implementation) stage. v1.1's PostgreSQL-as-system-of-record-and-queue decision (D1, D2) and the corrected write-safety mechanism (D12) remain unchanged in substance. This entry is further updated within v1.2 to document concurrency-safe `AgentStep` sequence allocation (`AgentRun.nextStepSequence`, the shared `appendAgentStep(...)` helper, and why `SELECT MAX(sequence) + 1` is unsafe) and the `completeAgentRunWithReport` invariant that every `PendingAction` created during finalization has exactly one matching `APPROVAL_CREATED` trace event, created in the same transaction — still describing planned design, not implemented behavior. v1.3 adds Challenge 2, documenting the minimal RAG vertical slice's evidence-grounding and retriever-isolation design — unlike Challenge 1, this describes code that has actually been implemented and unit-tested in this revision, though the manual live spike against a real embedding provider and live Claude has not yet been run. v1.4 corrects that last clause: the manual live spike has now been run. Both the baseline-RAG scenario and the isolated injection-probe scenario passed against a real Voyage embedding provider and a real Claude model, with repeated rate limiting observed (and worked around via a scenario selector) but no RAG-correctness or evidence-grounding failure in any attempt — see `docs/05-rag-design.md` and `docs/reviews/05-rag-design-spike-results.md` for the full design record and measured results. This does not change any of Challenge 2's design, validation, or testing content below, which described planned/already-implemented behavior accurately; it only updates the one clause that described the live spike as not yet run. v1.5 adds Challenge 3, documenting the implemented Agent Run / Trace Persistence milestone (`packages/database`) — a deliberately smaller, already-built precursor to Challenge 1's full queue-claiming design, described in full in `docs/11-agent-run-persistence.md`. v1.6 adds Challenge 4, documenting a real implementation-time discovery in the Agent Run API milestone (`apps/api`, `docs/12-agent-run-api.md`): `nest build`/`nest start --watch` are architecturally incompatible with this monorepo's pinned `typescript@^7.0.2` (a native rewrite whose public npm export no longer exposes the classic TypeScript Compiler API `@nestjs/cli` depends on internally), resolved by bypassing the Nest CLI's build wrapper in favor of the same plain-`tsc` pattern already used successfully by every other package in this monorepo, rather than downgrading TypeScript. v1.7 revises Challenge 4's Decision/Tradeoffs/Implementation Notes at a focused pre-commit review pass: `@nestjs/cli`/`@nestjs/schematics` and `apps/api/nest-cli.json`, originally kept as an unused "possible future use" placeholder, are now removed entirely as dead configuration/dependencies with no actual justification to keep; `apps/api`'s `build` script now cleans stale `dist/` output before every build, and `start:dev` is now a reliable `pnpm run build && pnpm run start` (no automatic reload — deferred, not silently dropped) rather than the previously untested concurrent `tsc --watch`/`node --watch` pair. |
 
 ---
 
@@ -915,3 +915,466 @@ This problem demonstrates:
 - Recognizing when a failure is architectural (an upstream package's public API surface changed) rather than a simple version mismatch
 - Stopping at an explicit decision point and getting a scoped answer instead of silently choosing a workaround with monorepo-wide consequences
 - Reusing an already-proven pattern from elsewhere in the same codebase instead of inventing a new one
+
+---
+
+## 7. Challenge 5 — One Public Origin Without the SPA Fallback Swallowing the API
+
+### Context
+
+The production deployment milestone (`docs/08-cicd-deployment.md`) serves the built React app and the
+NestJS API from one Render Web Service instead of two, so the browser only ever talks to one origin
+and no CORS is needed. `apps/api` is already a `NestExpressApplication`, so `useStaticAssets` plus a
+hand-written SPA fallback middleware were added ahead of the JSON body parser and Nest's own routing.
+
+### Problem
+
+Two failure directions exist simultaneously, and a fix for one can silently reintroduce the other:
+the SPA fallback must never intercept a real `/v1/**` request destined for the API, and the API's own
+catch-all route must never intercept `/` or a deep link before the SPA fallback gets a chance to serve
+`index.html`.
+
+### Why It Is Difficult
+
+The approved design plan asserted that `NotFoundController`'s `@All("*splat")` catch-all "only ever
+matches `/v1/**`" because of `app.setGlobalPrefix("v1")`, and that this alone made it structurally
+impossible for the catch-all to intercept `/`. **Direct testing of the real application showed this
+claim is false in this exact stack (NestJS 11 + Express 5 + path-to-regexp v8).** A minimal
+reproduction — one controller registered only at an explicit `/v1/ping`, plus the real
+`NotFoundController`, both under `setGlobalPrefix("v1")` — showed that `GET /ping` (no prefix) still
+returned the application's own `ROUTE_NOT_FOUND` JSON envelope, not Express's default 404 page and not
+a silent pass-through. Dumping the underlying Express router's registered layers showed the route
+*is* correctly registered as `/v1/*splat`, yet still matched an unprefixed request path in practice —
+a genuine, reproducible discrepancy between the registered pattern string and Express 5's actual
+match behavior for this specific wildcard construct, not a mistake in how the prefix was configured.
+This was found only by instrumenting a real running Nest application and inspecting both its observed
+HTTP responses and its live router stack — it is not visible from reading the source of
+`app.module.ts`, `not-found.controller.ts`, or `main.ts` in isolation.
+
+### Failure Modes
+
+- If the SPA fallback had been registered **after** Nest's routing (or omitted the `/v1` guard
+  entirely), the over-broad catch-all above would swallow `/` and every deep link with a `404
+  ROUTE_NOT_FOUND` JSON body before the fallback ever got a chance to serve the app shell — the
+  opposite failure from the one the design plan was worried about.
+- Conversely, an SPA fallback with **no** `/v1` guard, registered before Nest, would serve
+  `index.html` for a genuinely unmatched `/v1/**` path (`/v1/nope`) instead of the API's JSON error
+  envelope, silently breaking the "JSON errors under `/v1/**`" contract the frontend and any API
+  client rely on.
+- An SPA fallback with no extension guard would return `index.html` (200, `Content-Type: text/html`)
+  for a missing built asset like `/assets/app-abc123.js`. Browsers send `Accept: */*` for `<script>`
+  tags, which satisfies an `Accept`-only content-negotiation check, so this failure is invisible to a
+  naive test and surfaces in production as a blank page plus a MIME-type console error, not a clean
+  404.
+- The `/v1abc` prefix-lookalike case: a naive guard checking `req.path.startsWith("/v1")` (no trailing
+  slash) would incorrectly treat `/v1abc` as an API path and forward it into Nest, where it would
+  fall through to the (surprisingly broad) catch-all and return a JSON 404 for what should have been
+  an ordinary SPA route.
+- A case-sensitive guard: Express's router is case-insensitive by default (case-sensitive routing is
+  not enabled anywhere in this app), so a real request to `/V1/health/live` reaches the exact same
+  Nest route `/v1/health/live` does. A guard comparing `req.path` against the literal lowercase
+  string `/v1` would not recognize `/V1/health/live` as an API path, and would incorrectly serve it
+  `index.html` — a real request to a real endpoint, silently answered with the wrong body. This was
+  the initial implementation's actual behavior until it was corrected.
+
+### Decision
+
+Register `useStaticAssets` and a hand-written `spaFallbackMiddleware` as raw Express middleware,
+**before** the JSON body parser and before Nest's routing is wired in, conditional on
+`apps/web/dist/index.html` actually existing (so local API-only development is unaffected). The
+fallback applies exactly three guards, in order: non-GET/HEAD requests fall through; any path equal
+to `/v1` or starting with `/v1/` falls through, compared against a **lowercased copy** of the path
+(never the raw path, which is still what the extension check and `sendFile` use) — so `/v1abc` is
+correctly treated as *not* an API path (the trailing-slash-aware comparison), and `/V1/health/live`
+is correctly treated as *the same API path* `/v1/health/live` is, matching Express's own
+case-insensitive routing rather than a stricter rule the router itself does not enforce; any path
+with a file extension falls through. Only a request that survives all three guards receives
+`index.html` with `Cache-Control: no-cache`.
+
+Because static serving and the fallback are registered **first** in the Express middleware chain
+(added via `app.use()` before Nest's own routes are wired in), they get first right of refusal on
+every request — this ordering is what actually protects `/` and deep links from the catch-all's
+broader-than-expected scope, independent of whatever that catch-all's true matching behavior turns
+out to be. The `/v1` guard inside the fallback is what protects the API in the other direction. Both
+guards are necessary; neither depends on the (now known to be incorrect) assumption that the global
+prefix alone scopes the catch-all.
+
+A useful, unplanned side effect of the catch-all's actual broad scope: a missing static asset that
+falls through the fallback's extension guard (`/missing.js`) still receives the application's own
+JSON `ROUTE_NOT_FOUND` envelope rather than Express's raw default 404 HTML page — a stricter result
+than the original design's stated goal ("missing assets must never return HTML"), reached for a
+different reason than originally assumed.
+
+### Alternatives Considered
+
+#### Alternative A — Trust the design plan's stated scoping and add the `/v1` guard "for defense in depth" only
+
+Would have been the wrong reasoning to record even though the resulting code (a `/v1` guard, static
+middleware ordered first) happens to be identical to what was actually needed. Verifying the real
+behavior mattered because a future change to route registration order or module structure could
+silently remove the *actual* protection (middleware ordering) while leaving the guard that was
+believed to be sufficient but is not, on its own, load-bearing without ordering.
+
+#### Alternative B — `@nestjs/serve-static`
+
+Rejected per the design plan: it is a new dependency for behavior `useStaticAssets` already provides,
+with less explicit control over ordering relative to the existing middleware chain.
+
+### Tradeoffs
+
+- The middleware-ordering dependency is implicit — nothing in the type system enforces that
+  `app.use(requestIdMiddleware)`, static serving, and the SPA fallback stay registered before
+  `jsonBodyParser`/Nest's routing. This is mitigated by the transport-level integration test
+  (`apps/api/test/static-assets.integration.test.ts`), which exercises the assembled pipeline exactly
+  as `main.ts` constructs it, rather than testing the fallback middleware in isolation.
+- The corrected understanding (the catch-all's real scope is broader than the design plan assumed)
+  is recorded here rather than "fixed" in `not-found.controller.ts`, because the observed behavior is
+  already exactly what the system needs — a stricter safety net for missing assets, not a bug to
+  patch.
+
+### Implementation Notes
+
+`apps/api/src/common/web-assets.ts` (`resolveWebDistDir`, `isWebDistServable`),
+`apps/api/src/common/spa-fallback.middleware.ts` (`createSpaFallbackMiddleware`), wired into
+`apps/api/src/main.ts` immediately after `requestIdMiddleware` and before `jsonBodyParser`, both
+conditional on `isWebDistServable(webDistDir)`.
+
+### Testing Strategy
+
+`spa-fallback.middleware.test.ts` — each guard independently, including `/v1abc` and its alternate-case
+counterpart `/V1abc` as their own explicit cases (distinct from `/v1` and `/v1/nope`), plus
+`/V1`, `/V1/`, and `/V1/health/live` proving the API-prefix guard falls through regardless of case.
+`web-assets.test.ts` — `WEB_DIST_DIR` override, default resolution, and the missing-`index.html` case.
+`static-assets.integration.test.ts` — the assembled pipeline via a real Nest test app and Supertest,
+with and without a web-dist fixture present, covering `/`, `/deep/link`,
+`/v1/definitely-not-a-route`, `/v1/agent-runs/not-a-uuid`, `/missing.js`, `POST /unknown`, and
+`GET /V1/health/live` (asserting it reaches the real health route's JSON response, grounded in the
+actual observed behavior, not the app shell) in one suite.
+
+### Observability
+
+No new logging — a wrongly-routed request is either a 404 JSON envelope (visible via the existing
+request-ID-tagged structured error response) or a served `index.html` with a distinctive
+`Cache-Control` header, both directly observable from the response itself without needing new
+instrumentation.
+
+### Interview Explanation
+
+> The design I was handed said a global route prefix alone would keep the API's catch-all route from
+> ever intercepting the root path, so an SPA fallback's `/v1` guard was framed as defense in depth. I
+> didn't take that on faith — I wrote a minimal reproduction with just two routes and dumped the
+> actual registered router patterns, and found the catch-all matched an unprefixed path even though
+> its registered pattern string was correctly prefixed. That's a real discrepancy in this specific
+> framework/HTTP-library version combination, not a config mistake. It didn't change what code I
+> shipped — the same guard and the same middleware ordering were still exactly correct — but it
+> changed *why* I could claim it was correct, and it meant the real protection was middleware
+> registration order, not the prefix. That's the kind of thing you only find by testing the real
+> system instead of trusting the design document's stated reasoning.
+
+### Resume Relevance
+
+This problem demonstrates:
+
+- Verifying a design document's stated technical claim against the real running system instead of
+  accepting it as ambient truth, by writing a minimal, targeted reproduction
+- Distinguishing "the code I would write is unaffected" from "the reasoning I was given for why it
+  works is correct" — and recording the corrected reasoning even when the resulting implementation
+  does not change
+- Designing a guard around the actual protective mechanism (middleware registration order) rather
+  than an assumption (route-prefix scoping) that turned out not to hold
+
+---
+
+## 8. Challenge 6 — Reproducible Container Builds for a pnpm Workspace With a Generated Prisma Client
+
+### Context
+
+The production Dockerfile (`docs/08-cicd-deployment.md` §13) builds `apps/api` and its full workspace
+dependency chain into a single runtime image, using a `--prod --filter "@opspilot/api..."` install to
+keep `apps/worker`'s paid-provider SDKs out of the image entirely.
+
+### Problem
+
+Two independent, unplanned failures surfaced only when the actual built image was run — not when it
+was merely built — despite the Dockerfile itself building successfully and passing every build-time
+assertion on the first attempt.
+
+### Why It Is Difficult
+
+**Failure 1 — a JavaScript closure trap, not a Docker problem.** `resolveWebDistDir()` accepted an
+optional `baseDir: string = __dirname` parameter, intended so `main.ts` could pass its own directory
+and the function would resolve `apps/web/dist` relative to it. Inside the running container, `GET /`
+returned the API's own `404 ROUTE_NOT_FOUND` JSON instead of the built React app, even though
+`/app/apps/web/dist/index.html` demonstrably existed in the image (verified via `docker exec`) and
+the default-parameter arithmetic looked correct on inspection. The actual cause: a default parameter
+expression is evaluated in the scope where the **function is declared**, not the scope of the
+**call site** — so `__dirname` in `resolveWebDistDir`'s default parameter always referred to
+`web-assets.js`'s own directory (`apps/api/dist/common/`), one level deeper than `main.js`'s directory
+(`apps/api/dist/`), regardless of where or how the function was called. The unit test for this
+function did not catch it, because the test always passed `baseDir` explicitly — sidestepping the
+exact code path (the default parameter) that was broken. Only running the real container and
+observing the wrong HTTP response surfaced it.
+
+**Failure 2 — a Prisma CLI validation quirk with no local reproduction.** After fixing Failure 1,
+`docker/entrypoint.sh`'s `prisma migrate deploy` failed inside the container with `P1013`: "the
+provided database string is invalid. `datasource.shadowDatabaseUrl` ... must not be an empty string."
+`prisma.config.ts` unconditionally declares `datasource.shadowDatabaseUrl: process.env.SHADOW_DATABASE_URL ?? ""`
+(needed only by `prisma migrate diff`, used in CI's drift check), and Prisma 7.9's CLI validates that
+field for every command, including `migrate deploy`, which never actually connects to it. This
+failure mode does not reproduce locally, because `scripts/run-prisma.mjs` loads the repository-root
+`.env` (which sets a real `SHADOW_DATABASE_URL` for the drift check), and the container deliberately
+ships no `.env` at all. A first attempted fix — defaulting `SHADOW_DATABASE_URL` to `DATABASE_URL`
+when unset — produced a second, different Prisma error ("the shadow database you configured appears
+to be the same as the main database"), discovered only by actually running that fix against the real
+CLI.
+
+### Failure Modes
+
+- A default parameter silently resolving relative to the wrong module's directory, producing a path
+  that is subtly wrong (`/app/apps/api/web/dist` instead of `/app/apps/web/dist`) rather than
+  obviously broken — the function never threw, `isWebDistServable()` just correctly reported "not
+  servable" for the wrong reason.
+- A required-but-unused config field (`shadowDatabaseUrl`) blocking an entirely unrelated command
+  (`migrate deploy`) with an error message that does not mention `migrate deploy` at all.
+- A fix for one CLI validation ("must not be empty") tripping a second, independent CLI validation
+  ("must not equal the main database") — the naive first fix looked complete until it was actually
+  run.
+
+### Decision
+
+**Failure 1:** removed the default parameter entirely — `resolveWebDistDir(baseDir: string)` is now a
+required parameter, and `main.ts` passes its own `__dirname` explicitly. This does not just fix the
+bug; it removes the trap's precondition (a default parameter expression referencing a module-scoped
+variable), so it cannot silently regress if another caller is ever added.
+
+**Failure 2:** `docker/entrypoint.sh` now defaults `SHADOW_DATABASE_URL` — before invoking
+`prisma migrate deploy` — to a fixed, obviously-fake placeholder using the `.invalid` TLD (RFC 2606,
+guaranteed never to resolve), only when the variable is not already set. This satisfies both of
+Prisma's validations (non-empty, and not identical to `DATABASE_URL`) without creating any real
+second-database dependency, since `migrate deploy` never dereferences the value.
+
+### Alternatives Considered
+
+#### Alternative A (Failure 1) — Keep the default parameter, adjust the relative-path arithmetic to account for the extra `common/` subdirectory
+
+Rejected: it would keep the trap in place for any future file that imports `resolveWebDistDir` from a
+different directory depth, and would make the function's correctness depend on callers knowing an
+implementation detail (its own file's location) that has nothing to do with their own code.
+
+#### Alternative B (Failure 2) — Modify `packages/database/prisma.config.ts` to omit `shadowDatabaseUrl` entirely when `SHADOW_DATABASE_URL` is unset
+
+Would fix the root cause more directly, but `prisma.config.ts` is shared by every consumer of the
+database package (`migrate dev`, `migrate diff`/the CI drift check, local development), all of which
+already work correctly today via the repository-root `.env`. Changing shared, already-working
+configuration to fix a problem that is entirely specific to the container's "no `.env` file" runtime
+environment was judged riskier than a fix scoped to the one script that actually has the problem —
+`docker/entrypoint.sh`, which is new in this milestone and touches nothing else.
+
+### Tradeoffs
+
+- The `SHADOW_DATABASE_URL` placeholder is a small piece of "spooky action at a distance": a reader of
+  `docker/entrypoint.sh` needs the accompanying comment to understand why a shadow-database URL is
+  being set at all in a script that only ever runs `migrate deploy`. Mitigated with an explicit
+  comment recording both Prisma error messages verbatim and the fact that they were found by running
+  the real CLI, not inferred from documentation.
+- Neither failure was caught by the existing source-level tests — both are genuinely
+  runtime/environment-dependent (module-resolution scope in one case, Prisma CLI behavior with no
+  `.env` present in the other), and both were discovered only by running the actual built image. This
+  is not a claim that no regression test could ever be written for either one — `web-assets.test.ts`
+  could exercise the removed default parameter's exact failure shape directly, and a narrower
+  integration test could shell out to the real Prisma CLI with no `.env` present without needing a
+  full container — only that the tests already in place before this milestone did not, and would not
+  have, exercised either path. This is the concrete argument for why the `docker-smoke` CI job's full
+  container run (`docs/08-cicd-deployment.md` §20) exists at all, rather than relying on unit and
+  mocked-transport tests alone.
+
+### Implementation Notes
+
+`apps/api/src/common/web-assets.ts` — `resolveWebDistDir(baseDir: string)`, called as
+`resolveWebDistDir(__dirname)` from `apps/api/src/main.ts`. `docker/entrypoint.sh` — the
+`SHADOW_DATABASE_URL` default is set once, near the top of the script, before any Prisma invocation,
+and exported so it reaches the `prisma migrate deploy` child process the same way `DATABASE_URL`
+already does.
+
+### Testing Strategy
+
+Both failures were found by, and are now guarded against by, running the actual built image locally
+end to end (`docker build`, then `docker run` against a real local PostgreSQL instance, then `curl`
+against `/` and `/v1/health/ready`) before opening the pull request. The existing source-level test
+suite did not catch either one — not because a regression test is impossible in principle (see the
+Tradeoffs section above), but because neither the unit tests nor the mocked transport tests exercised
+the real module-resolution path or the real Prisma CLI. The same full-container sequence is automated
+in the `docker-smoke` CI job so it is proven on every pull request, not only when a human happens to
+run it locally.
+
+### Observability
+
+`docker/entrypoint.sh` logs every failed migration attempt to stderr already (§ Challenge 7 below);
+the `SHADOW_DATABASE_URL` default does not need its own log line, since a Prisma validation failure
+against it would itself be loud and immediate, not silent.
+
+### Interview Explanation
+
+> Two bugs only showed up once I actually ran the built container, not when it built successfully or
+> when unit tests passed. One was a JavaScript scoping trap — a default parameter of `= __dirname`
+> silently resolves against the file where the function is *defined*, not where it's *called*, so a
+> path-resolution helper was quietly looking one directory too deep. The fix wasn't to patch the
+> arithmetic, it was to remove the default parameter entirely and make callers pass their own
+> `__dirname` explicitly, so the trap can't come back. The other was a Prisma CLI quirk with no local
+> reproduction: a config field only used by one command was still being validated by a completely
+> different command, and my first fix for it tripped a second, different validation I only discovered
+> by actually running it. Both are the reason I don't trust "it built" or "the unit tests pass" as
+> proof a container actually works — I ran the real image against a real database before calling
+> either one done, and that's exactly what the `docker-smoke` CI job now automates for every PR.
+
+### Resume Relevance
+
+This problem demonstrates:
+
+- Recognizing a JavaScript/TypeScript default-parameter closure trap and fixing its root precondition
+  rather than patching around the symptom
+- Diagnosing a third-party CLI's undocumented validation behavior by running it directly against a
+  minimal reproduction, twice, after the first attempted fix revealed a second independent check
+- Understanding the limits of unit and mocked-integration testing for container-specific,
+  environment-dependent failure modes, and building the CI coverage (a full container run) that
+  actually closes that gap
+
+---
+
+## 9. Challenge 7 — Where a Startup Retry Actually Belongs
+
+### Context
+
+Render's free tier and Neon's free tier both auto-suspend after a period of idle traffic, so the
+first request after idle needs to tolerate a database that takes a few seconds to wake up. The
+production deployment needed exactly one place in the system that retries a database connection on
+startup.
+
+### Problem
+
+The obvious home for "retry the database connection on startup" is the application's own lifecycle
+hook — `PrismaLifecycleService.onModuleInit`, which already runs a `SELECT 1` and already fails the
+whole application fast if it cannot reach the database. An early draft of the deployment design put
+the retry there.
+
+### Why It Is Difficult
+
+In this container, the application's own `SELECT 1` is **not** the first thing that touches the
+database. `docker/entrypoint.sh` runs `prisma migrate deploy` before `exec`-ing the Node process at
+all — so by the time `PrismaLifecycleService.onModuleInit` would run, either the migration already
+succeeded (in which case the database is demonstrably awake and a second retry is pure latency for no
+benefit) or the migration already failed and the container has already exited via `set -e`, meaning
+`onModuleInit` — and any retry logic inside it — would never execute at all. A retry placed in the
+lifecycle service would have looked completely correct in every unit test (which exercises the
+service directly, never the entrypoint script that runs before it) while being structurally
+unreachable in the one scenario it was built for. Spotting this required reading the entrypoint script
+and the lifecycle service together, as a sequence, rather than reviewing either file in isolation —
+the bug is in the relationship between two files that individually look correct.
+
+### Failure Modes
+
+- A retry in `PrismaLifecycleService` with the entrypoint's migration step unmodified: the entrypoint
+  either succeeds (retry never needed) or exits non-zero on migration failure before Node ever starts
+  (retry never reached) — the retry code exists but no code path ever benefits from it.
+- Two independent retry policies (one in the entrypoint around `migrate deploy`, one in the lifecycle
+  service around the boot-time `SELECT 1`) would double the worst-case startup latency for no
+  additional reliability, and would require keeping two sets of retry-budget environment variables
+  synchronized in meaning if not in name.
+- A retry that silently classifies "transient" vs. "permanent" PostgreSQL errors to retry the former
+  and fail fast on the latter is more sophisticated, but a misclassification (retrying a genuinely
+  broken migration for the full budget before giving up, or failing fast on a legitimately transient
+  wake-up delay) is a worse outcome than a short, dumb, fixed delay applied uniformly.
+
+### Decision
+
+The retry lives entirely in `docker/entrypoint.sh`, around `prisma migrate deploy` — the actual first
+database contact. `PrismaLifecycleService` stays exactly as it was: fail-fast, unmodified, no retry.
+By the time Nest boots, the entrypoint's successful migration has already proven the database
+reachable, so the lifecycle service's own `SELECT 1` needs no retry of its own — a failure there after
+a successful migration would indicate the database went away *during* startup, a different condition
+than "was asleep at the start," and one the API's existing fail-fast behavior already handles
+correctly. The retry itself is deliberately unsophisticated: a fixed number of attempts (default 5), a
+fixed delay (default 3 seconds, no backoff, no jitter), and no inspection of the underlying error at
+all — a broken migration and a slow-to-wake database are retried identically and both eventually
+either succeed or exhaust the budget (worst case roughly 12 seconds at the defaults) and exit
+non-zero.
+
+### Alternatives Considered
+
+#### Alternative A — Retry in `PrismaLifecycleService.onModuleInit` (the original draft)
+
+Rejected once the entrypoint/lifecycle-service ordering was traced end to end: structurally
+unreachable in the scenario it exists for, per Why It Is Difficult above.
+
+#### Alternative B — Classify PostgreSQL errors and retry only transient ones (connection refused / timeout), fail immediately on schema errors
+
+Would in principle fail faster on a genuinely broken migration. Rejected for a single-instance
+portfolio demo: correctly classifying transient-vs-permanent Postgres errors is its own nontrivial
+problem, and getting that classification wrong (treating a permanent failure as transient, retrying it
+uselessly, or the reverse) is a worse failure mode than a bounded ~12-second delay applied uniformly.
+
+### Tradeoffs
+
+- A genuinely broken migration surfaces roughly 12 seconds later (at default settings) than a
+  no-retry design would, because the entrypoint cannot distinguish it from a slow database wake-up.
+  Accepted explicitly — see `docs/08-cicd-deployment.md` §21.
+- The retry logs every failed attempt to stderr specifically so a database that *routinely* needs
+  2–3 attempts is visible in Render's logs as a signal to investigate, rather than silently absorbed
+  into "the deploy just took a bit longer" — the retry is deliberately not tuned to hide a
+  persistently degraded database.
+- Both retry knobs (`MIGRATION_RETRY_ATTEMPTS`, `MIGRATION_RETRY_DELAY_SECONDS`) are
+  environment-overridable specifically so the `docker-smoke` CI job can exercise the
+  exhaustion path deterministically and quickly (`MIGRATION_RETRY_ATTEMPTS=2`,
+  `MIGRATION_RETRY_DELAY_SECONDS=1`) without waiting through the production defaults.
+
+### Implementation Notes
+
+`docker/entrypoint.sh` — POSIX `sh`, `set -e`, a `run_migrations` function invoked as a bare command
+(so a non-zero return trips `errexit` and the container exits before the final `exec`), with
+`cmd && return 0` inside the retry loop being the one place failure is deliberately tolerated, and
+only up to the configured budget. `PrismaLifecycleService`
+(`apps/api/src/persistence/prisma-lifecycle.service.ts`) is untouched by this milestone — its
+`onModuleInit`/`onModuleDestroy` and its own existing test coverage remain exactly as they were before
+this container work began.
+
+### Testing Strategy
+
+The retry is verified behaviorally, not via a lifecycle-service unit test, because there is nothing
+new to unit-test in the lifecycle service — it did not change. `docker-smoke` (§20) covers both
+directions with the real container: the normal path (migrations apply against a genuinely empty
+database on the first attempt) and the exhaustion path (an unreachable database,
+`MIGRATION_RETRY_ATTEMPTS=2`/`MIGRATION_RETRY_DELAY_SECONDS=1`, asserting the container exits
+non-zero, the exact configured number of failed attempts appear in the logs, and the API's
+"listening" line never appears — i.e. it never bound a port).
+
+### Observability
+
+Every failed attempt logs `prisma migrate deploy attempt N/M failed; retrying in Ds` to stderr; final
+exhaustion logs a distinct `prisma migrate deploy failed after N attempt(s); aborting startup` line —
+both fixed, greppable strings a deploy-log viewer (Render's own log stream) surfaces without any
+additional instrumentation.
+
+### Interview Explanation
+
+> The natural place to put "retry the database on startup" is the application's own lifecycle hook —
+> that's where we already had a `SELECT 1` health check. But in this container, the application isn't
+> the first thing that touches the database at all; a migration step runs before the app process even
+> starts, inside the entrypoint script. A retry in the app would either never be needed (the migration
+> already proved the database awake) or never be reached (the migration already failed and the
+> container already exited). I found this by reading the entrypoint and the lifecycle service
+> together as a sequence, not by reviewing either file alone — individually they both looked correct.
+> The fix was moving the retry to the actual first point of contact and leaving the application's own
+> fail-fast check untouched, so there's exactly one retry policy in the system instead of one that
+> works and one that's silently dead code.
+
+### Resume Relevance
+
+This problem demonstrates:
+
+- Tracing an actual runtime sequence across multiple files/processes (an entrypoint script, then an
+  application lifecycle hook) rather than reviewing each file's correctness in isolation
+- Recognizing when additional resilience logic (a retry) is dead code because the failure mode it
+  targets can never reach it, and removing the wrong copy rather than keeping both "just in case"
+- Choosing a deliberately simple, unclassified retry policy over a more sophisticated one, with an
+  explicit argument for why the simpler policy's worst case is preferable to the sophisticated
+  policy's failure mode
