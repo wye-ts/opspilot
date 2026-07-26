@@ -30,11 +30,11 @@
     "@prisma/client": "7.9.0",
     "@prisma/adapter-pg": "7.9.0",
     "pg": "8.22.0",
+    "prisma": "7.9.0",
     "zod": "^4.4.3",
     "@opspilot/contracts": "workspace:*"
   },
   "devDependencies": {
-    "prisma": "7.9.0",
     "@types/pg": "8.20.0",
     "vitest": "^4.1.10",
     "typescript": "^7.0.2"

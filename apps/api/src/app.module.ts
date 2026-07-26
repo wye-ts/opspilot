@@ -5,6 +5,7 @@ import { AgentJobsModule } from "./agent-jobs/agent-jobs.module";
 import { AgentRunApprovalsModule } from "./agent-run-approvals/agent-run-approvals.module";
 import { AgentRunsModule } from "./agent-runs/agent-runs.module";
 import { NotFoundModule } from "./common/not-found.module";
+import { HealthModule } from "./health/health.module";
 import { PrismaModule } from "./persistence/prisma.module";
 
 @Module({})
@@ -23,6 +24,7 @@ export class AppModule {
         AgentJobsModule,
         AgentRunsModule,
         AgentRunApprovalsModule,
+        HealthModule,
         NotFoundModule,
       ],
     };

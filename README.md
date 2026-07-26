@@ -44,9 +44,27 @@ pnpm db:migrate:deploy
 pnpm db:migrate:drift
 ```
 
-See `docs/08-cicd-deployment.md` for the full CI design. **There is no deployment yet** — no
-container image, no hosting configuration, and no public URL; that work is planned but not
-implemented.
+See `docs/08-cicd-deployment.md` for the full CI design.
+
+### Deployment
+
+A production container (`Dockerfile`, `docker/entrypoint.sh`, `render.yaml`) implements a
+single-origin, deterministic FAKE-provider deployment — one Render Docker web service serving the
+built React app at `/` and the NestJS API at `/v1/**`, backed by a Neon PostgreSQL database, proven
+end to end by the `docker-smoke` CI job (image boundary checks, the full deterministic and approval
+workflow, and a migration-failure path). **This configuration exists and is CI-verified; it has not
+yet been deployed.** There is no live URL in this document, and none should be inferred — a Render
+service and Neon database have not been created yet. See `docs/08-cicd-deployment.md` §12–§24 for the
+full deployment design, and the Feature Complete / Portfolio Ready distinction at the top of that
+document.
+
+**Public-demo limitations, once deployed:** FAKE provider only (no real LLM calls, no provider keys
+anywhere); no authentication, rate limiting, or abuse protection; Render's free tier cold-starts after
+idle (documented plainly, not hidden, once a real URL exists). **The repository contains real
+retrieval-augmented-generation work** (`apps/worker`, `docs/05-rag-design.md`) — evaluated
+offline and unit-tested — **but the deployed browser path performs zero runbook retrieval**:
+`apps/api` wires no retriever, and `runbooks/` is excluded from the production image entirely. Retrieval
+should be described as repository/offline-evaluation work, never as something the public demo does.
 
 ### Local PostgreSQL (for the persistence layer)
 
@@ -82,7 +100,7 @@ pnpm --filter @opspilot/worker run eval        # 15-case deterministic evaluatio
 
 ### Agent Run API (`apps/api`)
 
-A local-only, synchronous NestJS API over the persistence layer above — six endpoints, no auth, no queue, no live model calls (every run executes against a deterministic fake provider). Requires the local PostgreSQL setup above.
+A synchronous NestJS API over the persistence layer above — eight endpoints (six domain endpoints plus `/v1/health/live` and `/v1/health/ready`), no auth, no queue, no live model calls (every run executes against a deterministic fake provider). Requires the local PostgreSQL setup above.
 
 ```bash
 pnpm --filter @opspilot/api run build
