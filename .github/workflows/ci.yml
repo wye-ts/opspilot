@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# The default token needs nothing beyond reading the checkout: this workflow
+# never publishes, comments, or pushes.
+permissions:
+  contents: read
+
+concurrency:
+  # Superseded pull-request pushes are cancelled; runs on main always finish.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  TZ: UTC
+  CI: "true"
+  # The only provider mode the API supports. No ANTHROPIC_API_KEY, VOYAGE_API_KEY,
+  # or any other provider secret is referenced anywhere in this workflow, so CI
+  # cannot make a paid provider call.
+  AGENT_RUN_PROVIDER_MODE: FAKE
+
+jobs:
+  verify:
+    name: Verify (typecheck, unit tests, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm is installed before setup-node so that `cache: pnpm` can resolve the
+      # store path, and so the pnpm version comes from this pin rather than from
+      # whichever Corepack shim the runner image happens to ship.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.13.1
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      # Generated into packages/database/src/generated/ and gitignored, so it must
+      # be produced before anything typechecks or builds against it. Run once, up
+      # front; every recursive script below is serialized with
+      # --workspace-concurrency=1, so no second generate can race this one.
+      - name: Generate the Prisma client
+        run: pnpm db:generate
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Production builds
+        run: pnpm build
+
+      - name: Production bundle guard
+        run: pnpm --filter @opspilot/web run check:bundle
+
+      - name: Upload the web bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: apps/web/dist
+          retention-days: 7
+
+  integration:
+    name: Integration (PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: opspilot
+          POSTGRES_PASSWORD: opspilot_ci_only
+          POSTGRES_DB: opspilot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U opspilot -d opspilot"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://opspilot:opspilot_ci_only@localhost:5432/opspilot
+      TEST_DATABASE_URL: postgres://opspilot:opspilot_ci_only@localhost:5432/opspilot_test
+      SHADOW_DATABASE_URL: postgres://opspilot:opspilot_ci_only@localhost:5432/opspilot_shadow
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.13.1
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      # scripts/ensure-test-database.sh is the local equivalent, but it shells in
+      # via `docker compose exec` and is unusable against a service container.
+      # Using the client inside the pinned postgres:16-alpine image avoids both
+      # installing a client and assuming the runner already provides one; the
+      # connection goes over the container's local socket, which needs no password.
+      - name: Create the test and shadow databases
+        run: |
+          docker exec "${{ job.services.postgres.id }}" \
+            psql -U opspilot -d opspilot \
+              -c 'CREATE DATABASE opspilot_test OWNER opspilot;' \
+              -c 'CREATE DATABASE opspilot_shadow OWNER opspilot;'
+
+      - name: Generate the Prisma client
+        run: pnpm db:generate
+
+      - name: Apply migrations to the test database
+        run: pnpm db:migrate:test
+
+      # Both suites share one physical test database and TRUNCATE between tests,
+      # so they must run one after the other. Never parallelize them.
+      - name: Integration tests (sequential)
+        run: pnpm test:integration:sequential
+
+      # migrate diff compares the committed migrations against a live datasource,
+      # so DATABASE_URL has to be migrated before the drift check can read it.
+      - name: Apply migrations to the drift-check database
+        run: pnpm db:migrate:deploy
+
+      - name: Migration drift check
+        run: pnpm db:migrate:drift

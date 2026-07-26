@@ -1,5 +1,7 @@
 # OpsPilot
 
+[![CI](https://github.com/wye-ts/opspilot/actions/workflows/ci.yml/badge.svg)](https://github.com/wye-ts/opspilot/actions/workflows/ci.yml)
+
 AI support and incident resolution agent — see `docs/01-prd.md` for the product overview and `docs/03-technical-design.md` for the full architecture.
 
 ## Getting Started
@@ -14,6 +16,37 @@ This alone is enough to type-check and run the unit test suite — no `.env` fil
 pnpm -r run typecheck
 pnpm -r run test
 ```
+
+### Continuous integration
+
+Every pull request and every push to `main` runs `.github/workflows/ci.yml` — a `verify` job
+(typecheck, unit tests, production builds, web bundle guard) and an `integration` job (both
+PostgreSQL suites plus a Prisma migration drift check), in parallel. Node is pinned to `22.21.0` via
+`.nvmrc` and pnpm to `11.13.1`; no provider secrets are referenced, so CI never makes a paid API call.
+
+To run exactly what CI runs, without a database:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm db:generate
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm --filter @opspilot/web run check:bundle    # no dev origins, backend names, or test assets in apps/web/dist
+```
+
+And with PostgreSQL (see the next section for first-time setup):
+
+```bash
+pnpm db:migrate:test
+pnpm test:integration:sequential                # the two suites share one database — never parallelize
+pnpm db:migrate:deploy
+pnpm db:migrate:drift
+```
+
+See `docs/08-cicd-deployment.md` for the full CI design. **There is no deployment yet** — no
+container image, no hosting configuration, and no public URL; that work is planned but not
+implemented.
 
 ### Local PostgreSQL (for the persistence layer)
 
