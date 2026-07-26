@@ -10,6 +10,7 @@
     "dev": "vite",
     "preview": "vite preview",
     "test": "pnpm run build:deps && vitest run",
+    "check:bundle": "tsx scripts/check-bundle.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {
