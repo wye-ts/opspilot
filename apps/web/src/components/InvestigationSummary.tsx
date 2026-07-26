@@ -1,6 +1,7 @@
 import type { AgentJobResponse, AgentRunRecordView } from "../api/types";
 import { formatDateTime, formatDuration } from "../format/datetime";
-import { StatusBadge, type BadgeTone } from "./StatusBadge";
+import { runStatusBadge } from "../run/run-overview-presentation";
+import { StatusBadge } from "./StatusBadge";
 
 export interface InvestigationSummaryProps {
   readonly ticketId: string;
@@ -11,19 +12,6 @@ export interface InvestigationSummaryProps {
   readonly onRetryRun: () => void;
   readonly refreshDisabled: boolean;
   readonly onRefresh: () => void;
-}
-
-function runStatusPresentation(status: string): { tone: BadgeTone; glyph: string } {
-  switch (status) {
-    case "COMPLETED":
-      return { tone: "success", glyph: "✓" };
-    case "FAILED":
-      return { tone: "danger", glyph: "✕" };
-    case "RUNNING":
-      return { tone: "info", glyph: "●" };
-    default:
-      return { tone: "neutral", glyph: "—" };
-  }
 }
 
 // Secondary detail — the timeline and report are the primary surfaces (§6 of
@@ -40,7 +28,7 @@ export function InvestigationSummary({
   refreshDisabled,
   onRefresh,
 }: InvestigationSummaryProps) {
-  const presentation = run !== null ? runStatusPresentation(run.status) : null;
+  const presentation = run !== null ? runStatusBadge(run.status) : null;
 
   return (
     <section className="investigation-summary" aria-labelledby="investigation-summary-heading">
