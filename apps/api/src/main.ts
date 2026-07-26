@@ -1,5 +1,7 @@
 import "reflect-metadata";
 
+import path from "node:path";
+
 import { NestFactory } from "@nestjs/core";
 import type { NestExpressApplication } from "@nestjs/platform-express";
 import { createPrismaClient } from "@opspilot/database";
@@ -9,11 +11,14 @@ import { AllExceptionsFilter } from "./common/all-exceptions.filter";
 import { jsonBodyParser, jsonParserErrorHandler } from "./common/json-body-parser";
 import { LoggingInterceptor } from "./common/logging.interceptor";
 import { requestIdMiddleware } from "./common/request-id.middleware";
+import { resolveServerConfig } from "./common/server-config";
+import { createSpaFallbackMiddleware } from "./common/spa-fallback.middleware";
+import { isWebDistServable, resolveWebDistDir } from "./common/web-assets";
 import { closeOnBootstrapFailure, createSafeClose } from "./persistence/safe-close";
 
 const STARTUP_FAILURE_MESSAGE = "OpsPilot API failed to start.";
-const DEFAULT_PORT = 3000;
-const HOST = "127.0.0.1";
+const ASSETS_DIR_NAME = "assets";
+const INDEX_HTML = "index.html";
 
 async function bootstrap(): Promise<void> {
   // The single outer-owned Prisma handle for the whole process — main.ts is
@@ -24,6 +29,8 @@ async function bootstrap(): Promise<void> {
 
   let app: NestExpressApplication | undefined;
   try {
+    const { host, port } = resolveServerConfig();
+
     app = await NestFactory.create<NestExpressApplication>(AppModule.forRoot(handle, safeClose), {
       abortOnError: false,
       logger: false,
@@ -31,12 +38,31 @@ async function bootstrap(): Promise<void> {
     });
 
     // Raw Express middleware, registered before Nest routing, in this exact
-    // order (see docs/12-agent-run-api.md):
+    // order (see docs/12-agent-run-api.md and docs/08-cicd-deployment.md):
     //   1. server-generated request ID
-    //   2. JSON parser, 32 KB
-    //   3. parser-error normalization
-    //   4. Nest routes
+    //   2. static React assets (conditional — only when a build is present)
+    //   3. guarded SPA fallback (conditional, same guard)
+    //   4. JSON parser, 32 KB
+    //   5. parser-error normalization
+    //   6. Nest routes
     app.use(requestIdMiddleware);
+
+    const webDistDir = resolveWebDistDir(__dirname);
+    if (isWebDistServable(webDistDir)) {
+      app.useStaticAssets(webDistDir, {
+        index: INDEX_HTML,
+        setHeaders: (res, filePath) => {
+          const relativePath = path.relative(webDistDir, filePath);
+          if (relativePath === INDEX_HTML) {
+            res.setHeader("Cache-Control", "no-cache");
+          } else if (relativePath.startsWith(`${ASSETS_DIR_NAME}${path.sep}`)) {
+            res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+          }
+        },
+      });
+      app.use(createSpaFallbackMiddleware(webDistDir));
+    }
+
     app.use(jsonBodyParser);
     app.use(jsonParserErrorHandler);
 
@@ -50,9 +76,8 @@ async function bootstrap(): Promise<void> {
     // instead of dropping the connection.
     app.enableShutdownHooks(["SIGINT", "SIGTERM"]);
 
-    const port = process.env.PORT ? Number(process.env.PORT) : DEFAULT_PORT;
-    await app.listen(port, HOST);
-    console.log(`OpsPilot API listening on http://${HOST}:${port}`);
+    await app.listen(port, host);
+    console.log(`OpsPilot API listening on http://${host}:${port}`);
   } catch {
     await closeOnBootstrapFailure(app, safeClose);
     console.error(STARTUP_FAILURE_MESSAGE);
