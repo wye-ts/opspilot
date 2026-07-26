@@ -1,0 +1,32 @@
+# Render blueprint for the single-origin, deterministic FAKE-provider
+# deployment — see docs/08-cicd-deployment.md. Render builds the committed
+# Dockerfile itself: no container registry, no push credentials.
+#
+# PR 5B ships this configuration; it does not by itself prove a deployment
+# happened (see docs/08-cicd-deployment.md — Feature Complete vs Portfolio
+# Ready). Applying this blueprint and setting DATABASE_URL in the Render
+# dashboard is PR 5C's job.
+services:
+  - type: web
+    name: opspilot
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    branch: main
+    # checksPass (not the deprecated autoDeploy: true) — Render deploys main
+    # only after this repository's own CI checks pass, matching PR 5A's
+    # verify/integration jobs and the docker-smoke job (docs/08-cicd-deployment.md §20).
+    autoDeployTrigger: checksPass
+    healthCheckPath: /v1/health/ready
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: AGENT_RUN_PROVIDER_MODE
+        value: FAKE
+      # The only secret. Never committed — set by hand in the Render
+      # dashboard after the Neon database exists (see
+      # docs/08-cicd-deployment.md). Render supplies PORT itself;
+      # apps/api/src/main.ts already reads it.
+      - key: DATABASE_URL
+        sync: false

@@ -12,7 +12,7 @@
 
 ## 1. Scope
 
-`apps/api` is a local-only NestJS application exposing six HTTP endpoints over the persistence and agent-runtime packages built in this and the prior milestone:
+`apps/api` is a NestJS application exposing eight HTTP endpoints over the persistence and agent-runtime packages built in this and the prior milestone:
 
 ```text
 POST /v1/agent-jobs
@@ -21,9 +21,17 @@ GET  /v1/agent-jobs/:jobId
 GET  /v1/agent-runs/:runId
 POST /v1/agent-runs/:runId/approval
 GET  /v1/agent-runs/:runId/approval
+GET  /v1/health/live
+GET  /v1/health/ready
 ```
 
-Milestone 6C (see `docs/13-approval-workflow.md`) adds the last two: `POST /v1/agent-runs/:runId/approval` and `GET /v1/agent-runs/:runId/approval`, recording a human approve/reject decision against a completed run's suggested actions. The workflow records a decision only — it never executes, simulates executing, or schedules execution of the approved action.
+Milestone 6C (see `docs/13-approval-workflow.md`) adds the approval pair: `POST /v1/agent-runs/:runId/approval` and `GET /v1/agent-runs/:runId/approval`, recording a human approve/reject decision against a completed run's suggested actions. The workflow records a decision only — it never executes, simulates executing, or schedules execution of the approved action.
+
+The production deployment milestone (see `docs/08-cicd-deployment.md`) adds the health pair:
+`GET /v1/health/live` (process-only, never queries the database) and `GET /v1/health/ready` (a
+lightweight `SELECT 1` through the same Prisma handle; a database failure reuses the existing
+`PERSISTENCE_UNAVAILABLE` catalog entry rather than a new code). Both follow the same `{ data: ... }`
+success envelope and error catalog as every other endpoint in this document.
 
 Every request runs synchronously, end to end:
 
@@ -188,9 +196,17 @@ The scenario's `toolCallId` is `` `${job.id}-call-1` `` — scoped to the **job*
 
 ---
 
-## 7. Local-only / no-auth warning
+## 7. No-auth warning
 
-`apps/api` binds only to `127.0.0.1` and has **no authentication, authorization, or network exposure hardening** — it is not safe to bind to `0.0.0.0` or expose beyond localhost as implemented. Every run executes against the deterministic fake provider only; there is no live-model code path to accidentally invoke.
+`apps/api` has **no authentication, authorization, or network exposure hardening** of its own — this
+remains true regardless of `HOST`. Locally, `HOST` defaults to `127.0.0.1`, so nothing changes for
+ordinary development. The production container (`docs/08-cicd-deployment.md`) sets `HOST=0.0.0.0`
+deliberately, because a containerized service must accept connections from outside its own network
+namespace to be reachable at all — that is a routing requirement, not a statement that the API grew
+authentication. The public deployment's security posture rests entirely on the boundaries documented
+in `docs/08-cicd-deployment.md` §22: single origin, FAKE provider only, no provider keys anywhere,
+and explicit demo-only limitations stated alongside the live URL. Every run still executes against
+the deterministic fake provider only; there is no live-model code path to accidentally invoke.
 
 ---
 
