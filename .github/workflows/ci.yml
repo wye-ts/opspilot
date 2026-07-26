@@ -144,3 +144,225 @@ jobs:
 
       - name: Migration drift check
         run: pnpm db:migrate:drift
+
+  docker-smoke:
+    name: Docker smoke test (image, migrations, full workflow)
+    runs-on: ubuntu-latest
+    needs: verify
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: opspilot
+          POSTGRES_PASSWORD: opspilot_ci_only
+          POSTGRES_DB: opspilot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U opspilot -d opspilot"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.13.1
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      # Only the runner's own shell needs this — to run
+      # apps/api/scripts/run-api-demo.ts (via tsx) against the container
+      # over plain HTTP below. The container itself never runs this install.
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build the production image
+        run: docker build -t opspilot:ci .
+
+      - name: Report image size
+        run: |
+          docker image inspect -f 'Image size in bytes: {{.Size}}' opspilot:ci
+
+      # Static assertions about what actually got built — fail fast, and
+      # keep the boundary table in docs/08-cicd-deployment.md §13 honest.
+      - name: Image boundary checks
+        run: |
+          docker run --rm --entrypoint sh opspilot:ci -c '
+            set -e
+            ! test -d /app/apps/worker/src
+            ! test -d /app/apps/worker/dist
+            ! test -d /app/runbooks
+            ! test -d /app/node_modules/@anthropic-ai
+            ! test -d /app/node_modules/voyageai
+            test -x /app/packages/database/node_modules/.bin/prisma
+            test -x /usr/local/bin/opspilot-entrypoint
+            echo "Image boundary checks passed."
+          '
+
+      - name: Non-root user check
+        run: |
+          uid="$(docker run --rm --entrypoint id opspilot:ci -u)"
+          test "$uid" != "0"
+          echo "Runtime user id: $uid"
+
+      # require.resolve() walks up from the *file's* own directory, not the
+      # process cwd — so this must run from the package context that
+      # actually declares each dependency (apps/api for the workspace
+      # packages it imports directly; packages/database for @prisma/client,
+      # which apps/api never depends on directly). This is what would break
+      # if pnpm's relative node_modules symlinks did not survive COPY --from.
+      - name: Package resolution checks (post stage-copy)
+        run: |
+          docker run --rm --workdir /app/apps/api --entrypoint node opspilot:ci \
+            -e "require.resolve('@opspilot/database'); require.resolve('@opspilot/agent-runtime')"
+          docker run --rm --workdir /app/packages/database --entrypoint node opspilot:ci \
+            -e "require.resolve('@prisma/client')"
+
+      - name: Run the container against an empty database
+        run: |
+          docker run -d --network host --name opspilot \
+            -e DATABASE_URL=postgres://opspilot:opspilot_ci_only@localhost:5432/opspilot \
+            -e PORT=3000 -e HOST=0.0.0.0 opspilot:ci
+
+      - name: Wait for readiness
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:3000/v1/health/ready > /dev/null; then
+              echo "Ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Container never became ready within 60s" >&2
+          exit 1
+
+      - name: Static frontend and /v1/** JSON boundary checks
+        run: |
+          curl -f http://localhost:3000/v1/health/live
+          curl -sf http://localhost:3000/ | grep -q 'id="root"'
+          curl -s http://localhost:3000/v1/nope | grep -q '"error"'
+
+      # Reuses the repository's own reviewed demo script rather than
+      # reimplementing equivalent curl assertions: job creation, run
+      # execution (COMPLETED, ordered trace, structured report),
+      # NOT_ELIGIBLE approval read, the TICKET-APPROVAL-DEMO flow
+      # (PENDING -> APPROVE 201 -> idempotent replay 200 -> conflicting
+      # decision 409 -> final GET), each with its own assertion and a
+      # non-zero exit on any failure (see apps/api/scripts/run-api-demo.ts).
+      - name: Full deterministic and approval workflow
+        env:
+          API_BASE_URL: http://localhost:3000
+        run: pnpm --filter @opspilot/api run demo
+
+      - name: Stop the primary container (graceful shutdown)
+        if: always()
+        run: docker stop opspilot || true
+
+      # Do not hide the exit code with an unconditional `|| true` — capture
+      # and assert the real exit status, per docs/08-cicd-deployment.md §20.
+      - name: Migration-failure verification
+        run: |
+          set +e
+          docker run --name opspilot-migration-failure \
+            -e DATABASE_URL=postgres://opspilot:wrong@127.0.0.1:59999/nope \
+            -e MIGRATION_RETRY_ATTEMPTS=2 -e MIGRATION_RETRY_DELAY_SECONDS=1 \
+            opspilot:ci
+          exit_code=$?
+          set -e
+
+          if [ "$exit_code" -eq 0 ]; then
+            echo "Expected the migration-failure container to exit non-zero, got 0" >&2
+            exit 1
+          fi
+
+          logs="$(docker logs opspilot-migration-failure 2>&1)"
+          attempt_count=$(printf '%s\n' "$logs" | grep -c "Can't reach database server")
+          if [ "$attempt_count" -ne 2 ]; then
+            echo "Expected exactly 2 failed migration attempts in the logs, found ${attempt_count}" >&2
+            exit 1
+          fi
+
+          if printf '%s\n' "$logs" | grep -q "OpsPilot API listening"; then
+            echo "The API unexpectedly started despite the migration failure" >&2
+            exit 1
+          fi
+
+          echo "Migration failure verified: exit code ${exit_code}, ${attempt_count} attempts logged, API never bound."
+
+      # The primary database is already migrated by this point (the earlier
+      # "Full deterministic and approval workflow" run applied it), so a
+      # container that genuinely skips migrations should still start and
+      # serve traffic against it, with no migrate-deploy invocation logged.
+      - name: RUN_MIGRATIONS_ON_START=false skips migrations, API still starts
+        run: |
+          docker run -d --network host --name opspilot-skip-migrations \
+            -e DATABASE_URL=postgres://opspilot:opspilot_ci_only@localhost:5432/opspilot \
+            -e RUN_MIGRATIONS_ON_START=false \
+            -e PORT=3000 -e HOST=0.0.0.0 opspilot:ci
+
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3000/v1/health/ready > /dev/null; then
+              echo "Ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          curl -sf http://localhost:3000/v1/health/ready
+
+          logs="$(docker logs opspilot-skip-migrations 2>&1)"
+          if printf '%s\n' "$logs" | grep -q "migrate deploy"; then
+            echo "Expected migrations to be skipped, but a migrate-deploy invocation was logged" >&2
+            exit 1
+          fi
+
+          echo "Confirmed: no migrate-deploy invocation logged, and the API served /v1/health/ready."
+
+      - name: Invalid RUN_MIGRATIONS_ON_START rejects before startup
+        run: |
+          set +e
+          docker run --name opspilot-invalid-run-migrations \
+            -e DATABASE_URL=postgres://opspilot:opspilot_ci_only@localhost:5432/opspilot \
+            -e RUN_MIGRATIONS_ON_START=ture \
+            opspilot:ci
+          exit_code=$?
+          set -e
+
+          if [ "$exit_code" -eq 0 ]; then
+            echo "Expected a non-zero exit for an invalid RUN_MIGRATIONS_ON_START value, got 0" >&2
+            exit 1
+          fi
+
+          logs="$(docker logs opspilot-invalid-run-migrations 2>&1)"
+          if ! printf '%s\n' "$logs" | grep -q "RUN_MIGRATIONS_ON_START must be exactly 'true' or 'false'"; then
+            echo "Expected the RUN_MIGRATIONS_ON_START validation error message in the logs" >&2
+            exit 1
+          fi
+          if printf '%s\n' "$logs" | grep -q "OpsPilot API listening"; then
+            echo "The API unexpectedly started despite the invalid RUN_MIGRATIONS_ON_START value" >&2
+            exit 1
+          fi
+
+          echo "Invalid RUN_MIGRATIONS_ON_START verified: exit code ${exit_code}, rejected before any startup."
+
+      - name: Container logs
+        if: always()
+        run: |
+          docker logs opspilot || true
+          docker logs opspilot-migration-failure || true
+          docker logs opspilot-skip-migrations || true
+          docker logs opspilot-invalid-run-migrations || true
+
+      - name: Clean up containers
+        if: always()
+        run: |
+          docker rm -f opspilot opspilot-migration-failure \
+            opspilot-skip-migrations opspilot-invalid-run-migrations || true

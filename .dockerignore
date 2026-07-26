@@ -1,0 +1,39 @@
+# Lean, deterministic build context for the production image (see
+# docs/08-cicd-deployment.md). Workspace manifests (package.json,
+# pnpm-lock.yaml, pnpm-workspace.yaml — including apps/worker/package.json)
+# are deliberately NOT excluded: --frozen-lockfile requires an importer
+# entry for every workspace package, worker included.
+
+node_modules
+**/node_modules
+**/dist
+
+.git
+.github
+
+.env
+.env.*
+
+coverage
+.claude
+.plans
+.DS_Store
+
+# Documentation, review artifacts, offline evaluation, and runbooks are not
+# runtime dependencies of the deployed API (see docs/08-cicd-deployment.md
+# §23 — the deployed path performs zero runbook retrieval) and must never
+# reach the image.
+docs
+evals
+runbooks
+/*.diff
+/*-review-summary.txt
+
+# Gitignored and generated inside the build stage by `pnpm db:generate`
+# (see packages/database/package.json) — never copied in from the host.
+packages/database/src/generated
+
+# Worker source is excluded; its package.json is not (frozen-lockfile
+# needs the importer entry). No worker build output exists to exclude —
+# apps/worker has no build script.
+apps/worker/src
