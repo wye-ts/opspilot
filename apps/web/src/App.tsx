@@ -3,11 +3,12 @@ import { useEffect, useRef, useState } from "react";
 import { createAgentJob, getAgentRun, getApproval, recordApproval, startAgentRun } from "./api/endpoints";
 import { ApiRequestError } from "./api/http-client";
 import type { AgentJobResponse, AgentRunDetail, ApprovalView, RecordApprovalDecisionInput } from "./api/types";
-import { ApprovalPanel } from "./components/ApprovalPanel";
+import { ActionRequiredBanner } from "./components/ActionRequiredBanner";
 import { ErrorBanner, type DisplayableError } from "./components/ErrorBanner";
 import { InvestigationForm, type InvestigationFormSubmission } from "./components/InvestigationForm";
 import { InvestigationSummary } from "./components/InvestigationSummary";
 import { ReportPanel } from "./components/ReportPanel";
+import { RunContextPanel } from "./components/RunContextPanel";
 import { TraceTimeline } from "./components/TraceTimeline";
 
 type Phase = "idle" | "creating-job" | "running-agent" | "loading-approval" | "refreshing-run" | "submitting-approval";
@@ -82,19 +83,24 @@ export function App() {
   // Never throws — a failed approval fetch must not unwind the run that was
   // already committed to the page. Reuses the caller's signal/generation
   // rather than calling beginWorkflow() again, since it is a continuation of
-  // the caller's workflow, not a new one.
+  // the caller's workflow, not a new one. Returns the fetched ApprovalView (or
+  // null on a stale/aborted/reported-error result) so callers can decide the
+  // right accessible-notice wording for their own flow (see runInvestigation/
+  // retryRun/refreshRun) without this function needing to know which flow
+  // called it.
   async function loadApproval(
     runId: string,
     signal: AbortSignal,
     generation: number,
     options: { readonly reportError: boolean },
-  ) {
+  ): Promise<ApprovalView | null> {
     try {
       const result = await getApproval(runId, signal);
-      if (isStale(generation)) return;
+      if (isStale(generation)) return null;
       setApproval(result.data);
+      return result.data;
     } catch (thrown) {
-      if (isAbortError(thrown) || isStale(generation)) return;
+      if (isAbortError(thrown) || isStale(generation)) return null;
       if (options.reportError) {
         setError(toDisplayableError(thrown));
         setApproval(null);
@@ -102,6 +108,7 @@ export function App() {
       // reportError: false is the 409-convergence path — the server's 409
       // message stays on screen instead of being overwritten by this GET's
       // error, and `approval` is left untouched rather than inventing state.
+      return null;
     }
   }
 
@@ -145,8 +152,11 @@ export function App() {
     }
 
     setPhase("loading-approval");
-    await loadApproval(createdRun.run.id, signal, generation, { reportError: true });
+    const loadedApproval = await loadApproval(createdRun.run.id, signal, generation, { reportError: true });
     if (isStale(generation)) return;
+    if (loadedApproval?.status === "PENDING") {
+      setNotice("Investigation completed. Human approval required.");
+    }
     setPhase("idle");
   }
 
@@ -169,8 +179,11 @@ export function App() {
     }
 
     setPhase("loading-approval");
-    await loadApproval(startedRun.run.id, signal, generation, { reportError: true });
+    const loadedApproval = await loadApproval(startedRun.run.id, signal, generation, { reportError: true });
     if (isStale(generation)) return;
+    if (loadedApproval?.status === "PENDING") {
+      setNotice("Investigation completed. Human approval required.");
+    }
     setPhase("idle");
   }
 
@@ -193,9 +206,9 @@ export function App() {
     }
 
     setPhase("loading-approval");
-    await loadApproval(refreshedRun.run.id, signal, generation, { reportError: true });
+    const loadedApproval = await loadApproval(refreshedRun.run.id, signal, generation, { reportError: true });
     if (isStale(generation)) return;
-    setNotice("Run refreshed.");
+    setNotice(loadedApproval?.status === "PENDING" ? "Run refreshed. Human approval required." : "Run refreshed.");
     setPhase("idle");
   }
 
@@ -229,6 +242,7 @@ export function App() {
   const isBusy = phase !== "idle";
   const showRetryRun = job !== null && run === null && phase === "idle";
   const progressText = isBusy ? PHASE_LABELS[phase] : (notice ?? "");
+  const showActionRequiredBanner = approval?.status === "PENDING";
 
   return (
     <div className="app-shell">
@@ -257,24 +271,30 @@ export function App() {
         />
       ) : null}
 
+      {showActionRequiredBanner ? <ActionRequiredBanner /> : null}
+
       {run !== null ? (
         <div className="investigation-content">
-          <section aria-labelledby="timeline-heading">
-            <h2 id="timeline-heading">Investigation timeline</h2>
-            <TraceTimeline trace={run.trace} />
-          </section>
-          <div className="investigation-report-column">
+          <div role="region" aria-label="Run detail" className="investigation-main-column">
+            <section aria-labelledby="timeline-heading">
+              <h2 id="timeline-heading" tabIndex={-1}>
+                Investigation timeline
+              </h2>
+              <TraceTimeline trace={run.trace} />
+            </section>
             <ReportPanel outcome={run.outcome} onRefresh={refreshRun} refreshDisabled={isBusy} />
-            {approval !== null ? (
-              <ApprovalPanel
-                approval={approval}
-                suggestedActionCount={run.outcome.type === "COMPLETED" ? run.outcome.report.suggestedActions.length : 0}
-                decisionDisabled={isBusy}
-                submittingDecision={phase === "submitting-approval"}
-                onDecide={recordDecision}
-              />
-            ) : null}
           </div>
+          <aside className="run-context-column" aria-label="Run context">
+            <RunContextPanel
+              run={run.run}
+              trace={run.trace}
+              approval={approval}
+              suggestedActionCount={run.outcome.type === "COMPLETED" ? run.outcome.report.suggestedActions.length : 0}
+              decisionDisabled={isBusy}
+              submittingDecision={phase === "submitting-approval"}
+              onDecide={recordDecision}
+            />
+          </aside>
         </div>
       ) : null}
     </div>

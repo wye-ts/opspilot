@@ -3,12 +3,12 @@
 | Field | Value |
 |---|---|
 | Document | Engineering Challenges and Design Decisions |
-| Version | 1.9 |
+| Version | 1.10 |
 | Status | Living Document |
 | Project | OpsPilot |
 | Purpose | Capture difficult engineering problems, design decisions, tradeoffs, and interview-ready explanations |
-| Related Documents | `docs/03-technical-design.md`, `docs/04-agent-design.md`, `docs/reviews/03-technical-design-feasibility-review.md`, `docs/reviews/03-technical-design-review-decisions.md`, `docs/reviews/04-agent-design-claude-spike-results.md`, `docs/12-agent-run-api.md`, `docs/13-approval-workflow.md`, `docs/08-cicd-deployment.md` |
-| Revision note | v1.9 adds Challenges 5–7 from the production deployment milestone (PR 5B, `docs/08-cicd-deployment.md`): Challenge 5 documents the single-origin SPA-fallback design and a repository-verified correction to the design plan's stated claim about how far NestJS's catch-all route actually reaches under this exact NestJS 11 / Express 5 / path-to-regexp v8 combination; Challenge 6 documents two implementation-time bugs found only by running the real built container — a JavaScript default-parameter closure trap in web-dist path resolution, and a Prisma 7.9 CLI validation quirk around an unconditionally-declared `shadowDatabaseUrl` — neither caught by the existing source-level tests, both discovered by running the built image; Challenge 7 documents why the migration startup retry belongs in `docker/entrypoint.sh` rather than `PrismaLifecycleService`, and why an earlier draft's placement there would have been unreachable dead code. v1.8 adds a pointer, at the end of Challenge 1's "Idempotent State Changes" subsection, to `docs/13-approval-workflow.md` (Milestone 6C) — the actual, much simpler approval-workflow design now on record. It is **not** an implementation of Challenge 1's aspirational `pending_actions`/`PendingAction`/`APPROVAL_CREATED` concept (which remains exactly as described below: planned, unimplemented design tied to the future `AgentJob`-as-queue/`AgentStep` architecture); it is a standalone, deliberately smaller mechanism built directly on the actually-shipped `agent_jobs`/`agent_runs`/`agent_trace_events` schema (`docs/11-agent-run-persistence.md`), following the same "deliberately smaller precursor, not a partial implementation" relationship `docs/11` §9 already draws between that shipped persistence slice and this same aspirational future design — see `docs/13-approval-workflow.md` §2 for the exact reasoning. v1.2 aligns Challenge 1 with `docs/03-technical-design.md` v1.3: `AgentJob` now includes `CANCELLED`; the maintenance sweep sets `AgentRun.completedAt`; the corrected write-safety design is presented as two distinct repository transaction patterns (`withExecutionOwnership`, `withLockedRunState`) sharing one global lock order (`AgentJob` → `AgentRun` → child rows), not a single "ownership-fenced" pattern; and language implying the design has already been implemented or shipped has been replaced with language accurate to the project's current (pre-implementation) stage. v1.1's PostgreSQL-as-system-of-record-and-queue decision (D1, D2) and the corrected write-safety mechanism (D12) remain unchanged in substance. This entry is further updated within v1.2 to document concurrency-safe `AgentStep` sequence allocation (`AgentRun.nextStepSequence`, the shared `appendAgentStep(...)` helper, and why `SELECT MAX(sequence) + 1` is unsafe) and the `completeAgentRunWithReport` invariant that every `PendingAction` created during finalization has exactly one matching `APPROVAL_CREATED` trace event, created in the same transaction — still describing planned design, not implemented behavior. v1.3 adds Challenge 2, documenting the minimal RAG vertical slice's evidence-grounding and retriever-isolation design — unlike Challenge 1, this describes code that has actually been implemented and unit-tested in this revision, though the manual live spike against a real embedding provider and live Claude has not yet been run. v1.4 corrects that last clause: the manual live spike has now been run. Both the baseline-RAG scenario and the isolated injection-probe scenario passed against a real Voyage embedding provider and a real Claude model, with repeated rate limiting observed (and worked around via a scenario selector) but no RAG-correctness or evidence-grounding failure in any attempt — see `docs/05-rag-design.md` and `docs/reviews/05-rag-design-spike-results.md` for the full design record and measured results. This does not change any of Challenge 2's design, validation, or testing content below, which described planned/already-implemented behavior accurately; it only updates the one clause that described the live spike as not yet run. v1.5 adds Challenge 3, documenting the implemented Agent Run / Trace Persistence milestone (`packages/database`) — a deliberately smaller, already-built precursor to Challenge 1's full queue-claiming design, described in full in `docs/11-agent-run-persistence.md`. v1.6 adds Challenge 4, documenting a real implementation-time discovery in the Agent Run API milestone (`apps/api`, `docs/12-agent-run-api.md`): `nest build`/`nest start --watch` are architecturally incompatible with this monorepo's pinned `typescript@^7.0.2` (a native rewrite whose public npm export no longer exposes the classic TypeScript Compiler API `@nestjs/cli` depends on internally), resolved by bypassing the Nest CLI's build wrapper in favor of the same plain-`tsc` pattern already used successfully by every other package in this monorepo, rather than downgrading TypeScript. v1.7 revises Challenge 4's Decision/Tradeoffs/Implementation Notes at a focused pre-commit review pass: `@nestjs/cli`/`@nestjs/schematics` and `apps/api/nest-cli.json`, originally kept as an unused "possible future use" placeholder, are now removed entirely as dead configuration/dependencies with no actual justification to keep; `apps/api`'s `build` script now cleans stale `dist/` output before every build, and `start:dev` is now a reliable `pnpm run build && pnpm run start` (no automatic reload — deferred, not silently dropped) rather than the previously untested concurrent `tsc --watch`/`node --watch` pair. |
+| Related Documents | `docs/03-technical-design.md`, `docs/04-agent-design.md`, `docs/reviews/03-technical-design-feasibility-review.md`, `docs/reviews/03-technical-design-review-decisions.md`, `docs/reviews/04-agent-design-claude-spike-results.md`, `docs/12-agent-run-api.md`, `docs/13-approval-workflow.md`, `docs/08-cicd-deployment.md`, `docs/14-web-ui.md` |
+| Revision note | v1.10 adds Challenge 8 from the approval-workflow UX milestone (PR 5C, `docs/14-web-ui.md` §8): a completed agent run and a completed human approval decision were visually indistinguishable, because the sole decision control sat below the entire report in a 50/50-width column — a run-detail layout problem, not a persistence or API problem, distinguished here from Challenge 1's data-consistency scope precisely because nothing about the backend contract changed to fix it. v1.9 adds Challenges 5–7 from the production deployment milestone (PR 5B, `docs/08-cicd-deployment.md`): Challenge 5 documents the single-origin SPA-fallback design and a repository-verified correction to the design plan's stated claim about how far NestJS's catch-all route actually reaches under this exact NestJS 11 / Express 5 / path-to-regexp v8 combination; Challenge 6 documents two implementation-time bugs found only by running the real built container — a JavaScript default-parameter closure trap in web-dist path resolution, and a Prisma 7.9 CLI validation quirk around an unconditionally-declared `shadowDatabaseUrl` — neither caught by the existing source-level tests, both discovered by running the built image; Challenge 7 documents why the migration startup retry belongs in `docker/entrypoint.sh` rather than `PrismaLifecycleService`, and why an earlier draft's placement there would have been unreachable dead code. v1.8 adds a pointer, at the end of Challenge 1's "Idempotent State Changes" subsection, to `docs/13-approval-workflow.md` (Milestone 6C) — the actual, much simpler approval-workflow design now on record. It is **not** an implementation of Challenge 1's aspirational `pending_actions`/`PendingAction`/`APPROVAL_CREATED` concept (which remains exactly as described below: planned, unimplemented design tied to the future `AgentJob`-as-queue/`AgentStep` architecture); it is a standalone, deliberately smaller mechanism built directly on the actually-shipped `agent_jobs`/`agent_runs`/`agent_trace_events` schema (`docs/11-agent-run-persistence.md`), following the same "deliberately smaller precursor, not a partial implementation" relationship `docs/11` §9 already draws between that shipped persistence slice and this same aspirational future design — see `docs/13-approval-workflow.md` §2 for the exact reasoning. v1.2 aligns Challenge 1 with `docs/03-technical-design.md` v1.3: `AgentJob` now includes `CANCELLED`; the maintenance sweep sets `AgentRun.completedAt`; the corrected write-safety design is presented as two distinct repository transaction patterns (`withExecutionOwnership`, `withLockedRunState`) sharing one global lock order (`AgentJob` → `AgentRun` → child rows), not a single "ownership-fenced" pattern; and language implying the design has already been implemented or shipped has been replaced with language accurate to the project's current (pre-implementation) stage. v1.1's PostgreSQL-as-system-of-record-and-queue decision (D1, D2) and the corrected write-safety mechanism (D12) remain unchanged in substance. This entry is further updated within v1.2 to document concurrency-safe `AgentStep` sequence allocation (`AgentRun.nextStepSequence`, the shared `appendAgentStep(...)` helper, and why `SELECT MAX(sequence) + 1` is unsafe) and the `completeAgentRunWithReport` invariant that every `PendingAction` created during finalization has exactly one matching `APPROVAL_CREATED` trace event, created in the same transaction — still describing planned design, not implemented behavior. v1.3 adds Challenge 2, documenting the minimal RAG vertical slice's evidence-grounding and retriever-isolation design — unlike Challenge 1, this describes code that has actually been implemented and unit-tested in this revision, though the manual live spike against a real embedding provider and live Claude has not yet been run. v1.4 corrects that last clause: the manual live spike has now been run. Both the baseline-RAG scenario and the isolated injection-probe scenario passed against a real Voyage embedding provider and a real Claude model, with repeated rate limiting observed (and worked around via a scenario selector) but no RAG-correctness or evidence-grounding failure in any attempt — see `docs/05-rag-design.md` and `docs/reviews/05-rag-design-spike-results.md` for the full design record and measured results. This does not change any of Challenge 2's design, validation, or testing content below, which described planned/already-implemented behavior accurately; it only updates the one clause that described the live spike as not yet run. v1.5 adds Challenge 3, documenting the implemented Agent Run / Trace Persistence milestone (`packages/database`) — a deliberately smaller, already-built precursor to Challenge 1's full queue-claiming design, described in full in `docs/11-agent-run-persistence.md`. v1.6 adds Challenge 4, documenting a real implementation-time discovery in the Agent Run API milestone (`apps/api`, `docs/12-agent-run-api.md`): `nest build`/`nest start --watch` are architecturally incompatible with this monorepo's pinned `typescript@^7.0.2` (a native rewrite whose public npm export no longer exposes the classic TypeScript Compiler API `@nestjs/cli` depends on internally), resolved by bypassing the Nest CLI's build wrapper in favor of the same plain-`tsc` pattern already used successfully by every other package in this monorepo, rather than downgrading TypeScript. v1.7 revises Challenge 4's Decision/Tradeoffs/Implementation Notes at a focused pre-commit review pass: `@nestjs/cli`/`@nestjs/schematics` and `apps/api/nest-cli.json`, originally kept as an unused "possible future use" placeholder, are now removed entirely as dead configuration/dependencies with no actual justification to keep; `apps/api`'s `build` script now cleans stale `dist/` output before every build, and `start:dev` is now a reliable `pnpm run build && pnpm run start` (no automatic reload — deferred, not silently dropped) rather than the previously untested concurrent `tsc --watch`/`node --watch` pair. |
 
 ---
 
@@ -1378,3 +1378,195 @@ This problem demonstrates:
 - Choosing a deliberately simple, unclassified retry policy over a more sophisticated one, with an
   explicit argument for why the simpler policy's worst case is preferable to the sophisticated
   policy's failure mode
+
+---
+
+## 10. Challenge 8 — Agent Execution Complete != Human Workflow Complete
+
+### Context
+
+`apps/web`'s run-detail page (`docs/14-web-ui.md` §8) renders a completed investigation's timeline,
+report, and an approval panel for runs with at least one suggested action. A live walkthrough of the
+approval-demo flow surfaced a usability bug in this page's layout, not in any backend behavior.
+
+### Problem
+
+Once an approval-demo investigation finished, the page looked entirely done — a success-toned run
+status badge, the full generated report, evidence — while a human decision (`PENDING`) was still
+outstanding. The only decision control on the page, `ApprovalPanel`, was the literal last DOM node:
+below the entire report, in a right-hand column that was a plain 50/50 split of the viewport width
+even on desktop. A reviewer had to scroll past the whole report to discover that anything was still
+required of them, and on any viewport narrower than the page's one existing breakpoint (1024px), that
+was the full page's scroll length.
+
+### Why It Is Difficult
+
+The bug is not a missing feature — every piece of information a reviewer needs (the badge, the report,
+the decision form) was already on the page, correctly rendered, fully tested. The problem is purely
+about **where** that information sits and **how it competes for attention**, which is invisible to any
+test that only checks for the presence of text or a control (`screen.getByText`/`getByRole`) — exactly
+the kind of test this codebase already had in abundance (`App.approval.test.tsx`'s 16 cases). None of
+them failed, because none of them encoded "and it must be reachable without scrolling." A second,
+subtler difficulty: the obvious naive fixes each traded one usability problem for a worse one —
+auto-scrolling to the decision on page load solves discoverability by taking control away from the
+reader mid-report; duplicating the Approve/Reject buttons at both the top and bottom of the page solves
+discoverability by creating two live, irreversible-decision buttons that must somehow stay
+synchronized; and a sticky panel with no width limit solves visibility but pushes the actual report —
+the thing a reviewer is there to read — into a cramped remainder column.
+
+### Failure Modes
+
+- **Auto-scroll/auto-focus on run completion.** Immediately jumping the reader to the decision as soon
+  as a run finishes actively fights a reader who is still reading the report top-to-bottom, and is
+  disorienting for a screen-reader user who did not initiate the movement.
+- **Duplicated Approve/Reject controls** (one copy near the top, one near the bottom). Two live buttons
+  for the same one-time, irreversible action is a double-submission hazard in its own right and forces
+  every future change to the decision form to be kept in sync in two places.
+- **An unconstrained-width sticky panel.** Making the context column sticky without a width cap (a
+  naive first pass literally used `1fr 1fr`, giving the decision panel half the page) fixes visibility
+  at the cost of compressing the actual report — the primary reading surface — to match it.
+- **A single flat "not eligible" state used for two different facts.** Presenting `approval === null`
+  (no approval data yet — still loading, or the last fetch failed) identically to a permanent,
+  backend-computed `NOT_ELIGIBLE` would tell a reviewer "this run will never have anything to approve"
+  when the real, transient cause might be a dropped network request.
+
+### Decision
+
+A frontend-only, backend-contract-unchanged redesign (`ApprovalStatus`, `ApprovalView`,
+`presentApproval`'s inputs/outputs, and the `201`/`200`/`409`×2 handling in `App.tsx` are all reused
+exactly as they were): a two-column run-detail grid, `minmax(0, 1fr) minmax(18rem, 22rem)`, keeping the
+timeline/report as the flexible, visually dominant main reading surface while a new, reusable
+`RunContextPanel` occupies a width-capped, sticky-on-desktop side column. `RunContextPanel` is a thin,
+three-way switch — `approval === null` and `approval.status === "NOT_ELIGIBLE"` both render a new
+`RunOverviewPanel` (run facts only for `null`; run facts plus the *reused* `presentApproval` eligibility
+badge/copy/hint for `NOT_ELIGIBLE`, explicitly never conflated with each other), while `PENDING` /
+`APPROVED` / `REJECTED` render the existing `ApprovalPanel`, whose decision semantics remain unchanged. A stateless `ActionRequiredBanner`
+— a single native link to `#approval-heading`, never a second copy of the decision buttons — appears
+only while `approval?.status === "PENDING"`, and the existing accessible notice region (not a new live
+region) announces the pending state with wording that distinguishes a fresh completion from an explicit
+refresh (see Implementation Notes).
+
+### Alternatives Considered
+
+#### Alternative A — Auto-scroll to the decision panel on run completion
+
+Rejected outright: takes control away from a reader still reviewing the report, and moves focus/scroll
+position without any user-initiated action — a poor experience for both sighted and assistive-technology
+users.
+
+#### Alternative B — Duplicate Approve/Reject controls at both the top and bottom of the page
+
+Rejected: two live buttons for one irreversible decision is a correctness hazard (which one did the
+reviewer mean to click, and did both fire?), not only a code-duplication concern.
+
+#### Alternative C — Modal/drawer for the decision form
+
+Rejected: blocks reading the report and the decision side by side, which is plausibly the most
+important capability for an actual reviewer, and is a materially larger diff (focus trap, backdrop,
+dismiss handling) for no stated benefit over a sticky column.
+
+#### Alternative D — Accordion / collapsed-by-default decision section
+
+Rejected: requires an extra click just to discover a decision is even needed, which re-creates a milder
+version of the original "buried" bug rather than fixing it.
+
+#### Alternative E — Whole-context-column `max-height`/`overflow-y: auto` sticky region
+
+An earlier draft made the entire sticky context column internally scrollable, bounded to the viewport
+height. Rejected on review: real context-panel content (a badge, a sentence or two, a short form or a
+short record) is only ever a few hundred pixels tall, so a column-wide scroll region added a nested
+page-scroll/column-scroll interaction for no benefit in the common case. The one place content can
+genuinely exceed a short viewport — a reviewer note up to 1000 characters — is handled narrowly instead:
+`white-space: pre-wrap; overflow-wrap: anywhere;` lets the terminal panel simply grow taller, relying on
+ordinary page scrolling rather than a second, internally-scrollable region that would need its own
+keyboard/focus handling to stay accessible.
+
+### Tradeoffs
+
+- The banner and the sticky panel are deliberately complementary, not redundant: the banner solves
+  discoverability at the instant a run completes; the sticky panel solves staying visible while the
+  reviewer subsequently scrolls a long report. Removing either reintroduces a version of the original
+  problem.
+- Sticky positioning applies uniformly to the context column regardless of which of its three states is
+  showing, rather than only while `PENDING`. This is simpler (one CSS rule, no state-dependent class)
+  and avoids layout jank exactly when a decision is submitted and the panel's content changes shape
+  mid-scroll — accepted as a reversible, one-line judgment call.
+- No second (tablet) breakpoint was introduced. Sticky positioning only makes sense once the two-column
+  grid already exists at the same width the grid itself activates at (`64rem`); container-width
+  arithmetic at exactly that breakpoint (`.app-shell`'s `max-width: 84rem` and `padding: var(--space-6)
+  var(--space-5)`, worked through against the `minmax(18rem, 22rem)` context-column bound) showed no
+  squeeze occurs there, so a second breakpoint would be unjustified complexity.
+
+### Implementation Notes
+
+The main-column wrapper is a `<div role="region" aria-label="Run detail">`, not a `<section>` —
+deliberately, because the stylesheet's existing `.investigation-content section` rule gives any nested
+`<section>` card styling, and using a `<section>` for the outer wrapper would have produced an
+unintended outer card wrapping the already-carded timeline and report sections one level down.
+`RunOverviewPanel`'s `NOT_ELIGIBLE` copy/hint is never a second hand-written string — it calls the
+existing, exported `presentApproval("NOT_ELIGIBLE", suggestedActionCount)` directly, so the "Approval
+workflow demo" checkbox hint text stays defined in exactly one place. The accessible pending
+announcement reuses the one existing `role="status" aria-live="polite"` notice region rather than
+adding a second live region; `loadApproval()`'s return type changed from `Promise<void>` to
+`Promise<ApprovalView | null>` specifically so `runInvestigation`/`retryRun`/`refreshRun` could each
+choose the right wording — `"Investigation completed. Human approval required."` for a fresh
+completion/retry, `"Run refreshed. Human approval required."` for an explicit refresh that is still
+pending (never implying the investigation just completed), and the unchanged `"Run refreshed."` for a
+refresh that resolves to anything else. The `Action required` banner links to `#approval-heading` via a
+plain native anchor; `tabIndex={-1}` was added to the timeline, report, and approval headings, making
+each one programmatically focusable and giving the native fragment link its baseline mechanism with
+zero JavaScript. Real-browser confirmation that activating the link both scrolls to and visibly focuses
+the target heading remains an open manual-verification item (Testing Strategy, below) — a small,
+explicit `scrollIntoView`/`.focus({ preventScroll: true })` fallback was deliberately *not* added
+preemptively, and would only be introduced if that verification showed the native behavior unreliable.
+
+### Testing Strategy
+
+Structural/DOM-order assertions (`App.run-context-layout.test.tsx`) verify what jsdom actually can:
+banner presence keyed to `PENDING`, the banner preceding the named "Run detail" region in source order,
+exactly one Approve/Reject button while pending, the `RunContextPanel` three-way switch (including the
+direct regression case for `approval === null` never showing an eligibility claim), all three notice
+wordings, `tabindex="-1"` on the three section headings, and a long reviewer note remaining a single,
+non-duplicated `<dd>`. The one `compareDocumentPosition()` call in that file is explicitly a structural
+DOM-order check, not a simulation of visual order — both compared elements are still located via
+`getByRole`, not a CSS selector. What jsdom cannot prove — real `position: sticky` behavior, real
+no-scroll initial visibility on an actual viewport, real fragment scrolling and focus landing, and real
+`prefers-reduced-motion` behavior — are open manual-verification items (`docs/14-web-ui.md` §11), not
+yet performed as of this implementation session, and are documented here as such rather than silently
+assumed or claimed as done. All five pre-existing web test suites pass with zero modifications,
+confirmed by grep before making any change: none of their assertions depended on `ApprovalPanel`'s DOM
+ancestry, any CSS class name, or the notice region's exact text.
+
+### Observability
+
+This is a client-only layout change with no server-side logs, metrics, or alerts to add — the existing
+accessible notice region (`role="status" aria-live="polite"`) is itself the only user-facing "signal"
+this change touches, and its wording accuracy (fresh completion vs. refresh) is covered by the automated
+tests above rather than any runtime telemetry, since `apps/web` has no analytics/telemetry pipeline to
+begin with (`docs/14-web-ui.md` §1's non-goals).
+
+### Interview Explanation
+
+> We had a subtle usability bug where a finished investigation and a finished *human decision* looked
+> identical on the page, because the one decision control sat below an entire report in a plain 50/50
+> column — nothing was missing, it just wasn't reachable without scrolling. The interesting part wasn't
+> the fix itself, it was ruling out the obvious-looking fixes first: auto-scrolling to the decision
+> fights a reader who's still reviewing the report, and duplicating the Approve/Reject buttons top and
+> bottom creates a real hazard for an irreversible action. We landed on a banner that just links to the
+> decision, paired with a sticky, width-capped context column so the report stays the dominant thing on
+> the page while the decision stays reachable. None of it touched the backend at all — the whole fix is
+> a routing/layout decision one level above already-correct, already-tested components.
+
+### Resume Relevance
+
+This problem demonstrates:
+
+- Distinguishing "the information is on the page" from "the information is discoverable," and treating
+  the latter as a real, testable requirement rather than a subjective polish item
+- Recognizing that the naive fixes for a discoverability bug (auto-scroll, duplicated controls, an
+  unconstrained sticky panel) each trade it for a worse, more hazardous problem, and choosing a design
+  that avoids all three failure modes at once
+- Keeping a frontend-only UX fix strictly decoupled from its backend contract, reusing an existing,
+  independently-tested presentation seam (`presentApproval`) rather than duplicating its copy
+- Separating what an automated (jsdom) test can prove from what only a real browser can, and reporting
+  the difference explicitly rather than letting a passing test suite imply more coverage than it has

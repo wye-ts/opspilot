@@ -26,7 +26,7 @@ export function ApprovalPanel({ approval, suggestedActionCount, decisionDisabled
 
   return (
     <section className="approval-panel" aria-labelledby="approval-heading">
-      <h2 id="approval-heading">Approval</h2>
+      <h2 id="approval-heading" tabIndex={-1}>Approval</h2>
       <p className="approval-panel-status">
         <StatusBadge tone={presentation.tone} glyph={presentation.glyph} label={presentation.badgeLabel} />
       </p>
@@ -43,7 +43,7 @@ export function ApprovalPanel({ approval, suggestedActionCount, decisionDisabled
           </div>
           <div>
             <dt>Note</dt>
-            <dd>{approval.note ?? "No note provided"}</dd>
+            <dd className="approval-decision-note">{approval.note ?? "No note provided"}</dd>
           </div>
           <div>
             <dt>Decided at</dt>

@@ -13,7 +13,7 @@ export function ReportPanel({ outcome, onRefresh, refreshDisabled }: ReportPanel
   if (outcome.type === "RUNNING") {
     return (
       <section className="report-panel" aria-labelledby="report-heading">
-        <h2 id="report-heading">Generated report</h2>
+        <h2 id="report-heading" tabIndex={-1}>Generated report</h2>
         <p>This run has not produced a report yet.</p>
         <button type="button" onClick={onRefresh} disabled={refreshDisabled}>
           Refresh
@@ -25,7 +25,7 @@ export function ReportPanel({ outcome, onRefresh, refreshDisabled }: ReportPanel
   if (outcome.type === "FAILED") {
     return (
       <section className="report-panel" aria-labelledby="report-heading">
-        <h2 id="report-heading">Generated report</h2>
+        <h2 id="report-heading" tabIndex={-1}>Generated report</h2>
         <p>The run failed before producing a report.</p>
         <dl>
           <div>
@@ -45,7 +45,7 @@ export function ReportPanel({ outcome, onRefresh, refreshDisabled }: ReportPanel
 
   return (
     <section className="report-panel" aria-labelledby="report-heading">
-      <h2 id="report-heading">Generated report</h2>
+      <h2 id="report-heading" tabIndex={-1}>Generated report</h2>
 
       <dl className="report-panel-fields">
         <div>
