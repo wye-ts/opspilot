@@ -52,6 +52,13 @@ export interface AgentOrchestratorParams {
   readonly retriever?: RunbookRetriever;
   readonly retrievalInput?: RetrievalInput;
   readonly maxOutputTokens?: number;
+  // Forwarded verbatim to every provider turn. The orchestrator neither
+  // creates nor inspects it: it owns no deadline of its own (see
+  // MAX_PROVIDER_TURNS above — the loop is bounded by turn count, not by
+  // wall clock). Scope: this covers the provider calls only. Tool execution,
+  // retrieval, and persistence are NOT cancelled by it, so it is not a strict
+  // deadline for the whole run. Retries remain the provider transport's concern.
+  readonly signal?: AbortSignal;
 }
 
 export type AgentOrchestratorResult =
@@ -185,6 +192,9 @@ export async function runAgentOrchestrator(
       phase,
       maxOutputTokens,
       conversation,
+      // Conditional spread: exactOptionalPropertyTypes is on, so an optional
+      // property must be absent or a real value, never an explicit undefined.
+      ...(params.signal !== undefined ? { signal: params.signal } : {}),
     });
 
     if (result.type === "protocol_error") {
