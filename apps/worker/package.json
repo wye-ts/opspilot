@@ -12,6 +12,7 @@
     "demo:rag": "pnpm run build:deps && tsx src/demo/run-rag-agent-demo.ts",
     "demo:persisted": "pnpm run build:deps && node --env-file-if-exists=../../.env --import tsx src/demo/run-persisted-agent-demo.ts",
     "eval": "pnpm run build:deps && tsx src/evaluation/run-eval.ts",
+    "test:claude:live": "pnpm run build:deps && node --env-file-if-exists=.env --import tsx src/smoke/claude-live-smoke.ts",
     "spike:claude": "pnpm run build:deps && tsx src/demo/run-claude-agent-spike.ts",
     "spike:rag": "pnpm run build:deps && tsx src/demo/run-rag-live-spike.ts"
   },
