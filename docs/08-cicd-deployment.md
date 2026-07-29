@@ -93,7 +93,10 @@ AGENT_RUN_PROVIDER_MODE=FAKE
 ```
 
 `TZ=UTC` removes any dependency on the runner's local time zone from date formatting.
-`AGENT_RUN_PROVIDER_MODE=FAKE` is the only mode `apps/api` supports; see §7.
+`AGENT_RUN_PROVIDER_MODE=FAKE` is the only mode `apps/api` supports; see §7. `LIVE` selects the
+Claude provider in `apps/worker` only, and is never set in CI or in the deployed container. The
+worker's live path is bounded by a caller-owned signal covering its Anthropic provider calls; tool,
+retrieval, and persistence cancellation are not wired in this milestone.
 
 ### Toolchain setup (identical in both jobs)
 
@@ -241,8 +244,17 @@ Three independent reasons, in order of how hard they are to defeat:
    `LiveProviderModeNotSupportedError` at dependency-injection time for any value other than `FAKE`,
    before a network call is possible. CI sets it to `FAKE` explicitly anyway.
 3. **Nothing in the test suites reaches a provider.** The live spikes
-   (`apps/worker`'s `spike:claude` and `spike:rag`) are separate scripts that are never invoked by
-   `pnpm test` or by any CI step, and they fail fast on a missing key.
+   (`apps/worker`'s `spike:claude` and `spike:rag`) and the live smoke
+   (`test:claude:live`) are separate scripts that are never invoked by `pnpm test` or by any CI
+   step, and each fails fast on a missing key. `pnpm test` runs `pnpm -r --if-present run test`,
+   which matches the script name `test` exactly — `test:claude:live` is not a match, so it cannot be
+   picked up by the recursive run. The smoke additionally requires `OPSPILOT_LIVE_SMOKE=1` and
+   `AGENT_RUN_PROVIDER_MODE=LIVE`, neither of which exists in CI.
+4. **The Anthropic SDK is not in the production image.** `pnpm install --prod --filter
+   "@opspilot/api..."` resolves only the API's dependency closure, and the `docker-smoke` job
+   asserts `! test -d /app/node_modules/@anthropic-ai`. The Claude adapter therefore lives in
+   `apps/worker`, never in `packages/agent-runtime` — that package *is* copied into the image, so
+   putting SDK-importing code there would defeat this boundary (see §13).
 
 ---
 
@@ -598,8 +610,13 @@ there is no container registry and no push credential to manage.
 | Branch | `main`, `autoDeployTrigger: checksPass` — deploys only after this repository's own CI checks pass (`verify`, `integration`, `docker-smoke`), not on every push. The deprecated `autoDeploy: true` field deploys unconditionally on push and is deliberately not used. |
 | Health check | `/v1/health/ready` |
 | `HOST` | `0.0.0.0` |
-| `AGENT_RUN_PROVIDER_MODE` | `FAKE` |
+| `AGENT_RUN_PROVIDER_MODE` | `FAKE` — unchanged by the live-provider milestone; the deployment remains FAKE-only |
 | `DATABASE_URL` | `sync: false` — the **only** secret, entered by hand in the Render dashboard, never committed |
+
+No `ANTHROPIC_API_KEY` is deployed to Render, and none belongs there: `apps/api` rejects
+`AGENT_RUN_PROVIDER_MODE=LIVE` at startup, and the Anthropic SDK is absent from the image entirely.
+Making the public demo live-LLM-capable is a separate milestone with its own safeguards (rate
+limiting, budget controls, protected access) and is explicitly not enabled here.
 
 Render supplies `PORT` itself; `main.ts` already reads it through the same validated `resolveServerConfig()` used everywhere else (§13 in `docs/12-agent-run-api.md` is unaffected — this is additive).
 
