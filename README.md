@@ -1,117 +1,208 @@
 # OpsPilot
 
 [![CI](https://github.com/wye-ts/opspilot/actions/workflows/ci.yml/badge.svg)](https://github.com/wye-ts/opspilot/actions/workflows/ci.yml)
+[![Live Demo](https://img.shields.io/badge/Live_Demo-Render-46E3B7)](https://opspilot-bkdf.onrender.com)
 
-AI support and incident resolution agent — see `docs/01-prd.md` for the product overview and `docs/03-technical-design.md` for the full architecture.
+OpsPilot is an AI-assisted support and incident investigation system. It turns an issue summary into
+a persisted investigation, runs a bounded agent with a validated diagnostic tool, produces a
+structured evidence-backed report, and can record a human approval or rejection for proposed
+actions.
 
-## Getting Started
+**Live demo:** [https://opspilot-bkdf.onrender.com](https://opspilot-bkdf.onrender.com)
+
+The public demo is a React/Vite frontend and NestJS API served from one Render Docker service and
+backed by Neon PostgreSQL. It intentionally defaults to the deterministic `FAKE` provider:
+`AGENT_RUN_PROVIDER_MODE=FAKE`, `LIVE_AGENT_RUNS_ENABLED=false`, and no public paid model execution.
+Render's free service may need time to wake after being idle.
+
+## Why this is more than a chatbot
+
+The application owns the investigation lifecycle instead of handing an unconstrained conversation
+to a model:
+
+```text
+Issue summary
+  → persisted investigation job
+  → bounded two-turn agent orchestration
+  → validated diagnostic tool call
+  → normalized evidence
+  → structured report
+  → persisted trace and result
+  → optional human approval/rejection
+```
+
+The model/provider boundary is typed, tool inputs and model outputs are runtime-validated, evidence
+must trace back to completed tool calls, and the run is finalized in PostgreSQL. Approval decisions
+are also persisted, but **approved actions are not executed, simulated, or scheduled**.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    Browser["React + Vite UI"] -->|"relative /v1 requests"| API["NestJS API"]
+    API --> Runtime["Provider-neutral agent runtime"]
+    Runtime --> Tools["Validated diagnostic tools"]
+    Runtime --> Fake["Deterministic FAKE provider"]
+    Runtime -. "configured LIVE runs only" .-> Claude["Claude provider"]
+    API --> DB[("PostgreSQL")]
+    Runtime --> DB
+```
+
+Production uses a single origin: NestJS serves the built frontend at `/` and JSON endpoints at
+`/v1/**`. The API executes an investigation synchronously in the request handler; there is no job
+queue or background worker in the browser path. The timeline shown after completion is an ordered,
+persisted audit trail, **not a real-time streamed progress display**. There is no SSE, WebSocket,
+background polling, or asynchronous job execution.
+
+Key engineering boundaries include:
+
+- provider-neutral orchestration with deterministic and Claude adapters;
+- Zod-backed model, tool, trace, report, and HTTP contracts;
+- a hard two-provider-turn limit and at most one diagnostic tool call per run;
+- PostgreSQL persistence for jobs, runs, ordered trace events, reports, and approval decisions;
+- fail-closed live-provider configuration and no silent provider fallback;
+- a human decision boundary before any proposed action could be acted upon;
+- deterministic unit, integration, evaluation, and Docker smoke coverage;
+- GitHub Actions, a multi-stage Docker build, startup migrations, and health checks;
+- frontend bundle guards for development origins, backend identifiers, provider SDK references, and
+  credential patterns.
+
+See [Technical Design](docs/03-technical-design.md), [Agent Design](docs/04-agent-design.md), and
+[Engineering Challenges](docs/10-engineering-challenges.md) for the deeper design record.
+
+## Repository capability vs public demo
+
+The repository contains both deterministic and real-provider paths. The public deployment exposes
+only the safe deterministic configuration.
+
+| Capability | Repository | Public demo |
+| --- | --- | --- |
+| Deterministic investigation | Implemented with `FakeLlmProvider` | Available; default and intended mode |
+| Diagnostic tool execution | Implemented with validated inputs and normalized evidence | Available with the deterministic scenario |
+| Persisted trace and report | Implemented in PostgreSQL | Available through Neon PostgreSQL |
+| Approval recording | Implemented; approve/reject decisions are persisted | Available for the approval demo scenario |
+| Real Claude provider | Implemented for worker scripts and per-run API selection | Disabled; no public paid model execution |
+| Browser/API RAG | Not wired; RAG exists in worker/offline evaluation paths | Unavailable |
+| Action execution | Not implemented | Unavailable |
+| Authentication/RBAC | Not implemented | Unavailable |
+| Live progress streaming | Not implemented | Unavailable; timeline is returned after synchronous completion |
+
+### Provider selection and safety
+
+The repository supports:
+
+- deterministic `FAKE` execution with no model network call;
+- real Claude execution through `@opspilot/provider-claude`;
+- optional per-run `{"providerMode":"FAKE"}` or `{"providerMode":"LIVE"}` selection on the Agent Run
+  API.
+
+An omitted API selection uses `AGENT_RUN_PROVIDER_MODE`, which defaults to `FAKE`. A requested
+`LIVE` run requires valid Anthropic configuration and `LIVE_AGENT_RUNS_ENABLED=true`.
+**A requested `LIVE` run is never silently downgraded to `FAKE`**: unavailable or disabled live
+execution is rejected before a run row or provider call is created.
+
+The current browser does not expose a `FAKE`/`LIVE` selector. The public Render service sets
+`AGENT_RUN_PROVIDER_MODE=FAKE` and `LIVE_AGENT_RUNS_ENABLED=false`, and does not provide public paid
+Claude execution. Shared demo-token protection, rate limiting, concurrency limiting, and a durable
+PostgreSQL daily cost budget are not implemented yet.
+
+See [Agent Run API](docs/12-agent-run-api.md) for the request and error contracts.
+
+### RAG boundary
+
+Runbook retrieval, retrieval validation, evidence grounding, deterministic RAG demos, and offline
+evaluation exist in `apps/worker` and `packages/agent-runtime`; see
+[RAG Design](docs/05-rag-design.md). The public browser/API execution path does not currently
+retrieve runbooks. `apps/api` wires no runbook retriever, and `runbooks/` is excluded from the
+production image.
+
+## Local development
+
+Requirements: Node.js `22.21.0`, pnpm `11.13.1`, and Docker for PostgreSQL-backed workflows.
+
+### Install and unit checks
+
+No database or provider credential is required for these checks:
 
 ```bash
 pnpm install
-```
-
-This alone is enough to type-check and run the unit test suite — no `.env` file or running database is required:
-
-```bash
-pnpm -r run typecheck
-pnpm -r run test
-```
-
-### Continuous integration
-
-Every pull request and every push to `main` runs `.github/workflows/ci.yml` — a `verify` job
-(typecheck, unit tests, production builds, web bundle guard) and an `integration` job (both
-PostgreSQL suites plus a Prisma migration drift check), in parallel. Node is pinned to `22.21.0` via
-`.nvmrc` and pnpm to `11.13.1`; no provider secrets are referenced, so CI never makes a paid API call.
-
-To run exactly what CI runs, without a database:
-
-```bash
-pnpm install --frozen-lockfile
 pnpm db:generate
 pnpm typecheck
 pnpm test
 pnpm build
-pnpm --filter @opspilot/web run check:bundle    # no dev origins, backend names, or test assets in apps/web/dist
+pnpm --filter @opspilot/web run check:bundle
 ```
 
-And with PostgreSQL (see the next section for first-time setup):
+### Local PostgreSQL
 
 ```bash
-pnpm db:migrate:test
-pnpm test:integration:sequential                # the two suites share one database — never parallelize
+cp .env.example .env
+pnpm infra:up
+pnpm db:test:ensure
 pnpm db:migrate:deploy
-pnpm db:migrate:drift
+pnpm db:migrate:test
+pnpm db:generate
 ```
 
-See `docs/08-cicd-deployment.md` for the full CI design.
-
-### Deployment
-
-A production container (`Dockerfile`, `docker/entrypoint.sh`, `render.yaml`) implements a
-single-origin, deterministic FAKE-provider deployment — one Render Docker web service serving the
-built React app at `/` and the NestJS API at `/v1/**`, backed by a Neon PostgreSQL database, proven
-end to end by the `docker-smoke` CI job (image boundary checks, the full deterministic and approval
-workflow, and a migration-failure path). **This configuration exists and is CI-verified; it has not
-yet been deployed.** There is no live URL in this document, and none should be inferred — a Render
-service and Neon database have not been created yet. See `docs/08-cicd-deployment.md` §12–§24 for the
-full deployment design, and the Feature Complete / Portfolio Ready distinction at the top of that
-document.
-
-**Public-demo limitations, once deployed:** FAKE provider only (no real LLM calls, no provider keys
-anywhere); no authentication, rate limiting, or abuse protection; Render's free tier cold-starts after
-idle (documented plainly, not hidden, once a real URL exists). **The repository contains real
-retrieval-augmented-generation work** (`apps/worker`, `docs/05-rag-design.md`) — evaluated
-offline and unit-tested — **but the deployed browser path performs zero runbook retrieval**:
-`apps/api` wires no retriever, and `runbooks/` is excluded from the production image entirely. Retrieval
-should be described as repository/offline-evaluation work, never as something the public demo does.
-
-### Local PostgreSQL (for the persistence layer)
-
-Only needed for `packages/database`'s integration tests and the persisted demo (`demo:persisted`).
-
-```bash
-cp .env.example .env          # local-only placeholders, never real credentials
-pnpm infra:up                 # start local Postgres via Docker Compose
-pnpm db:test:ensure           # idempotently create the test/shadow databases
-pnpm db:migrate:deploy        # apply committed migrations to the dev database
-pnpm db:migrate:test          # apply committed migrations to the test database
-pnpm db:generate              # generate the Prisma Client (gitignored — never assume it already exists)
-```
-
-Then:
+Then run the PostgreSQL suites or persisted demo:
 
 ```bash
 pnpm --filter @opspilot/database run test:integration
+pnpm --filter @opspilot/api run test:integration
 pnpm --filter @opspilot/worker run demo:persisted
 ```
 
-See `docs/11-agent-run-persistence.md` for the full persistence design, schema, and test-database lifecycle (including `db:reset:dev`/`db:reset:test`/`infra:down:reset` and the migration-authoring workflow).
-
-### Demos and evaluation
+The two integration suites share one test database and must not run in parallel. The repository
+provides the serialized equivalent:
 
 ```bash
-pnpm --filter @opspilot/worker run demo        # deterministic agent demo, no DB, no live API
-pnpm --filter @opspilot/worker run demo:rag    # deterministic RAG-augmented demo
-pnpm --filter @opspilot/worker run eval        # 15-case deterministic evaluation harness
+pnpm test:integration:sequential
 ```
 
-`spike:claude` and `spike:rag` require real `ANTHROPIC_API_KEY`/`VOYAGE_API_KEY` values and make live network calls — see `apps/worker/.env.example`.
+See [Agent Run Persistence](docs/11-agent-run-persistence.md) for schema, migration, and reset
+details.
 
-### Live Claude provider (worker only)
+### API and web startup
 
-`AGENT_RUN_PROVIDER_MODE` selects which provider the worker builds:
+After starting and migrating local PostgreSQL:
 
-| Value | Provider | Network |
-|---|---|---|
-| `FAKE` (default) | `FakeLlmProvider` | none |
-| `LIVE` | `ClaudeLlmProvider` | real, billed Anthropic Messages API calls |
+```bash
+pnpm --filter @opspilot/api run build
+pnpm --filter @opspilot/api run start
+```
 
-Live mode is **worker-only**. `apps/api` rejects any value other than `FAKE` at startup, before constructing anything network-capable, so the HTTP API and the public Render deployment remain FAKE-only. Enabling live model calls for the public demo is PR 6B's job and requires its own safeguards. RAG likewise remains un-wired to the browser and the API.
+In another terminal:
 
-`claude-sonnet-5` is the only supported model, validated at configuration time. See `apps/worker/.env.example` for the full variable list and `docs/04-agent-design.md` for the design.
+```bash
+pnpm --filter @opspilot/web run dev
+```
 
-The fail-closed live smoke proves the end-to-end path against the real API:
+The Vite UI runs at `http://127.0.0.1:5173` and proxies relative `/v1/**` requests to the API at
+`http://127.0.0.1:3000`. To exercise the API's persisted deterministic and approval workflows:
+
+```bash
+pnpm api:demo
+```
+
+In the UI, **Approval workflow demo** uses the deterministic
+`TICKET-APPROVAL-DEMO` scenario, which produces one proposed customer reply and enables the
+persisted approve/reject flow. Ordinary investigations produce no suggested actions. See
+[Approval Workflow](docs/13-approval-workflow.md) and [Web UI](docs/14-web-ui.md).
+
+### Deterministic demos and evaluation
+
+```bash
+pnpm --filter @opspilot/worker run demo
+pnpm --filter @opspilot/worker run demo:rag
+pnpm --filter @opspilot/worker run eval
+```
+
+These commands use deterministic providers. The RAG demo and the 15-case evaluation exercise the
+repository/offline retrieval path, not the public browser path.
+
+### Optional paid live smoke
+
+With `ANTHROPIC_API_KEY` supplied in the worker environment:
 
 ```bash
 OPSPILOT_LIVE_SMOKE=1 \
@@ -120,36 +211,37 @@ ANTHROPIC_MODEL=claude-sonnet-5 \
 pnpm --filter @opspilot/worker run test:claude:live
 ```
 
-> **This command makes a paid Anthropic API call** (roughly $0.03 at the measured spike token counts) — one smoke run performing up to two Messages API requests, one per orchestrator turn. It exits non-zero unless all four conditions above hold — including a present `ANTHROPIC_API_KEY` — and never falls back to the deterministic provider. It is excluded from `pnpm test` and from CI.
+> **Warning:** This makes paid Anthropic API requests. It is excluded from normal tests and CI.
 >
-> Its `AbortSignal.timeout(120_000)` is a caller-owned deadline covering Anthropic provider calls across the run. Tool, retrieval, and persistence cancellation are not wired in this milestone, so it is not a strict deadline for the entire agent run.
+> The smoke is fail-closed and never falls back to `FAKE`. One run can make up to two Anthropic
+> Messages API requests. Its caller-owned deadline covers provider calls, not tool, retrieval, or
+> persistence work.
 
-### Agent Run API (`apps/api`)
+## CI and deployment
 
-A synchronous NestJS API over the persistence layer above — eight endpoints (six domain endpoints plus `/v1/health/live` and `/v1/health/ready`), no auth, no queue, no live model calls (every run executes against a deterministic fake provider; the API rejects `AGENT_RUN_PROVIDER_MODE=LIVE` at startup). Requires the local PostgreSQL setup above.
+GitHub Actions runs type checks, unit tests, production builds, the frontend bundle guard,
+PostgreSQL integration tests, migration drift checks, and a Docker smoke workflow. The production
+image serves the React bundle and NestJS API together, runs committed migrations before startup,
+uses a non-root runtime user, and excludes worker source, Voyage AI, and runbooks.
 
-```bash
-pnpm --filter @opspilot/api run build
-pnpm --filter @opspilot/api run start     # Terminal A — blocks; http://127.0.0.1:3000
-```
+The deployed topology is:
 
-```bash
-pnpm api:demo                             # Terminal B — POST job, POST run, GET job, GET run,
-                                           # plus the TICKET-APPROVAL-DEMO approval-workflow flow
-```
+- one Render Docker web service;
+- one Neon PostgreSQL database;
+- one public origin for the frontend and API;
+- deterministic `FAKE` execution by default, with public `LIVE` execution disabled.
 
-See `docs/12-agent-run-api.md` for the full endpoint/error/envelope reference.
+See [CI/CD and Deployment](docs/08-cicd-deployment.md).
 
-An approval workflow adding `POST`/`GET /v1/agent-runs/:runId/approval` — recording a human approve/reject decision against a completed run's suggested actions, without executing them — is implemented; see `docs/13-approval-workflow.md`. The shipped deterministic demo (`pnpm --filter @opspilot/worker run demo`) always produces zero suggested actions, so nothing is ever approval-eligible there; `apps/api`'s own deterministic scenario adds one opt-in exception — a job created with `ticketId: "TICKET-APPROVAL-DEMO"` completes with one suggested action, exercising the full `PENDING` → `APPROVED`/`REJECTED` flow end to end via `pnpm api:demo`.
+## Roadmap
 
-### Web UI (`apps/web`)
+Next:
 
-A React + Vite UI over the Agent Run API above, supporting local development and same-origin production serving through `apps/api` — describe an issue, run an investigation with one click, read the resulting trace timeline and generated report, and record an approve/reject decision, all in the browser. Requires the API running (previous section).
+- protect public `LIVE` execution with a shared demo access token;
+- add rate and concurrency controls plus a durable PostgreSQL daily budget;
+- add a browser `FAKE`/`LIVE` selector with model, latency, and estimated-cost display.
 
-```bash
-pnpm --filter @opspilot/web run dev       # Terminal C — blocks; http://127.0.0.1:5173
-```
+Later:
 
-There is no editable Ticket ID field — an ordinary investigation generates one internally (`DEMO-<uuid>`), shown only as read-only metadata after the fact. To exercise the full approval demo: check **Approval workflow demo** before clicking **Run Investigation** to route the exact ticket ID `TICKET-APPROVAL-DEMO`; the report shows the one `DRAFT_CUSTOMER_REPLY` suggested action described above, and the Run Context Panel beside it (an "Action required" banner also appears above the report on completion) shows `PENDING` with a decision form. Enter a reviewer name (and, optionally, a note) and click **Approve** or **Reject** to record a terminal decision — the panel becomes a read-only record of the reviewer, note, and decision time, with no edit or revoke control. An ordinary (unchecked) investigation always shows `NOT_ELIGIBLE`, since it never produces a suggested action.
-
-Browser requests are relative `/v1/...` paths only, proxied by Vite to the API — no CORS configuration was needed or added. See `docs/14-web-ui.md` for the full design record.
+- move long-running investigations to asynchronous execution;
+- expose real-time investigation stages after a durable execution model exists.
