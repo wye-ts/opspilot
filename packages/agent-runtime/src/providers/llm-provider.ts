@@ -69,6 +69,17 @@ export interface AgentTurnInput {
   readonly phase: AgentTurnPhase;
   readonly maxOutputTokens: number;
   readonly conversation: readonly AgentConversationMessage[];
+  // Optional caller-owned cancellation seam. AbortSignal is a platform
+  // primitive, not an SDK type, so this stays provider-neutral: FakeLlmProvider
+  // ignores it, and a live adapter forwards it to its transport.
+  //
+  // It is deliberately per-turn rather than per-provider-instance. A deadline
+  // originates with whoever invoked the run — an HTTP request in the API path,
+  // a smoke script locally — and that owner is not known when the provider is
+  // constructed. Note this is only a *seam*: nothing here schedules a deadline,
+  // and it reaches provider calls only — tool execution, retrieval, and
+  // persistence are not cancelled by it in this milestone.
+  readonly signal?: AbortSignal;
 }
 
 export interface LlmProvider {
@@ -80,11 +91,18 @@ export interface LlmProvider {
 // produced a parseable model response, so they must not be laundered into an
 // AgentTurnResult. A live provider throws this instead; callers that want to
 // surface it (e.g. a demo/spike runner) catch it explicitly.
+// BILLING is distinct from AUTHENTICATION on purpose: a rejected key, a
+// missing permission, and an exhausted balance need three different operator
+// responses, and collapsing them would send an operator down the wrong one.
+// CANCELLED is likewise distinct from TIMEOUT — a caller aborting deliberately
+// is not a provider failure and must never be reported as one.
 export type LlmProviderErrorCategory =
   | "AUTHENTICATION"
+  | "BILLING"
   | "RATE_LIMIT"
   | "CONNECTION"
   | "TIMEOUT"
+  | "CANCELLED"
   | "SERVER_ERROR"
   | "REQUEST_INVALID"
   | "UNKNOWN";
