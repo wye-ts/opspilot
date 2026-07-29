@@ -890,6 +890,106 @@ The adapter must not:
 
 Exact model identifiers and provider-specific request syntax are spike outputs, not hard-coded architectural assumptions in this document.
 
+### 22.1 Provider Selection (implemented)
+
+The adapter is now selected by validated configuration rather than reachable only from a spike script.
+
+`AGENT_RUN_PROVIDER_MODE` is the execution mode and stays **provider-neutral**:
+
+| Value | Provider |
+|---|---|
+| `FAKE` (default) | `FakeLlmProvider` |
+| `LIVE` | `ClaudeLlmProvider` |
+
+There is deliberately no `CLAUDE` value. `FAKE | LIVE` is already what `agent_runs.provider_mode` persists, and the vendor belongs in provider/model metadata rather than in the execution-mode enum. A future multi-vendor selector (`LIVE_LLM_PROVIDER=ANTHROPIC`) is not introduced while Anthropic is the only live provider.
+
+Selection is expressed as a discriminated union so invalid pairings cannot be represented, and — importantly — it carries no database types, which is what allows the adapter to move to `packages/provider-claude` later without dragging Prisma into every consumer:
+
+```ts
+type LlmProviderSelection =
+  | { providerMode: "FAKE"; modelIdentifier?: null }
+  | { providerMode: "LIVE"; modelIdentifier: "claude-sonnet-5" };
+```
+
+After configuration parsing, `selection.modelIdentifier` is the single source of truth for the live model. Nothing downstream re-reads `ANTHROPIC_MODEL`.
+
+### 22.2 Supported Model Set
+
+`claude-sonnet-5` is the **only** supported model, and `ANTHROPIC_MODEL` must name it explicitly. Validation happens at configuration time, before any usable live-provider path exists — an unsupported value never reaches a request.
+
+This is a capability constraint, not caution for its own sake. The adapter sends `thinking: { type: "disabled" }` on every call because Sonnet 5's default adaptive thinking is incompatible with the forced `tool_choice` the finalization turn requires, and the provider-neutral conversation shape carries no thinking blocks to replay. Other models differ materially here — thinking cannot be disabled at all on some, and is effort-gated on others — so supporting one means a capability-aware request policy and its own tests, not merely a new pricing row.
+
+### 22.3 Cancellation, Timeout, and Retry
+
+Three distinct concerns, deliberately not conflated:
+
+| Concern | Owner | Mechanism |
+|---|---|---|
+| Per-attempt timeout | Anthropic SDK | `ANTHROPIC_TIMEOUT_MS` (default 45 000) |
+| Retry count and backoff | Anthropic SDK **only** | `ANTHROPIC_MAX_RETRIES` (default 1) |
+| Deadline covering Anthropic provider calls | the caller | an `AbortSignal` threaded through `AgentTurnInput.signal` |
+
+The SDK is the sole retry owner; the application and the orchestrator add none, so no compounded retry stack can exist. Both knobs are set explicitly on every client rather than inherited, since the SDK's own defaults (10-minute timeout, 2 retries) suit a batch job rather than an interactive demo.
+
+**Total duration is not `timeout × attempts`.** Retry backoff and any honoured `retry-after` delay add time no per-attempt timeout bounds, and a full agent run invokes the provider twice.
+
+**Scope of the caller-owned signal.** It is threaded to every provider turn, so it is a caller-owned deadline covering Anthropic provider calls across the run — the live smoke supplies `AbortSignal.timeout(120_000)`. It is **not** a strict deadline for the entire agent run: **tool, retrieval, and persistence cancellation are not wired in PR 6A**. PR 6A ships the seam only; PR 6B decides the complete API-run deadline behaviour, with `AgentRunService` as the intended owner.
+
+### 22.4 Error Taxonomy
+
+Transport and auth failures **throw** a sanitized `LlmProviderError`; response-shape failures **return** `protocol_error`. That split is unchanged.
+
+Classification order is load-bearing: abort first (it extends the base API error), then timeout before connection (the timeout class extends the connection class), then numeric status before the `>= 500` check (the SDK maps every 5xx to one class, so a 504 would otherwise be lost).
+
+| Signal | Category |
+|---|---|
+| Deliberate abort | `CANCELLED` |
+| HTTP 402 | `BILLING` |
+| HTTP 401 / 403 | `AUTHENTICATION` |
+| HTTP 504, client timeout | `TIMEOUT` |
+| HTTP 500 / 529 | `SERVER_ERROR` |
+| HTTP 429 | `RATE_LIMIT` |
+| HTTP 400 / 404 / 409 / 413 | `REQUEST_INVALID` |
+| Network / DNS / TLS | `CONNECTION` |
+
+`BILLING` is distinct from `AUTHENTICATION` because a rejected key, a missing permission, and an exhausted balance need three different operator responses. `CANCELLED` is distinct from `TIMEOUT` because a caller aborting deliberately is not a provider failure.
+
+Every user-facing message is one of a fixed set of sanitized strings. No raw provider body, header, `cause`, prompt content, or credential ever reaches one.
+
+### 22.5 Cost Estimation and Pricing Validity
+
+Cost is estimated from a versioned local rate table, never from the API response — the Messages response contains no monetary field.
+
+- The five token categories are priced **separately**: input, output, cache read, 5-minute cache write, and 1-hour cache write. The two cache-write TTLs carry different rates and are never summed.
+- Pricing uses the model the API **actually returned** (`message.model`), not the requested one.
+- Rates are integer nanoUSD per token, so the arithmetic is exact rather than accumulating floating-point noise.
+- The estimator takes an **injected observation time**; it reads no clock, so no test depends on the calendar.
+
+An estimate that cannot be produced correctly is `null` with a reason, never a guess:
+
+| `pricingStatus` | Meaning |
+|---|---|
+| `CURRENT` | Priced against a rate valid on the observation date |
+| `STALE` | The table's validity window does not cover the observation date |
+| `UNKNOWN_MODEL` | No rate entry for the returned model |
+| `INSUFFICIENT_USAGE_DETAIL` | Cache-creation tokens were reported without the TTL breakdown needed to price them |
+
+`claude-sonnet-5`'s current entry is the introductory rate, valid through **2026-08-31**. When that passes, every estimate becomes `STALE` with a null cost until the table is deliberately updated — the estimate stops claiming to be current rather than silently applying a wrong rate.
+
+### 22.6 Recorded Metadata
+
+Provider, model, request and message IDs, latency, stop reason, the five token categories, `configuredMaxRetries`, the cost estimate with its full pricing basis, the normalized result type, and — on failure — the terminal error category.
+
+`configuredMaxRetries` is the *configured ceiling*, not an observed attempt count. The Messages response exposes no reliable standard field for how many attempts the SDK actually made, so an `attempts` number would be an invention; this is a configuration fact, true by construction.
+
+All of it lives in the adapter's log event. None of it is persisted to PostgreSQL, and no raw request or response payload is persisted anywhere.
+
+### 22.7 Future Package Move
+
+The adapter lives in `apps/worker/src/providers/` and imports nothing from the rest of `apps/worker` — a property enforced by `module-boundary.test.ts`. That keeps the planned move to `packages/provider-claude` a mechanical relocation rather than a rewrite.
+
+It cannot move into `packages/agent-runtime`: that package ships inside the API production image, and the Anthropic SDK must stay out of it (see `docs/08-cicd-deployment.md` §13).
+
 ---
 
 ## 23. Observable Trace Semantics

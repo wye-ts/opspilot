@@ -2,14 +2,23 @@ import { fileURLToPath } from "node:url";
 
 import Anthropic from "@anthropic-ai/sdk";
 
+import opspilotAgentRuntime from "@opspilot/agent-runtime";
+
 import { ClaudeLlmProvider, type ClaudeProviderLogEvent } from "../providers/claude-llm-provider";
-import { getServiceStatusTool } from "../tools";
+import { requireSupportedClaudeModel } from "../providers/claude-model";
 import {
   hasFailingScenario,
   runForcedFinalizationProbe,
   runToolThenReportScenario,
   type SpikeScenarioResult,
 } from "./claude-agent-spike-scenarios";
+
+const { GET_SERVICE_STATUS_CATALOG_ENTRY } = opspilotAgentRuntime;
+
+// This script predates the validated worker configuration and builds its own
+// Anthropic client without passing timeout/maxRetries, so it inherits the
+// SDK's own defaults. Recorded explicitly rather than implied.
+const SDK_DEFAULT_MAX_RETRIES = 2;
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -25,11 +34,11 @@ function requireEnv(name: string): string {
 function logSpikeEvent(event: ClaudeProviderLogEvent): void {
   if (event.outcome === "response_received") {
     console.log(
-      `[claude] model=${event.model} providerRequestId=${event.providerRequestId} providerMessageId=${event.providerMessageId} usage=${JSON.stringify(event.usage)} latencyMs=${event.latencyMs.toFixed(0)} normalizedResultType=${event.normalizedResultType}`,
+      `[claude] model=${event.model} providerRequestId=${event.providerRequestId} providerMessageId=${event.providerMessageId} usage={"inputTokens":${event.inputTokens},"outputTokens":${event.outputTokens}} estimatedCostUsd=${event.estimatedCostUsd ?? "null"} pricingStatus=${event.pricingStatus} latencyMs=${event.latencyMs.toFixed(0)} normalizedResultType=${event.normalizedResultType}`,
     );
   } else {
     console.log(
-      `[claude] model=${event.model} error category=${event.category} latencyMs=${event.latencyMs.toFixed(0)}`,
+      `[claude] model=${event.model} error category=${event.terminalErrorCategory} latencyMs=${event.latencyMs.toFixed(0)}`,
     );
   }
 }
@@ -46,7 +55,10 @@ function printSummary(results: readonly SpikeScenarioResult[]): void {
 async function main(): Promise<void> {
   // Fail closed: both must be present before the client is ever constructed.
   const apiKey = requireEnv("ANTHROPIC_API_KEY");
-  const model = requireEnv("ANTHROPIC_MODEL");
+  // Validated through the same supported-model policy the configuration-
+  // selected path uses, BEFORE any client or provider is constructed — there
+  // is no unchecked `model: process.env.ANTHROPIC_MODEL` route into the adapter.
+  const model = requireSupportedClaudeModel(process.env.ANTHROPIC_MODEL);
 
   // logLevel "off" so all output comes from the adapter's own sanitized
   // telemetry callback below, never the SDK's own debug/warn logging.
@@ -55,13 +67,12 @@ async function main(): Promise<void> {
   const provider = new ClaudeLlmProvider({
     client,
     model,
-    diagnosticTools: [
-      {
-        tool: getServiceStatusTool,
-        description:
-          "Look up the current operational status (OPERATIONAL, DEGRADED, OUTAGE, or UNKNOWN) of a named internal service.",
-      },
-    ],
+    // The tool description now comes from the shared catalog rather than a
+    // literal duplicated with run-rag-live-spike.ts.
+    diagnosticTools: [GET_SERVICE_STATUS_CATALOG_ENTRY],
+    // This historical spike constructs its own client without the configured
+    // retry ceiling, so it reports the SDK default it actually inherits.
+    configuredMaxRetries: SDK_DEFAULT_MAX_RETRIES,
     logger: logSpikeEvent,
   });
 

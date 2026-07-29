@@ -180,6 +180,13 @@ export function createAgentRunService(repository: AgentRunRepositoryInterface): 
           ...(params.retriever !== undefined ? { retriever: params.retriever } : {}),
           ...(params.retrievalInput !== undefined ? { retrievalInput: params.retrievalInput } : {}),
           ...(params.maxOutputTokens !== undefined ? { maxOutputTokens: params.maxOutputTokens } : {}),
+          // ExecuteAndPersistParams inherits `signal` from AgentOrchestratorParams,
+          // so it must actually be forwarded — an inherited-but-dropped option
+          // would silently ignore a caller's cancellation. Scope: this reaches
+          // the provider turns only; tool, retrieval, and persistence
+          // cancellation are not wired in this milestone. PR 6B is where
+          // AgentRunService itself owns the complete API-run deadline.
+          ...(params.signal !== undefined ? { signal: params.signal } : {}),
         });
       } catch (rawError) {
         // Not a PersistenceError (persistence worked correctly up to this

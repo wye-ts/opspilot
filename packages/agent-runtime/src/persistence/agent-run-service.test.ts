@@ -464,3 +464,53 @@ describe("getAgentJob", () => {
     expect(result.runs).toEqual([]);
   });
 });
+
+describe("executeAndPersist — cancellation signal forwarding", () => {
+  it("forwards the caller's signal, unchanged, to every provider turn", async () => {
+    // ExecuteAndPersistParams inherits `signal` from AgentOrchestratorParams,
+    // so the service boundary must actually forward it. An inherited-but-dropped
+    // option would silently ignore a caller's cancellation while still
+    // type-checking — the failure mode this test exists to prevent.
+    const { repository } = createFakeRepository();
+    const service = createAgentRunService(repository);
+    const provider = reportSubmittingProvider();
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+    const controller = new AbortController();
+
+    const result = await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "FAKE",
+      createProvider: () => provider,
+      toolRegistry: toolRegistryWithServiceStatus(),
+      signal: controller.signal,
+    });
+
+    expect(result.persistence).toBe("persisted");
+    // The scenario is investigation-then-report, so both turns must be covered.
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(2);
+    for (const [input] of runAgentTurnSpy.mock.calls) {
+      // Identity, not equality: the boundary must neither replace the signal
+      // with a fresh one nor wrap it.
+      expect(input.signal).toBe(controller.signal);
+    }
+  });
+
+  it("omits the signal entirely when the caller supplies none", async () => {
+    const { repository } = createFakeRepository();
+    const service = createAgentRunService(repository);
+    const provider = reportSubmittingProvider();
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+
+    await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "FAKE",
+      createProvider: () => provider,
+      toolRegistry: toolRegistryWithServiceStatus(),
+    });
+
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(2);
+    for (const [input] of runAgentTurnSpy.mock.calls) {
+      expect(input.signal).toBeUndefined();
+    }
+  });
+});

@@ -188,7 +188,9 @@ Raw Express middleware runs before Nest routing, in this exact order: **(1)** se
 
 - **Service slug**: bounded keyword matching over the ticket summary — `billing` → `billing-service`, `notification` → `notification-service`, `auth` → `auth-service`, otherwise `unspecified-service`.
 - **Summary truncation**: the ticket summary is truncated to 200 characters before being interpolated into report fields.
-- **`AGENT_RUN_PROVIDER_MODE`**: defaults to `FAKE`. Any other value — in particular `LIVE` — fails the provider factory's own construction synchronously, before the Nest module graph finishes initializing, with a fixed message. No `ClaudeLlmProvider` is ever constructed and no network call is ever made in this milestone.
+- **`AGENT_RUN_PROVIDER_MODE`**: defaults to `FAKE`. Any other value — in particular `LIVE` — fails the provider factory's own construction synchronously, before the Nest module graph finishes initializing, with a fixed message. No `ClaudeLlmProvider` is ever constructed and no network call is ever made by this API.
+
+> **The live Claude provider does not change this.** `AGENT_RUN_PROVIDER_MODE=LIVE` selects `ClaudeLlmProvider` in `apps/worker` only. `apps/api` still rejects `LIVE` outright, still passes a hardcoded `providerMode: "FAKE"` on every run it executes, and still has no Anthropic SDK in its dependency closure — the production image's boundary check asserts that. This HTTP API is **not** live-provider capable; wiring it up, with the public-demo safeguards that would require, is a later milestone.
 
 ### Job-scoped `toolCallId`, and reuse across runs
 
@@ -245,6 +247,6 @@ pnpm run test:integration:sequential                # packages/database's suite,
 - A job queue (BullMQ or similar) and `202 Accepted` + polling/SSE for run status, once run latency no longer fits comfortably inside one HTTP request/response cycle.
 - Idempotency keys on `POST /v1/agent-jobs/:jobId/runs` for safe client-side retry.
 - Authentication/authorization, once this API is exposed beyond a local developer machine.
-- A live model provider path (`AGENT_RUN_PROVIDER_MODE=LIVE`), currently rejected outright.
+- A live model provider path through this API (`AGENT_RUN_PROVIDER_MODE=LIVE`), still rejected outright. The live `ClaudeLlmProvider` exists and is exercised from `apps/worker`, but no API path reaches it.
 
 The human-approval workflow — `POST`/`GET /v1/agent-runs/:runId/approval`, recording a decision only, never executing it — was future work as of Milestone 6B; it is implemented as of Milestone 6C. See §3/§4 above and `docs/13-approval-workflow.md` for the full design and implementation record.
