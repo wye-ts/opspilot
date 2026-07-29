@@ -2,6 +2,8 @@ import type Anthropic from "@anthropic-ai/sdk";
 import {
   APIConnectionError,
   APIConnectionTimeoutError,
+  APIError,
+  APIUserAbortError,
   AuthenticationError,
   InternalServerError,
   RateLimitError,
@@ -326,6 +328,7 @@ describe("ClaudeLlmProvider", () => {
     const provider = new ClaudeLlmProvider({
       client: buildFakeClient(create),
       model: "claude-sonnet-5",
+      configuredMaxRetries: 1,
       diagnosticTools: [{ tool: getServiceStatusTool, description: "Look up service status." }],
     });
 
@@ -344,6 +347,7 @@ describe("ClaudeLlmProvider", () => {
     const provider = new ClaudeLlmProvider({
       client: buildFakeClient(create),
       model: "claude-sonnet-5",
+      configuredMaxRetries: 1,
       diagnosticTools: [{ tool: getServiceStatusTool, description: "Look up service status." }],
     });
 
@@ -363,6 +367,7 @@ describe("ClaudeLlmProvider", () => {
     const provider = new ClaudeLlmProvider({
       client: buildFakeClient(create),
       model: "claude-sonnet-5",
+      configuredMaxRetries: 1,
       diagnosticTools: [],
     });
 
@@ -377,6 +382,7 @@ describe("ClaudeLlmProvider", () => {
     const provider = new ClaudeLlmProvider({
       client: buildFakeClient(create),
       model: "claude-sonnet-5",
+      configuredMaxRetries: 1,
       diagnosticTools: [],
     });
 
@@ -401,6 +407,7 @@ describe("ClaudeLlmProvider", () => {
     const provider = new ClaudeLlmProvider({
       client: buildFakeClient(create),
       model: "claude-sonnet-5",
+      configuredMaxRetries: 1,
       diagnosticTools: [],
       logger,
     });
@@ -427,6 +434,7 @@ describe("ClaudeLlmProvider", () => {
     const provider = new ClaudeLlmProvider({
       client: buildFakeClient(create),
       model: "claude-sonnet-5",
+      configuredMaxRetries: 1,
       diagnosticTools: [],
       logger,
     });
@@ -454,6 +462,7 @@ describe("ClaudeLlmProvider", () => {
     const provider = new ClaudeLlmProvider({
       client: buildFakeClient(create),
       model: "claude-sonnet-5",
+      configuredMaxRetries: 1,
       diagnosticTools: [],
     });
 
@@ -478,5 +487,283 @@ describe("ClaudeLlmProvider", () => {
     expect(providerError.message).not.toContain("network down");
     expect(providerError.message).not.toContain("upstream-simulated-timeout-detail-9f3a");
     expect(providerError.message).not.toContain("oops");
+  });
+});
+
+function buildProvider(
+  create: AnthropicMessagesClient["messages"]["create"],
+  overrides: Partial<ConstructorParameters<typeof ClaudeLlmProvider>[0]> = {},
+) {
+  return new ClaudeLlmProvider({
+    client: buildFakeClient(create),
+    model: "claude-sonnet-5",
+    diagnosticTools: [],
+    configuredMaxRetries: 1,
+    now: () => new Date("2026-07-28T00:00:00.000Z"),
+    ...overrides,
+  });
+}
+
+describe("ClaudeLlmProvider — error classification ordering", () => {
+  it("classifies a deliberate abort as CANCELLED, never as a timeout or a provider failure", async () => {
+    const create = vi.fn().mockRejectedValue(new APIUserAbortError({ message: "aborted" }));
+    const logger = vi.fn();
+    const provider = buildProvider(create, { logger });
+
+    const thrown = await provider.runAgentTurn(buildInput()).catch((error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(LlmProviderError);
+    expect((thrown as InstanceType<typeof LlmProviderError>).category).toBe("CANCELLED");
+    expect(logger).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "error", terminalErrorCategory: "CANCELLED" }),
+    );
+  });
+
+  it("classifies HTTP 402 as BILLING rather than folding it into AUTHENTICATION", async () => {
+    // 402 has no dedicated SDK error class, so it arrives as a generic
+    // APIError and must be classified from its status.
+    const error = new APIError(402, { message: "credit balance too low" }, "credit", new Headers());
+    const provider = buildProvider(vi.fn().mockRejectedValue(error));
+
+    const thrown = await provider.runAgentTurn(buildInput()).catch((e: unknown) => e);
+    const providerError = thrown as InstanceType<typeof LlmProviderError>;
+
+    expect(providerError.category).toBe("BILLING");
+    expect(providerError.category).not.toBe("AUTHENTICATION");
+    expect(providerError.message).toMatch(/billing or credit issue/);
+    expect(providerError.message).not.toContain("credit balance too low");
+  });
+
+  it.each([
+    [402, "BILLING"],
+    [408, "TIMEOUT"],
+    [413, "REQUEST_INVALID"],
+    [504, "TIMEOUT"],
+  ] as const)(
+    "classifies generic APIError status %i as %s",
+    async (status, expected) => {
+      // These four cannot be classified from the SDK's exception classes alone:
+      // 402 and 413 have no dedicated class, and 504 shares InternalServerError
+      // with 500/529. After retries are exhausted, 408 can also arrive as a
+      // generic APIError.
+      const error = new APIError(status, { message: "sensitive-body-7c31" }, "m", new Headers());
+      const provider = buildProvider(vi.fn().mockRejectedValue(error));
+
+      const thrown = await provider.runAgentTurn(buildInput()).catch((e: unknown) => e);
+      const providerError = thrown as InstanceType<typeof LlmProviderError>;
+
+      expect(providerError.category).toBe(expected);
+      expect(providerError.message).not.toContain("sensitive-body-7c31");
+    },
+  );
+
+  it.each([
+    [500, "SERVER_ERROR"],
+    [529, "SERVER_ERROR"],
+  ] as const)("still classifies typed 5xx status %i as %s", async (status, expected) => {
+    const error = new InternalServerError(status, { message: "x" }, "x", new Headers());
+    const provider = buildProvider(vi.fn().mockRejectedValue(error));
+
+    const thrown = await provider.runAgentTurn(buildInput()).catch((e: unknown) => e);
+
+    expect((thrown as InstanceType<typeof LlmProviderError>).category).toBe(expected);
+  });
+
+  it("classifies HTTP 504 as TIMEOUT even though the SDK maps every 5xx to InternalServerError", async () => {
+    const error = new InternalServerError(504, { message: "gateway timeout" }, "gw", new Headers());
+    const provider = buildProvider(vi.fn().mockRejectedValue(error));
+
+    const thrown = await provider.runAgentTurn(buildInput()).catch((e: unknown) => e);
+
+    expect((thrown as InstanceType<typeof LlmProviderError>).category).toBe("TIMEOUT");
+  });
+
+  it("still classifies 500 and 529 as SERVER_ERROR after the 504 carve-out", async () => {
+    for (const status of [500, 529]) {
+      const error = new InternalServerError(status, { message: "x" }, "x", new Headers());
+      const provider = buildProvider(vi.fn().mockRejectedValue(error));
+
+      const thrown = await provider.runAgentTurn(buildInput()).catch((e: unknown) => e);
+      expect((thrown as InstanceType<typeof LlmProviderError>).category).toBe("SERVER_ERROR");
+    }
+  });
+
+  it("keeps timeout ahead of connection, since the timeout class extends the connection class", async () => {
+    const timeout = buildProvider(
+      vi.fn().mockRejectedValue(new APIConnectionTimeoutError({ message: "t" })),
+    );
+    const connection = buildProvider(
+      vi.fn().mockRejectedValue(new APIConnectionError({ message: "c" })),
+    );
+
+    const timeoutError = (await timeout
+      .runAgentTurn(buildInput())
+      .catch((e: unknown) => e)) as InstanceType<typeof LlmProviderError>;
+    const connectionError = (await connection
+      .runAgentTurn(buildInput())
+      .catch((e: unknown) => e)) as InstanceType<typeof LlmProviderError>;
+
+    expect(timeoutError.category).toBe("TIMEOUT");
+    expect(connectionError.category).toBe("CONNECTION");
+  });
+
+  it("throws UNKNOWN when the response carries no request id", async () => {
+    const message = buildFakeMessage({ _request_id: null, content: [] });
+    const provider = buildProvider(vi.fn().mockResolvedValue(message));
+
+    const thrown = await provider.runAgentTurn(buildInput()).catch((e: unknown) => e);
+
+    expect((thrown as InstanceType<typeof LlmProviderError>).category).toBe("UNKNOWN");
+  });
+});
+
+describe("ClaudeLlmProvider — cancellation seam", () => {
+  it("forwards the turn's AbortSignal to the transport", async () => {
+    const create = vi.fn().mockResolvedValue(buildFakeMessage({ content: [] }));
+    const provider = buildProvider(create);
+    const controller = new AbortController();
+
+    await provider.runAgentTurn(buildInput({ signal: controller.signal }));
+
+    expect(create.mock.calls[0]?.[1]).toEqual({ signal: controller.signal });
+  });
+
+  it("passes no signal option at all when the turn supplies none", async () => {
+    const create = vi.fn().mockResolvedValue(buildFakeMessage({ content: [] }));
+    const provider = buildProvider(create);
+
+    await provider.runAgentTurn(buildInput());
+
+    expect(create.mock.calls[0]?.[1]).toEqual({});
+  });
+});
+
+describe("ClaudeLlmProvider — usage, retries, and cost metadata", () => {
+  it("splits cache-creation usage by TTL and prices each separately", async () => {
+    const message = buildFakeMessage({
+      content: [],
+      usage: {
+        cache_creation: { ephemeral_5m_input_tokens: 400, ephemeral_1h_input_tokens: 100 },
+        cache_creation_input_tokens: 500,
+        cache_read_input_tokens: 200,
+        inference_geo: null,
+        input_tokens: 1000,
+        output_tokens: 50,
+        output_tokens_details: null,
+        server_tool_use: null,
+        service_tier: null,
+      },
+    });
+    const logger = vi.fn();
+    const provider = buildProvider(vi.fn().mockResolvedValue(message), { logger });
+
+    await provider.runAgentTurn(buildInput());
+
+    expect(logger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        inputTokens: 1000,
+        outputTokens: 50,
+        cacheReadInputTokens: 200,
+        cacheCreation5mInputTokens: 400,
+        cacheCreation1hInputTokens: 100,
+        pricingStatus: "CURRENT",
+        // 1000*2000 + 50*10000 + 200*200 + 400*2500 + 100*4000
+        // = 2000000 + 500000 + 40000 + 1000000 + 400000 = 3940000 nanoUSD
+        estimatedCostUsd: 0.00394,
+      }),
+    );
+  });
+
+  it("refuses to price a cache write whose TTL breakdown is missing", async () => {
+    const message = buildFakeMessage({
+      content: [],
+      usage: {
+        cache_creation: null,
+        cache_creation_input_tokens: 500,
+        cache_read_input_tokens: 0,
+        inference_geo: null,
+        input_tokens: 100,
+        output_tokens: 10,
+        output_tokens_details: null,
+        server_tool_use: null,
+        service_tier: null,
+      },
+    });
+    const logger = vi.fn();
+    const provider = buildProvider(vi.fn().mockResolvedValue(message), { logger });
+
+    await provider.runAgentTurn(buildInput());
+
+    expect(logger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        estimatedCostUsd: null,
+        pricingStatus: "INSUFFICIENT_USAGE_DETAIL",
+      }),
+    );
+  });
+
+  it("prices against the model the API returned, not the model that was requested", async () => {
+    // The configured model is claude-sonnet-5, but the response says otherwise;
+    // pricing must follow the response or it would silently apply a wrong rate.
+    const message = buildFakeMessage({ content: [], model: "claude-opus-5" });
+    const logger = vi.fn();
+    const provider = buildProvider(vi.fn().mockResolvedValue(message), { logger });
+
+    await provider.runAgentTurn(buildInput());
+
+    expect(logger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: "claude-opus-5",
+        estimatedCostUsd: null,
+        pricingStatus: "UNKNOWN_MODEL",
+      }),
+    );
+  });
+
+  it("records configuredMaxRetries and never an invented actual attempt count", async () => {
+    const logger = vi.fn();
+    const provider = buildProvider(vi.fn().mockResolvedValue(buildFakeMessage({ content: [] })), {
+      logger,
+      configuredMaxRetries: 3,
+    });
+
+    await provider.runAgentTurn(buildInput());
+
+    const event = logger.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(event.configuredMaxRetries).toBe(3);
+    expect(event).not.toHaveProperty("attempts");
+  });
+
+  it("records the stop reason and provider name", async () => {
+    const logger = vi.fn();
+    const provider = buildProvider(
+      vi.fn().mockResolvedValue(buildFakeMessage({ content: [], stop_reason: "max_tokens" })),
+      { logger },
+    );
+
+    await provider.runAgentTurn(buildInput());
+
+    expect(logger).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "anthropic", stopReason: "max_tokens" }),
+    );
+  });
+
+  it("emits no raw payload, prompt, or ticket content in the log event", async () => {
+    const logger = vi.fn();
+    const provider = buildProvider(vi.fn().mockResolvedValue(buildFakeMessage({ content: [] })), {
+      logger,
+    });
+
+    await provider.runAgentTurn(
+      buildInput({
+        conversation: [
+          { role: "ticket_context", ticketId: "TICKET-9", summary: "sensitive-ticket-body-4b21" },
+        ],
+      }),
+    );
+
+    const serialized = JSON.stringify(logger.mock.calls[0]?.[0]);
+    expect(serialized).not.toContain("sensitive-ticket-body-4b21");
+    expect(serialized).not.toContain("TICKET-9");
   });
 });

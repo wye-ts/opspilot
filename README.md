@@ -98,9 +98,35 @@ pnpm --filter @opspilot/worker run eval        # 15-case deterministic evaluatio
 
 `spike:claude` and `spike:rag` require real `ANTHROPIC_API_KEY`/`VOYAGE_API_KEY` values and make live network calls — see `apps/worker/.env.example`.
 
+### Live Claude provider (worker only)
+
+`AGENT_RUN_PROVIDER_MODE` selects which provider the worker builds:
+
+| Value | Provider | Network |
+|---|---|---|
+| `FAKE` (default) | `FakeLlmProvider` | none |
+| `LIVE` | `ClaudeLlmProvider` | real, billed Anthropic Messages API calls |
+
+Live mode is **worker-only**. `apps/api` rejects any value other than `FAKE` at startup, before constructing anything network-capable, so the HTTP API and the public Render deployment remain FAKE-only. Enabling live model calls for the public demo is PR 6B's job and requires its own safeguards. RAG likewise remains un-wired to the browser and the API.
+
+`claude-sonnet-5` is the only supported model, validated at configuration time. See `apps/worker/.env.example` for the full variable list and `docs/04-agent-design.md` for the design.
+
+The fail-closed live smoke proves the end-to-end path against the real API:
+
+```bash
+OPSPILOT_LIVE_SMOKE=1 \
+AGENT_RUN_PROVIDER_MODE=LIVE \
+ANTHROPIC_MODEL=claude-sonnet-5 \
+pnpm --filter @opspilot/worker run test:claude:live
+```
+
+> **This command makes a paid Anthropic API call** (roughly $0.03 at the measured spike token counts) — one smoke run performing up to two Messages API requests, one per orchestrator turn. It exits non-zero unless all four conditions above hold — including a present `ANTHROPIC_API_KEY` — and never falls back to the deterministic provider. It is excluded from `pnpm test` and from CI.
+>
+> Its `AbortSignal.timeout(120_000)` is a caller-owned deadline covering Anthropic provider calls across the run. Tool, retrieval, and persistence cancellation are not wired in this milestone, so it is not a strict deadline for the entire agent run.
+
 ### Agent Run API (`apps/api`)
 
-A synchronous NestJS API over the persistence layer above — eight endpoints (six domain endpoints plus `/v1/health/live` and `/v1/health/ready`), no auth, no queue, no live model calls (every run executes against a deterministic fake provider). Requires the local PostgreSQL setup above.
+A synchronous NestJS API over the persistence layer above — eight endpoints (six domain endpoints plus `/v1/health/live` and `/v1/health/ready`), no auth, no queue, no live model calls (every run executes against a deterministic fake provider; the API rejects `AGENT_RUN_PROVIDER_MODE=LIVE` at startup). Requires the local PostgreSQL setup above.
 
 ```bash
 pnpm --filter @opspilot/api run build

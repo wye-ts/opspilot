@@ -1570,3 +1570,164 @@ This problem demonstrates:
   independently-tested presentation seam (`presentApproval`) rather than duplicating its copy
 - Separating what an automated (jsdom) test can prove from what only a real browser can, and reporting
   the difference explicitly rather than letting a passing test suite imply more coverage than it has
+
+---
+
+## 11. Challenge 9 — A Live Provider That Cannot Quietly Become a Fake One
+
+### Context
+
+The agent runtime was provider-neutral from the start: `LlmProvider` → `AgentTurnResult`, with a
+deterministic `FakeLlmProvider` behind it. A working Claude adapter existed, but only as something
+two hand-run spike scripts could reach — it read `process.env` inline and had no timeout, retry,
+cancellation, cost, or configuration story. This milestone promoted it to a configuration-selected
+provider while leaving the deployed HTTP API and the public deployment deterministic.
+
+### Problem
+
+Adding a real, billed, non-deterministic dependency to a codebase whose entire test and deployment
+story depends on determinism, without weakening either.
+
+Four constraints pulled against each other:
+
+1. CI must need no credential and make no provider call.
+2. The public deployment must stay fake-only, provably, not by convention.
+3. The live path must be genuinely exercisable, or it proves nothing.
+4. The adapter must be reusable by a second consumer later without being copied.
+
+### Why It Is Difficult
+
+The failure mode that matters is not "the live call breaks." It is "the live call silently does not
+happen and everything looks green." A fallback-to-fake path, an unset environment variable, or a
+default that resolves to the deterministic provider all produce a passing run that proves nothing —
+and the more safety scaffolding you add, the more places that silent downgrade can hide.
+
+The second difficulty is that "correct" for cost and duration is not what it first appears. A
+per-attempt timeout multiplied by an attempt count looks like a wall-clock bound and is not one. A
+token count multiplied by a headline rate looks like a cost and is not one, if a promotional rate has
+expired or the response reported cache tokens without the detail needed to price them.
+
+### Failure Modes
+
+- A live smoke that runs green against the deterministic provider because a variable was unset.
+- An adapter placed in the shared runtime package, pulling the vendor SDK into the production image.
+- A documented "worst case duration" that the system can exceed, because backoff was not counted.
+- A cancellation seam described as a whole-run deadline when it only reaches provider calls.
+- A cost figure computed at a rate that expired, reported with the same confidence as a valid one.
+- Cache-creation tokens priced at one TTL's rate when the response never said which TTL applied.
+- A retry stack compounding across SDK, application, and orchestrator layers.
+- A credential reaching a log line through a validation error, a `JSON.stringify`, or SDK debug output.
+
+### Decision
+
+**Fail closed at every boundary, and make the impossible states unrepresentable.**
+
+- The execution mode stays the provider-neutral `FAKE | LIVE` the database already persists. The
+  vendor lives in model metadata, not in the mode enum.
+- Provider selection is a discriminated union, so a LIVE selection cannot omit its model and a FAKE
+  selection cannot carry one. It references no database type, which is what keeps the adapter movable.
+- There is no fallback anywhere. Invalid LIVE configuration throws; a LIVE selection the factory
+  cannot satisfy throws; the smoke's gate exits non-zero. None of them degrade to FAKE.
+- The supported model set is exactly one, validated at configuration time, because the request policy
+  (thinking disabled alongside a forced tool choice) is validated for that model only.
+- The SDK is the sole retry owner. A caller-owned `AbortSignal` bounds Anthropic
+  provider calls across the run; tool, retrieval, and persistence cancellation are
+  deliberately not wired in this milestone, so it is not a whole-run deadline.
+- An estimate that cannot be produced correctly is `null` with a reason, never a number.
+
+### Alternatives Considered
+
+#### Alternative A — put the adapter in `packages/agent-runtime`
+
+Rejected. That package is copied into the production image, and CI asserts the vendor SDK is absent
+from it. Moving the adapter there would delete a structural guarantee to save one directory hop.
+
+#### Alternative B — add `AGENT_RUN_PROVIDER_MODE=CLAUDE`
+
+Rejected. The database persists `FAKE | LIVE`; introducing a third value would create a
+config/schema mismatch needing a later migration, to express something that belongs in model
+metadata anyway.
+
+#### Alternative C — record the SDK's actual retry count
+
+Rejected. The response exposes no reliable standard field for it. Reporting one would be invention
+dressed as telemetry; the configured ceiling is recorded instead, which is true by construction.
+
+#### Alternative D — a second output-token budget variable
+
+Rejected. The turn input already carries `maxOutputTokens`. A second authority with no defined
+precedence would silently override a caller that had deliberately lowered its budget.
+
+### Tradeoffs
+
+Supporting exactly one model is a real limitation, taken deliberately: a validated narrow claim is
+worth more than a broad unvalidated one, and the constraint is enforced where it is cheap to relax.
+Cost estimates expire by design rather than drifting silently, which means someone must update a
+table — the alternative is a number that is confidently wrong.
+
+### Implementation Notes
+
+- Rates are integer nanoUSD per token, so five token categories sum exactly rather than accumulating
+  floating-point noise. Every published rate lands on an integer in those units.
+- The estimator takes an injected observation time, so no test depends on the calendar and nothing
+  starts failing on a promotional rate's expiry date.
+- Error classification order is load-bearing three times over: abort extends the base API error;
+  the timeout class extends the connection class; and the SDK maps every 5xx to one class, so a 504
+  must be caught by status before that check.
+- The API key is stored non-enumerably with `toJSON` and `inspect.custom` overridden — covering
+  serialization, logging, enumeration, and spreads. Validation errors name variables, never values.
+- A boundary test parses every adapter source and rejects any import outside the directory, which is
+  what keeps a future package move mechanical.
+
+### Testing Strategy
+
+Mocked-transport unit tests for every error category, signal forwarding, cache-usage extraction, and
+secret redaction; an integration test driving the unmodified orchestrator's two-turn flow through the
+real adapter against scripted response fixtures; gate tests that prove the smoke refuses every
+invalid invocation without a network call; and cost tests covering each pricing status with injected
+dates.
+
+The boundary test earned its place immediately — it caught a violation on first run (its own doc
+comment cited a forbidden import as an example), which proved the detection worked before it had
+anything real to catch.
+
+### Observability
+
+One sanitized log event per turn: provider, model, request and message IDs, latency, stop reason, the
+five token categories, the configured retry ceiling, and the cost estimate with its full pricing
+basis. No raw payload, prompt, ticket content, header, or credential — enforced by test, and by
+constructing the SDK client with logging disabled so its own debug output can never leak a body.
+
+### Interview Explanation
+
+> The interesting risk in adding a live model provider wasn't that the call might fail — it was that
+> it might silently *not happen*. A smoke test that falls back to the deterministic provider passes,
+> looks like proof, and proves nothing. So the design rule was fail-closed everywhere: no fallback
+> path exists, invalid configuration throws before a client is constructed, and provider selection is
+> a discriminated union so a live selection can't be missing its model in the first place.
+>
+> Three things I'd flagged as "done" turned out to be wrong under scrutiny. I'd documented worst-case
+> duration as per-attempt timeout times attempts — but retry backoff and `retry-after` add time no
+> per-attempt timeout bounds. I then overcorrected and called the caller's abort signal the total
+> bound on the run, which it also isn't: it reaches the provider calls, while tool, retrieval, and
+> persistence cancellation stay unwired, so it is a deadline covering Anthropic calls and nothing
+> more. And I'd
+> planned to log the SDK's actual retry count, which the response doesn't reliably expose; I record
+> the configured ceiling instead, because a number you can't source is worse than no number. Cost
+> follows the same rule: it expires rather than drifting, and returns null with a reason when the
+> response lacks the detail to price it.
+
+### Resume Relevance
+
+This problem demonstrates:
+
+- Treating "silently passes without doing the work" as the primary risk of adding a live dependency,
+  and designing every boundary to fail closed rather than degrade
+- Using the type system to make invalid states unrepresentable, and keeping database types out of a
+  provider abstraction so it stays relocatable
+- Correcting three plausible-but-wrong claims — a duration formula, an overstated cancellation
+  scope, and an unobservable metric — rather than shipping documentation the system does not honour
+- Treating a source-scanning guard's own false positive as evidence the guard works, and fixing the
+  scanner rather than loosening the rule it enforces
+- Enforcing an architectural boundary with an executable test instead of a convention, so a future
+  package move stays mechanical
