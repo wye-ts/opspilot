@@ -13,7 +13,7 @@ import {
   UnprocessableEntityError,
 } from "@anthropic-ai/sdk";
 import type Anthropic from "@anthropic-ai/sdk";
-import opspilotAgentRuntime from "@opspilot/agent-runtime";
+import { LlmProviderError } from "@opspilot/agent-runtime";
 import type {
   AgentTurnInput,
   LlmProvider,
@@ -35,7 +35,6 @@ import {
   type DiagnosticToolWithDescription,
 } from "./claude-tool-schemas";
 
-const { LlmProviderError } = opspilotAgentRuntime;
 
 // The seam ClaudeLlmProvider depends on instead of a concrete Anthropic
 // client, so tests can inject a fake with zero live calls. A real
@@ -75,7 +74,16 @@ export type ClaudeProviderLogEvent =
       // SDK actually made, so reporting an "attempts" number would be an
       // invention. This is a configuration fact, true by construction.
       readonly configuredMaxRetries: number;
-      readonly estimatedCostUsd: number | null;
+      // Exact integer nanoUSD as a decimal string — the accounting value, not
+      // a display value. A JSON number cannot carry money without rounding,
+      // and a `bigint` cannot cross `JSON.stringify` at all, so the string is
+      // the only representation that survives both this sanitized event and a
+      // structured log line intact. Consumers that accumulate cost take
+      // `BigInt(estimatedCostNanoUsd)`; consumers that render it format it
+      // themselves. Deriving nanoUSD from a USD float would reintroduce the
+      // precision loss packages/agent-runtime/src/providers/cost-estimation.ts
+      // exists to prevent.
+      readonly estimatedCostNanoUsd: string | null;
       readonly pricingStatus: PricingStatus;
       readonly pricingBasis: string | null;
       readonly pricingBasisDate: string | null;
@@ -272,7 +280,7 @@ export class ClaudeLlmProvider implements LlmProvider {
       cacheCreation5mInputTokens: pricedUsage.cacheCreation5mInputTokens,
       cacheCreation1hInputTokens: pricedUsage.cacheCreation1hInputTokens,
       configuredMaxRetries: this.options.configuredMaxRetries,
-      estimatedCostUsd: cost.estimatedCostUsd,
+      estimatedCostNanoUsd: cost.estimatedCostNanoUsd,
       pricingStatus: cost.pricingStatus,
       pricingBasis: cost.pricingBasis,
       pricingBasisDate: cost.pricingBasisDate,

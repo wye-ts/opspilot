@@ -65,6 +65,24 @@ export type PricingStatus =
   | "INSUFFICIENT_USAGE_DETAIL";
 
 export interface CostEstimate {
+  /**
+   * The ACCOUNTING value: exact integer nanoUSD, carried as a decimal string.
+   *
+   * A string rather than a `bigint` because this value crosses boundaries that
+   * `bigint` cannot: it is placed on a sanitized provider log event, and
+   * `JSON.stringify` throws on a `bigint`. Callers that need to do arithmetic
+   * take `BigInt(estimatedCostNanoUsd)` and stay in `bigint` from there.
+   *
+   * Every consumer that sums, persists, or compares cost must use this field.
+   * Deriving nanoUSD from `estimatedCostUsd` would reintroduce exactly the
+   * floating-point loss this module exists to avoid.
+   */
+  readonly estimatedCostNanoUsd: string | null;
+  /**
+   * The DISPLAY value: the same estimate projected to USD and rounded to
+   * whole microUSD. Lossy, and safe only for rendering and log lines.
+   * Never an accounting input — see `estimatedCostNanoUsd`.
+   */
   readonly estimatedCostUsd: number | null;
   readonly pricingStatus: PricingStatus;
   readonly pricingBasis: string | null;
@@ -81,14 +99,22 @@ function toIsoDate(observedAt: Date): string {
   return observedAt.toISOString().slice(0, 10);
 }
 
-// Exact integer arithmetic; see ModelPricing's note on units.
-function totalNanoUsd(usage: PricedTokenUsage, pricing: ModelPricing): number {
+// Exact integer arithmetic in `bigint`, not `number`; see ModelPricing's note
+// on units.
+//
+// `number` was exact enough for one response — every term is an integer, and
+// a realistic run lands nowhere near Number.MAX_SAFE_INTEGER. It stops being
+// enough the moment estimates are *accumulated*: PR 6B2 sums per-run costs
+// into a durable daily total, and money that is summed must not be carried in
+// a type where the exactness is a property of the magnitude rather than of the
+// representation. `bigint` makes it a property of the representation.
+function totalNanoUsd(usage: PricedTokenUsage, pricing: ModelPricing): bigint {
   return (
-    usage.inputTokens * pricing.inputNanoUsdPerToken +
-    usage.outputTokens * pricing.outputNanoUsdPerToken +
-    usage.cacheReadInputTokens * pricing.cacheReadNanoUsdPerToken +
-    usage.cacheCreation5mInputTokens * pricing.cacheCreation5mNanoUsdPerToken +
-    usage.cacheCreation1hInputTokens * pricing.cacheCreation1hNanoUsdPerToken
+    BigInt(usage.inputTokens) * BigInt(pricing.inputNanoUsdPerToken) +
+    BigInt(usage.outputTokens) * BigInt(pricing.outputNanoUsdPerToken) +
+    BigInt(usage.cacheReadInputTokens) * BigInt(pricing.cacheReadNanoUsdPerToken) +
+    BigInt(usage.cacheCreation5mInputTokens) * BigInt(pricing.cacheCreation5mNanoUsdPerToken) +
+    BigInt(usage.cacheCreation1hInputTokens) * BigInt(pricing.cacheCreation1hNanoUsdPerToken)
   );
 }
 
@@ -96,8 +122,15 @@ function totalNanoUsd(usage: PricedTokenUsage, pricing: ModelPricing): number {
 // order of $0.03, so micro-dollar resolution is far finer than the estimate's
 // own accuracy, while keeping printed output and test expectations free of
 // trailing floating-point noise.
-function nanoUsdToUsd(nanoUsd: number): number {
-  return Math.round(nanoUsd / 1000) / 1_000_000;
+//
+// Lossy by construction, and that is the point: this is the DISPLAY
+// projection. Nothing downstream may convert it back — see CostEstimate.
+//
+// `+ 500n` before the divide reproduces Math.round's half-up behaviour, which
+// bigint division alone would not: `/` truncates toward zero. Costs are never
+// negative, so half-up and half-away-from-zero coincide here.
+function nanoUsdToUsd(nanoUsd: bigint): number {
+  return Number((nanoUsd + 500n) / 1000n) / 1_000_000;
 }
 
 /**
@@ -120,6 +153,7 @@ export function estimateCostUsd(
 
   if (!pricing) {
     return {
+      estimatedCostNanoUsd: null,
       estimatedCostUsd: null,
       pricingStatus: "UNKNOWN_MODEL",
       pricingBasis: null,
@@ -137,19 +171,25 @@ export function estimateCostUsd(
   } as const;
 
   if (observedDate < pricing.effectiveFrom || observedDate > pricing.validThrough) {
-    return { estimatedCostUsd: null, pricingStatus: "STALE", ...metadata };
+    return { estimatedCostNanoUsd: null, estimatedCostUsd: null, pricingStatus: "STALE", ...metadata };
   }
 
   if (usage.cacheCreationBreakdownMissing === true) {
     return {
+      estimatedCostNanoUsd: null,
       estimatedCostUsd: null,
       pricingStatus: "INSUFFICIENT_USAGE_DETAIL",
       ...metadata,
     };
   }
 
+  // Computed once and projected twice: the exact value is what downstream
+  // accounting consumes, the USD number is only ever rendered.
+  const nanoUsd = totalNanoUsd(usage, pricing);
+
   return {
-    estimatedCostUsd: nanoUsdToUsd(totalNanoUsd(usage, pricing)),
+    estimatedCostNanoUsd: nanoUsd.toString(),
+    estimatedCostUsd: nanoUsdToUsd(nanoUsd),
     pricingStatus: "CURRENT",
     ...metadata,
   };

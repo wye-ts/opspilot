@@ -1,11 +1,11 @@
 import { Module } from "@nestjs/common";
 
 import { AgentRuntimeModule } from "../execution/agent-runtime.module";
-import { DeterministicExecutionModule } from "../execution/deterministic-execution.module";
+import { RunExecutionModule } from "../execution/run-execution.module";
 import { AgentRunsController } from "./agent-runs.controller";
 
 @Module({
-  imports: [AgentRuntimeModule, DeterministicExecutionModule],
+  imports: [AgentRuntimeModule, RunExecutionModule],
   controllers: [AgentRunsController],
 })
 export class AgentRunsModule {}

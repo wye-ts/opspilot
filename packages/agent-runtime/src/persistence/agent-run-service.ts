@@ -20,6 +20,7 @@ import {
   type AgentOrchestratorResult,
 } from "../agent/agent-orchestrator";
 import type { AgentConversationMessage, LlmProvider } from "../providers/llm-provider";
+import { resolveAbortProvenance, type RunAbortContext } from "../providers/run-abort-context";
 import { AgentRunServiceError } from "./agent-run-service-error";
 import type { AgentRunRepositoryInterface } from "./agent-run-repository-interface";
 
@@ -69,6 +70,19 @@ export interface ExecuteAndPersistParams
   readonly providerMode: ProviderMode;
   readonly createProvider: (job: AgentJobRecord) => LlmProvider;
   readonly modelIdentifier?: string | null;
+  /**
+   * Supplied for a LIVE run so the persisted failure code can distinguish "ran
+   * out of time" from "caller went away" — the merged signal alone cannot,
+   * because the SDK reports both as a user abort. See resolveAbortProvenance.
+   *
+   * When supplied, `abortContext.signal` — not the bare `signal` (inherited
+   * from AgentOrchestratorParams) — is the signal that actually reaches the
+   * provider; the same context is also kept around to resolve deadline/
+   * disconnect provenance at finalization. Bare `signal` remains the fallback
+   * for legacy/internal callers with no RunAbortContext to supply. The API
+   * controller passes only `abortContext`.
+   */
+  readonly abortContext?: RunAbortContext;
 }
 
 export type ExecuteAndPersistResult =
@@ -104,6 +118,34 @@ export interface AgentRunService {
   getAgentJob(jobId: string): Promise<PersistedAgentJob>;
 }
 
+/**
+ * Resolves abort provenance exactly once, against the complete
+ * `AgentOrchestratorResult`, before any persistence is attempted.
+ *
+ * This must happen before `finalize`'s try/catch, not inside it. `finalize`
+ * can fail with a transient `PersistenceError`, in which case it returns the
+ * `persistence: "unavailable", stage: "finalization"` variant carrying the
+ * SAME `agentResult` object back to the caller for `retryFinalization`. If
+ * provenance were instead derived only in the value passed to
+ * `repository.finalizeFailed(...)`, that returned `agentResult` would still
+ * carry the ORIGINAL orchestrator code — so a retry (which has no
+ * `RunAbortContext` to re-derive provenance from) would persist whatever the
+ * provider adapter first reported (e.g. `PROVIDER_CANCELLED`) even when the
+ * deadline had actually fired (`PROVIDER_TIMEOUT`) on the very first attempt.
+ * A transient database failure must never be able to change the terminal
+ * failure code — resolving once, up front, is what makes that impossible by
+ * construction rather than by discipline.
+ */
+function resolveAgentResultAbortProvenance(
+  result: AgentOrchestratorResult,
+  context: RunAbortContext | undefined,
+): AgentOrchestratorResult {
+  if (result.status === "completed") return result;
+
+  const code = resolveAbortProvenance(result.code, context);
+  return code === result.code ? result : { ...result, code };
+}
+
 async function finalize(
   repository: AgentRunRepositoryInterface,
   runId: string,
@@ -113,6 +155,12 @@ async function finalize(
     if (agentResult.status === "completed") {
       await repository.finalizeCompleted(runId, agentResult.trace, agentResult.report);
     } else {
+      // agentResult.code is already the resolved terminal code — see
+      // resolveAgentResultAbortProvenance, called once by executeAndPersist
+      // before this function is ever reached. finalize itself resolves
+      // nothing: doing so here would mean re-deriving provenance on every
+      // retry, using whatever context that retry call happens to supply
+      // (retryFinalization supplies none at all).
       await repository.finalizeFailed(runId, agentResult.trace, agentResult.code);
     }
     return { persistence: "persisted", run: await repository.getAgentRun(runId) };
@@ -154,6 +202,21 @@ export function createAgentRunService(repository: AgentRunRepositoryInterface): 
         summary: started.job.ticketContext.summary,
       };
 
+      // A single signal source. `abortContext.signal` — when supplied — is
+      // ALREADY the merged deadline/disconnect signal (see
+      // createRunAbortHandles), so it takes precedence over a bare `signal`.
+      // Plain `signal` remains for callers that supply no RunAbortContext at
+      // all (apps/worker's demo scripts, and any other caller that only
+      // wants cancellation with no abort-provenance tracking).
+      //
+      // Deriving exactly one effective signal here — rather than letting a
+      // caller pass both `signal` and `abortContext` as independent values —
+      // is what makes it impossible for the provider to be cancelled by one
+      // signal while finalization resolves provenance from a different one.
+      // The API controller supplies only `abortContext`; nothing in this
+      // codebase constructs both from unrelated sources.
+      const effectiveSignal = params.abortContext?.signal ?? params.signal;
+
       // runAgentOrchestrator remains completely unchanged and persistence-free
       // (see agent-orchestrator.ts) — this is Option A, persist-after: the
       // orchestrator runs fully in memory before any trace/outcome is written.
@@ -180,13 +243,9 @@ export function createAgentRunService(repository: AgentRunRepositoryInterface): 
           ...(params.retriever !== undefined ? { retriever: params.retriever } : {}),
           ...(params.retrievalInput !== undefined ? { retrievalInput: params.retrievalInput } : {}),
           ...(params.maxOutputTokens !== undefined ? { maxOutputTokens: params.maxOutputTokens } : {}),
-          // ExecuteAndPersistParams inherits `signal` from AgentOrchestratorParams,
-          // so it must actually be forwarded — an inherited-but-dropped option
-          // would silently ignore a caller's cancellation. Scope: this reaches
-          // the provider turns only; tool, retrieval, and persistence
-          // cancellation are not wired in this milestone. PR 6B is where
-          // AgentRunService itself owns the complete API-run deadline.
-          ...(params.signal !== undefined ? { signal: params.signal } : {}),
+          // Scope: this reaches the provider turns only; tool, retrieval, and
+          // persistence cancellation are not wired in this milestone.
+          ...(effectiveSignal !== undefined ? { signal: effectiveSignal } : {}),
         });
       } catch (rawError) {
         // Not a PersistenceError (persistence worked correctly up to this
@@ -197,7 +256,12 @@ export function createAgentRunService(repository: AgentRunRepositoryInterface): 
         throw new AgentRunServiceError("AGENT_EXECUTION_CRASHED", started.run.id, { cause: rawError });
       }
 
-      return finalize(repository, started.run.id, agentResult);
+      // Resolved once, here, before finalize is ever called — see
+      // resolveAgentResultAbortProvenance for why this must not move inside
+      // finalize or be re-derived on retry.
+      const resolvedResult = resolveAgentResultAbortProvenance(agentResult, params.abortContext);
+
+      return finalize(repository, started.run.id, resolvedResult);
     },
 
     retryFinalization: (runId, agentResult) => finalize(repository, runId, agentResult),

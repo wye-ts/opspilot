@@ -11,7 +11,9 @@ export type ApiErrorCode =
   | "AGENT_EXECUTION_CRASHED"
   | "INTERNAL_ERROR"
   | "AGENT_RUN_NOT_APPROVAL_ELIGIBLE"
-  | "AGENT_RUN_APPROVAL_ALREADY_DECIDED";
+  | "AGENT_RUN_APPROVAL_ALREADY_DECIDED"
+  | "LIVE_NOT_CONFIGURED"
+  | "LIVE_RUNS_DISABLED";
 
 interface ApiErrorCatalogEntry {
   readonly status: number;
@@ -72,5 +74,23 @@ export const API_ERROR_CATALOG: Readonly<Record<ApiErrorCode, ApiErrorCatalogEnt
   AGENT_RUN_APPROVAL_ALREADY_DECIDED: {
     status: 409,
     message: "The agent run already has a recorded approval decision that does not match this request.",
+  },
+  // Both are admission failures: they are decided before any AgentRun row
+  // exists, so no run resource is created and an error envelope is the honest
+  // response. A failure *after* the row exists returns 201 with the persisted
+  // FAILED run instead — see agent-runs.controller.ts.
+  //
+  // Two distinct codes, same status. A public caller that inspects the error
+  // code (rather than just the HTTP status or the near-identical message
+  // text) can tell no-credential apart from switched-off — the codes are not
+  // collapsed. The similar wording is only so neither message body leaks more
+  // about the deployment's security posture than the code already does.
+  LIVE_NOT_CONFIGURED: {
+    status: 503,
+    message: "Live agent runs are not available on this server.",
+  },
+  LIVE_RUNS_DISABLED: {
+    status: 503,
+    message: "Live agent runs are currently disabled.",
   },
 };

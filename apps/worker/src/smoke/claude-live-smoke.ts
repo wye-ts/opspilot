@@ -3,16 +3,16 @@ import { fileURLToPath } from "node:url";
 import opspilotAgentRuntime from "@opspilot/agent-runtime";
 import type { AgentOrchestratorResult, LlmProvider } from "@opspilot/agent-runtime";
 
-import {
-  parseWorkerProviderConfig,
-  type EnvRecord,
-  type LiveWorkerProviderConfig,
-} from "../providers/claude-config";
-import type { ClaudeProviderLogEvent } from "../providers/claude-llm-provider";
-import { createLlmProviderFactory } from "../providers/create-llm-provider";
+import opspilotProviderClaude from "@opspilot/provider-claude";
+import type {
+  ClaudeProviderLogEvent,
+  EnvRecord,
+  LiveProviderConfig,
+} from "@opspilot/provider-claude";
 
 const { runAgentOrchestrator, InMemoryToolRegistry, GET_SERVICE_STATUS_CATALOG_ENTRY, LlmProviderError } =
   opspilotAgentRuntime;
+const { parseProviderConfig, createLlmProviderFactory } = opspilotProviderClaude;
 
 /**
  * Opt-in, fail-closed live smoke.
@@ -56,7 +56,7 @@ export interface SmokeGateFailure {
  */
 export interface SmokeGateSuccess {
   readonly ok: true;
-  readonly config: LiveWorkerProviderConfig;
+  readonly config: LiveProviderConfig;
 }
 
 export type SmokeGateResult = SmokeGateFailure | SmokeGateSuccess;
@@ -92,18 +92,23 @@ export function evaluateSmokeGate(env: EnvRecord): SmokeGateResult {
   // provider path uses, rather than re-implementing them here.
   let config;
   try {
-    config = parseWorkerProviderConfig(env);
+    config = parseProviderConfig(env);
   } catch (error) {
     return { ok: false, reason: (error as Error).message };
   }
 
-  if (config.anthropic === null || config.selection.providerMode !== "LIVE") {
-    return { ok: false, reason: "The parsed configuration is not a LIVE configuration." };
+  // Since PR 6B1, live capability is resolved independently of the default
+  // request mode: the parser returns "absent" when neither Anthropic variable
+  // is set, rather than throwing. This smoke requires an actual live
+  // capability, so absent is a refusal — never a quiet fall-through to the
+  // deterministic provider.
+  if (config.liveCapability.kind !== "present") {
+    return { ok: false, reason: "No live Anthropic capability is configured." };
   }
 
   // The redaction-preserving object is passed through untouched; the key is
   // never read out into a plain property.
-  return { ok: true, config };
+  return { ok: true, config: config.liveCapability };
 }
 
 function formatEvent(event: ClaudeProviderLogEvent): string {
@@ -129,7 +134,7 @@ function formatEvent(event: ClaudeProviderLogEvent): string {
     `cacheCreation5mInputTokens=${event.cacheCreation5mInputTokens}`,
     `cacheCreation1hInputTokens=${event.cacheCreation1hInputTokens}`,
     `configuredMaxRetries=${event.configuredMaxRetries}`,
-    `estimatedCostUsd=${event.estimatedCostUsd ?? "null"}`,
+    `estimatedCostNanoUsd=${event.estimatedCostNanoUsd ?? "null"}`,
     `pricingStatus=${event.pricingStatus}`,
     `pricingBasis=${event.pricingBasis ?? "null"}`,
     `pricingBasisDate=${event.pricingBasisDate ?? "null"}`,

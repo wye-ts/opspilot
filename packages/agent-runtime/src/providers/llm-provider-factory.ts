@@ -10,7 +10,7 @@ import type { LlmProvider } from "./llm-provider";
  * would have to change every time a provider is added or a model retired.
  *
  * The provider layer narrows it — see SupportedClaudeModel in
- * apps/worker/src/providers/claude-model.ts.
+ * @opspilot/provider-claude's claude-model.ts.
  *
  * A discriminated union rather than `{ providerMode, modelIdentifier? }`, so
  * the invalid combinations are unrepresentable: a LIVE selection cannot omit

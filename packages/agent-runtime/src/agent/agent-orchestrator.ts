@@ -2,15 +2,18 @@ import {
   ResolutionReportSchema,
   type AgentOrchestratorErrorCode,
   type AgentTraceEvent,
+  type AgentTurnResult,
   type EvidenceReference,
   type ResolutionReport,
   type RetrievalSummaryEntry,
 } from "@opspilot/contracts";
 
+import { LlmProviderError } from "../providers/llm-provider";
 import type {
   AgentConversationMessage,
   AgentTurnPhase,
   LlmProvider,
+  LlmProviderErrorCategory,
 } from "../providers/llm-provider";
 import { formatRagContext } from "../rag/rag-context-formatting";
 import { validateRetrievalInput, validateRetrievedChunks } from "../rag/retrieval-validation";
@@ -80,6 +83,36 @@ function failed(
   trace: readonly AgentTraceEvent[],
 ): AgentOrchestratorResult {
   return { status: "failed", code, message, trace };
+}
+
+/**
+ * Maps a transport-level provider failure onto the persisted failure code.
+ *
+ * Grouped by what an operator would do about it, not by vendor error class.
+ * TIMEOUT and CANCELLED are kept separate from everything else because they
+ * are not provider faults: one means the run outlived its budget, the other
+ * means the caller went away. Collapsing either into PROVIDER_UNAVAILABLE
+ * would send an operator looking for an outage that never happened.
+ *
+ * An exhaustive switch, deliberately: adding a category to
+ * LlmProviderErrorCategory should fail the build here rather than silently
+ * fall through to a default.
+ */
+function providerFailureCode(category: LlmProviderErrorCategory): AgentOrchestratorErrorCode {
+  switch (category) {
+    case "TIMEOUT":
+      return "PROVIDER_TIMEOUT";
+    case "CANCELLED":
+      return "PROVIDER_CANCELLED";
+    case "AUTHENTICATION":
+    case "BILLING":
+    case "RATE_LIMIT":
+    case "CONNECTION":
+    case "SERVER_ERROR":
+    case "REQUEST_INVALID":
+    case "UNKNOWN":
+      return "PROVIDER_UNAVAILABLE";
+  }
 }
 
 export function findInvalidEvidence(
@@ -187,15 +220,36 @@ export async function runAgentOrchestrator(
   for (let turnIndex = 0; turnIndex < MAX_PROVIDER_TURNS; turnIndex++) {
     const phase: AgentTurnPhase =
       turnIndex === MAX_PROVIDER_TURNS - 1 ? "FINALIZATION" : "INVESTIGATION";
-    const result = await provider.runAgentTurn({
-      turnIndex,
-      phase,
-      maxOutputTokens,
-      conversation,
-      // Conditional spread: exactOptionalPropertyTypes is on, so an optional
-      // property must be absent or a real value, never an explicit undefined.
-      ...(params.signal !== undefined ? { signal: params.signal } : {}),
-    });
+    let result: AgentTurnResult;
+    try {
+      result = await provider.runAgentTurn({
+        turnIndex,
+        phase,
+        maxOutputTokens,
+        conversation,
+        // Conditional spread: exactOptionalPropertyTypes is on, so an optional
+        // property must be absent or a real value, never an explicit undefined.
+        ...(params.signal !== undefined ? { signal: params.signal } : {}),
+      });
+    } catch (error) {
+      // An LlmProviderError is an EXPECTED outcome of a live provider call —
+      // auth, billing, rate limit, connectivity, timeout, cancellation — and
+      // is converted into an ordinary failed result so the caller can finalize
+      // the run. Letting it propagate would leave the persisted run RUNNING
+      // forever, because AgentRunService's catch turns any throw into
+      // AGENT_EXECUTION_CRASHED without finalizing.
+      //
+      // Its message is already the adapter's sanitized, category-keyed string,
+      // so nothing vendor-specific — no response body, header, prompt, request
+      // ID, or credential — reaches the trace or the database.
+      //
+      // Anything else is a genuine defect and still propagates unchanged: the
+      // crash path exists precisely to make those loud.
+      if (error instanceof LlmProviderError) {
+        return failed(providerFailureCode(error.category), error.message, trace);
+      }
+      throw error;
+    }
 
     if (result.type === "protocol_error") {
       return failed(result.code, result.message, trace);

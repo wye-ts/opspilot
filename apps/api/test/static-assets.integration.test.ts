@@ -18,8 +18,14 @@ import { NotFoundController } from "../src/common/not-found.controller";
 import { requestIdMiddleware } from "../src/common/request-id.middleware";
 import { createSpaFallbackMiddleware } from "../src/common/spa-fallback.middleware";
 import { isWebDistServable } from "../src/common/web-assets";
-import type { DeterministicProviderFactory } from "../src/execution/deterministic-provider-factory";
-import { AGENT_RUN_SERVICE, DETERMINISTIC_PROVIDER_FACTORY, TOOL_REGISTRY } from "../src/execution/execution.tokens";
+import type { AgentProviderFactory } from "../src/execution/api-provider-factory";
+import {
+  AGENT_RUN_SERVICE,
+  AGENT_PROVIDER_FACTORY,
+  RUN_EXECUTION_CONFIG,
+  TOOL_REGISTRY,
+} from "../src/execution/execution.tokens";
+import type { RunExecutionConfig } from "../src/execution/run-execution-config";
 import { HealthController } from "../src/health/health.controller";
 import { PRISMA_CLIENT_HANDLE } from "../src/persistence/prisma.tokens";
 
@@ -36,7 +42,16 @@ const fakeAgentRunService: AgentRunService = {
   getAgentJob: vi.fn(),
 };
 const fakeToolRegistry = { find: vi.fn() } as unknown as ToolRegistry;
-const fakeProviderFactory: DeterministicProviderFactory = { createProvider: vi.fn() };
+const fakeProviderFactory: AgentProviderFactory = { createProvider: vi.fn() };
+// The safest posture a deployment can be in: deterministic by default, no live
+// capability, kill switch off. This suite is about static-asset routing and
+// should not depend on the live path at all.
+const runExecutionConfig: RunExecutionConfig = {
+  defaultRequestMode: "FAKE",
+  liveCapability: { kind: "absent" },
+  liveAgentRunsEnabled: false,
+  providerDeadlineMs: 120_000,
+};
 const fakeQueryRaw = vi.fn().mockResolvedValue([{ "?column?": 1 }]);
 const fakePrismaHandle = { prisma: { $queryRaw: fakeQueryRaw } } as unknown as PrismaClientHandle;
 
@@ -48,7 +63,8 @@ const fakePrismaHandle = { prisma: { $queryRaw: fakeQueryRaw } } as unknown as P
   providers: [
     { provide: AGENT_RUN_SERVICE, useValue: fakeAgentRunService },
     { provide: TOOL_REGISTRY, useValue: fakeToolRegistry },
-    { provide: DETERMINISTIC_PROVIDER_FACTORY, useValue: fakeProviderFactory },
+    { provide: AGENT_PROVIDER_FACTORY, useValue: fakeProviderFactory },
+    { provide: RUN_EXECUTION_CONFIG, useValue: runExecutionConfig },
     { provide: PRISMA_CLIENT_HANDLE, useValue: fakePrismaHandle },
   ],
 })

@@ -21,6 +21,7 @@
     "@opspilot/agent-runtime": "workspace:*",
     "@opspilot/contracts": "workspace:*",
     "@opspilot/database": "workspace:*",
+    "@opspilot/provider-claude": "workspace:*",
     "voyageai": "^0.4.0",
     "zod": "^4.4.3"
   }

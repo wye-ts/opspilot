@@ -16,8 +16,14 @@ import { jsonBodyParser, jsonParserErrorHandler } from "../src/common/json-body-
 import { LoggingInterceptor } from "../src/common/logging.interceptor";
 import { NotFoundController } from "../src/common/not-found.controller";
 import { requestIdMiddleware } from "../src/common/request-id.middleware";
-import type { DeterministicProviderFactory } from "../src/execution/deterministic-provider-factory";
-import { AGENT_RUN_SERVICE, DETERMINISTIC_PROVIDER_FACTORY, TOOL_REGISTRY } from "../src/execution/execution.tokens";
+import type { AgentProviderFactory } from "../src/execution/api-provider-factory";
+import {
+  AGENT_RUN_SERVICE,
+  AGENT_PROVIDER_FACTORY,
+  RUN_EXECUTION_CONFIG,
+  TOOL_REGISTRY,
+} from "../src/execution/execution.tokens";
+import type { RunExecutionConfig } from "../src/execution/run-execution-config";
 
 // Mocked-service HTTP transport suite — real Nest HTTP app, real Express
 // middleware pipeline (reproduced in the exact production order), Supertest.
@@ -31,7 +37,17 @@ const fakeAgentRunService: AgentRunService = {
   getAgentJob: vi.fn(),
 };
 const fakeToolRegistry = { find: vi.fn() } as unknown as ToolRegistry;
-const fakeProviderFactory: DeterministicProviderFactory = { createProvider: vi.fn() };
+const fakeProviderFactory: AgentProviderFactory = { createProvider: vi.fn() };
+// The safest posture a deployment can be in: deterministic by default, no live
+// capability, kill switch off. This suite exercises the HTTP transport, which
+// should not depend on the live path at all — and with this config a stray LIVE
+// request would be refused rather than attempted.
+const runExecutionConfig: RunExecutionConfig = {
+  defaultRequestMode: "FAKE",
+  liveCapability: { kind: "absent" },
+  liveAgentRunsEnabled: false,
+  providerDeadlineMs: 120_000,
+};
 const fakeAgentRunApprovalService: AgentRunApprovalService = {
   recordApprovalDecision: vi.fn(),
   getApprovalDecision: vi.fn(),
@@ -45,7 +61,8 @@ const fakeAgentRunApprovalService: AgentRunApprovalService = {
   providers: [
     { provide: AGENT_RUN_SERVICE, useValue: fakeAgentRunService },
     { provide: TOOL_REGISTRY, useValue: fakeToolRegistry },
-    { provide: DETERMINISTIC_PROVIDER_FACTORY, useValue: fakeProviderFactory },
+    { provide: AGENT_PROVIDER_FACTORY, useValue: fakeProviderFactory },
+    { provide: RUN_EXECUTION_CONFIG, useValue: runExecutionConfig },
     { provide: AGENT_RUN_APPROVAL_SERVICE, useValue: fakeAgentRunApprovalService },
   ],
 })

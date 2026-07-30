@@ -44,7 +44,7 @@ export class UnsupportedClaudeModelError extends Error {
 /**
  * Narrows an untrusted environment value to the supported model, or throws.
  * Used by the historical spike runners, which have their own env contract and
- * do not go through parseWorkerProviderConfig.
+ * do not go through parseProviderConfig.
  */
 export function requireSupportedClaudeModel(model: string | undefined): SupportedClaudeModel {
   const trimmed = model?.trim();

@@ -93,8 +93,10 @@ AGENT_RUN_PROVIDER_MODE=FAKE
 ```
 
 `TZ=UTC` removes any dependency on the runner's local time zone from date formatting.
-`AGENT_RUN_PROVIDER_MODE=FAKE` is the only mode `apps/api` supports; see §7. `LIVE` selects the
-Claude provider in `apps/worker` only, and is never set in CI or in the deployed container. The
+`AGENT_RUN_PROVIDER_MODE=FAKE` is the **default request mode** — since PR 6B1 `apps/api` can also
+execute a run that explicitly asks for `LIVE`, so this is no longer the only mode it supports; see §7.
+CI never configures live capability (neither `ANTHROPIC_API_KEY` nor `ANTHROPIC_MODEL` is set), so a
+`LIVE` request there is refused with 503 before any Anthropic object exists. The
 worker's live path is bounded by a caller-owned signal covering its Anthropic provider calls; tool,
 retrieval, and persistence cancellation are not wired in this milestone.
 
@@ -240,9 +242,14 @@ Three independent reasons, in order of how hard they are to defeat:
 
 1. **No secret is referenced.** The workflow contains no `secrets.*` expression at all — no
    `ANTHROPIC_API_KEY`, no `VOYAGE_API_KEY`, no OpenAI key. There is nothing to authenticate with.
-2. **The API refuses any other mode.** `apps/api` reads `AGENT_RUN_PROVIDER_MODE` and throws
-   `LiveProviderModeNotSupportedError` at dependency-injection time for any value other than `FAKE`,
-   before a network call is possible. CI sets it to `FAKE` explicitly anyway.
+2. **CI configures no live capability, and the kill switch is off by default.** Since PR 6B1
+   `apps/api` *can* execute a requested `LIVE` run, so the old blanket rejection is gone — but two
+   independent conditions still have to hold before one runs, and neither does in CI. Live capability
+   comes from `ANTHROPIC_API_KEY` + `ANTHROPIC_MODEL`, and CI sets neither, so a `LIVE` request is
+   refused with `503 LIVE_NOT_CONFIGURED` before any Anthropic object is constructed. Independently,
+   `LIVE_AGENT_RUNS_ENABLED` defaults to `false`, so even a capable process refuses. CI also still
+   sets `AGENT_RUN_PROVIDER_MODE=FAKE` explicitly, so nothing reaches the live path by default
+   either.
 3. **Nothing in the test suites reaches a provider.** The live spikes
    (`apps/worker`'s `spike:claude` and `spike:rag`) and the live smoke
    (`test:claude:live`) are separate scripts that are never invoked by `pnpm test` or by any CI
@@ -479,7 +486,8 @@ individual `node_modules` subdirectories would break them — see
 | Worker **source** (`apps/worker/src`) | absent — excluded by `.dockerignore` |
 | Worker **build output** | absent — `apps/worker` has no build script, so none exists to exclude |
 | A worker **process** | absent — the entrypoint execs the API only |
-| `@anthropic-ai/sdk`, `voyageai` | absent — excluded by the `--filter "@opspilot/api..."` production install |
+| `@anthropic-ai/sdk` | **present** since PR 6B1 — `apps/api` can execute a requested `LIVE` run, so the SDK is part of `@opspilot/api`'s production closure via `@opspilot/provider-claude`. Reachable only from the server-side provider path: `apps/web` depends on neither the SDK nor the provider package, so it cannot enter the browser bundle. CI asserts both directions — the SDK resolves from `packages/provider-claude`, does **not** resolve from `apps/web`, and the web build guard fails on the SDK specifier, on `ANTHROPIC_API_KEY`, and on a literal `sk-ant-*` credential. |
+| `voyageai` | absent — still excluded by the `--filter "@opspilot/api..."` production install |
 | `runbooks/` | absent — the deployed API never reads them (§17) |
 | `.env`, any secret | absent — `.dockerignore` excludes `.env`/`.env.*`; the container reads real environment variables only |
 | `apps/worker/package.json` | **present** — an inert manifest required by the frozen-lockfile workspace install; not worth pruning |
@@ -610,11 +618,29 @@ there is no container registry and no push credential to manage.
 | Branch | `main`, `autoDeployTrigger: checksPass` — deploys only after this repository's own CI checks pass (`verify`, `integration`, `docker-smoke`), not on every push. The deprecated `autoDeploy: true` field deploys unconditionally on push and is deliberately not used. |
 | Health check | `/v1/health/ready` |
 | `HOST` | `0.0.0.0` |
-| `AGENT_RUN_PROVIDER_MODE` | `FAKE` — unchanged by the live-provider milestone; the deployment remains FAKE-only |
+| `AGENT_RUN_PROVIDER_MODE` | `FAKE` — the **default request mode**, so every unmodified caller still runs deterministically |
+| `LIVE_AGENT_RUNS_ENABLED` | `"false"` — the live kill switch, shipped in PR 6B1 and deliberately off |
+| `AGENT_RUN_PROVIDER_DEADLINE_MS` | `"120000"` — inert while the kill switch is off |
 | `DATABASE_URL` | `sync: false` — the **only** secret, entered by hand in the Render dashboard, never committed |
 
-No `ANTHROPIC_API_KEY` is deployed to Render, and none belongs there: `apps/api` rejects
-`AGENT_RUN_PROVIDER_MODE=LIVE` at startup, and the Anthropic SDK is absent from the image entirely.
+**No `ANTHROPIC_API_KEY` is deployed to Render, and public LIVE is impossible there.** PR 6B1
+changed how that is guaranteed, so the reasoning is worth stating precisely. The API no longer
+rejects `LIVE` outright — the run endpoint accepts `{"providerMode":"LIVE"}` from any caller, and a
+UI is not required to reach it. Two independent conditions stop it instead:
+
+1. **No live capability.** Neither `ANTHROPIC_API_KEY` nor `ANTHROPIC_MODEL` is set, so capability
+   resolves to absent and a `LIVE` request is refused with `503 LIVE_NOT_CONFIGURED` before any
+   Anthropic object is constructed.
+2. **The kill switch is off.** `LIVE_AGENT_RUNS_ENABLED=false`, so even a process that *did* have a
+   credential would refuse with `503 LIVE_RUNS_DISABLED`.
+
+Either alone is sufficient; both hold. The Anthropic SDK *is* now in the image (see §13), which is
+why the guarantee rests on configuration rather than on the SDK's absence.
+
+Turning live runs on is a PR 6B2 rollout step, gated on explicit owner authorization, and requires
+the public-demo safeguards — shared access token, rate limit, concurrency limit, and durable daily
+budget — to exist first. Adding the key and flipping the switch are deliberately two separate
+actions, so neither alone starts spending.
 Making the public demo live-LLM-capable is a separate milestone with its own safeguards (rate
 limiting, budget controls, protected access) and is explicitly not enabled here.
 

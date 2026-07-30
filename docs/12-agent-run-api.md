@@ -188,9 +188,56 @@ Raw Express middleware runs before Nest routing, in this exact order: **(1)** se
 
 - **Service slug**: bounded keyword matching over the ticket summary — `billing` → `billing-service`, `notification` → `notification-service`, `auth` → `auth-service`, otherwise `unspecified-service`.
 - **Summary truncation**: the ticket summary is truncated to 200 characters before being interpolated into report fields.
-- **`AGENT_RUN_PROVIDER_MODE`**: defaults to `FAKE`. Any other value — in particular `LIVE` — fails the provider factory's own construction synchronously, before the Nest module graph finishes initializing, with a fixed message. No `ClaudeLlmProvider` is ever constructed and no network call is ever made by this API.
+- **`AGENT_RUN_PROVIDER_MODE`**: defaults to `FAKE`. As of PR 6B1 this is the **default request mode** — what a run request that omits `providerMode` gets — not the only mode the API supports. See §7.1.
 
-> **The live Claude provider does not change this.** `AGENT_RUN_PROVIDER_MODE=LIVE` selects `ClaudeLlmProvider` in `apps/worker` only. `apps/api` still rejects `LIVE` outright, still passes a hardcoded `providerMode: "FAKE"` on every run it executes, and still has no Anthropic SDK in its dependency closure — the production image's boundary check asserts that. This HTTP API is **not** live-provider capable; wiring it up, with the public-demo safeguards that would require, is a later milestone.
+### 7.1 Per-run provider selection (PR 6B1)
+
+`POST /v1/agent-jobs/:jobId/runs` accepts an optional `providerMode`:
+
+```jsonc
+{}                          // → the server's default request mode
+{ "providerMode": "FAKE" }  // → deterministic provider
+{ "providerMode": "LIVE" }  // → live claude-sonnet-5, if permitted
+```
+
+An absent body and `{}` both remain valid, so every caller written before PR 6B1
+behaves exactly as it did. An explicit `null` body is still rejected, unknown keys are
+still rejected, and a `providerMode` that is neither value returns
+`REQUEST_BODY_INVALID` (400) — a misspelled mode is never silently treated as the
+default.
+
+Four concepts are kept strictly separate, because a deployment can be in any
+combination of them:
+
+| Concept | Source | Default |
+| --- | --- | --- |
+| Default request mode | `AGENT_RUN_PROVIDER_MODE` | `FAKE` |
+| Requested run mode | the request body's `providerMode` | the default request mode |
+| Server live capability | `ANTHROPIC_API_KEY` + `ANTHROPIC_MODEL` | absent |
+| Live kill switch | `LIVE_AGENT_RUNS_ENABLED` | **`false`** |
+
+**Live capability is optional.** A process with neither Anthropic variable set starts
+normally and serves `FAKE` — that is the configuration CI and ordinary local
+development run in. A *partial* configuration is a different matter and fails startup:
+a key without a model, a model without a key, an unsupported model, or an
+out-of-range timeout or retry count. Resolving a partial configuration to "absent"
+would silently turn a deployment meant to be live into a deterministic one.
+
+**A requested `LIVE` run is never downgraded to `FAKE`.** It is either served or
+refused:
+
+| Condition | Response |
+| --- | --- |
+| Capability absent | `503 LIVE_NOT_CONFIGURED` |
+| Capability present, kill switch `false` | `503 LIVE_RUNS_DISABLED` |
+| Capability present, kill switch `true` | executes against `claude-sonnet-5` |
+
+Both refusals are decided before `startRun`, so no `AgentRun` row is created and no
+Anthropic object is touched. `FAKE` requests never consult either.
+
+The persisted run records what actually ran: `provider_mode` is `FAKE` or `LIVE`, and
+`model_identifier` is `claude-sonnet-5` for a live run and `null` for a deterministic
+one.
 
 ### Job-scoped `toolCallId`, and reuse across runs
 
@@ -247,6 +294,12 @@ pnpm run test:integration:sequential                # packages/database's suite,
 - A job queue (BullMQ or similar) and `202 Accepted` + polling/SSE for run status, once run latency no longer fits comfortably inside one HTTP request/response cycle.
 - Idempotency keys on `POST /v1/agent-jobs/:jobId/runs` for safe client-side retry.
 - Authentication/authorization, once this API is exposed beyond a local developer machine.
-- A live model provider path through this API (`AGENT_RUN_PROVIDER_MODE=LIVE`), still rejected outright. The live `ClaudeLlmProvider` exists and is exercised from `apps/worker`, but no API path reaches it.
+- Public-demo safeguards for the live path — a shared access token, per-client rate
+  limiting, a concurrency limiter, an atomic per-job attempt limit, and a durable daily
+  token/cost budget. PR 6B1 ships the live path itself but leaves it switched off
+  (`LIVE_AGENT_RUNS_ENABLED=false`) precisely because those safeguards do not exist
+  yet. Deferred to PR 6B2.
+- Per-run usage and cost persistence, and the `FAKE`/`LIVE` selector in the browser.
+  Also PR 6B2 — the deployed frontend currently offers no way to request a live run.
 
 The human-approval workflow — `POST`/`GET /v1/agent-runs/:runId/approval`, recording a decision only, never executing it — was future work as of Milestone 6B; it is implemented as of Milestone 6C. See §3/§4 above and `docs/13-approval-workflow.md` for the full design and implementation record.
