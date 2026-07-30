@@ -1,6 +1,5 @@
 import { readFileSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -12,24 +11,19 @@ import {
   requireSupportedClaudeModel,
 } from "./claude-model";
 
-const DEMO_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "demo");
-const AGENT_RUNTIME_SRC = join(
-  dirname(fileURLToPath(import.meta.url)),
-  "..",
-  "..",
-  "..",
-  "..",
-  "packages",
-  "agent-runtime",
-  "src",
-);
+// This package compiles to CommonJS, where `import.meta` is a compile error
+// (TS1470) and vite-node does not reliably provide `__dirname`. The package
+// root is the working directory under both `pnpm --filter ... run test` and the
+// recursive root `pnpm test`, and the "finds the sources" test below fails
+// loudly if this path is ever wrong.
+const SRC_DIR = join(process.cwd(), "src");
 
-// Comments are stripped before every source scan below. Prose that *names* a
-// forbidden pattern — including the comments this change added explaining why
-// the pattern is forbidden — must not be mistaken for the pattern itself.
-function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
-}
+// packages/provider-claude/src → three levels up is the repository root.
+// (Before PR 6B1 this file lived at apps/worker/src/providers and needed four.
+// The depth changed with the move, which is exactly why the sibling "finds the
+// sources it is meant to police" test exists: a stale path would otherwise
+// make the assertion below vacuously pass.)
+const AGENT_RUNTIME_SRC = join(SRC_DIR, "..", "..", "..", "packages", "agent-runtime", "src");
 
 function readAllSources(dir: string): { readonly file: string; readonly source: string }[] {
   const out: { file: string; source: string }[] = [];
@@ -107,39 +101,8 @@ describe("vendor knowledge stays out of the neutral runtime", () => {
   });
 });
 
-describe("historical spike runners enforce the same model policy", () => {
-  const spikeFiles = ["run-claude-agent-spike.ts", "run-rag-live-spike.ts"] as const;
-
-  it("finds both spike entry points", () => {
-    for (const file of spikeFiles) {
-      expect(() => readFileSync(join(DEMO_DIR, file), "utf8")).not.toThrow();
-    }
-  });
-
-  it.each(spikeFiles)("%s validates the model through the shared validator", (file) => {
-    const source = readFileSync(join(DEMO_DIR, file), "utf8");
-
-    expect(source).toContain("requireSupportedClaudeModel(process.env.ANTHROPIC_MODEL)");
-  });
-
-  it.each(spikeFiles)("%s has no unchecked ANTHROPIC_MODEL path", (file) => {
-    const source = stripComments(readFileSync(join(DEMO_DIR, file), "utf8"));
-
-    // The two ways an unvalidated model previously reached the adapter.
-    expect(source).not.toContain('requireEnv("ANTHROPIC_MODEL")');
-    expect(source).not.toMatch(/model:\s*process\.env\.ANTHROPIC_MODEL/);
-  });
-
-  it.each(spikeFiles)("%s validates before constructing the Anthropic client", (file) => {
-    const source = readFileSync(join(DEMO_DIR, file), "utf8");
-
-    const validationAt = source.indexOf("requireSupportedClaudeModel(process.env.ANTHROPIC_MODEL)");
-    const clientAt = source.indexOf("new Anthropic(");
-
-    expect(validationAt).toBeGreaterThan(-1);
-    expect(clientAt).toBeGreaterThan(-1);
-    // Ordering matters: an unsupported model must never get as far as a
-    // constructed, network-capable client.
-    expect(validationAt).toBeLessThan(clientAt);
-  });
-});
+// The companion "historical spike runners enforce the same model policy" suite
+// moved to apps/worker/src/demo/spike-model-policy.test.ts in PR 6B1. It
+// polices files under apps/worker, and this package must not reach into an
+// application — the same boundary module-boundary.test.ts enforces for
+// imports. The invariant it guards is unchanged.

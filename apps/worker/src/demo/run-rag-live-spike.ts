@@ -4,9 +4,9 @@ import Anthropic from "@anthropic-ai/sdk";
 import { VoyageAIClient } from "voyageai";
 
 import opspilotAgentRuntime from "@opspilot/agent-runtime";
+import opspilotProviderClaude from "@opspilot/provider-claude";
+import type { ClaudeProviderLogEvent } from "@opspilot/provider-claude";
 
-import { ClaudeLlmProvider, type ClaudeProviderLogEvent } from "../providers/claude-llm-provider";
-import { requireSupportedClaudeModel } from "../providers/claude-model";
 import { loadDefaultRunbookCorpus, type VoyageEmbeddingClient } from "../rag";
 
 import {
@@ -20,6 +20,7 @@ import {
 } from "./run-rag-live-spike-scenarios";
 
 const { GET_SERVICE_STATUS_CATALOG_ENTRY } = opspilotAgentRuntime;
+const { ClaudeLlmProvider, requireSupportedClaudeModel } = opspilotProviderClaude;
 
 // This script predates the validated worker configuration and builds its own
 // Anthropic client without passing timeout/maxRetries, so it inherits the
@@ -73,7 +74,7 @@ function resolveEmbeddingDimensions(): number {
 function logSpikeEvent(event: ClaudeProviderLogEvent): void {
   if (event.outcome === "response_received") {
     console.log(
-      `[claude] model=${event.model} providerRequestId=${event.providerRequestId} providerMessageId=${event.providerMessageId} usage={"inputTokens":${event.inputTokens},"outputTokens":${event.outputTokens}} estimatedCostUsd=${event.estimatedCostUsd ?? "null"} pricingStatus=${event.pricingStatus} latencyMs=${event.latencyMs.toFixed(0)} normalizedResultType=${event.normalizedResultType}`,
+      `[claude] model=${event.model} providerRequestId=${event.providerRequestId} providerMessageId=${event.providerMessageId} usage={"inputTokens":${event.inputTokens},"outputTokens":${event.outputTokens}} estimatedCostNanoUsd=${event.estimatedCostNanoUsd ?? "null"} pricingStatus=${event.pricingStatus} latencyMs=${event.latencyMs.toFixed(0)} normalizedResultType=${event.normalizedResultType}`,
     );
   } else {
     console.log(

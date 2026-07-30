@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { FakeLlmProvider, type FakeAgentScenario } from "../providers/fake-llm-provider";
-import type { AgentConversationMessage } from "../providers/llm-provider";
+import { LlmProviderError } from "../providers/llm-provider";
+import type { AgentConversationMessage, LlmProvider } from "../providers/llm-provider";
 import {
   RetrieverError,
   type RetrievedRunbookChunk,
@@ -1003,5 +1004,83 @@ describe("runAgentOrchestrator — retrieval integration", () => {
     });
 
     expect(result.status).toBe("completed");
+  });
+});
+
+/**
+ * A transport-level provider failure is an EXPECTED outcome once a live
+ * provider is wired, not a defect. These tests pin the property that makes the
+ * live path safe to persist: the orchestrator converts such a failure into an
+ * ordinary failed result, so the caller finalizes the run instead of letting a
+ * throw escape and strand the row in RUNNING forever.
+ */
+class ThrowingProvider implements LlmProvider {
+  constructor(private readonly toThrow: unknown) {}
+  async runAgentTurn(): Promise<never> {
+    throw this.toThrow;
+  }
+}
+
+describe("runAgentOrchestrator — expected provider failures", () => {
+  const registry = new InMemoryToolRegistry([getServiceStatusTool]);
+
+  const run = (toThrow: unknown) =>
+    runAgentOrchestrator({
+      provider: new ThrowingProvider(toThrow),
+      toolRegistry: registry,
+      initialConversation: [ticketContext],
+    });
+
+  it.each([
+    ["AUTHENTICATION", "PROVIDER_UNAVAILABLE"],
+    ["BILLING", "PROVIDER_UNAVAILABLE"],
+    ["RATE_LIMIT", "PROVIDER_UNAVAILABLE"],
+    ["CONNECTION", "PROVIDER_UNAVAILABLE"],
+    ["SERVER_ERROR", "PROVIDER_UNAVAILABLE"],
+    ["REQUEST_INVALID", "PROVIDER_UNAVAILABLE"],
+    ["UNKNOWN", "PROVIDER_UNAVAILABLE"],
+    ["TIMEOUT", "PROVIDER_TIMEOUT"],
+    ["CANCELLED", "PROVIDER_CANCELLED"],
+  ] as const)("maps a %s provider error to %s", async (category, expectedCode) => {
+    const result = await run(new LlmProviderError(category, "sanitized message"));
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") return;
+    expect(result.code).toBe(expectedCode);
+  });
+
+  it("carries the adapter's already-sanitized message through unchanged", async () => {
+    // The adapter's message is a fixed, category-keyed string. Passing it
+    // through is what keeps vendor bodies, headers, request IDs, and prompts
+    // out of the trace and the database.
+    const result = await run(new LlmProviderError("RATE_LIMIT", "Anthropic API rate limit was exceeded."));
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") return;
+    expect(result.message).toBe("Anthropic API rate limit was exceeded.");
+  });
+
+  it("returns a result rather than throwing, so the run can be finalized", async () => {
+    // The whole point: a caller must never have to choose between an
+    // unfinalized RUNNING row and swallowing the failure.
+    await expect(run(new LlmProviderError("TIMEOUT", "timed out"))).resolves.toMatchObject({
+      status: "failed",
+    });
+  });
+
+  it("still emits a trace for the failed run", async () => {
+    const result = await run(new LlmProviderError("CONNECTION", "connection failed"));
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") return;
+    expect(Array.isArray(result.trace)).toBe(true);
+  });
+
+  it("rethrows a genuine defect instead of laundering it into a failed run", async () => {
+    // A TypeError is a bug, not a provider outcome. Converting it would hide
+    // the defect behind a plausible-looking FAILED run.
+    const defect = new TypeError("cannot read properties of undefined");
+
+    await expect(run(defect)).rejects.toThrow(defect);
   });
 });

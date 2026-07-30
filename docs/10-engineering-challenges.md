@@ -8,7 +8,7 @@
 | Project | OpsPilot |
 | Purpose | Capture difficult engineering problems, design decisions, tradeoffs, and interview-ready explanations |
 | Related Documents | `docs/03-technical-design.md`, `docs/04-agent-design.md`, `docs/reviews/03-technical-design-feasibility-review.md`, `docs/reviews/03-technical-design-review-decisions.md`, `docs/reviews/04-agent-design-claude-spike-results.md`, `docs/12-agent-run-api.md`, `docs/13-approval-workflow.md`, `docs/08-cicd-deployment.md`, `docs/14-web-ui.md` |
-| Revision note | v1.10 adds Challenge 8 from the approval-workflow UX milestone (PR 5C, `docs/14-web-ui.md` §8): a completed agent run and a completed human approval decision were visually indistinguishable, because the sole decision control sat below the entire report in a 50/50-width column — a run-detail layout problem, not a persistence or API problem, distinguished here from Challenge 1's data-consistency scope precisely because nothing about the backend contract changed to fix it. v1.9 adds Challenges 5–7 from the production deployment milestone (PR 5B, `docs/08-cicd-deployment.md`): Challenge 5 documents the single-origin SPA-fallback design and a repository-verified correction to the design plan's stated claim about how far NestJS's catch-all route actually reaches under this exact NestJS 11 / Express 5 / path-to-regexp v8 combination; Challenge 6 documents two implementation-time bugs found only by running the real built container — a JavaScript default-parameter closure trap in web-dist path resolution, and a Prisma 7.9 CLI validation quirk around an unconditionally-declared `shadowDatabaseUrl` — neither caught by the existing source-level tests, both discovered by running the built image; Challenge 7 documents why the migration startup retry belongs in `docker/entrypoint.sh` rather than `PrismaLifecycleService`, and why an earlier draft's placement there would have been unreachable dead code. v1.8 adds a pointer, at the end of Challenge 1's "Idempotent State Changes" subsection, to `docs/13-approval-workflow.md` (Milestone 6C) — the actual, much simpler approval-workflow design now on record. It is **not** an implementation of Challenge 1's aspirational `pending_actions`/`PendingAction`/`APPROVAL_CREATED` concept (which remains exactly as described below: planned, unimplemented design tied to the future `AgentJob`-as-queue/`AgentStep` architecture); it is a standalone, deliberately smaller mechanism built directly on the actually-shipped `agent_jobs`/`agent_runs`/`agent_trace_events` schema (`docs/11-agent-run-persistence.md`), following the same "deliberately smaller precursor, not a partial implementation" relationship `docs/11` §9 already draws between that shipped persistence slice and this same aspirational future design — see `docs/13-approval-workflow.md` §2 for the exact reasoning. v1.2 aligns Challenge 1 with `docs/03-technical-design.md` v1.3: `AgentJob` now includes `CANCELLED`; the maintenance sweep sets `AgentRun.completedAt`; the corrected write-safety design is presented as two distinct repository transaction patterns (`withExecutionOwnership`, `withLockedRunState`) sharing one global lock order (`AgentJob` → `AgentRun` → child rows), not a single "ownership-fenced" pattern; and language implying the design has already been implemented or shipped has been replaced with language accurate to the project's current (pre-implementation) stage. v1.1's PostgreSQL-as-system-of-record-and-queue decision (D1, D2) and the corrected write-safety mechanism (D12) remain unchanged in substance. This entry is further updated within v1.2 to document concurrency-safe `AgentStep` sequence allocation (`AgentRun.nextStepSequence`, the shared `appendAgentStep(...)` helper, and why `SELECT MAX(sequence) + 1` is unsafe) and the `completeAgentRunWithReport` invariant that every `PendingAction` created during finalization has exactly one matching `APPROVAL_CREATED` trace event, created in the same transaction — still describing planned design, not implemented behavior. v1.3 adds Challenge 2, documenting the minimal RAG vertical slice's evidence-grounding and retriever-isolation design — unlike Challenge 1, this describes code that has actually been implemented and unit-tested in this revision, though the manual live spike against a real embedding provider and live Claude has not yet been run. v1.4 corrects that last clause: the manual live spike has now been run. Both the baseline-RAG scenario and the isolated injection-probe scenario passed against a real Voyage embedding provider and a real Claude model, with repeated rate limiting observed (and worked around via a scenario selector) but no RAG-correctness or evidence-grounding failure in any attempt — see `docs/05-rag-design.md` and `docs/reviews/05-rag-design-spike-results.md` for the full design record and measured results. This does not change any of Challenge 2's design, validation, or testing content below, which described planned/already-implemented behavior accurately; it only updates the one clause that described the live spike as not yet run. v1.5 adds Challenge 3, documenting the implemented Agent Run / Trace Persistence milestone (`packages/database`) — a deliberately smaller, already-built precursor to Challenge 1's full queue-claiming design, described in full in `docs/11-agent-run-persistence.md`. v1.6 adds Challenge 4, documenting a real implementation-time discovery in the Agent Run API milestone (`apps/api`, `docs/12-agent-run-api.md`): `nest build`/`nest start --watch` are architecturally incompatible with this monorepo's pinned `typescript@^7.0.2` (a native rewrite whose public npm export no longer exposes the classic TypeScript Compiler API `@nestjs/cli` depends on internally), resolved by bypassing the Nest CLI's build wrapper in favor of the same plain-`tsc` pattern already used successfully by every other package in this monorepo, rather than downgrading TypeScript. v1.7 revises Challenge 4's Decision/Tradeoffs/Implementation Notes at a focused pre-commit review pass: `@nestjs/cli`/`@nestjs/schematics` and `apps/api/nest-cli.json`, originally kept as an unused "possible future use" placeholder, are now removed entirely as dead configuration/dependencies with no actual justification to keep; `apps/api`'s `build` script now cleans stale `dist/` output before every build, and `start:dev` is now a reliable `pnpm run build && pnpm run start` (no automatic reload — deferred, not silently dropped) rather than the previously untested concurrent `tsc --watch`/`node --watch` pair. |
+| Revision note | v1.11 adds Challenge 10 from the shared-provider-package milestone (PR 6B1, `docs/12-agent-run-api.md` §7.1): two interop defects that type-checked cleanly and passed the affected package's own unit tests, and were caught only by artefacts that exercise the *built* output and the *real* event sequence — a CommonJS/ESM default-import inversion that appears when a package consumed by an ESM app is itself compiled to CommonJS, and a client-disconnect design built on `request.on("close")` that would have aborted every healthy live run before its first provider call. Both are now enforced by executable rules rather than convention. v1.10 adds Challenge 8 from the approval-workflow UX milestone (PR 5C, `docs/14-web-ui.md` §8): a completed agent run and a completed human approval decision were visually indistinguishable, because the sole decision control sat below the entire report in a 50/50-width column — a run-detail layout problem, not a persistence or API problem, distinguished here from Challenge 1's data-consistency scope precisely because nothing about the backend contract changed to fix it. v1.9 adds Challenges 5–7 from the production deployment milestone (PR 5B, `docs/08-cicd-deployment.md`): Challenge 5 documents the single-origin SPA-fallback design and a repository-verified correction to the design plan's stated claim about how far NestJS's catch-all route actually reaches under this exact NestJS 11 / Express 5 / path-to-regexp v8 combination; Challenge 6 documents two implementation-time bugs found only by running the real built container — a JavaScript default-parameter closure trap in web-dist path resolution, and a Prisma 7.9 CLI validation quirk around an unconditionally-declared `shadowDatabaseUrl` — neither caught by the existing source-level tests, both discovered by running the built image; Challenge 7 documents why the migration startup retry belongs in `docker/entrypoint.sh` rather than `PrismaLifecycleService`, and why an earlier draft's placement there would have been unreachable dead code. v1.8 adds a pointer, at the end of Challenge 1's "Idempotent State Changes" subsection, to `docs/13-approval-workflow.md` (Milestone 6C) — the actual, much simpler approval-workflow design now on record. It is **not** an implementation of Challenge 1's aspirational `pending_actions`/`PendingAction`/`APPROVAL_CREATED` concept (which remains exactly as described below: planned, unimplemented design tied to the future `AgentJob`-as-queue/`AgentStep` architecture); it is a standalone, deliberately smaller mechanism built directly on the actually-shipped `agent_jobs`/`agent_runs`/`agent_trace_events` schema (`docs/11-agent-run-persistence.md`), following the same "deliberately smaller precursor, not a partial implementation" relationship `docs/11` §9 already draws between that shipped persistence slice and this same aspirational future design — see `docs/13-approval-workflow.md` §2 for the exact reasoning. v1.2 aligns Challenge 1 with `docs/03-technical-design.md` v1.3: `AgentJob` now includes `CANCELLED`; the maintenance sweep sets `AgentRun.completedAt`; the corrected write-safety design is presented as two distinct repository transaction patterns (`withExecutionOwnership`, `withLockedRunState`) sharing one global lock order (`AgentJob` → `AgentRun` → child rows), not a single "ownership-fenced" pattern; and language implying the design has already been implemented or shipped has been replaced with language accurate to the project's current (pre-implementation) stage. v1.1's PostgreSQL-as-system-of-record-and-queue decision (D1, D2) and the corrected write-safety mechanism (D12) remain unchanged in substance. This entry is further updated within v1.2 to document concurrency-safe `AgentStep` sequence allocation (`AgentRun.nextStepSequence`, the shared `appendAgentStep(...)` helper, and why `SELECT MAX(sequence) + 1` is unsafe) and the `completeAgentRunWithReport` invariant that every `PendingAction` created during finalization has exactly one matching `APPROVAL_CREATED` trace event, created in the same transaction — still describing planned design, not implemented behavior. v1.3 adds Challenge 2, documenting the minimal RAG vertical slice's evidence-grounding and retriever-isolation design — unlike Challenge 1, this describes code that has actually been implemented and unit-tested in this revision, though the manual live spike against a real embedding provider and live Claude has not yet been run. v1.4 corrects that last clause: the manual live spike has now been run. Both the baseline-RAG scenario and the isolated injection-probe scenario passed against a real Voyage embedding provider and a real Claude model, with repeated rate limiting observed (and worked around via a scenario selector) but no RAG-correctness or evidence-grounding failure in any attempt — see `docs/05-rag-design.md` and `docs/reviews/05-rag-design-spike-results.md` for the full design record and measured results. This does not change any of Challenge 2's design, validation, or testing content below, which described planned/already-implemented behavior accurately; it only updates the one clause that described the live spike as not yet run. v1.5 adds Challenge 3, documenting the implemented Agent Run / Trace Persistence milestone (`packages/database`) — a deliberately smaller, already-built precursor to Challenge 1's full queue-claiming design, described in full in `docs/11-agent-run-persistence.md`. v1.6 adds Challenge 4, documenting a real implementation-time discovery in the Agent Run API milestone (`apps/api`, `docs/12-agent-run-api.md`): `nest build`/`nest start --watch` are architecturally incompatible with this monorepo's pinned `typescript@^7.0.2` (a native rewrite whose public npm export no longer exposes the classic TypeScript Compiler API `@nestjs/cli` depends on internally), resolved by bypassing the Nest CLI's build wrapper in favor of the same plain-`tsc` pattern already used successfully by every other package in this monorepo, rather than downgrading TypeScript. v1.7 revises Challenge 4's Decision/Tradeoffs/Implementation Notes at a focused pre-commit review pass: `@nestjs/cli`/`@nestjs/schematics` and `apps/api/nest-cli.json`, originally kept as an unused "possible future use" placeholder, are now removed entirely as dead configuration/dependencies with no actual justification to keep; `apps/api`'s `build` script now cleans stale `dist/` output before every build, and `start:dev` is now a reliable `pnpm run build && pnpm run start` (no automatic reload — deferred, not silently dropped) rather than the previously untested concurrent `tsc --watch`/`node --watch` pair. |
 
 ---
 
@@ -1731,3 +1731,139 @@ This problem demonstrates:
   scanner rather than loosening the rule it enforces
 - Enforcing an architectural boundary with an executable test instead of a convention, so a future
   package move stays mechanical
+
+---
+
+## 12. Challenge 10 — Two Interop Traps That Type-Check Perfectly and Fail at Runtime
+
+### Context
+
+PR 6B1 moved the Claude adapter out of `apps/worker/src/providers/` into
+`packages/provider-claude` so both `apps/worker` and `apps/api` could consume it, and gave the API a
+caller-owned deadline plus client-disconnect cancellation for live runs.
+
+Challenge 9 had already made the move mechanical: `module-boundary.test.ts` existed specifically so
+that nothing in the directory reached back into the worker, and the move was indeed a clean
+`git mv` of 17 files. The two defects below were not in the moved code at all. They were in the
+*consequences* of moving it, and both had the same shape — code that satisfies the compiler, passes
+the package's own unit tests, and is wrong.
+
+### Problem
+
+**Trap 1 — the module-format inversion.** `apps/worker` is ESM and consumes CommonJS workspace
+packages through a *default* import (`import pkg from "@opspilot/agent-runtime"`), because
+`packages/agent-runtime/src/index.ts` deliberately uses plain-`const` exports so vite-node's interop
+forwards them. Four of the moved files did exactly that. Once they lived in a package that
+*compiles to CommonJS*, the same line inverted: TypeScript emits `agent_runtime_1.default`, and
+because the imported module sets `exports.__esModule = true`, the `__importDefault` helper passes it
+through unwrapped, so `.default` is `undefined`.
+
+**Trap 2 — the disconnect signal.** The obvious way to notice a caller going away is
+`request.on("close")`. `IncomingMessage` emits `close` when its readable side finishes, which for an
+ordinary `POST` with a small JSON body is as soon as the body has been read — before the handler has
+done any work. Guarding it with `response.writableEnded` does not help, because nothing has been
+written yet either, so the guard is false and the abort fires anyway.
+
+### Why It Is Difficult
+
+Neither is visible where you would look for it.
+
+Trap 1 type-checks cleanly, and `pnpm --filter @opspilot/provider-claude run test` passes — because
+vite-node transforms the `.ts` *source* with ESM semantics rather than loading the built `.js`. The
+failure appears only when a consumer loads `dist/`, which is why it surfaced as an unrelated-looking
+worker test failure: `Cannot destructure property 'estimateCostUsd' of 'agent_runtime_1.default' as
+it is undefined`, thrown from `packages/provider-claude/dist/claude-pricing.js`.
+
+Trap 2 is worse, because its failure mode is plausible. A live run cancelled immediately looks like a
+provider timeout, a network problem, or a flaky test — not like a listener on the wrong object. And
+it would have been *masked* in every unit test that mocks the response, since a mock never emits
+`close` at all.
+
+### Failure Modes
+
+| Trap | Symptom | Where it would have been caught |
+| --- | --- | --- |
+| 1 | `undefined` destructured from a workspace package, only via `dist/` | The worker's existing test suite — by accident |
+| 1 | `Object.keys()` lists the export; reading it yields `undefined` | Nowhere, if the package had no ESM consumer |
+| 2 | Every live run aborts before its first provider call | Nowhere — mocked responses never emit `close` |
+| 2 | Recorded as `PROVIDER_CANCELLED`, indistinguishable from a real client disconnect | Nowhere |
+
+### Decision
+
+**Trap 1: named imports inside the CommonJS package, and a test that enforces it.** All eight files
+were converted to `import { x } from "@opspilot/agent-runtime"` — the same style `apps/api` (also
+CommonJS) already uses. The four *test* files were converted too, even though they were not broken,
+because leaving two import styles side by side in one package is an invitation to copy the wrong one
+into a source file.
+
+Enforcement is `module-boundary.test.ts`'s new "never default-imports a workspace package" case. A
+comment is not sufficient here: the correct style is *opposite* in two packages of the same
+repository, so the rule cannot be remembered, only checked.
+
+`packages/provider-claude/src/export-surface.test.ts` covers the mirror-image risk in the package's
+own barrel — no value re-exported through a getter — and `apps/worker/src/smoke/cjs-interop-smoke.ts`
+gained six checks, because it is the only place that exercises the built CommonJS output under the
+real `tsx` runtime rather than under Vitest.
+
+**Trap 2: observe the response, never the request.** `createRequestAbortHandle(response)` takes only
+a `ServerResponse` — the request object is not a parameter, so the wrong listener cannot be attached
+by mistake. `finish` marks the handle settled and never aborts; `close` aborts only when
+`!response.writableFinished`. `writableFinished` rather than `writableEnded` is deliberate: the
+former is true only once data has actually flushed, so a socket dying mid-flush is correctly a
+disconnect rather than a clean finish.
+
+### Alternatives Considered
+
+- **Keep default imports and add `esModuleInterop` shims.** Rejected: it would make the package's
+  emitted output depend on a helper's behaviour that is itself the thing that broke.
+- **Compile `packages/provider-claude` to ESM.** Rejected: `apps/api` is CommonJS and
+  `@opspilot/database`'s generated Prisma client is `moduleFormat = "cjs"`. Introducing a dual-format
+  package to avoid an import-style rule is a much larger commitment than the rule.
+- **`request.aborted`.** Rejected: deprecated, and it answers the same question the wrong object was
+  being asked.
+- **A wall-clock timer alone, with no disconnect detection.** Rejected: it would hold a live provider
+  call open for the full 120-second budget after the caller had already left.
+
+### Tradeoffs
+
+The import-style rule is genuinely counterintuitive — "use named imports here, default imports one
+directory over" — and a reviewer who knows only the worker's convention will read the diff as a
+regression. That cost is accepted because the alternative is a runtime failure that no amount of
+type-checking catches. The test comment carries the explanation, so the answer arrives with the
+failure rather than requiring archaeology.
+
+`createRequestAbortHandle`'s narrow signature means it cannot ever report a disconnect that happens
+after the handler returns. That is a real limitation and it is stated in the module's own doc comment
+rather than left for someone to discover.
+
+### Testing Strategy
+
+Trap 2's suite is written against a `FakeResponse` extending `EventEmitter`, so all six cases are
+deterministic and the one that matters most — *normal finish does not abort* — is asserted first. It
+would have failed against the `request.on("close")` design. Listener counts are asserted directly,
+because a handle that aborts correctly but leaks listeners is still a defect.
+
+Trap 1's enforcement is a source scan rather than a runtime assertion, since the runtime symptom
+appears only in a built artefact consumed from another package — too far from the mistake to be a
+useful failure message.
+
+### Interview Explanation
+
+Two bugs, one lesson: the compiler and the unit-test runner can agree with each other and both be
+wrong about what the shipped artefact does. The ESM/CommonJS bug passed `tsc` and passed Vitest
+because Vitest transformed the source instead of loading the build. The disconnect bug would have
+passed every mocked-response test because a mock never emits the event that triggers it.
+
+What made both survivable was that the repository already had places where a *built artefact* and a
+*real event sequence* are exercised — a CJS-interop smoke script run under the actual runtime, and a
+boundary test that scans source rather than trusting convention. The fix in each case was to extend
+that existing mechanism, not to add a new layer of mocking.
+
+### Resume Relevance
+
+- Diagnosing a module-format bug that inverts between two packages in the same monorepo, and
+  encoding the resolution as an executable rule rather than a comment
+- Rejecting an intuitive-but-wrong cancellation design by reasoning about when Node's stream events
+  actually fire, before shipping it
+- Recognising that a green unit-test suite proved nothing here, because the transform under test was
+  not the transform that ships

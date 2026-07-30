@@ -33,6 +33,7 @@ import {
   GET_SERVICE_STATUS_CATALOG_ENTRY as _GET_SERVICE_STATUS_CATALOG_ENTRY,
 } from "./tools/diagnostic-tool-catalog";
 import { estimateCostUsd as _estimateCostUsd } from "./providers/cost-estimation";
+import { resolveAbortProvenance as _resolveAbortProvenance } from "./providers/run-abort-context";
 import { RetrieverError as _RetrieverError } from "./rag/runbook-retriever";
 import { validateRetrievalInput as _validateRetrievalInput, validateRetrievedChunks as _validateRetrievedChunks } from "./rag/retrieval-validation";
 import { formatRagContext as _formatRagContext } from "./rag/rag-context-formatting";
@@ -52,6 +53,7 @@ export const getServiceStatusTool = _getServiceStatusTool;
 export const DIAGNOSTIC_TOOL_CATALOG = _DIAGNOSTIC_TOOL_CATALOG;
 export const GET_SERVICE_STATUS_CATALOG_ENTRY = _GET_SERVICE_STATUS_CATALOG_ENTRY;
 export const estimateCostUsd = _estimateCostUsd;
+export const resolveAbortProvenance = _resolveAbortProvenance;
 export const RetrieverError = _RetrieverError;
 export const validateRetrievalInput = _validateRetrievalInput;
 export const validateRetrievedChunks = _validateRetrievedChunks;
@@ -106,6 +108,8 @@ export type {
   LlmProviderFactory,
   LlmProviderSelection,
 } from "./providers/llm-provider-factory";
+
+export type { RunAbortContext } from "./providers/run-abort-context";
 
 export type {
   CostEstimate,

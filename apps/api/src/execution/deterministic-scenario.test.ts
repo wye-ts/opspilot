@@ -3,11 +3,7 @@ import { AgentTraceEventSchema } from "@opspilot/contracts";
 import type { AgentJobRecord } from "@opspilot/database";
 import { describe, expect, it } from "vitest";
 
-import {
-  createDeterministicProviderFactory,
-  createDeterministicScenario,
-  LiveProviderModeNotSupportedError,
-} from "./deterministic-provider-factory";
+import { createDeterministicScenario } from "./deterministic-scenario";
 
 function buildJob(overrides: Partial<AgentJobRecord> = {}): AgentJobRecord {
   return {
@@ -276,42 +272,15 @@ describe("opt-in TICKET-APPROVAL-DEMO suggested action (docs/13-approval-workflo
   });
 });
 
-describe("createDeterministicProviderFactory", () => {
-  it("defaults to FAKE mode when AGENT_RUN_PROVIDER_MODE is undefined", () => {
-    expect(() => createDeterministicProviderFactory(undefined)).not.toThrow();
-  });
-
-  it("accepts an explicit FAKE mode", () => {
-    expect(() => createDeterministicProviderFactory("FAKE")).not.toThrow();
-  });
-
-  it("rejects LIVE mode synchronously, without any network-capable object being constructed", () => {
-    expect(() => createDeterministicProviderFactory("LIVE")).toThrow(LiveProviderModeNotSupportedError);
-  });
-
-  it("rejects any other unrecognized mode value", () => {
-    expect(() => createDeterministicProviderFactory("BOGUS")).toThrow(LiveProviderModeNotSupportedError);
-  });
-
-  it("createProvider builds a FakeLlmProvider that runs the deterministic scenario end to end", async () => {
-    const factory = createDeterministicProviderFactory("FAKE");
-    const job = buildJob();
-    const provider = factory.createProvider(job);
-
-    const toolTurn = await provider.runAgentTurn({
-      turnIndex: 0,
-      phase: "INVESTIGATION",
-      maxOutputTokens: 4096,
-      conversation: [],
-    });
-    expect(toolTurn.type).toBe("diagnostic_tool_request");
-
-    const reportTurn = await provider.runAgentTurn({
-      turnIndex: 1,
-      phase: "FINALIZATION",
-      maxOutputTokens: 4096,
-      conversation: [],
-    });
-    expect(reportTurn.type).toBe("report_submission");
-  });
-});
+// The former "createDeterministicProviderFactory" suite is gone. It asserted
+// that AGENT_RUN_PROVIDER_MODE=LIVE threw LiveProviderModeNotSupportedError at
+// DI time, which was correct while the API could only ever run deterministically.
+//
+// PR 6B1 replaced that single rejection with three separate decisions, each
+// tested where it now lives:
+//   - the mode is a per-request value ....... agent-runs.controller.test.ts
+//   - live capability is optional/fail-closed  run-execution-config.test.ts
+//   - the factory builds either provider ....  api-provider-factory.test.ts
+//
+// This file keeps its original subject: the deterministic scenario itself,
+// which PR 6B1 did not change.

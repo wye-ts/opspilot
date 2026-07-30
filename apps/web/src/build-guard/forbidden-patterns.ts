@@ -63,6 +63,33 @@ export const FORBIDDEN_PATTERNS: readonly ForbiddenPattern[] = [
     reason: "Test-only code was bundled into the production output.",
     pattern: /__tests__|\.test\.[jt]sx?\b|\/src\/test\//,
   },
+  // Added in PR 6B1, when @anthropic-ai/sdk entered the API production image
+  // for the first time. The SDK now legitimately exists server-side, so
+  // "it isn't in the repo's runtime dependencies" stopped being the thing that
+  // kept it out of the browser. These three rules are what replaced that
+  // accident with a check.
+  //
+  // apps/web depends on neither the SDK nor @opspilot/provider-claude, so
+  // isolation is structural today; these fail the build the moment an import
+  // makes it incidental.
+  {
+    rule: "provider-secret-env-name",
+    reason: "A provider credential variable name reached the browser.",
+    pattern: /\bANTHROPIC_API_KEY\b/,
+  },
+  {
+    rule: "provider-sdk",
+    reason: "The server-side model SDK leaked into the browser bundle.",
+    pattern: /@anthropic-ai\/sdk/,
+  },
+  {
+    // The credential itself, not just its variable name. Anchored on the
+    // published key prefix plus enough following characters that a prose
+    // mention of the prefix alone does not trip it.
+    rule: "provider-credential-literal",
+    reason: "A literal Anthropic credential reached the browser.",
+    pattern: /\bsk-ant-[A-Za-z0-9_-]{8,}/,
+  },
 ];
 
 // One violation per rule per file, anchored at the first match: a minified

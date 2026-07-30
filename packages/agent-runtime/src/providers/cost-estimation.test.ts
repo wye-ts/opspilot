@@ -142,6 +142,7 @@ describe("estimateCostUsd", () => {
     );
 
     expect(result).toEqual({
+      estimatedCostNanoUsd: null,
       estimatedCostUsd: null,
       pricingStatus: "UNKNOWN_MODEL",
       pricingBasis: null,
@@ -251,5 +252,111 @@ describe("estimateCostUsd", () => {
       );
 
     expect(call()).toEqual(call());
+  });
+});
+
+/**
+ * The accounting field is the one downstream code sums, persists, and compares
+ * (PR 6B2 accumulates it into a durable daily total). These assertions are
+ * about exactness surviving the boundary, not about the arithmetic — which the
+ * suite above already covers through the USD projection.
+ */
+describe("estimateCostUsd — exact nanoUSD accounting value", () => {
+  it("reports the exact integer nanoUSD as a decimal string", () => {
+    const result = estimateCostUsd(
+      usage({ inputTokens: 1000, outputTokens: 50, cacheReadInputTokens: 200 }),
+      "test-model-5",
+      WITHIN_VALIDITY,
+      TABLE,
+    );
+
+    // 1000*2000 + 50*10000 + 200*200 = 2000000 + 500000 + 40000
+    expect(result.estimatedCostNanoUsd).toBe("2540000");
+  });
+
+  it("round-trips through BigInt without loss", () => {
+    const result = estimateCostUsd(
+      usage({ inputTokens: 1234, outputTokens: 567 }),
+      "test-model-5",
+      WITHIN_VALIDITY,
+      TABLE,
+    );
+
+    const exact = BigInt(result.estimatedCostNanoUsd as string);
+
+    expect(exact).toBe(1234n * 2000n + 567n * 10_000n);
+    expect(exact.toString()).toBe(result.estimatedCostNanoUsd);
+  });
+
+  it("stays exact above Number.MAX_SAFE_INTEGER", () => {
+    // Synthetic, far beyond any real run: the point is that exactness is a
+    // property of the representation, not of the magnitude. As a float this
+    // total would silently round; the assertion below would then fail.
+    const enormous = 10_000_000_000_000n;
+    const result = estimateCostUsd(
+      usage({ inputTokens: Number(enormous) }),
+      "test-model-5",
+      WITHIN_VALIDITY,
+      TABLE,
+    );
+
+    const exact = BigInt(result.estimatedCostNanoUsd as string);
+
+    expect(exact).toBe(enormous * 2000n);
+    expect(exact).toBeGreaterThan(BigInt(Number.MAX_SAFE_INTEGER));
+    expect(exact % 2000n).toBe(0n);
+  });
+
+  it("sums across turns without drift", () => {
+    // The multi-turn aggregation PR 6B2 performs, done here in bigint. The
+    // equivalent float sum of the USD projections does not reproduce it.
+    const turns = [
+      usage({ inputTokens: 1117, outputTokens: 293 }),
+      usage({ inputTokens: 883, outputTokens: 407 }),
+    ].map((u) => estimateCostUsd(u, "test-model-5", WITHIN_VALIDITY, TABLE));
+
+    const total = turns.reduce(
+      (sum, turn) => sum + BigInt(turn.estimatedCostNanoUsd as string),
+      0n,
+    );
+
+    expect(total).toBe(2000n * 2000n + 700n * 10_000n);
+  });
+
+  it("keeps a null estimate null rather than reporting zero", () => {
+    // A cost that could not be computed must never reconcile as a known $0.
+    const unknownModel = estimateCostUsd(usage({ inputTokens: 1000 }), "nope", WITHIN_VALIDITY, TABLE);
+    const stale = estimateCostUsd(
+      usage({ inputTokens: 1000 }),
+      "test-model-5",
+      new Date("2026-09-01T00:00:00.000Z"),
+      TABLE,
+    );
+    const missingBreakdown = estimateCostUsd(
+      { ...usage({ inputTokens: 100 }), cacheCreationBreakdownMissing: true },
+      "test-model-5",
+      WITHIN_VALIDITY,
+      TABLE,
+    );
+
+    for (const result of [unknownModel, stale, missingBreakdown]) {
+      expect(result.estimatedCostNanoUsd).toBeNull();
+      expect(result.estimatedCostNanoUsd).not.toBe("0");
+    }
+  });
+
+  it("survives JSON serialization, which a bigint field would not", () => {
+    const result = estimateCostUsd(
+      usage({ inputTokens: 1000, outputTokens: 50 }),
+      "test-model-5",
+      WITHIN_VALIDITY,
+      TABLE,
+    );
+
+    // The reason the field is a string and not a bigint: this call throws
+    // "Do not know how to serialize a BigInt" if it ever becomes one, and the
+    // sanitized provider log event carrying it is JSON-serialized.
+    expect(() => JSON.stringify(result)).not.toThrow();
+    expect(JSON.parse(JSON.stringify(result)).estimatedCostNanoUsd).toBe("2500000");
   });
 });

@@ -23,6 +23,25 @@ describe("findBundleViolations — real leaks are caught", () => {
     expect(rulesFor(`new PrismaClient({adapter:a})`)).toContain("prisma-runtime");
   });
 
+  // PR 6B1: @anthropic-ai/sdk now legitimately ships in the API image, so its
+  // absence from the browser is no longer an accident of the dependency tree
+  // and has to be checked.
+  it("catches the provider credential's variable name", () => {
+    expect(rulesFor(`const k=process.env.ANTHROPIC_API_KEY`)).toContain(
+      "provider-secret-env-name",
+    );
+  });
+
+  it("catches the provider SDK specifier", () => {
+    expect(rulesFor(`import Anthropic from"@anthropic-ai/sdk"`)).toContain("provider-sdk");
+  });
+
+  it("catches a literal provider credential", () => {
+    expect(rulesFor(`const k="sk-ant-api03-AbCdEfGh1234"`)).toContain(
+      "provider-credential-literal",
+    );
+  });
+
   it.each([
     ["a __tests__ directory", `import x from "../__tests__/fixtures"`],
     ["a .test.ts source path", `"/src/api/http-client.test.ts"`],
@@ -60,6 +79,11 @@ describe("findBundleViolations — benign bundle content is not flagged", () => 
     ["a RegExp test call", `if(pattern.test(value)){return null}`],
     ["an identifier merely containing the word test", `const latestRunId=state.latestTestable`],
     ["a word containing localhost as a substring", `const notlocalhostish="x"`],
+    // The credential rule requires the prefix plus real key characters, so
+    // ordinary prose or UI copy mentioning it is not a violation. Without this,
+    // the demo-token field's own help text (PR 6B2) would fail the build.
+    ["prose mentioning the key prefix", `const help="Keys start with sk-ant-"`],
+    ["a provider name that is not the SDK specifier", `const label="Anthropic Claude"`],
   ])("does not flag %s", (_label, contents) => {
     expect(findBundleViolations("assets/index-abc123.js", contents)).toEqual([]);
   });

@@ -726,6 +726,32 @@ type AgentRunErrorCode =
   | "INTERNAL_AGENT_ERROR";
 ```
 
+### 18.1 What is actually implemented (PR 6B1)
+
+`AgentOrchestratorErrorCodeSchema` in `packages/contracts` is the narrower set the shipped
+orchestrator really produces. PR 6B1 added its three transport-level members, which correspond to
+this aspirational set's `AGENT_TIMEOUT` / `AGENT_CANCELLED` / `PROVIDER_*` group but are grouped by
+**operator response** rather than by vendor error class:
+
+| Implemented code | Covers | Why grouped this way |
+| --- | --- | --- |
+| `PROVIDER_UNAVAILABLE` | authentication, billing, rate limit, connectivity, server error, malformed request, unknown | All four aspirational `PROVIDER_*` codes collapse here. A public caller must not learn whether the deployment's credential is rejected, out of credit, or merely throttled; the precise category goes to the server-side structured log. |
+| `PROVIDER_TIMEOUT` | the caller-owned deadline, or the transport's own | Distinct because it is not a provider fault — the run outlived its budget. |
+| `PROVIDER_CANCELLED` | the caller disconnected before the response completed | Distinct because nobody is at fault, and reporting it as a provider failure would be wrong. |
+
+The last two are separated for a concrete reason: `AbortSignal.any([...])` merges the deadline and
+disconnect signals, and the SDK reports both as the same user-abort error, so the merged signal alone
+cannot tell them apart. `RunAbortContext` keeps the two source signals so `AgentRunService` can
+recover which fired, with the deadline taking precedence when both did.
+
+**These are results, not exceptions.** The orchestrator converts a thrown `LlmProviderError` into an
+ordinary failed result, so an expected live-provider failure finalizes the run as `FAILED` with a
+persisted `failure_code`. Before PR 6B1 such a throw escaped to the caller, which left the
+`agent_runs` row `RUNNING` forever with no recovery path — acceptable while the only provider in the
+persisted path was deterministic and a throw genuinely meant "should never happen", and not
+acceptable once a network call is involved. Only `LlmProviderError` is converted; a genuine defect
+still propagates.
+
 Rules:
 
 - public/UI messages are sanitized;
