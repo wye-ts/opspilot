@@ -8,7 +8,7 @@ import {
   InternalServerError,
   RateLimitError,
 } from "@anthropic-ai/sdk";
-import opspilotAgentRuntime from "@opspilot/agent-runtime";
+import { LlmProviderError, getServiceStatusTool } from "@opspilot/agent-runtime";
 import type { AgentTurnInput, RawProviderTurnContext } from "@opspilot/agent-runtime";
 import { describe, expect, it, vi } from "vitest";
 
@@ -17,7 +17,6 @@ import { ClaudeLlmProvider, type AnthropicMessagesClient } from "./claude-llm-pr
 import { normalizeClaudeMessage } from "./claude-response-normalization";
 import { SUBMIT_RESOLUTION_REPORT_TOOL_NAME } from "./claude-tool-schemas";
 
-const { LlmProviderError, getServiceStatusTool } = opspilotAgentRuntime;
 
 type FakeMessage = Anthropic.Message & { readonly _request_id?: string | null };
 
@@ -474,12 +473,10 @@ describe("ClaudeLlmProvider", () => {
     }
 
     expect(thrown).toBeInstanceOf(LlmProviderError);
-    // LlmProviderError is destructured from the default-imported
-    // opspilotAgentRuntime object above, which binds it only in the value
-    // namespace (destructuring cannot carry type information). A parallel
+    // LlmProviderError is imported as a value binding above. A parallel
     // `import type { LlmProviderError }` under the same name would collide
-    // with that local binding (TS2440), so InstanceType<typeof X> is
-    // intentionally retained here — see packages/agent-runtime/src/index.ts.
+    // with it (TS2440), so InstanceType<typeof X> is intentionally retained
+    // here — see packages/agent-runtime/src/index.ts.
     const providerError = thrown as InstanceType<typeof LlmProviderError>;
     expect(providerError.category).toBe(expectedCategory);
     expect(providerError.message).not.toContain("bad key");
@@ -668,8 +665,10 @@ describe("ClaudeLlmProvider — usage, retries, and cost metadata", () => {
         cacheCreation1hInputTokens: 100,
         pricingStatus: "CURRENT",
         // 1000*2000 + 50*10000 + 200*200 + 400*2500 + 100*4000
-        // = 2000000 + 500000 + 40000 + 1000000 + 400000 = 3940000 nanoUSD
-        estimatedCostUsd: 0.00394,
+        // = 2000000 + 500000 + 40000 + 1000000 + 400000 = 3940000 nanoUSD.
+        // Asserted as the exact integer the accounting path carries, not as
+        // the lossy $0.00394 projection it used to be compared against.
+        estimatedCostNanoUsd: "3940000",
       }),
     );
   });
@@ -696,7 +695,7 @@ describe("ClaudeLlmProvider — usage, retries, and cost metadata", () => {
 
     expect(logger).toHaveBeenCalledWith(
       expect.objectContaining({
-        estimatedCostUsd: null,
+        estimatedCostNanoUsd: null,
         pricingStatus: "INSUFFICIENT_USAGE_DETAIL",
       }),
     );
@@ -714,7 +713,7 @@ describe("ClaudeLlmProvider — usage, retries, and cost metadata", () => {
     expect(logger).toHaveBeenCalledWith(
       expect.objectContaining({
         model: "claude-opus-5",
-        estimatedCostUsd: null,
+        estimatedCostNanoUsd: null,
         pricingStatus: "UNKNOWN_MODEL",
       }),
     );
