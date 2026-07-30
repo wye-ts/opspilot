@@ -96,7 +96,15 @@ describe("runToolThenReportScenario", () => {
     });
   });
 
-  it("fails with LLM_PROVIDER_ERROR_<category> when the provider throws LlmProviderError", async () => {
+  it("reports the orchestrator's provider failure code when the provider throws", async () => {
+    // Changed by PR 6B1. This scenario runs through runAgentOrchestrator, and
+    // the orchestrator now converts an LlmProviderError into a failed result
+    // instead of letting it propagate — so the failure arrives as a normal
+    // orchestrator error code rather than through this scenario's catch block.
+    //
+    // The scenario's own LLM_PROVIDER_ERROR_<category> path is not dead: the
+    // forced-finalization probe calls the provider directly, bypassing the
+    // orchestrator, and is still the case that catch exists for.
     const provider = new ThrowingProvider(new LlmProviderError("RATE_LIMIT", "sanitized message"));
 
     const result = await runToolThenReportScenario(provider);
@@ -104,7 +112,7 @@ describe("runToolThenReportScenario", () => {
     expect(result).toEqual({
       name: "tool-then-report",
       passed: false,
-      failureCode: "LLM_PROVIDER_ERROR_RATE_LIMIT",
+      failureCode: "PROVIDER_UNAVAILABLE",
     });
   });
 

@@ -3,7 +3,8 @@ import type { ResolutionReport } from "@opspilot/contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import { FakeLlmProvider, type FakeAgentScenario } from "../providers/fake-llm-provider";
-import type { LlmProvider } from "../providers/llm-provider";
+import { LlmProviderError, type LlmProvider, type LlmProviderErrorCategory } from "../providers/llm-provider";
+import type { RunAbortContext } from "../providers/run-abort-context";
 import { getServiceStatusTool, InMemoryToolRegistry } from "../tools";
 import type { AgentRunRepositoryInterface } from "./agent-run-repository-interface";
 import { createAgentRunService } from "./agent-run-service";
@@ -69,6 +70,35 @@ function throwingProvider(message: string): LlmProvider {
   };
 }
 
+// Throws an LlmProviderError of the given category on the first turn — the
+// path runAgentOrchestrator's catch converts into a `failed` result via
+// providerFailureCode(category). Used to reach the PROVIDER_UNAVAILABLE /
+// PROVIDER_TIMEOUT / PROVIDER_CANCELLED codes without going through a real
+// Anthropic client.
+function providerThrowingCategory(category: LlmProviderErrorCategory, message = "sanitized"): LlmProvider {
+  return {
+    runAgentTurn: vi.fn(async () => {
+      throw new LlmProviderError(category, message);
+    }),
+  };
+}
+
+// A RunAbortContext with independently controllable source signals. Real
+// construction (createRunAbortHandles) always builds `signal` as
+// AbortSignal.any([deadlineSignal, disconnectSignal]); mirrored here so a
+// resolveAbortProvenance call sees a context shaped exactly like production.
+function buildAbortContext(overrides: { deadlineAborted?: boolean; disconnectAborted?: boolean } = {}): RunAbortContext {
+  const deadlineController = new AbortController();
+  const disconnectController = new AbortController();
+  if (overrides.deadlineAborted) deadlineController.abort();
+  if (overrides.disconnectAborted) disconnectController.abort();
+  return {
+    deadlineSignal: deadlineController.signal,
+    disconnectSignal: disconnectController.signal,
+    signal: AbortSignal.any([deadlineController.signal, disconnectController.signal]),
+  };
+}
+
 interface FakeRepositoryOptions {
   startRunError?: unknown;
   finalizeError?: unknown;
@@ -83,6 +113,10 @@ function createFakeRepository(options: FakeRepositoryOptions = {}) {
   let nextRunId = 1;
   const calls = { startRun: 0, finalizeCompleted: 0, finalizeFailed: 0, getAgentRun: 0, getAgentJob: 0 };
   const persistedRuns = new Map<string, unknown>();
+  // The exact `code` argument each finalizeFailed call actually received —
+  // exposed so tests can assert on what was PERSISTED, not just on the
+  // in-memory AgentOrchestratorResult the service happened to return.
+  const finalizeFailedCodes: unknown[] = [];
   const jobSnapshot = options.jobSnapshot ?? DEFAULT_JOB_SNAPSHOT;
   // The exact AgentJobRecord object instances startRun returned, in call
   // order — exposed so tests can assert identity (===) against whatever
@@ -140,10 +174,11 @@ function createFakeRepository(options: FakeRepositoryOptions = {}) {
         createdAt: "2026-01-01T00:00:00.000Z",
       };
     },
-    finalizeFailed: async (runId) => {
+    finalizeFailed: async (runId, _trace, code) => {
       calls.finalizeFailed += 1;
+      finalizeFailedCodes.push(code);
       if (options.finalizeError) throw options.finalizeError;
-      persistedRuns.set(runId, { status: "FAILED" });
+      persistedRuns.set(runId, { status: "FAILED", code });
       return {
         id: runId,
         jobId: JOB_ID,
@@ -181,7 +216,7 @@ function createFakeRepository(options: FakeRepositoryOptions = {}) {
     },
   };
 
-  return { repository, calls, startedJobs };
+  return { repository, calls, startedJobs, finalizeFailedCodes };
 }
 
 describe("executeAndPersist", () => {
@@ -512,5 +547,206 @@ describe("executeAndPersist — cancellation signal forwarding", () => {
     for (const [input] of runAgentTurnSpy.mock.calls) {
       expect(input.signal).toBeUndefined();
     }
+  });
+});
+
+describe("executeAndPersist — single signal source (abortContext takes precedence)", () => {
+  it("forwards abortContext.signal, by identity, to every provider turn", async () => {
+    const { repository } = createFakeRepository();
+    const service = createAgentRunService(repository);
+    const provider = reportSubmittingProvider();
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+    const abortContext = buildAbortContext();
+
+    const result = await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "LIVE",
+      createProvider: () => provider,
+      toolRegistry: toolRegistryWithServiceStatus(),
+      abortContext,
+    });
+
+    expect(result.persistence).toBe("persisted");
+    // toolThenReportScenario is investigation-then-report: both turns must
+    // receive the same object, not a fresh signal per call.
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(2);
+    for (const [input] of runAgentTurnSpy.mock.calls) {
+      expect(input.signal).toBe(abortContext.signal);
+    }
+  });
+
+  it("still forwards a bare `signal` for a legacy caller that supplies no abortContext", async () => {
+    // The worker's demo scripts (and any other caller with no abort-provenance
+    // tracking) pass `signal` alone. That path must keep working unchanged.
+    const { repository } = createFakeRepository();
+    const service = createAgentRunService(repository);
+    const provider = reportSubmittingProvider();
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+    const controller = new AbortController();
+
+    await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "FAKE",
+      createProvider: () => provider,
+      toolRegistry: toolRegistryWithServiceStatus(),
+      signal: controller.signal,
+    });
+
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(2);
+    for (const [input] of runAgentTurnSpy.mock.calls) {
+      expect(input.signal).toBe(controller.signal);
+    }
+  });
+
+  it("prefers abortContext.signal over a plain signal when both are somehow supplied", async () => {
+    // Not a shape any caller in this codebase actually produces (the API
+    // controller passes abortContext alone; the worker demo passes signal
+    // alone) — but the precedence rule itself must hold regardless, so that
+    // there is exactly one way to read "which signal is in effect" even if a
+    // future caller gets this wrong.
+    const { repository } = createFakeRepository();
+    const service = createAgentRunService(repository);
+    const provider = reportSubmittingProvider();
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+    const abortContext = buildAbortContext();
+    const unrelatedController = new AbortController();
+
+    await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "LIVE",
+      createProvider: () => provider,
+      toolRegistry: toolRegistryWithServiceStatus(),
+      signal: unrelatedController.signal,
+      abortContext,
+    });
+
+    for (const [input] of runAgentTurnSpy.mock.calls) {
+      expect(input.signal).toBe(abortContext.signal);
+      expect(input.signal).not.toBe(unrelatedController.signal);
+    }
+  });
+});
+
+describe("executeAndPersist / retryFinalization — abort provenance survives finalization failure and retry", () => {
+  it("resolves provenance once: a deadline override survives a finalization PersistenceError", async () => {
+    const finalizeError = new PersistenceError("PERSISTENCE_UNAVAILABLE", "db down mid-finalize");
+    const { repository } = createFakeRepository({ finalizeError });
+    const service = createAgentRunService(repository);
+    // The provider reports CANCELLED (a plausible raw SDK classification for
+    // any abort); the deadline having fired is what should override it.
+    const abortContext = buildAbortContext({ deadlineAborted: true });
+
+    const result = await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "LIVE",
+      createProvider: () => providerThrowingCategory("CANCELLED"),
+      toolRegistry: toolRegistryWithServiceStatus(),
+      abortContext,
+    });
+
+    expect(result.persistence).toBe("unavailable");
+    if (result.persistence !== "unavailable" || result.stage !== "finalization") {
+      throw new Error("expected stage: finalization");
+    }
+    expect(result.agentResult.status).toBe("failed");
+    if (result.agentResult.status !== "failed") throw new Error("expected a failed result");
+    // Resolved BEFORE the PersistenceError, not left as the provider's raw
+    // CANCELLED classification — this is the property the whole fix protects.
+    expect(result.agentResult.code).toBe("PROVIDER_TIMEOUT");
+  });
+
+  it("retrying that same agentResult persists PROVIDER_TIMEOUT, with no abortContext available to the retry", async () => {
+    const finalizeError = new PersistenceError("PERSISTENCE_UNAVAILABLE", "db down mid-finalize");
+    const { repository } = createFakeRepository({ finalizeError });
+    const service = createAgentRunService(repository);
+    const abortContext = buildAbortContext({ deadlineAborted: true });
+
+    const first = await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "LIVE",
+      createProvider: () => providerThrowingCategory("CANCELLED"),
+      toolRegistry: toolRegistryWithServiceStatus(),
+      abortContext,
+    });
+    if (first.persistence !== "unavailable" || first.stage !== "finalization") {
+      throw new Error("expected stage: finalization");
+    }
+    expect(first.agentResult.status).toBe("failed");
+    if (first.agentResult.status !== "failed") throw new Error("expected a failed result");
+    expect(first.agentResult.code).toBe("PROVIDER_TIMEOUT");
+
+    // A fresh repository, persistence now "working" — retryFinalization is
+    // called with the SAME agentResult object executeAndPersist returned, and
+    // with no abortContext at all (retryFinalization's signature carries none).
+    const { repository: healthyRepository, finalizeFailedCodes } = createFakeRepository();
+    const healthyService = createAgentRunService(healthyRepository);
+
+    const retry = await healthyService.retryFinalization(first.runId, first.agentResult);
+
+    expect(retry.persistence).toBe("persisted");
+    // The database received PROVIDER_TIMEOUT — the code a transient failure
+    // must never be allowed to revert to the provider's raw classification.
+    expect(finalizeFailedCodes).toEqual(["PROVIDER_TIMEOUT"]);
+  });
+
+  it("a disconnect override replaces a native TIMEOUT classification with PROVIDER_CANCELLED", async () => {
+    const { repository, finalizeFailedCodes } = createFakeRepository();
+    const service = createAgentRunService(repository);
+    // The transport reports its own TIMEOUT; the caller having disconnected
+    // (not the deadline) is what should take precedence.
+    const abortContext = buildAbortContext({ disconnectAborted: true });
+
+    const result = await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "LIVE",
+      createProvider: () => providerThrowingCategory("TIMEOUT"),
+      toolRegistry: toolRegistryWithServiceStatus(),
+      abortContext,
+    });
+
+    expect(result.persistence).toBe("persisted");
+    expect(finalizeFailedCodes).toEqual(["PROVIDER_CANCELLED"]);
+  });
+
+  it("a provider-native timeout is left unchanged when neither outer signal is aborted", async () => {
+    const { repository, finalizeFailedCodes } = createFakeRepository();
+    const service = createAgentRunService(repository);
+    // Both source signals live but un-fired: this is the ordinary case of the
+    // SDK's own per-attempt timeout firing well inside the caller's deadline
+    // and with the caller still connected.
+    const abortContext = buildAbortContext();
+
+    const result = await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "LIVE",
+      createProvider: () => providerThrowingCategory("TIMEOUT"),
+      toolRegistry: toolRegistryWithServiceStatus(),
+      abortContext,
+    });
+
+    expect(result.persistence).toBe("persisted");
+    expect(finalizeFailedCodes).toEqual(["PROVIDER_TIMEOUT"]);
+  });
+
+  it("leaves a completed result untouched even when the deadline fired", async () => {
+    // A run can legitimately finish (report submitted) at almost the exact
+    // moment its deadline expires. resolveAgentResultAbortProvenance must
+    // never touch a completed result — there is no `code` field to rewrite,
+    // and finalizeCompleted (never finalizeFailed) must be the call made.
+    const { repository, calls } = createFakeRepository();
+    const service = createAgentRunService(repository);
+    const abortContext = buildAbortContext({ deadlineAborted: true });
+
+    const result = await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "LIVE",
+      createProvider: () => reportSubmittingProvider(),
+      toolRegistry: toolRegistryWithServiceStatus(),
+      abortContext,
+    });
+
+    expect(result.persistence).toBe("persisted");
+    expect(calls.finalizeCompleted).toBe(1);
+    expect(calls.finalizeFailed).toBe(0);
   });
 });

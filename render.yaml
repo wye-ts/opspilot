@@ -22,11 +22,41 @@ services:
     envVars:
       - key: HOST
         value: 0.0.0.0
+      # The DEFAULT request mode — what a run request that omits
+      # `providerMode` gets. Since PR 6B1 it is no longer the only mode the API
+      # supports: a request may ask for LIVE explicitly. Keeping this at FAKE
+      # means the existing browser, the demo script, and every unmodified
+      # caller continue to run deterministically.
       - key: AGENT_RUN_PROVIDER_MODE
         value: FAKE
+      # The live kill switch, shipped in PR 6B1 and deliberately OFF.
+      #
+      # This is what makes public LIVE impossible on this deployment rather than
+      # merely unlikely. The run endpoint accepts {"providerMode":"LIVE"} from
+      # any caller, so a UI is not required to reach it — with the switch false,
+      # every such request is refused with 503 before any Anthropic object is
+      # touched. Combined with the absence of ANTHROPIC_API_KEY below, a live
+      # run is refused twice over.
+      #
+      # Turning it on is a separate, deliberate act, and PR 6B2's safeguards
+      # (access token, rate limit, concurrency, durable daily budget) must be in
+      # place first. Only the exact lowercase strings 'true' and 'false' are
+      # accepted; anything else fails startup rather than being guessed at.
+      - key: LIVE_AGENT_RUNS_ENABLED
+        value: "false"
+      # Caller-owned budget for Anthropic provider calls across a run. A
+      # product-level execution budget, not a worst-case formula — see
+      # docs/12-agent-run-api.md. Inert while the kill switch is off.
+      - key: AGENT_RUN_PROVIDER_DEADLINE_MS
+        value: "120000"
       # The only secret. Never committed — set by hand in the Render
       # dashboard after the Neon database exists (see
       # docs/08-cicd-deployment.md). Render supplies PORT itself;
       # apps/api/src/main.ts already reads it.
+      #
+      # ANTHROPIC_API_KEY is deliberately NOT declared here. Adding it is a
+      # PR 6B2 rollout step gated on explicit owner authorization, and until
+      # then the deployment has no credential to spend: live capability resolves
+      # to "absent" and a LIVE request is refused with 503 LIVE_NOT_CONFIGURED.
       - key: DATABASE_URL
         sync: false

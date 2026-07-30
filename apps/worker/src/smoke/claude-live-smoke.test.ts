@@ -3,7 +3,7 @@ import { inspect } from "node:util";
 import opspilotAgentRuntime from "@opspilot/agent-runtime";
 import { describe, expect, it, vi } from "vitest";
 
-import type { EnvRecord } from "../providers/claude-config";
+import type { EnvRecord } from "@opspilot/provider-claude";
 import {
   PAID_CALL_WARNING,
   SMOKE_MAX_OUTPUT_TOKENS,

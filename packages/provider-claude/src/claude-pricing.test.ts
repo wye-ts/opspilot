@@ -51,7 +51,10 @@ describe("estimateClaudeCostUsd", () => {
       WITHIN_VALIDITY,
     );
 
-    // 5961*2000 + 1674*10000 = 11922000 + 16740000 = 28662000 nanoUSD
+    // 5961*2000 + 1674*10000 = 11922000 + 16740000 = 28662000 nanoUSD.
+    // The exact accounting value and its lossy display projection, asserted
+    // together so a change to either is visible here.
+    expect(result.estimatedCostNanoUsd).toBe("28662000");
     expect(result.estimatedCostUsd).toBe(0.028662);
     expect(result.pricingStatus).toBe("CURRENT");
     expect(result.pricingBasis).toBe("ACTIVE_RATE");

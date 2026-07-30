@@ -1,4 +1,4 @@
-import opspilotAgentRuntime from "@opspilot/agent-runtime";
+import { estimateCostUsd } from "@opspilot/agent-runtime";
 import type {
   CostEstimate,
   ModelPricingTable,
@@ -7,7 +7,6 @@ import type {
 
 import { SUPPORTED_CLAUDE_MODEL } from "./claude-model";
 
-const { estimateCostUsd } = opspilotAgentRuntime;
 
 /**
  * Anthropic list rates, transcribed from platform.claude.com/docs/en/about-claude/pricing

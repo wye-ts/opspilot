@@ -4,7 +4,8 @@ import { PersistenceError } from "@opspilot/database";
 import { describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../errors/api-error";
-import type { DeterministicProviderFactory } from "../execution/deterministic-provider-factory";
+import type { AgentProviderFactory } from "../execution/api-provider-factory";
+import type { RunExecutionConfig } from "../execution/run-execution-config";
 import { AgentRunsController } from "./agent-runs.controller";
 
 const JOB: AgentJobRecord = {
@@ -58,23 +59,61 @@ function buildFakeToolRegistry(): ToolRegistry {
   return { find: vi.fn() } as unknown as ToolRegistry;
 }
 
-function buildFakeProviderFactory(): DeterministicProviderFactory {
+function buildFakeProviderFactory(): AgentProviderFactory {
   return { createProvider: vi.fn() };
 }
 
 function buildFakeResponse() {
-  return { status: vi.fn(), setHeader: vi.fn() } as unknown as import("express").Response;
+  // `once`/`off` are what createRequestAbortHandle attaches; a LIVE run needs
+  // them, and a FAKE run never touches them.
+  return {
+    status: vi.fn(),
+    setHeader: vi.fn(),
+    once: vi.fn(),
+    off: vi.fn(),
+    writableFinished: false,
+  } as unknown as import("express").Response;
 }
+
+function buildFakeRequest() {
+  return {} as unknown as import("express").Request;
+}
+
+/**
+ * Defaults to the safest posture a deployment can be in: deterministic by
+ * default, no live capability, kill switch off. Every LIVE test opts in
+ * explicitly, so nothing accidentally exercises the live path.
+ */
+function buildConfig(overrides: Partial<RunExecutionConfig> = {}): RunExecutionConfig {
+  return {
+    defaultRequestMode: "FAKE",
+    liveCapability: { kind: "absent" },
+    liveAgentRunsEnabled: false,
+    providerDeadlineMs: 120_000,
+    ...overrides,
+  };
+}
+
+const LIVE_CAPABILITY_PRESENT = {
+  kind: "present",
+  selection: { providerMode: "LIVE", modelIdentifier: "claude-sonnet-5" },
+  // Never read on these paths: the fake service short-circuits before any
+  // provider is built, so no client is ever constructed from it.
+  anthropic: { apiKey: "unused-in-tests", timeoutMs: 45_000, maxRetries: 1 },
+} as const satisfies RunExecutionConfig["liveCapability"];
 
 describe("AgentRunsController.createAgentRun", () => {
   it("persists a run, sets 201 + Location, and never pre-reads the job via getAgentJob", async () => {
     const getAgentJob = vi.fn();
     const executeAndPersist = vi.fn().mockResolvedValue({ persistence: "persisted", run: PERSISTED_RUN });
     const service = buildFakeService({ executeAndPersist, getAgentJob });
-    const controller = new AgentRunsController(service, buildFakeToolRegistry(), buildFakeProviderFactory());
+    const controller = new AgentRunsController(
+      service, buildFakeToolRegistry(), buildFakeProviderFactory(),
+      buildConfig(),
+    );
     const res = buildFakeResponse();
 
-    const result = await controller.createAgentRun("job-1", {}, res);
+    const result = await controller.createAgentRun("job-1", {}, buildFakeRequest(), res);
 
     expect(executeAndPersist).toHaveBeenCalledWith(
       expect.objectContaining({ jobId: "job-1", providerMode: "FAKE" }),
@@ -93,9 +132,10 @@ describe("AgentRunsController.createAgentRun", () => {
       buildFakeService({ executeAndPersist }),
       buildFakeToolRegistry(),
       buildFakeProviderFactory(),
+      buildConfig(),
     );
 
-    await expect(controller.createAgentRun("job-1", {}, buildFakeResponse())).rejects.toMatchObject({
+    await expect(controller.createAgentRun("job-1", {}, buildFakeRequest(), buildFakeResponse())).rejects.toMatchObject({
       code: "AGENT_EXECUTION_CRASHED",
       status: 500,
       runId: "run-9",
@@ -112,9 +152,10 @@ describe("AgentRunsController.createAgentRun", () => {
       buildFakeService({ executeAndPersist }),
       buildFakeToolRegistry(),
       buildFakeProviderFactory(),
+      buildConfig(),
     );
 
-    await expect(controller.createAgentRun("job-1", {}, buildFakeResponse())).rejects.toMatchObject({
+    await expect(controller.createAgentRun("job-1", {}, buildFakeRequest(), buildFakeResponse())).rejects.toMatchObject({
       code: "AGENT_JOB_NOT_FOUND",
       status: 404,
     });
@@ -132,9 +173,10 @@ describe("AgentRunsController.createAgentRun", () => {
       buildFakeService({ executeAndPersist }),
       buildFakeToolRegistry(),
       buildFakeProviderFactory(),
+      buildConfig(),
     );
 
-    await expect(controller.createAgentRun("job-1", {}, buildFakeResponse())).rejects.toMatchObject({
+    await expect(controller.createAgentRun("job-1", {}, buildFakeRequest(), buildFakeResponse())).rejects.toMatchObject({
       code: "INTERNAL_DATA_INVALID",
       status: 500,
     });
@@ -150,29 +192,219 @@ describe("AgentRunsController.createAgentRun", () => {
       buildFakeService({ executeAndPersist }),
       buildFakeToolRegistry(),
       buildFakeProviderFactory(),
+      buildConfig(),
     );
 
-    await expect(controller.createAgentRun("job-1", {}, buildFakeResponse())).rejects.toMatchObject({
+    await expect(controller.createAgentRun("job-1", {}, buildFakeRequest(), buildFakeResponse())).rejects.toMatchObject({
       code: "PERSISTENCE_UNAVAILABLE",
       status: 503,
     });
   });
 
-  it("passes a createProvider callback that delegates to the injected deterministic provider factory", async () => {
-    const executeAndPersist = vi.fn().mockImplementation(async (params: { createProvider: (job: AgentJobRecord) => unknown }) => {
-      params.createProvider(JOB);
-      return { persistence: "persisted", run: PERSISTED_RUN };
-    });
+  it("passes a createProvider callback that delegates to the injected provider factory with the requested mode", async () => {
+    const executeAndPersist = vi
+      .fn()
+      .mockImplementation(async (params: { createProvider: (job: AgentJobRecord) => unknown }) => {
+        params.createProvider(JOB);
+        return { persistence: "persisted", run: PERSISTED_RUN };
+      });
     const createProvider = vi.fn();
     const controller = new AgentRunsController(
       buildFakeService({ executeAndPersist }),
       buildFakeToolRegistry(),
       { createProvider },
+      buildConfig(),
     );
 
-    await controller.createAgentRun("job-1", {}, buildFakeResponse());
+    await controller.createAgentRun("job-1", {}, buildFakeRequest(), buildFakeResponse());
 
-    expect(createProvider).toHaveBeenCalledWith(JOB);
+    // The mode travels with the job: the factory needs both to decide which
+    // provider to build.
+    expect(createProvider).toHaveBeenCalledWith(JOB, "FAKE");
+  });
+});
+
+/**
+ * Per-run provider selection, added in PR 6B1.
+ *
+ * The invariant these protect is that an explicitly requested LIVE run is
+ * either served or refused — never quietly downgraded to FAKE, which would
+ * produce a run that looks successful while proving nothing.
+ */
+describe("AgentRunsController.createAgentRun — per-run provider selection", () => {
+  function controllerWith(config: RunExecutionConfig, executeAndPersist = vi.fn()) {
+    executeAndPersist.mockResolvedValue({ persistence: "persisted", run: PERSISTED_RUN });
+    return {
+      executeAndPersist,
+      controller: new AgentRunsController(
+        buildFakeService({ executeAndPersist }),
+        buildFakeToolRegistry(),
+        buildFakeProviderFactory(),
+        config,
+      ),
+    };
+  }
+
+  it("uses the server default when the body omits providerMode", async () => {
+    const { controller, executeAndPersist } = controllerWith(buildConfig());
+
+    await controller.createAgentRun("job-1", {}, buildFakeRequest(), buildFakeResponse());
+
+    expect(executeAndPersist).toHaveBeenCalledWith(
+      expect.objectContaining({ providerMode: "FAKE", modelIdentifier: null }),
+    );
+  });
+
+  it("honours an explicit FAKE request and records no model", async () => {
+    const { controller, executeAndPersist } = controllerWith(buildConfig());
+
+    await controller.createAgentRun(
+      "job-1",
+      { providerMode: "FAKE" },
+      buildFakeRequest(),
+      buildFakeResponse(),
+    );
+
+    expect(executeAndPersist).toHaveBeenCalledWith(
+      expect.objectContaining({ providerMode: "FAKE", modelIdentifier: null }),
+    );
+  });
+
+  it("honours an explicit LIVE request when capability is present and the switch is on", async () => {
+    const { controller, executeAndPersist } = controllerWith(
+      buildConfig({ liveCapability: LIVE_CAPABILITY_PRESENT, liveAgentRunsEnabled: true }),
+    );
+
+    await controller.createAgentRun(
+      "job-1",
+      { providerMode: "LIVE" },
+      buildFakeRequest(),
+      buildFakeResponse(),
+    );
+
+    expect(executeAndPersist).toHaveBeenCalledWith(
+      expect.objectContaining({ providerMode: "LIVE", modelIdentifier: "claude-sonnet-5" }),
+    );
+  });
+
+  it("gives a LIVE run an abort context; a FAKE run gets none", async () => {
+    const live = controllerWith(
+      buildConfig({ liveCapability: LIVE_CAPABILITY_PRESENT, liveAgentRunsEnabled: true }),
+    );
+    await live.controller.createAgentRun(
+      "job-1",
+      { providerMode: "LIVE" },
+      buildFakeRequest(),
+      buildFakeResponse(),
+    );
+
+    const liveParams = live.executeAndPersist.mock.calls[0]?.[0];
+    // Both source signals are preserved so finalization can tell a timeout
+    // from a disconnect.
+    expect(liveParams.abortContext.deadlineSignal).toBeInstanceOf(AbortSignal);
+    expect(liveParams.abortContext.disconnectSignal).toBeInstanceOf(AbortSignal);
+    expect(liveParams.abortContext.signal).toBeInstanceOf(AbortSignal);
+    // The controller passes ONLY abortContext — never a separately-derived
+    // `signal` alongside it. AgentRunService is the one place that derives an
+    // effective signal (from abortContext.signal), so there is exactly one
+    // signal source for the whole request, never two that could diverge.
+    expect(liveParams.signal).toBeUndefined();
+
+    const fake = controllerWith(buildConfig());
+    await fake.controller.createAgentRun("job-1", {}, buildFakeRequest(), buildFakeResponse());
+
+    const fakeParams = fake.executeAndPersist.mock.calls[0]?.[0];
+    expect(fakeParams.signal).toBeUndefined();
+    expect(fakeParams.abortContext).toBeUndefined();
+  });
+
+  it("refuses LIVE with 503 LIVE_NOT_CONFIGURED when no capability is configured", async () => {
+    const { controller, executeAndPersist } = controllerWith(
+      buildConfig({ liveAgentRunsEnabled: true }),
+    );
+
+    await expect(
+      controller.createAgentRun(
+        "job-1",
+        { providerMode: "LIVE" },
+        buildFakeRequest(),
+        buildFakeResponse(),
+      ),
+    ).rejects.toMatchObject({ code: "LIVE_NOT_CONFIGURED", status: 503 });
+
+    // Refused before any run row could exist.
+    expect(executeAndPersist).not.toHaveBeenCalled();
+  });
+
+  it("refuses LIVE with 503 LIVE_RUNS_DISABLED when the kill switch is off", async () => {
+    const { controller, executeAndPersist } = controllerWith(
+      buildConfig({ liveCapability: LIVE_CAPABILITY_PRESENT }),
+    );
+
+    await expect(
+      controller.createAgentRun(
+        "job-1",
+        { providerMode: "LIVE" },
+        buildFakeRequest(),
+        buildFakeResponse(),
+      ),
+    ).rejects.toMatchObject({ code: "LIVE_RUNS_DISABLED", status: 503 });
+
+    expect(executeAndPersist).not.toHaveBeenCalled();
+  });
+
+  it("never downgrades a refused LIVE request to FAKE", async () => {
+    // The single most important property here. A refusal must be a refusal —
+    // silently running the deterministic provider instead would return a
+    // plausible 201 that proves nothing about the live path.
+    for (const config of [
+      buildConfig({ liveAgentRunsEnabled: true }),
+      buildConfig({ liveCapability: LIVE_CAPABILITY_PRESENT }),
+    ]) {
+      const { controller, executeAndPersist } = controllerWith(config);
+
+      await expect(
+        controller.createAgentRun(
+          "job-1",
+          { providerMode: "LIVE" },
+          buildFakeRequest(),
+          buildFakeResponse(),
+        ),
+      ).rejects.toBeInstanceOf(ApiError);
+
+      expect(executeAndPersist).not.toHaveBeenCalled();
+    }
+  });
+
+  it("leaves FAKE runs unaffected by capability or the kill switch", async () => {
+    const { controller, executeAndPersist } = controllerWith(buildConfig());
+
+    await controller.createAgentRun(
+      "job-1",
+      { providerMode: "FAKE" },
+      buildFakeRequest(),
+      buildFakeResponse(),
+    );
+
+    expect(executeAndPersist).toHaveBeenCalledWith(
+      expect.objectContaining({ providerMode: "FAKE" }),
+    );
+  });
+
+  it("follows a LIVE server default when the body omits providerMode", async () => {
+    const { controller, executeAndPersist } = controllerWith(
+      buildConfig({
+        defaultRequestMode: "LIVE",
+        liveCapability: LIVE_CAPABILITY_PRESENT,
+        liveAgentRunsEnabled: true,
+      }),
+    );
+
+    await controller.createAgentRun("job-1", {}, buildFakeRequest(), buildFakeResponse());
+
+    expect(executeAndPersist).toHaveBeenCalledWith(
+      expect.objectContaining({ providerMode: "LIVE" }),
+    );
   });
 });
 
@@ -183,6 +415,7 @@ describe("AgentRunsController.getAgentRun", () => {
       buildFakeService({ getAgentRun }),
       buildFakeToolRegistry(),
       buildFakeProviderFactory(),
+      buildConfig(),
     );
 
     const result = await controller.getAgentRun("run-1");
@@ -197,6 +430,7 @@ describe("AgentRunsController.getAgentRun", () => {
       buildFakeService({ getAgentRun }),
       buildFakeToolRegistry(),
       buildFakeProviderFactory(),
+      buildConfig(),
     );
 
     await expect(controller.getAgentRun("run-missing")).rejects.toMatchObject({

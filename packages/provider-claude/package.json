@@ -1,0 +1,30 @@
+{
+  "name": "@opspilot/provider-claude",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build:deps": "pnpm --filter \"@opspilot/provider-claude^...\" -r --workspace-concurrency=1 run build",
+    "typecheck": "pnpm run build:deps && tsc -p tsconfig.json",
+    "build": "pnpm run build:deps && tsc -p tsconfig.build.json",
+    "test": "pnpm run build:deps && vitest run",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.112.0",
+    "@opspilot/agent-runtime": "workspace:*",
+    "@opspilot/contracts": "workspace:*",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}

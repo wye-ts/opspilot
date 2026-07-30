@@ -16,4 +16,14 @@ export const FAILURE_DISPLAY_MESSAGES: Record<AgentOrchestratorErrorCode, string
   REPORT_SCHEMA_INVALID: "The submitted resolution report failed schema validation.",
   REPORT_EVIDENCE_INVALID: "The submitted resolution report cited invalid evidence.",
   PROVIDER_PROTOCOL_INVALID: "The model provider violated the expected turn protocol.",
+  // Deliberately vague about the cause. These are read-time display strings on
+  // a publicly reachable run resource, so they must not tell a caller whether
+  // the deployment's credential is rejected, out of credit, or merely rate
+  // limited. The precise category stays in the server-side structured log.
+  PROVIDER_UNAVAILABLE: "The model provider could not complete this run.",
+  // "before the model responded" is false when turn 1 already succeeded and
+  // turn 2 timed out or was cancelled — "before model execution completed"
+  // holds for both a first-turn and a second-turn failure.
+  PROVIDER_TIMEOUT: "The run exceeded its time limit before model execution completed.",
+  PROVIDER_CANCELLED: "The run was cancelled before model execution completed.",
 };

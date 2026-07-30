@@ -18,6 +18,7 @@ COPY apps/worker/package.json            apps/worker/
 COPY packages/contracts/package.json     packages/contracts/
 COPY packages/database/package.json      packages/database/
 COPY packages/agent-runtime/package.json packages/agent-runtime/
+COPY packages/provider-claude/package.json packages/provider-claude/
 # --ignore-scripts is never used: pnpm-workspace.yaml's own allowBuilds
 # block is the only way prisma/@prisma/engines/esbuild's install scripts run.
 RUN pnpm install --frozen-lockfile
@@ -38,9 +39,17 @@ COPY apps/worker/package.json            apps/worker/
 COPY packages/contracts/package.json     packages/contracts/
 COPY packages/database/package.json      packages/database/
 COPY packages/agent-runtime/package.json packages/agent-runtime/
-# "@opspilot/api..." = @opspilot/api plus its full dependency closure —
-# this is what keeps apps/worker's @anthropic-ai/sdk and voyageai (and
-# apps/web) out of the production install entirely.
+COPY packages/provider-claude/package.json packages/provider-claude/
+# "@opspilot/api..." = @opspilot/api plus its full dependency closure. As of
+# PR 6B1 that closure includes @opspilot/provider-claude and, through it,
+# @anthropic-ai/sdk: the API can now execute a requested LIVE run, so the SDK
+# belongs in the runtime image. What the filter still excludes is voyageai and
+# all of apps/web's dev-only dependencies.
+#
+# The SDK reaches only the server-side provider path. It is not a dependency of
+# apps/web and therefore cannot enter the browser bundle — asserted
+# independently by apps/web's build guard, which fails on the SDK specifier, on
+# ANTHROPIC_API_KEY, and on a literal sk-ant-* credential.
 RUN pnpm install --frozen-lockfile --prod --filter "@opspilot/api..."
 
 # ---- runtime ----
@@ -57,6 +66,7 @@ COPY --from=build /app/apps/web/dist               apps/web/dist
 COPY --from=build /app/packages/contracts/dist     packages/contracts/dist
 COPY --from=build /app/packages/database/dist      packages/database/dist
 COPY --from=build /app/packages/agent-runtime/dist packages/agent-runtime/dist
+COPY --from=build /app/packages/provider-claude/dist packages/provider-claude/dist
 COPY packages/database/prisma            packages/database/prisma
 COPY packages/database/prisma.config.ts  packages/database/prisma.config.ts
 COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/opspilot-entrypoint
@@ -71,7 +81,8 @@ RUN test -x /app/packages/database/node_modules/.bin/prisma \
  && test -f /app/apps/api/dist/main.js \
  && test -f /app/apps/web/dist/index.html \
  && test -x /usr/local/bin/opspilot-entrypoint \
- && (cd /app/apps/api && node -e "require.resolve('@opspilot/database'); require.resolve('@opspilot/agent-runtime')") \
+ && (cd /app/apps/api && node -e "require.resolve('@opspilot/database'); require.resolve('@opspilot/agent-runtime'); require.resolve('@opspilot/provider-claude')") \
+ && (cd /app/packages/provider-claude && node -e "require.resolve('@anthropic-ai/sdk')") \
  && (cd /app/packages/database && node -e "require.resolve('@prisma/client')")
 
 USER node

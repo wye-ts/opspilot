@@ -1,13 +1,16 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { InternalServerError } from "@anthropic-ai/sdk";
-import opspilotAgentRuntime from "@opspilot/agent-runtime";
 import type { ResolutionReport } from "@opspilot/contracts";
 import { describe, expect, it, vi } from "vitest";
 
-import { ClaudeLlmProvider, type AnthropicMessagesClient } from "./claude-llm-provider";
+import {
+  runAgentOrchestrator,
+  InMemoryToolRegistry,
+  GET_SERVICE_STATUS_CATALOG_ENTRY,
+  LlmProviderError,
+} from "@opspilot/agent-runtime";
 
-const { runAgentOrchestrator, InMemoryToolRegistry, GET_SERVICE_STATUS_CATALOG_ENTRY, LlmProviderError } =
-  opspilotAgentRuntime;
+import { ClaudeLlmProvider, type AnthropicMessagesClient } from "./claude-llm-provider";
 
 /**
  * Drives the real, unmodified orchestrator through the real Claude adapter,
@@ -241,12 +244,51 @@ describe("orchestrator through the Claude adapter (mocked transport)", () => {
     expect(result.code).toBe("PROVIDER_PROTOCOL_INVALID");
   });
 
-  it("lets a transport failure propagate as LlmProviderError, never as a failed result", async () => {
+  it("turns a transport failure into a failed result the caller can finalize", async () => {
+    // PR 6B1 deliberately inverted this. Through PR 6A the orchestrator let an
+    // LlmProviderError propagate, because the only provider in the persisted
+    // path was deterministic and a throw genuinely meant "should never happen".
+    //
+    // Once a live provider is reachable from the API that is no longer true: an
+    // auth failure, a rate limit, a timeout, or a cancellation is the ordinary
+    // outcome of a network call. Propagating it left AgentRunService no choice
+    // but AGENT_EXECUTION_CRASHED, which does not finalize — stranding the
+    // agent_runs row in RUNNING forever with no recovery path.
+    //
+    // The adapter still *throws* LlmProviderError; what changed is that the
+    // orchestrator now catches it. That keeps the adapter's contract intact
+    // while making the failure persistable.
     const create = vi
       .fn()
       .mockRejectedValue(new InternalServerError(500, { message: "x" }, "x", new Headers()));
 
-    await expect(runOrchestrator(buildProvider(create))).rejects.toBeInstanceOf(LlmProviderError);
+    const result = await runOrchestrator(buildProvider(create));
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") return;
+    expect(result.code).toBe("PROVIDER_UNAVAILABLE");
+    // The sanitized, category-keyed message — never the SDK's own text.
+    expect(result.message).toBe("The Anthropic API returned a server error.");
+  });
+
+  it("classifies an unrecognized transport error rather than letting it escape", async () => {
+    // The adapter is a classification boundary: anything the transport throws
+    // becomes an LlmProviderError, with UNKNOWN as the fallback category. So a
+    // TypeError raised inside the SDK is recorded as an unavailable provider,
+    // not surfaced as a crash — which is the behaviour you want, since a
+    // malformed response from a vendor is not a defect in this codebase.
+    //
+    // The complementary property — that a defect raised by the *orchestrator's
+    // own* collaborators still propagates — is asserted one layer up, in
+    // agent-runtime's agent-orchestrator.test.ts, where the provider throws
+    // directly without passing through this adapter.
+    const create = vi.fn().mockRejectedValue(new TypeError("not a provider failure"));
+
+    const result = await runOrchestrator(buildProvider(create));
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") return;
+    expect(result.code).toBe("PROVIDER_UNAVAILABLE");
   });
 
   it("forwards the caller's cancellation signal to every provider turn (provider calls only)", async () => {

@@ -23,6 +23,7 @@
     "@opspilot/contracts": "workspace:*",
     "@opspilot/database": "workspace:*",
     "@opspilot/agent-runtime": "workspace:*",
+    "@opspilot/provider-claude": "workspace:*",
     "zod": "^4.4.3"
   },
   "devDependencies": {

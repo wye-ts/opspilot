@@ -6,8 +6,10 @@ import {
   DEFAULT_MAX_RETRIES,
   DEFAULT_TIMEOUT_MS,
   ProviderConfigError,
-  parseWorkerProviderConfig,
+  parseProviderConfig,
   type EnvRecord,
+  type LiveProviderConfig,
+  type ProviderConfig,
 } from "./claude-config";
 
 const SECRET = "sk-ant-test-do-not-use-0123456789";
@@ -21,46 +23,66 @@ function liveEnv(overrides: EnvRecord = {}): EnvRecord {
   };
 }
 
-describe("parseWorkerProviderConfig — mode selection", () => {
-  it("defaults to FAKE when the mode is unset", () => {
-    const config = parseWorkerProviderConfig({});
+/** Narrows to the present arm, failing the test rather than the type system. */
+function capabilityOf(config: ProviderConfig): LiveProviderConfig {
+  if (config.liveCapability.kind !== "present") {
+    throw new Error("expected live capability to be present");
+  }
+  return config.liveCapability;
+}
 
-    expect(config.selection.providerMode).toBe("FAKE");
-    expect(config.anthropic).toBeNull();
+describe("parseProviderConfig — default request mode", () => {
+  it("defaults to FAKE when the mode is unset", () => {
+    const config = parseProviderConfig({});
+
+    expect(config.defaultRequestMode).toBe("FAKE");
+    expect(config.liveCapability.kind).toBe("absent");
   });
 
   it("defaults to FAKE when the mode is an empty string", () => {
-    expect(parseWorkerProviderConfig({ AGENT_RUN_PROVIDER_MODE: "  " }).selection.providerMode).toBe(
-      "FAKE",
-    );
+    expect(parseProviderConfig({ AGENT_RUN_PROVIDER_MODE: "  " }).defaultRequestMode).toBe("FAKE");
   });
 
-  it("ignores Anthropic settings entirely in FAKE mode", () => {
-    const config = parseWorkerProviderConfig({
+  it("resolves capability independently of the default request mode", () => {
+    // The central property of the PR 6B1 restructure. A FAKE default with a
+    // valid Anthropic configuration is a normal, useful deployment: requests
+    // that omit `providerMode` run deterministically, and a request that asks
+    // for LIVE can still be served. The previous shape could not express this
+    // — it read the Anthropic settings only when the mode was LIVE.
+    const config = parseProviderConfig({
       AGENT_RUN_PROVIDER_MODE: "FAKE",
       ANTHROPIC_API_KEY: SECRET,
       ANTHROPIC_MODEL: "claude-sonnet-5",
     });
 
-    expect(config.anthropic).toBeNull();
-    expect(config.selection.modelIdentifier ?? null).toBeNull();
+    expect(config.defaultRequestMode).toBe("FAKE");
+    expect(capabilityOf(config).selection.modelIdentifier).toBe("claude-sonnet-5");
   });
 
-  it("accepts a valid LIVE configuration", () => {
-    const config = parseWorkerProviderConfig(liveEnv());
+  it("accepts a valid LIVE default with capability present", () => {
+    const config = parseProviderConfig(liveEnv());
 
-    expect(config.selection).toEqual({
+    expect(config.defaultRequestMode).toBe("LIVE");
+    expect(capabilityOf(config).selection).toEqual({
       providerMode: "LIVE",
       modelIdentifier: "claude-sonnet-5",
     });
-    expect(config.anthropic?.timeoutMs).toBe(DEFAULT_TIMEOUT_MS);
-    expect(config.anthropic?.maxRetries).toBe(DEFAULT_MAX_RETRIES);
+    expect(capabilityOf(config).anthropic.timeoutMs).toBe(DEFAULT_TIMEOUT_MS);
+    expect(capabilityOf(config).anthropic.maxRetries).toBe(DEFAULT_MAX_RETRIES);
+  });
+
+  it("rejects a LIVE default the process could not actually serve", () => {
+    // Every request omitting `providerMode` would fail at runtime. Refusing to
+    // start beats serving a guaranteed error.
+    expect(() => parseProviderConfig({ AGENT_RUN_PROVIDER_MODE: "LIVE" })).toThrow(
+      /AGENT_RUN_PROVIDER_MODE=LIVE requires/,
+    );
   });
 
   it.each(["LIVE ", " live", "Live", "CLAUDE", "ANTHROPIC", "true"])(
     "rejects the unsupported mode %o instead of guessing",
     (mode) => {
-      expect(() => parseWorkerProviderConfig({ AGENT_RUN_PROVIDER_MODE: mode })).toThrow(
+      expect(() => parseProviderConfig({ AGENT_RUN_PROVIDER_MODE: mode })).toThrow(
         ProviderConfigError,
       );
     },
@@ -69,29 +91,29 @@ describe("parseWorkerProviderConfig — mode selection", () => {
   it("does not accept CLAUDE as an execution mode", () => {
     // The execution mode stays provider-neutral; the vendor is expressed
     // through model metadata, not through this enum.
-    expect(() => parseWorkerProviderConfig({ AGENT_RUN_PROVIDER_MODE: "CLAUDE" })).toThrow(
+    expect(() => parseProviderConfig({ AGENT_RUN_PROVIDER_MODE: "CLAUDE" })).toThrow(
       /must be exactly 'FAKE' or 'LIVE'/,
     );
   });
 });
 
-describe("parseWorkerProviderConfig — LIVE requirements", () => {
-  it("rejects LIVE without an API key", () => {
-    const env = { AGENT_RUN_PROVIDER_MODE: "LIVE", ANTHROPIC_MODEL: "claude-sonnet-5" };
+describe("parseProviderConfig — live capability requirements", () => {
+  it("rejects a model without an API key", () => {
+    const env = { ANTHROPIC_MODEL: "claude-sonnet-5" };
 
-    expect(() => parseWorkerProviderConfig(env)).toThrow(/ANTHROPIC_API_KEY is required/);
+    expect(() => parseProviderConfig(env)).toThrow(/ANTHROPIC_API_KEY is required/);
   });
 
-  it("rejects LIVE with a blank API key", () => {
-    expect(() => parseWorkerProviderConfig(liveEnv({ ANTHROPIC_API_KEY: "   " }))).toThrow(
+  it("rejects a blank API key", () => {
+    expect(() => parseProviderConfig(liveEnv({ ANTHROPIC_API_KEY: "   " }))).toThrow(
       /ANTHROPIC_API_KEY is required/,
     );
   });
 
-  it("rejects LIVE without a model", () => {
-    const env = { AGENT_RUN_PROVIDER_MODE: "LIVE", ANTHROPIC_API_KEY: SECRET };
+  it("rejects an API key without a model", () => {
+    const env = { ANTHROPIC_API_KEY: SECRET };
 
-    expect(() => parseWorkerProviderConfig(env)).toThrow(/ANTHROPIC_MODEL is required/);
+    expect(() => parseProviderConfig(env)).toThrow(/ANTHROPIC_MODEL is required/);
   });
 
   it.each([
@@ -102,7 +124,7 @@ describe("parseWorkerProviderConfig — LIVE requirements", () => {
     "claude-sonnet-5-20260101",
     "sonnet-5",
   ])("rejects the unsupported model %o at configuration time", (model) => {
-    expect(() => parseWorkerProviderConfig(liveEnv({ ANTHROPIC_MODEL: model }))).toThrow(
+    expect(() => parseProviderConfig(liveEnv({ ANTHROPIC_MODEL: model }))).toThrow(
       /must be 'claude-sonnet-5'/,
     );
   });
@@ -116,53 +138,53 @@ describe("parseWorkerProviderConfig — LIVE requirements", () => {
       liveEnv({ ANTHROPIC_MODEL: "claude-opus-5" }),
       liveEnv({ ANTHROPIC_TIMEOUT_MS: "0" }),
     ]) {
-      expect(() => parseWorkerProviderConfig(env)).toThrow(ProviderConfigError);
+      expect(() => parseProviderConfig(env)).toThrow(ProviderConfigError);
     }
   });
 });
 
-describe("parseWorkerProviderConfig — bounded numeric settings", () => {
+describe("parseProviderConfig — bounded numeric settings", () => {
   it("uses explicit valid values", () => {
-    const config = parseWorkerProviderConfig(
+    const config = parseProviderConfig(
       liveEnv({ ANTHROPIC_TIMEOUT_MS: "30000", ANTHROPIC_MAX_RETRIES: "0" }),
     );
 
-    expect(config.anthropic?.timeoutMs).toBe(30_000);
-    expect(config.anthropic?.maxRetries).toBe(0);
+    expect(capabilityOf(config).anthropic.timeoutMs).toBe(30_000);
+    expect(capabilityOf(config).anthropic.maxRetries).toBe(0);
   });
 
   it.each(["0", "-1", "1.5", "45s", "abc", "999999999"])(
     "rejects the invalid timeout %o",
     (raw) => {
-      expect(() => parseWorkerProviderConfig(liveEnv({ ANTHROPIC_TIMEOUT_MS: raw }))).toThrow(
+      expect(() => parseProviderConfig(liveEnv({ ANTHROPIC_TIMEOUT_MS: raw }))).toThrow(
         /ANTHROPIC_TIMEOUT_MS must be an integer/,
       );
     },
   );
 
   it.each(["-1", "6", "2.5", "two"])("rejects the invalid retry count %o", (raw) => {
-    expect(() => parseWorkerProviderConfig(liveEnv({ ANTHROPIC_MAX_RETRIES: raw }))).toThrow(
+    expect(() => parseProviderConfig(liveEnv({ ANTHROPIC_MAX_RETRIES: raw }))).toThrow(
       /ANTHROPIC_MAX_RETRIES must be an integer/,
     );
   });
 
   it("does not silently truncate a trailing-unit typo", () => {
     // parseInt("45s") would yield 45; Number("45s") is NaN, which is rejected.
-    expect(() => parseWorkerProviderConfig(liveEnv({ ANTHROPIC_TIMEOUT_MS: "45s" }))).toThrow(
+    expect(() => parseProviderConfig(liveEnv({ ANTHROPIC_TIMEOUT_MS: "45s" }))).toThrow(
       ProviderConfigError,
     );
   });
 });
 
-describe("parseWorkerProviderConfig — secret hygiene", () => {
+describe("parseProviderConfig — secret hygiene", () => {
   it("keeps the key readable by the adapter that needs it", () => {
-    const config = parseWorkerProviderConfig(liveEnv());
+    const config = parseProviderConfig(liveEnv());
 
-    expect(config.anthropic?.apiKey).toBe(SECRET);
+    expect(capabilityOf(config).anthropic.apiKey).toBe(SECRET);
   });
 
   it("omits the key from JSON serialization", () => {
-    const config = parseWorkerProviderConfig(liveEnv());
+    const config = parseProviderConfig(liveEnv());
 
     const serialized = JSON.stringify(config);
     expect(serialized).not.toContain(SECRET);
@@ -170,16 +192,15 @@ describe("parseWorkerProviderConfig — secret hygiene", () => {
   });
 
   it("omits the key from inspection output", () => {
-    const config = parseWorkerProviderConfig(liveEnv());
+    const config = parseProviderConfig(liveEnv());
 
     expect(inspect(config, { depth: null })).not.toContain(SECRET);
-    expect(inspect(config.anthropic)).not.toContain(SECRET);
+    expect(inspect(capabilityOf(config).anthropic)).not.toContain(SECRET);
   });
 
   it("omits the key from enumeration and spreads", () => {
-    const config = parseWorkerProviderConfig(liveEnv());
-    const anthropic = config.anthropic;
-    if (anthropic === null) throw new Error("expected a LIVE config");
+    const config = parseProviderConfig(liveEnv());
+    const anthropic = capabilityOf(config).anthropic;
 
     expect(Object.keys(anthropic)).not.toContain("apiKey");
     expect(JSON.stringify({ ...anthropic })).not.toContain(SECRET);
@@ -195,7 +216,7 @@ describe("parseWorkerProviderConfig — secret hygiene", () => {
 
     for (const env of cases) {
       try {
-        parseWorkerProviderConfig(env);
+        parseProviderConfig(env);
         throw new Error("expected the configuration to be rejected");
       } catch (error) {
         const thrown = error as Error;

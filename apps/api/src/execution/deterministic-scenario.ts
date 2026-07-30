@@ -1,4 +1,4 @@
-import { FakeLlmProvider, type FakeAgentScenario, type LlmProvider } from "@opspilot/agent-runtime";
+import type { FakeAgentScenario } from "@opspilot/agent-runtime";
 import type { ResolutionReport } from "@opspilot/contracts";
 import type { AgentJobRecord } from "@opspilot/database";
 
@@ -52,7 +52,7 @@ function truncateSummary(summary: string): string {
 // a specific finding such as "SERVICE_DEGRADATION" or "did not report an
 // OPERATIONAL status" would be false whenever the seeded status actually is
 // OPERATIONAL (e.g. auth-service) — see
-// deterministic-provider-factory.test.ts's auth-service regression test.
+// deterministic-scenario.test.ts's auth-service regression test.
 //
 // The report also must not claim the actual status value can be recovered
 // from the persisted trace/evidence — it cannot. AgentTraceEventSchema's
@@ -114,40 +114,5 @@ export function createDeterministicScenario(job: AgentJobRecord): FakeAgentScena
       },
       { kind: "report_submission", usage: FIXED_TOKEN_USAGE, rawInput: report },
     ],
-  };
-}
-
-const LIVE_PROVIDER_MODE_MESSAGE =
-  "AGENT_RUN_PROVIDER_MODE=LIVE is not supported by this API; only FAKE is available.";
-
-// Thrown synchronously, before any network-capable object is ever
-// constructed — LIVE mode fails safely with a fixed message, never by
-// constructing ClaudeLlmProvider or making a network call (§12.5).
-export class LiveProviderModeNotSupportedError extends Error {
-  constructor() {
-    super(LIVE_PROVIDER_MODE_MESSAGE);
-    this.name = "LiveProviderModeNotSupportedError";
-  }
-}
-
-export interface DeterministicProviderFactory {
-  createProvider(job: AgentJobRecord): LlmProvider;
-}
-
-// AGENT_RUN_PROVIDER_MODE defaults to FAKE. Any other value (in particular
-// LIVE) fails the factory's construction itself, synchronously and without
-// touching the network — see main.ts's guarded bootstrap, which turns this
-// into the same fixed startup-failure path as a Prisma initialization
-// failure.
-export function createDeterministicProviderFactory(providerMode: string | undefined): DeterministicProviderFactory {
-  const mode = providerMode ?? "FAKE";
-  if (mode !== "FAKE") {
-    throw new LiveProviderModeNotSupportedError();
-  }
-
-  return {
-    createProvider(job: AgentJobRecord): LlmProvider {
-      return new FakeLlmProvider(createDeterministicScenario(job));
-    },
   };
 }

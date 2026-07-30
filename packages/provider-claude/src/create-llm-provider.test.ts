@@ -1,12 +1,11 @@
-import opspilotAgentRuntime from "@opspilot/agent-runtime";
+import { FakeLlmProvider } from "@opspilot/agent-runtime";
 import type { FakeAgentScenario, LlmProviderSelection } from "@opspilot/agent-runtime";
 import { describe, expect, it } from "vitest";
 
 import { ClaudeLlmProvider } from "./claude-llm-provider";
-import { parseWorkerProviderConfig } from "./claude-config";
+import { parseProviderConfig } from "./claude-config";
 import { LiveProviderUnavailableError, createLlmProviderFactory } from "./create-llm-provider";
 
-const { FakeLlmProvider } = opspilotAgentRuntime;
 
 const SECRET = "sk-ant-test-do-not-use-0123456789";
 
@@ -77,19 +76,23 @@ describe("createLlmProviderFactory", () => {
   });
 
   it("accepts a selection produced by the config parser end to end", () => {
-    const config = parseWorkerProviderConfig({
+    const config = parseProviderConfig({
       AGENT_RUN_PROVIDER_MODE: "LIVE",
       ANTHROPIC_API_KEY: SECRET,
       ANTHROPIC_MODEL: "claude-sonnet-5",
     });
-    if (config.anthropic === null) throw new Error("expected a LIVE config");
+    if (config.liveCapability.kind !== "present") {
+      throw new Error("expected live capability to be present");
+    }
 
     const factory = createLlmProviderFactory({
       fakeScenario: SCENARIO,
-      anthropic: config.anthropic,
+      anthropic: config.liveCapability.anthropic,
     });
 
-    expect(factory.createProvider(config.selection)).toBeInstanceOf(ClaudeLlmProvider);
+    expect(factory.createProvider(config.liveCapability.selection)).toBeInstanceOf(
+      ClaudeLlmProvider,
+    );
   });
 
   it("requires no database record to select a provider", () => {

@@ -201,7 +201,6 @@ jobs:
             ! test -d /app/apps/worker/src
             ! test -d /app/apps/worker/dist
             ! test -d /app/runbooks
-            ! test -d /app/node_modules/@anthropic-ai
             ! test -d /app/node_modules/voyageai
             test -x /app/packages/database/node_modules/.bin/prisma
             test -x /usr/local/bin/opspilot-entrypoint
@@ -220,12 +219,34 @@ jobs:
       # packages it imports directly; packages/database for @prisma/client,
       # which apps/api never depends on directly). This is what would break
       # if pnpm's relative node_modules symlinks did not survive COPY --from.
+      # The Anthropic SDK's presence is now asserted POSITIVELY, from the
+      # server-side path that is supposed to have it. The old assertion — that
+      # no @anthropic-ai directory existed anywhere in the image — became false
+      # in PR 6B1, when apps/api gained the ability to execute a requested LIVE
+      # run. Deleting it without replacement would have left the boundary
+      # unchecked in both directions, so it is replaced rather than dropped:
+      # resolvable from packages/provider-claude, and (below) absent from the
+      # browser bundle.
       - name: Package resolution checks (post stage-copy)
         run: |
           docker run --rm --workdir /app/apps/api --entrypoint node opspilot:ci \
-            -e "require.resolve('@opspilot/database'); require.resolve('@opspilot/agent-runtime')"
+            -e "require.resolve('@opspilot/database'); require.resolve('@opspilot/agent-runtime'); require.resolve('@opspilot/provider-claude')"
+          docker run --rm --workdir /app/packages/provider-claude --entrypoint node opspilot:ci \
+            -e "require.resolve('@anthropic-ai/sdk')"
           docker run --rm --workdir /app/packages/database --entrypoint node opspilot:ci \
             -e "require.resolve('@prisma/client')"
+
+      # The other half of the boundary: the SDK must not be reachable from the
+      # web app's own dependency tree. apps/web declares neither the SDK nor the
+      # provider package, so this resolution has to fail.
+      - name: The browser app cannot resolve the provider SDK
+        run: |
+          if docker run --rm --workdir /app/apps/web --entrypoint node opspilot:ci \
+               -e "require.resolve('@anthropic-ai/sdk')" 2>/dev/null; then
+            echo "apps/web can resolve @anthropic-ai/sdk; the browser boundary is broken." >&2
+            exit 1
+          fi
+          echo "Confirmed: apps/web cannot resolve @anthropic-ai/sdk."
 
       - name: Run the container against an empty database
         run: |

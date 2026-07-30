@@ -1,4 +1,4 @@
-import opspilotAgentRuntime from "@opspilot/agent-runtime";
+import { getServiceStatusTool } from "@opspilot/agent-runtime";
 import { ResolutionReportSchema } from "@opspilot/contracts";
 import { describe, expect, it } from "vitest";
 
@@ -9,7 +9,6 @@ import {
   toStrictInputSchema,
 } from "./claude-tool-schemas";
 
-const { getServiceStatusTool } = opspilotAgentRuntime;
 
 const FORBIDDEN_KEYS = [
   "minLength",
