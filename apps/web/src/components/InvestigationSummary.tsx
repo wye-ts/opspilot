@@ -65,8 +65,8 @@ export function InvestigationSummary({
 
         {showLiveRetryTokenNotice ? (
           <p className="investigation-summary-retry-note">
-            Use the <strong>Retry Live Run</strong> form above to retry this same investigation —
-            re-enter the live demo access token to continue.
+            Use the <strong>Recover Live Run</strong> form above to recover this same
+            investigation — re-enter the live demo access token to continue.
           </p>
         ) : null}
       </div>

@@ -2,6 +2,7 @@ import {
   LiveRunAdmissionError,
   PersistenceError,
   type AgentJobRecord,
+  type AgentRunRecord,
   type PersistedAgentJob,
 } from "@opspilot/database";
 import type { ResolutionReport } from "@opspilot/contracts";
@@ -35,6 +36,10 @@ const VALID_REPORT: ResolutionReport = {
 };
 
 const JOB_ID = "job-1";
+// The client's key for a LIVE request. A real one is a UUID (the API validates
+// that at the edge and the column enforces it); the service layer only ever
+// passes it through, so a stable literal is what these tests need.
+const CLIENT_REQUEST_ID = "11111111-1111-4111-8111-111111111111";
 
 const DEFAULT_JOB_SNAPSHOT: AgentJobRecord = {
   id: JOB_ID,
@@ -109,6 +114,7 @@ interface FakeRepositoryOptions {
   startRunError?: unknown;
   finalizeError?: unknown;
   startLiveRunError?: unknown;
+  replayLiveRunError?: unknown;
   reconcileError?: unknown;
   // Stands in for "what the database row actually contains" — returned by
   // startRun regardless of what the caller passed (the caller passes only
@@ -118,7 +124,7 @@ interface FakeRepositoryOptions {
 }
 
 /**
- * The three inputs a LIVE call is now REQUIRED to carry.
+ * The four inputs a LIVE call is now REQUIRED to carry.
  *
  * `providerMode` alone decides the execution path, and the path it decides on
  * must be fully equipped: a LIVE run missing any of these is refused outright
@@ -150,6 +156,7 @@ function liveSafeguardInputs() {
       dailyLimit: 10,
       costCeilingNanoUsd: 1_000_000_000n,
     },
+    clientRequestId: CLIENT_REQUEST_ID,
   };
 }
 
@@ -158,6 +165,7 @@ function createFakeRepository(options: FakeRepositoryOptions = {}) {
   const calls = {
     startRun: 0,
     startLiveRunWithAttemptLimit: 0,
+    replayLiveRun: 0,
     finalizeCompleted: 0,
     finalizeFailed: 0,
     reconcileLiveRunBudget: 0,
@@ -180,6 +188,15 @@ function createFakeRepository(options: FakeRepositoryOptions = {}) {
   // equality (see the "invokes createProvider with the exact AgentJobRecord
   // instance" test below).
   const startedJobs: AgentJobRecord[] = [];
+  // Every clientRequestId the live path received, in call order, so a test can
+  // assert that a recovery repeated the ORIGINAL key rather than minting one.
+  const clientRequestIds: string[] = [];
+  // Stands in for the partial unique index on (job_id, client_request_id): the
+  // fake's memory of which key already names a run.
+  const liveRunsByKey = new Map<
+    string,
+    { job: AgentJobRecord; run: AgentRunRecord }
+  >();
 
   const repository: AgentRunRepositoryInterface = {
     createJob: async (ticketContext) => ({
@@ -216,31 +233,65 @@ function createFakeRepository(options: FakeRepositoryOptions = {}) {
         },
       };
     },
-    startLiveRunWithAttemptLimit: async ({ jobId, modelIdentifier, budget }) => {
+    startLiveRunWithAttemptLimit: async ({ jobId, modelIdentifier, budget, clientRequestId }) => {
       calls.startLiveRunWithAttemptLimit += 1;
       if (options.startLiveRunError) throw options.startLiveRunError;
+      clientRequestIds.push(clientRequestId);
+
+      /**
+       * The REPLAY arm, modelled the way the real transaction behaves.
+       *
+       * Keyed on (jobId, clientRequestId) exactly as the partial unique index
+       * is, so a fake that "already has a run for this key" answers `replayed`
+       * with NO reservation. That absence is what the service under test must
+       * honour: a replay has nothing to reconcile, and handing one a reservation
+       * would double-count a cost the original attempt already recorded.
+       */
+      const existing = liveRunsByKey.get(`${jobId}:${clientRequestId}`);
+      if (existing) {
+        return { outcome: "replayed" as const, job: existing.job, run: existing.run };
+      }
+
       const id = `run-${nextRunId++}`;
       const startedJob: AgentJobRecord = { ...jobSnapshot, id: jobId };
       startedJobs.push(startedJob);
+      const run = {
+        id,
+        jobId,
+        attemptNumber: 1,
+        status: "RUNNING" as const,
+        providerMode: "LIVE" as const,
+        modelIdentifier,
+        startedAt: "2026-01-01T00:00:00.000Z",
+        finishedAt: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        estimatedCostNanoUsd: null,
+        possibleUnobservedCost: false,
+      };
+      liveRunsByKey.set(`${jobId}:${clientRequestId}`, { job: startedJob, run });
       return {
+        outcome: "started" as const,
         job: startedJob,
-        run: {
-          id,
-          jobId,
-          attemptNumber: 1,
-          status: "RUNNING",
-          providerMode: "LIVE",
-          modelIdentifier,
-          startedAt: "2026-01-01T00:00:00.000Z",
-          finishedAt: null,
-          createdAt: "2026-01-01T00:00:00.000Z",
-          estimatedCostNanoUsd: null,
-          possibleUnobservedCost: false,
-        },
+        run,
         // Echoed back from the "committed" row, exactly as the real transaction
         // does, so reconciliation keys off the reservation rather than a clock.
         reservation: { budgetDate: budget.budgetDate, runsReserved: 1 },
       };
+    },
+    /**
+     * The READ-ONLY sibling, keyed on the SAME map the creating arm writes.
+     *
+     * Sharing `liveRunsByKey` is what makes the fake honest about the property
+     * under test: the lookup and the creating transaction agree because they read
+     * the same state, exactly as the real pair agree because they read the same
+     * partial unique index. A separate map would let the two drift and quietly
+     * turn a replay test green for the wrong reason.
+     */
+    replayLiveRun: async ({ jobId, clientRequestId }) => {
+      calls.replayLiveRun += 1;
+      if (options.replayLiveRunError) throw options.replayLiveRunError;
+      const existing = liveRunsByKey.get(`${jobId}:${clientRequestId}`);
+      return existing ? { outcome: "replayed" as const, job: existing.job, run: existing.run } : null;
     },
     reconcileLiveRunBudget: async (reservation, usage) => {
       calls.reconcileLiveRunBudget += 1;
@@ -313,7 +364,15 @@ function createFakeRepository(options: FakeRepositoryOptions = {}) {
     },
   };
 
-  return { repository, calls, startedJobs, finalizeFailedCodes, finalizeUsage, reconciledWith };
+  return {
+    repository,
+    calls,
+    startedJobs,
+    finalizeFailedCodes,
+    finalizeUsage,
+    reconciledWith,
+    clientRequestIds,
+  };
 }
 
 describe("executeAndPersist", () => {
@@ -934,6 +993,7 @@ describe("executeAndPersist — service-owned usage collector", () => {
       usageHooks: { createCollector: () => collector },
       liveAttemptLimit: 2,
       budgetReservationInput: RESERVATION_INPUT,
+      clientRequestId: CLIENT_REQUEST_ID,
     };
   }
 
@@ -1310,6 +1370,7 @@ describe("retryFinalization — authoritative usage survives the rollback", () =
         },
         liveAttemptLimit: 2,
         budgetReservationInput: RESERVATION_INPUT,
+        clientRequestId: CLIENT_REQUEST_ID,
       },
     };
   }
@@ -1536,6 +1597,7 @@ describe("executeAndPersist — providerMode is authoritative", () => {
     usageHooks: HOOKS,
     liveAttemptLimit: 2,
     budgetReservationInput: RESERVATION,
+    clientRequestId: CLIENT_REQUEST_ID,
   };
 
   function baseParams(
@@ -1555,21 +1617,24 @@ describe("executeAndPersist — providerMode is authoritative", () => {
     "usageHooks",
     "liveAttemptLimit",
     "budgetReservationInput",
+    "clientRequestId",
   ];
 
-  // EVERY proper subset of the three live inputs — the empty set and all six
-  // partial ones. Each is a LIVE request that would previously have executed
-  // with the missing safeguards simply absent, so the matrix is exhaustive by
-  // construction rather than by whichever combinations someone thought of.
-  const INCOMPLETE_LIVE_INPUT_SETS: readonly (readonly LiveInputKey[])[] = [
-    [],
-    ["usageHooks"],
-    ["liveAttemptLimit"],
-    ["budgetReservationInput"],
-    ["usageHooks", "liveAttemptLimit"],
-    ["usageHooks", "budgetReservationInput"],
-    ["liveAttemptLimit", "budgetReservationInput"],
-  ];
+  /**
+   * EVERY proper subset of the live inputs — the empty set and all fourteen
+   * partial ones — ENUMERATED rather than listed.
+   *
+   * Each is a LIVE request that would previously have executed with the missing
+   * safeguards simply absent. The list used to be written out by hand, which was
+   * exhaustive only for as long as nobody added a fifth input: the fourth
+   * (`clientRequestId`) arrived and the hand-written seven silently stopped
+   * covering half the space. Deriving the subsets from ALL_LIVE_KEYS makes
+   * "exhaustive by construction" true rather than aspirational.
+   */
+  const INCOMPLETE_LIVE_INPUT_SETS: readonly (readonly LiveInputKey[])[] = Array.from(
+    { length: 2 ** ALL_LIVE_KEYS.length - 1 },
+    (_unused, mask) => ALL_LIVE_KEYS.filter((_key, index) => (mask & (1 << index)) !== 0),
+  );
 
   function subsetOf(keys: readonly LiveInputKey[]) {
     return Object.fromEntries(keys.map((key) => [key, LIVE_ONLY_INPUTS[key]]));
@@ -1630,7 +1695,8 @@ describe("executeAndPersist — providerMode is authoritative", () => {
     ["usageHooks", { usageHooks: HOOKS }],
     ["liveAttemptLimit", { liveAttemptLimit: 2 }],
     ["budgetReservationInput", { budgetReservationInput: RESERVATION }],
-    ["all three", LIVE_ONLY_INPUTS],
+    ["clientRequestId", { clientRequestId: CLIENT_REQUEST_ID }],
+    ["all four", LIVE_ONLY_INPUTS],
   ])("FAKE carrying %s", (_label, extra) => {
     it("is refused rather than silently ignored", async () => {
       // A FAKE call carrying live inputs is a caller that believes it asked for
@@ -1663,6 +1729,7 @@ describe("executeAndPersist — providerMode is authoritative", () => {
       },
       liveAttemptLimit: 2,
       budgetReservationInput: RESERVATION,
+      clientRequestId: CLIENT_REQUEST_ID,
     });
 
     expect(result.persistence).toBe("persisted");
@@ -1684,5 +1751,310 @@ describe("executeAndPersist — providerMode is authoritative", () => {
       throw new Error("expected persisted");
     expect(result.usageSummary).toBeNull();
     expect(result.reservation).toBeNull();
+  });
+});
+
+/**
+ * IDEMPOTENT LIVE CREATION, at the layer that decides whether to spend.
+ *
+ * The repository is where the (job_id, client_request_id) lookup actually
+ * happens; these tests cover the SERVICE's half of the contract, which is the
+ * half that can spend money: when the transaction answers `replayed`, nothing
+ * downstream of it may run. No collector, no provider, no orchestrator, no
+ * finalize, and — the one that costs real dollars twice — no reservation handed
+ * back for the caller to reconcile.
+ *
+ * The failure this prevents is not hypothetical. A finalization persistence
+ * failure happens AFTER the provider executed and after the budget was
+ * reconciled, and it is reported with the same PERSISTENCE_UNAVAILABLE code as a
+ * pre-run outage. Without the replay exit, the recovery the UI offers for that
+ * failure is a second paid execution.
+ */
+describe("executeAndPersist — idempotent LIVE creation", () => {
+  const RESERVATION_INPUT = {
+    budgetDate: "2026-07-29",
+    dailyLimit: 10,
+    costCeilingNanoUsd: 1_000_000_000n,
+  } as const;
+
+  function liveCall(
+    clientRequestId: string,
+    onCreateProvider: () => void = () => undefined,
+  ) {
+    return {
+      jobId: JOB_ID,
+      providerMode: "LIVE" as const,
+      modelIdentifier: "claude-sonnet-5",
+      createProvider: () => {
+        onCreateProvider();
+        return reportSubmittingProvider();
+      },
+      toolRegistry: toolRegistryWithServiceStatus(),
+      usageHooks: {
+        createCollector: () => ({
+          record: () => undefined,
+          snapshot: (): RunProviderUsageSummary => ({
+            providerCallsObserved: 1,
+            inputTokens: 100,
+            outputTokens: 50,
+            cacheReadInputTokens: 0,
+            cacheCreation5mInputTokens: 0,
+            cacheCreation1hInputTokens: 0,
+            estimatedCostNanoUsd: 1_000_000n,
+            pricingStatus: "CURRENT" as const,
+            possibleUnobservedCost: false,
+          }),
+        }),
+      },
+      liveAttemptLimit: 5,
+      budgetReservationInput: RESERVATION_INPUT,
+      clientRequestId,
+    };
+  }
+
+  it("marks a first, genuinely new LIVE run as started", async () => {
+    const { repository } = createFakeRepository();
+    const service = createAgentRunService(repository);
+
+    const result = await service.executeAndPersist(liveCall(CLIENT_REQUEST_ID));
+
+    if (result.persistence !== "persisted") throw new Error("expected persisted");
+    expect(result.execution).toBe("started");
+    expect(result.reservation).not.toBeNull();
+  });
+
+  it("repeating the key executes no provider and creates no second run", async () => {
+    let providersBuilt = 0;
+    const { repository, calls } = createFakeRepository();
+    const service = createAgentRunService(repository);
+
+    await service.executeAndPersist(liveCall(CLIENT_REQUEST_ID, () => (providersBuilt += 1)));
+    const finalizesAfterFirst = calls.finalizeCompleted + calls.finalizeFailed;
+
+    const replay = await service.executeAndPersist(
+      liveCall(CLIENT_REQUEST_ID, () => (providersBuilt += 1)),
+    );
+
+    if (replay.persistence !== "persisted") throw new Error("expected persisted");
+    expect(replay.execution).toBe("replayed");
+    // The provider is the thing that costs money, so it is the assertion that
+    // matters most: built exactly once across two requests.
+    expect(providersBuilt).toBe(1);
+    expect(calls.finalizeCompleted + calls.finalizeFailed).toBe(finalizesAfterFirst);
+  });
+
+  it("hands a replay no reservation, so the caller cannot reconcile it twice", async () => {
+    const { repository } = createFakeRepository();
+    const service = createAgentRunService(repository);
+
+    await service.executeAndPersist(liveCall(CLIENT_REQUEST_ID));
+    const replay = await service.executeAndPersist(liveCall(CLIENT_REQUEST_ID));
+
+    if (replay.persistence !== "persisted") throw new Error("expected persisted");
+    // Both null TOGETHER. The API controller reconciles only when it has a
+    // reservation AND a usage summary, so either one being null is enough — but
+    // a replay measured nothing and reserved nothing, and saying so on both
+    // fields keeps the reason legible rather than incidental.
+    expect(replay.reservation).toBeNull();
+    expect(replay.usageSummary).toBeNull();
+  });
+
+  it("a DIFFERENT key on the same job is a new request and runs again", async () => {
+    let providersBuilt = 0;
+    const { repository, calls } = createFakeRepository();
+    const service = createAgentRunService(repository);
+
+    await service.executeAndPersist(liveCall(CLIENT_REQUEST_ID, () => (providersBuilt += 1)));
+    const second = await service.executeAndPersist(
+      liveCall("22222222-2222-4222-8222-222222222222", () => (providersBuilt += 1)),
+    );
+
+    if (second.persistence !== "persisted") throw new Error("expected persisted");
+    // Idempotency is scoped to the key, never to the job. A user who
+    // deliberately starts another attempt still gets one — and it still counts
+    // against the per-job attempt limit and the day's budget, which is the
+    // repository's business rather than this layer's.
+    expect(second.execution).toBe("started");
+    expect(providersBuilt).toBe(2);
+    expect(calls.startLiveRunWithAttemptLimit).toBe(2);
+  });
+
+  it("forwards the caller's key unchanged, both times", async () => {
+    const { repository, clientRequestIds } = createFakeRepository();
+    const service = createAgentRunService(repository);
+
+    await service.executeAndPersist(liveCall(CLIENT_REQUEST_ID));
+    await service.executeAndPersist(liveCall(CLIENT_REQUEST_ID));
+
+    // Not regenerated, not normalized, not defaulted. A service that minted its
+    // own key on the second call would have made the replay impossible.
+    expect(clientRequestIds).toEqual([CLIENT_REQUEST_ID, CLIENT_REQUEST_ID]);
+  });
+});
+
+/**
+ * `replayLiveRun` — the RECOVERY half of idempotency, on its own.
+ *
+ * Separated from `executeAndPersist` so the API can ask "does this request
+ * already exist?" before it asks "may a new paid execution start?". Running those
+ * in the other order is what made the documented 200 replay unreachable whenever
+ * the day's spend admission was closed — including when the request's own
+ * original attempt was what closed it.
+ *
+ * What these protect is therefore mostly about what the method REFUSES to need:
+ * no reservation, no attempt limit, no usage hooks, no collector, no provider.
+ */
+describe("replayLiveRun", () => {
+  const RESERVATION_INPUT = {
+    budgetDate: "2026-07-29",
+    dailyLimit: 10,
+    costCeilingNanoUsd: 1_000_000_000n,
+  } as const;
+
+  function liveCall(clientRequestId: string, onCreateProvider: () => void = () => undefined) {
+    return {
+      jobId: JOB_ID,
+      providerMode: "LIVE" as const,
+      modelIdentifier: "claude-sonnet-5",
+      createProvider: () => {
+        onCreateProvider();
+        return reportSubmittingProvider();
+      },
+      toolRegistry: toolRegistryWithServiceStatus(),
+      ...liveSafeguardInputs(),
+      budgetReservationInput: RESERVATION_INPUT,
+      clientRequestId,
+    };
+  }
+
+  it("reports `absent` for a key that names nothing", async () => {
+    const { repository } = createFakeRepository();
+    const service = createAgentRunService(repository);
+
+    const result = await service.replayLiveRun({
+      jobId: JOB_ID,
+      clientRequestId: CLIENT_REQUEST_ID,
+    });
+
+    // `absent` is not permission to start anything — it only means the caller
+    // may go on and ask the new-run gates.
+    expect(result).toEqual({ replay: "absent" });
+  });
+
+  it("returns the run a previous LIVE execution created for the same key", async () => {
+    const { repository } = createFakeRepository();
+    const service = createAgentRunService(repository);
+
+    const created = await service.executeAndPersist(liveCall(CLIENT_REQUEST_ID));
+    if (created.persistence !== "persisted") throw new Error("expected persisted");
+
+    const result = await service.replayLiveRun({
+      jobId: JOB_ID,
+      clientRequestId: CLIENT_REQUEST_ID,
+    });
+
+    if (result.replay !== "found") throw new Error("expected found");
+    expect(result.run.run.id).toBe(created.run.run.id);
+  });
+
+  it("builds no provider, finalizes nothing, and reserves nothing", async () => {
+    let providersBuilt = 0;
+    const { repository, calls } = createFakeRepository();
+    const service = createAgentRunService(repository);
+
+    await service.executeAndPersist(liveCall(CLIENT_REQUEST_ID, () => (providersBuilt += 1)));
+    const finalizesAfterFirst = calls.finalizeCompleted + calls.finalizeFailed;
+
+    await service.replayLiveRun({ jobId: JOB_ID, clientRequestId: CLIENT_REQUEST_ID });
+
+    // The provider is the thing that costs money. One execution, one provider,
+    // however many times the key is replayed.
+    expect(providersBuilt).toBe(1);
+    expect(calls.finalizeCompleted + calls.finalizeFailed).toBe(finalizesAfterFirst);
+    // And emphatically NOT the creating transaction: a lookup must never be able
+    // to take a reservation or consume an attempt.
+    expect(calls.startLiveRunWithAttemptLimit).toBe(1);
+    expect(calls.reconcileLiveRunBudget).toBe(0);
+  });
+
+  it("replays the same run repeatedly without ever creating a second", async () => {
+    const { repository, calls } = createFakeRepository();
+    const service = createAgentRunService(repository);
+
+    const created = await service.executeAndPersist(liveCall(CLIENT_REQUEST_ID));
+    if (created.persistence !== "persisted") throw new Error("expected persisted");
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const result = await service.replayLiveRun({
+        jobId: JOB_ID,
+        clientRequestId: CLIENT_REQUEST_ID,
+      });
+      if (result.replay !== "found") throw new Error("expected found");
+      expect(result.run.run.id).toBe(created.run.run.id);
+    }
+
+    expect(calls.startLiveRunWithAttemptLimit).toBe(1);
+  });
+
+  it("requires no reservation, attempt limit, or usage hooks to answer", async () => {
+    // The signature IS the assertion: the four inputs `executeAndPersist`
+    // refuses a LIVE call without are exactly the ones a recovery must not have
+    // to supply, because needing them is what made the answer unreachable when
+    // spend admission was closed.
+    const { repository, calls } = createFakeRepository();
+    const service = createAgentRunService(repository);
+
+    await service.replayLiveRun({ jobId: JOB_ID, clientRequestId: CLIENT_REQUEST_ID });
+
+    expect(calls.replayLiveRun).toBe(1);
+    expect(calls.startRun).toBe(0);
+    expect(calls.startLiveRunWithAttemptLimit).toBe(0);
+  });
+
+  describe("when the lookup fails", () => {
+    it("reports `unavailable` rather than `absent` for a persistence failure", async () => {
+      const error = new PersistenceError("PERSISTENCE_UNAVAILABLE", "connection refused");
+      const { repository } = createFakeRepository({ replayLiveRunError: error });
+      const service = createAgentRunService(repository);
+
+      const result = await service.replayLiveRun({
+        jobId: JOB_ID,
+        clientRequestId: CLIENT_REQUEST_ID,
+      });
+
+      // The distinction that matters most in this file. Collapsing this into
+      // `absent` would send a request that may already have executed straight
+      // into new-run admission — the exact duplicate charge the key prevents.
+      expect(result).toEqual({ replay: "unavailable", error });
+    });
+
+    it("reports `unavailable` for a missing job too, carrying the not-found code", async () => {
+      const error = new PersistenceError("PERSISTENCE_NOT_FOUND", "no job");
+      const { repository } = createFakeRepository({ replayLiveRunError: error });
+      const service = createAgentRunService(repository);
+
+      const result = await service.replayLiveRun({
+        jobId: JOB_ID,
+        clientRequestId: CLIENT_REQUEST_ID,
+      });
+
+      // The caller maps this to the same 404 the creating transaction produces
+      // for the same cause.
+      if (result.replay !== "unavailable") throw new Error("expected unavailable");
+      expect(result.error.code).toBe("PERSISTENCE_NOT_FOUND");
+    });
+
+    it("re-throws a non-persistence failure rather than dressing it as unavailable", async () => {
+      const { repository } = createFakeRepository({
+        replayLiveRunError: new TypeError("replayLiveRun is not a function"),
+      });
+      const service = createAgentRunService(repository);
+
+      // Only a persistence failure has a defined safe answer. Blanket-mapping
+      // everything would hide a real bug behind "try again later".
+      await expect(
+        service.replayLiveRun({ jobId: JOB_ID, clientRequestId: CLIENT_REQUEST_ID }),
+      ).rejects.toBeInstanceOf(TypeError);
+    });
   });
 });

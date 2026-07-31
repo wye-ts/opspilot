@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type { NestExpressApplication } from "@nestjs/platform-express";
 import { Test } from "@nestjs/testing";
 import {
@@ -44,6 +46,7 @@ import { requestIdMiddleware } from "../src/common/request-id.middleware";
 const PLACEHOLDER_KEY = "sk-ant-test-do-not-use-0123456789";
 const DEMO_TOKEN = "demo-token-do-not-use-8f14e45fceea";
 const TOKEN_HEADER = "X-OpsPilot-Demo-Token";
+const IDEMPOTENCY_HEADER = "Idempotency-Key";
 
 const UNAVAILABLE_MESSAGE =
   "PostgreSQL test database is unreachable. Run:\n" +
@@ -145,12 +148,20 @@ async function newJob(ticketId: string) {
  */
 async function leaveUnreconciledReservation() {
   const job = await newJob(`TKT-latch-${Math.random().toString(36).slice(2, 10)}`);
-  return startLiveRunWithAttemptLimit(prisma, {
+  const started = await startLiveRunWithAttemptLimit(prisma, {
     jobId: job.id,
     modelIdentifier: "claude-sonnet-5",
     maxLiveAttempts: 5,
     budget: { budgetDate: todayUtc(), dailyLimit: 10, costCeilingNanoUsd: 1_000_000_000n },
+    // A fresh key per call: this helper is used to leave SEVERAL independent
+    // reservations, and a shared key would make every call after the first an
+    // idempotent replay that reserved nothing.
+    clientRequestId: randomUUID(),
   });
+  if (started.outcome !== "started") {
+    throw new Error("expected a started run");
+  }
+  return started;
 }
 
 async function budgetRow() {
@@ -181,6 +192,9 @@ describe("an unreconciled reservation closes LIVE admission over HTTP", () => {
     const response = await request(app.getHttpServer())
       .post(`/v1/agent-jobs/${job.id}/runs`)
       .set(TOKEN_HEADER, DEMO_TOKEN)
+      // A fresh key: each of these is a genuinely new request, so none of them
+      // should replay another's run.
+      .set(IDEMPOTENCY_HEADER, randomUUID())
       .send({ providerMode: "LIVE" })
       .expect(429);
 
@@ -194,6 +208,9 @@ describe("an unreconciled reservation closes LIVE admission over HTTP", () => {
     await request(app.getHttpServer())
       .post(`/v1/agent-jobs/${job.id}/runs`)
       .set(TOKEN_HEADER, DEMO_TOKEN)
+      // A fresh key: each of these is a genuinely new request, so none of them
+      // should replay another's run.
+      .set(IDEMPOTENCY_HEADER, randomUUID())
       .send({ providerMode: "LIVE" })
       .expect(429);
 
@@ -230,6 +247,9 @@ describe("an unreconciled reservation closes LIVE admission over HTTP", () => {
     const response = await request(app.getHttpServer())
       .post(`/v1/agent-jobs/${job.id}/runs`)
       .set(TOKEN_HEADER, DEMO_TOKEN)
+      // A fresh key: each of these is a genuinely new request, so none of them
+      // should replay another's run.
+      .set(IDEMPOTENCY_HEADER, randomUUID())
       .send({ providerMode: "LIVE" })
       .expect(429);
 

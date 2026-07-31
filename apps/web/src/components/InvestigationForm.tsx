@@ -16,10 +16,10 @@ export interface InvestigationFormSubmission {
 }
 
 /**
- * The retained job a LIVE retry would run against.
+ * The retained job a LIVE recovery would address.
  *
  * Present ONLY when job creation succeeded and the LIVE run request then failed.
- * Its presence switches the whole form into "Retry Live Run" mode, where the
+ * Its presence switches the whole form into "Recover Live Run" mode, where the
  * ticket and summary are facts about a row that already exists in PostgreSQL
  * rather than fields the user is composing.
  */
@@ -40,9 +40,10 @@ export interface InvestigationFormProps {
    */
   readonly liveRetryTarget: LiveRetryTarget | null;
   /**
-   * Submitting in retry mode. Takes ONLY the freshly typed token: everything
-   * else about the retry is already fixed by the retained job, and passing a
-   * summary here would imply the retry could change it.
+   * Submitting in recovery mode. Takes ONLY the freshly typed token: everything
+   * else is already fixed — the job by the retained row, the request identity by
+   * the key App.tsx carries — and passing a summary here would imply the
+   * submission could change what is being recovered.
    */
   readonly onRetryLiveRun: (liveAccessToken: string) => void;
   /** Abandons the retained partial workflow. Local state only — see App.tsx. */
@@ -132,9 +133,10 @@ export function InvestigationForm({
    */
   const tokenSatisfied = !liveSelected || liveAccessToken.trim().length > 0;
 
-  // Retry validates ONLY the token. The summary belongs to a row that already
+  // Recovery validates ONLY the token. The summary belongs to a row that already
   // exists in PostgreSQL and is not being submitted, so re-checking its length
-  // here would let a stored value the backend already accepted block a retry.
+  // here would let a stored value block a recovery of a run that may already
+  // have executed.
   const canSubmit = retrying
     ? !disabled && tokenSatisfied
     : !disabled && summaryLongEnough && summaryShortEnough && tokenSatisfied;
@@ -163,9 +165,9 @@ export function InvestigationForm({
 
     if (retrying) {
       // A DIFFERENT handler, not `onSubmit` with extra flags. The two operations
-      // hit different endpoints — retry never touches POST /v1/agent-jobs — and
-      // routing them through one callback is exactly how a retry would end up
-      // creating a replacement job by accident.
+      // hit different endpoints — recovery never touches POST /v1/agent-jobs —
+      // and routing them through one callback is exactly how a recovery would
+      // end up creating a replacement job by accident.
       onRetryLiveRun(liveAccessToken);
       return;
     }
@@ -196,7 +198,7 @@ export function InvestigationForm({
    * every terminal outcome with one rule: success, failure, and cancellation all
    * end the same way.
    *
-   * The consequence is deliberate: retrying a live run means typing the token
+   * The consequence is deliberate: recovering a live run means typing the token
    * again. That is the intended cost of not keeping it.
    */
   useEffect(() => {
@@ -208,8 +210,8 @@ export function InvestigationForm({
   }, [disabled]);
 
   /**
-   * Entering retry mode — or switching to a different retained job — starts from
-   * an empty token field.
+   * Entering recovery mode — or switching to a different retained job — starts
+   * from an empty token field.
    *
    * Belt and braces alongside the busy→idle clear above, which already runs on
    * the failure that produces this state. Stating it independently means the
@@ -224,23 +226,45 @@ export function InvestigationForm({
   return (
     <form className="investigation-form" onSubmit={handleSubmit} aria-busy={disabled}>
       {/*
-        RETRY MODE. Rendered instead of the provider selector and the editable
+        RECOVERY MODE. Rendered instead of the provider selector and the editable
         summary, because in this mode neither is a choice: the job row already
         exists in PostgreSQL with its ticket and summary, and it was created for a
-        LIVE run. Showing an editable summary here would imply a retry could
-        change the investigation it retries — it cannot, and silently ignoring an
+        LIVE run. Showing an editable summary here would imply a recovery could
+        change the investigation it recovers — it cannot, and silently ignoring an
         edit would be worse than not offering one.
       */}
       {retrying && liveRetryTarget !== null ? (
         <div className="form-field form-retry-banner" role="group" aria-labelledby={retryHeadingId}>
           <h2 id={retryHeadingId} className="form-retry-heading">
-            Retry Live Run
+            Recover Live Run
           </h2>
           <p className="form-help">
-            The investigation was created, but the live run could not be started. Re-enter the
-            live demo access token to retry <strong>this same investigation</strong> — no new
-            investigation is created, and the attempt counts against this job&apos;s live run limit.
+            The investigation was created, but the live run did not return an answer. Re-enter
+            the live demo access token to recover <strong>this same investigation</strong> — no
+            new investigation is created. If the original run did start, it is returned as it
+            stands and nothing is charged again; only if it never started is one run attempted.
           </p>
+          {/*
+            Shown ONLY in recovery mode, and only when new runs are closed.
+
+            Recovery is deliberately not gated on the capability snapshot (see
+            App.tsx): availability answers "may a NEW paid run start?", and the
+            request being recovered is very often what closed it. So the banner
+            explains why the button is still live rather than leaving the user to
+            reconcile it with a disabled LIVE option elsewhere.
+
+            The wording promises nothing about the outcome, on purpose. The server
+            may still refuse for provider configuration, the kill switch, an
+            invalid token, a persistence failure, or because no run was ever
+            created for this key — in which case the ordinary new-run rules apply
+            and may well reject it.
+          */}
+          {!liveAvailable ? (
+            <p className="form-help">
+              New Live Claude runs are currently unavailable. Recovery of an existing request is
+              still allowed.
+            </p>
+          ) : null}
           <dl className="form-retry-details">
             <div>
               <dt>Ticket ID</dt>
@@ -370,7 +394,7 @@ export function InvestigationForm({
 
       <div className="form-actions">
         <button type="submit" disabled={!canSubmit}>
-          {retrying && !disabled ? "Retry Live Run" : submitLabel}
+          {retrying && !disabled ? "Recover Live Run" : submitLabel}
         </button>
 
         {/*

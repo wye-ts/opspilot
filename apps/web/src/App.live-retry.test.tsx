@@ -171,7 +171,7 @@ async function submitLive(u: ReturnType<typeof userEvent.setup>, token = TOKEN) 
 /** Re-enters a token in retry mode and submits. */
 async function submitRetry(u: ReturnType<typeof userEvent.setup>, token = RETRY_TOKEN) {
   await u.type(screen.getByLabelText("Live demo access token"), token);
-  await u.click(screen.getByRole("button", { name: "Retry Live Run" }));
+  await u.click(screen.getByRole("button", { name: "Recover Live Run" }));
 }
 
 /**
@@ -201,7 +201,7 @@ afterEach(() => {
 });
 
 describe("LIVE partial failure — the retained job", () => {
-  it("keeps the job, renders no run, and enters Retry Live Run mode", async () => {
+  it("keeps the job, renders no run, and enters Recover Live Run mode", async () => {
     mockFetch(jsonResponse(201, { data: jobResponse() }), RUN_REFUSED());
     render(<App />);
 
@@ -213,8 +213,8 @@ describe("LIVE partial failure — the retained job", () => {
     // ...no run was produced...
     expect(screen.queryByRole("heading", { name: "Investigation timeline" })).toBeNull();
     // ...and the form now offers the dedicated retry, not a new investigation.
-    expect(screen.getByRole("heading", { name: "Retry Live Run" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Retry Live Run" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Recover Live Run" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Recover Live Run" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Run Investigation" })).toBeNull();
   });
 
@@ -226,7 +226,7 @@ describe("LIVE partial failure — the retained job", () => {
     render(<App />);
 
     await submitLive(user());
-    await screen.findByRole("heading", { name: "Retry Live Run" });
+    await screen.findByRole("heading", { name: "Recover Live Run" });
 
     expect(screen.queryByLabelText("Issue Summary")).toBeNull();
     expect(screen.getAllByText(SUMMARY).length).toBeGreaterThan(0);
@@ -242,11 +242,11 @@ describe("LIVE partial failure — the retained job", () => {
     render(<App />);
 
     await submitLive(user());
-    await screen.findByRole("heading", { name: "Retry Live Run" });
+    await screen.findByRole("heading", { name: "Recover Live Run" });
 
     expect(screen.getByLabelText("Live demo access token")).toHaveValue("");
     // With no token typed, the retry cannot be submitted.
-    expect(screen.getByRole("button", { name: "Retry Live Run" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Recover Live Run" })).toBeDisabled();
   });
 });
 
@@ -262,7 +262,7 @@ describe("LIVE retry — the request it actually makes", () => {
     const u = user();
 
     await submitLive(u);
-    await screen.findByRole("heading", { name: "Retry Live Run" });
+    await screen.findByRole("heading", { name: "Recover Live Run" });
     await submitRetry(u);
     await waitFor(() => expect(runCreateCalls(fetchMock)).toHaveLength(2));
 
@@ -284,7 +284,7 @@ describe("LIVE retry — the request it actually makes", () => {
     const u = user();
 
     await submitLive(u);
-    await screen.findByRole("heading", { name: "Retry Live Run" });
+    await screen.findByRole("heading", { name: "Recover Live Run" });
     await submitRetry(u);
     await waitFor(() => expect(runCreateCalls(fetchMock)).toHaveLength(2));
 
@@ -306,7 +306,7 @@ describe("LIVE retry — the request it actually makes", () => {
     const u = user();
 
     await submitLive(u);
-    await screen.findByRole("heading", { name: "Retry Live Run" });
+    await screen.findByRole("heading", { name: "Recover Live Run" });
     const afterFirstSubmit = randomUUID.mock.calls.length;
     await submitRetry(u);
     await waitFor(() => expect(runCreateCalls(fetchMock)).toHaveLength(2));
@@ -328,7 +328,7 @@ describe("LIVE retry — outcomes", () => {
     const u = user();
 
     await submitLive(u);
-    await screen.findByRole("heading", { name: "Retry Live Run" });
+    await screen.findByRole("heading", { name: "Recover Live Run" });
     await submitRetry(u);
 
     await screen.findByRole("heading", { name: "Investigation timeline" });
@@ -339,7 +339,7 @@ describe("LIVE retry — outcomes", () => {
     // The retained job id is unchanged — this is the same investigation.
     expect(screen.getAllByText(JOB_ID).length).toBeGreaterThan(0);
     // Retry mode is gone, and with it the token field.
-    expect(screen.queryByRole("heading", { name: "Retry Live Run" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Recover Live Run" })).toBeNull();
     await waitFor(() => expect(screen.getByLabelText("Live demo access token")).toHaveValue(""));
   });
 
@@ -353,14 +353,14 @@ describe("LIVE retry — outcomes", () => {
     const u = user();
 
     await submitLive(u);
-    await screen.findByRole("heading", { name: "Retry Live Run" });
+    await screen.findByRole("heading", { name: "Recover Live Run" });
     await submitRetry(u);
     await waitFor(() => expect(runCreateCalls(fetchMock)).toHaveLength(2));
 
     // Same job, still exactly one created, still offering a retry.
     expect(jobCreateCalls(fetchMock)).toHaveLength(1);
     expect(screen.getAllByText(JOB_ID).length).toBeGreaterThan(0);
-    expect(screen.getByRole("heading", { name: "Retry Live Run" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Recover Live Run" })).toBeInTheDocument();
     // Token cleared again, so a third attempt needs a third entry.
     await waitFor(() => expect(screen.getByLabelText("Live demo access token")).toHaveValue(""));
   });
@@ -381,7 +381,7 @@ describe("LIVE retry — outcomes", () => {
     const u = user();
 
     await submitLive(u);
-    await screen.findByRole("heading", { name: "Retry Live Run" });
+    await screen.findByRole("heading", { name: "Recover Live Run" });
     await submitRetry(u);
 
     await screen.findByText("This agent job has reached its live run attempt limit.");
@@ -433,8 +433,8 @@ describe("an in-flight first LIVE run is not treated as a failure", () => {
     });
 
     // ...and NOTHING claims it failed.
-    expect(screen.queryByRole("heading", { name: "Retry Live Run" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Retry Live Run" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Recover Live Run" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Recover Live Run" })).toBeNull();
     expect(
       screen.queryByText(/the live run could not be started/i),
     ).toBeNull();
@@ -488,15 +488,21 @@ describe("an in-flight first LIVE run is not treated as a failure", () => {
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Running agent…"), {
       timeout: 5_000,
     });
-    expect(screen.queryByRole("heading", { name: "Retry Live Run" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Recover Live Run" })).toBeNull();
 
     pendingRun.resolve(
       jsonResponse(503, errorEnvelope("LIVE_RUNS_DISABLED", "Live agent runs are currently disabled.")),
     );
 
     // Now — and only now — the recovery affordance appears.
-    await screen.findByRole("heading", { name: "Retry Live Run" });
-    expect(screen.getByLabelText("Live demo access token")).toHaveValue("");
+    await screen.findByRole("heading", { name: "Recover Live Run" });
+    // `waitFor`, not a bare read. The heading is driven by state, while the token
+    // is cleared by an EFFECT on the busy→idle edge, so the two do not have to
+    // land in the same commit — and on a slow machine they sometimes do not.
+    // What the test asserts is unchanged (the field ends up empty); it just no
+    // longer demands that it be empty in the exact tick the heading first
+    // renders, which was never the guarantee.
+    await waitFor(() => expect(screen.getByLabelText("Live demo access token")).toHaveValue(""));
   });
 
   it("does not enter retry mode when the FIRST attempt was FAKE", async () => {
@@ -513,7 +519,7 @@ describe("an in-flight first LIVE run is not treated as a failure", () => {
     await u.click(screen.getByRole("button", { name: "Run Investigation" }));
     await screen.findByText("The database is temporarily unavailable.");
 
-    expect(screen.queryByRole("heading", { name: "Retry Live Run" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Recover Live Run" })).toBeNull();
     expect(screen.getByRole("button", { name: "Retry Run" })).toBeInTheDocument();
   });
 
@@ -530,7 +536,7 @@ describe("an in-flight first LIVE run is not treated as a failure", () => {
     const u = user();
 
     await submitLive(u);
-    await screen.findByRole("heading", { name: "Retry Live Run" });
+    await screen.findByRole("heading", { name: "Recover Live Run" });
     await submitRetry(u);
 
     // Still in retry mode, still busy.
@@ -545,7 +551,7 @@ describe("an in-flight first LIVE run is not treated as a failure", () => {
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Running agent…"), {
       timeout: 5_000,
     });
-    expect(screen.getByRole("heading", { name: "Retry Live Run" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Recover Live Run" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Issue Summary")).toBeNull();
 
     pendingRetry.resolve(jsonResponse(503, errorEnvelope("LIVE_RUNS_DISABLED", "disabled")));
@@ -562,12 +568,12 @@ describe("Start new investigation", () => {
     const u = user();
 
     await submitLive(u);
-    await screen.findByRole("heading", { name: "Retry Live Run" });
+    await screen.findByRole("heading", { name: "Recover Live Run" });
 
     await u.click(screen.getByRole("button", { name: "Start new investigation" }));
 
     // Back to the ordinary creation form...
-    expect(screen.queryByRole("heading", { name: "Retry Live Run" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Recover Live Run" })).toBeNull();
     expect(screen.getByLabelText("Issue Summary")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Run Investigation" })).toBeInTheDocument();
     // ...the retained job is gone from the page...
@@ -609,7 +615,7 @@ describe("FAKE partial failure is unchanged", () => {
     await screen.findByText("The database is temporarily unavailable.");
 
     // The FAKE affordance is still a button, not a token form.
-    expect(screen.queryByRole("heading", { name: "Retry Live Run" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Recover Live Run" })).toBeNull();
     await u.click(screen.getByRole("button", { name: "Retry Run" }));
     await waitFor(() => expect(runCreateCalls(fetchMock)).toHaveLength(2));
 
@@ -633,7 +639,7 @@ describe("the retry token stays ephemeral", () => {
     const u = user();
 
     await submitLive(u);
-    await screen.findByRole("heading", { name: "Retry Live Run" });
+    await screen.findByRole("heading", { name: "Recover Live Run" });
     await submitRetry(u);
     await waitFor(() => expect(runCreateCalls(fetchMock)).toHaveLength(2));
 

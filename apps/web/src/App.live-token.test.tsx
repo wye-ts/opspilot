@@ -230,8 +230,8 @@ describe("live access token lifetime", () => {
     // for FAKE. For LIVE there is no token to retry with, so the app offers its
     // dedicated retry mode rather than a button that would earn a 401.
     expect(screen.queryByRole("button", { name: "Retry Run" })).toBeNull();
-    expect(screen.getByRole("heading", { name: "Retry Live Run" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Retry Live Run" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Recover Live Run" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Recover Live Run" })).toBeInTheDocument();
   });
 
   it("still offers Retry Run after a failed FAKE run, which needs no credential", async () => {

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { createPrismaClient, type PrismaClient, type PrismaClientHandle } from "../client";
@@ -10,11 +12,43 @@ import {
   getAgentRun,
   isLiveRunBudgetOpen,
   reconcileLiveRunBudget,
-  startLiveRunWithAttemptLimit,
+  startLiveRunWithAttemptLimit as startLiveRunKeyed,
   startRun,
 } from "./agent-run-repository";
 import { createTestPrismaClient, truncateAllTables } from "../test/test-db";
-import type { LiveRunBudgetReservationInput, RunProviderUsageWrite } from "../types";
+import type {
+  LiveRunBudgetReservationInput,
+  RunProviderUsageWrite,
+  StartedLiveRun,
+} from "../types";
+
+/**
+ * The keyed transaction, with a FRESH client key per call.
+ *
+ * Every test below that calls this twice means "two separate requests" — the
+ * attempt limit, the budget gate, the latch. Reusing one key across those calls
+ * would make the second an idempotent REPLAY and quietly turn assertions about
+ * limits into assertions about nothing. Generating a key per call keeps each of
+ * those tests testing what it always tested.
+ *
+ * It also NARROWS to StartedLiveRun and throws otherwise, which is what keeps
+ * `started.reservation` typed. A replay reaching here would mean a key was
+ * accidentally shared, and failing loudly is better than a confusing type error
+ * sixty call sites away. The replay path has its own tests, which call
+ * `startLiveRunKeyed` directly with a deliberately repeated key.
+ */
+async function startLiveRunWithAttemptLimit(
+  client: PrismaClient,
+  params: Omit<Parameters<typeof startLiveRunKeyed>[1], "clientRequestId"> & {
+    readonly clientRequestId?: string;
+  },
+): Promise<StartedLiveRun> {
+  const result = await startLiveRunKeyed(client, { clientRequestId: randomUUID(), ...params });
+  if (result.outcome !== "started") {
+    throw new Error("expected a started run — a replay here means a client key was reused");
+  }
+  return result;
+}
 
 const BUDGET_DATE = "2026-07-29";
 const CEILING = 1_000_000_000n; // $1.00

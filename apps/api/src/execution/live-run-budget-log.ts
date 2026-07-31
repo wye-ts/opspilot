@@ -108,15 +108,22 @@ export function logBudgetReconciliationFailure(params: {
  * A type rather than a bare function reference so the admission controller takes
  * it as an injected dependency — which is what lets tests assert the emitted
  * shape directly instead of parsing stdout.
+ *
+ * THREE decisions, from a closed set, and the third is why the set is not two.
+ * `replayed` means the request was answered by returning a run an earlier request
+ * with the same key had already created: no rate-limit slot consumed, no budget
+ * read, no concurrency lease, no attempt, no provider call. Recording that as
+ * `admitted` would have made a free recovery indistinguishable from a new paid
+ * execution in the one place an operator looks to count them.
  */
 export type LiveRunAdmissionDecisionLogger = (params: {
-  readonly decision: "admitted" | "rejected";
+  readonly decision: "admitted" | "replayed" | "rejected";
   readonly code: string | null;
 }) => void;
 
 /**
  * One structured line per LIVE admission decision, emitted by the admission
- * controller for every request it admits or rejects — see `admit`.
+ * controller for every request it admits, replays, or rejects.
  *
  * Carries no budget figures, counts, or headroom — those belong in the database,
  * not in a log line an operator might paste into an issue. It carries no token,

@@ -313,42 +313,213 @@ describe("a completed LIVE run refreshes availability", () => {
   });
 });
 
-describe("retained-job retry preflight", () => {
+/**
+ * RECOVERY IS NOT GATED ON CAPABILITIES — and it used to be.
+ *
+ * The tab ran the same preflight before a recovery that it runs before a new
+ * investigation, and refused to send the request when `/v1/capabilities` said
+ * UNAVAILABLE. But availability answers exactly one question — may a NEW paid
+ * live run be started? — and it reports UNAVAILABLE when the day's allowance is
+ * used up or when an unreconciled reservation has latched the day.
+ *
+ * Those are the states the request being recovered most often CREATED. So the
+ * browser refused to send the one request that would have handed back the run
+ * its own original attempt paid for, enforcing a rule the server does not have
+ * against the exact case the retained key exists for.
+ *
+ * The tests that asserted "capability unavailable -> send no recovery request"
+ * encoded that defect and are replaced by the ones below.
+ */
+describe("retained-job recovery ignores the capability snapshot", () => {
   async function reachRetryMode(u: ReturnType<typeof userEvent.setup>) {
     await waitFor(() => expect(liveRadio()).toBeEnabled());
     await u.type(screen.getByLabelText("Issue Summary"), SUMMARY);
     await u.click(liveRadio());
     await u.type(screen.getByLabelText("Live demo access token"), TOKEN);
     await u.click(screen.getByRole("button", { name: "Run Investigation" }));
-    await screen.findByRole("heading", { name: "Retry Live Run" });
+    await screen.findByRole("heading", { name: "Recover Live Run" });
   }
 
-  it("sends no run request and keeps the retained job when capability is gone", async () => {
-    // mount, first preflight, post-failure refresh, then the retry preflight.
-    capabilityQueue = [AVAILABLE(), AVAILABLE(), AVAILABLE(), UNAVAILABLE()];
+  function runCreates(fetchMock: ReturnType<typeof vi.fn>) {
+    return investigationCalls(fetchMock).filter(
+      (call) => String(call[0]).includes("/runs") && (call[1] as RequestInit).method === "POST",
+    );
+  }
+
+  it("sends the recovery, repeating the same key, while capabilities says UNAVAILABLE", async () => {
+    // The headline case: the original attempt consumed the day's final
+    // reservation, so the server now reports UNAVAILABLE — and answers the
+    // retained key with the run that attempt created.
+    capabilityQueue = [AVAILABLE(), AVAILABLE(), UNAVAILABLE()];
     capabilityFallback = UNAVAILABLE;
     const fetchMock = mockFetch(
       jsonResponse(201, { data: jobResponse() }),
-      jsonResponse(503, errorEnvelope("LIVE_RUNS_DISABLED", "Live agent runs are currently disabled.")),
+      jsonResponse(503, errorEnvelope("PERSISTENCE_UNAVAILABLE", "The database is temporarily unavailable.")),
+      jsonResponse(200, { data: liveRunDetail() }),
+      jsonResponse(200, { data: approvalView() }),
+    );
+    render(<App />);
+    const u = user();
+
+    await reachRetryMode(u);
+    // The snapshot is UNAVAILABLE by now, and the button is still usable once a
+    // token is typed.
+    await u.type(screen.getByLabelText("Live demo access token"), "second-entry");
+    expect(screen.getByRole("button", { name: "Recover Live Run" })).toBeEnabled();
+    await u.click(screen.getByRole("button", { name: "Recover Live Run" }));
+
+    await screen.findByRole("heading", { name: "Investigation timeline" });
+
+    // The request WAS sent, carried the original key, and the token was fresh.
+    const creates = runCreates(fetchMock);
+    expect(creates).toHaveLength(2);
+    const headers = (creates[1]![1] as RequestInit).headers as Record<string, string>;
+    expect(headers[HEADER]).toBe("second-entry");
+    expect(headers["Idempotency-Key"]).toBe(
+      ((creates[0]![1] as RequestInit).headers as Record<string, string>)["Idempotency-Key"],
+    );
+    // And no second job, so no second ticket id.
+    expect(
+      investigationCalls(fetchMock).filter((call) => String(call[0]).endsWith("/v1/agent-jobs")),
+    ).toHaveLength(1);
+  });
+
+  it("renders the replayed original and says nothing new was started", async () => {
+    capabilityQueue = [AVAILABLE(), AVAILABLE(), UNAVAILABLE()];
+    capabilityFallback = UNAVAILABLE;
+    mockFetch(
+      jsonResponse(201, { data: jobResponse() }),
+      jsonResponse(503, errorEnvelope("PERSISTENCE_UNAVAILABLE", "The database is temporarily unavailable.")),
+      // 200 — the server recognized the key and returned the run the lost
+      // attempt had already created.
+      jsonResponse(200, { data: liveRunDetail() }),
+      jsonResponse(200, { data: approvalView() }),
     );
     render(<App />);
     const u = user();
 
     await reachRetryMode(u);
     await u.type(screen.getByLabelText("Live demo access token"), "second-entry");
-    await u.click(screen.getByRole("button", { name: "Retry Live Run" }));
+    await u.click(screen.getByRole("button", { name: "Recover Live Run" }));
 
-    await screen.findByText("Live Claude is temporarily unavailable. The investigation is still here to retry.");
-
-    // No second run request, and above all no replacement job.
-    expect(investigationCalls(fetchMock)).toHaveLength(2);
-    // The recovery path is intact: same job, still in retry mode.
-    expect(screen.getAllByText(JOB_ID).length).toBeGreaterThan(0);
-    expect(screen.getByRole("heading", { name: "Retry Live Run" })).toBeInTheDocument();
+    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByText(/no new run was started/i);
+    expect(screen.queryByRole("heading", { name: "Recover Live Run" })).toBeNull();
   });
 
-  it("lets the retry proceed once a focus refresh reports AVAILABLE again", async () => {
-    capabilityQueue = [AVAILABLE(), AVAILABLE(), AVAILABLE(), UNAVAILABLE()];
+  it("explains that new runs are closed while recovery is still allowed", async () => {
+    capabilityQueue = [AVAILABLE(), AVAILABLE(), UNAVAILABLE()];
+    capabilityFallback = UNAVAILABLE;
+    mockFetch(
+      jsonResponse(201, { data: jobResponse() }),
+      jsonResponse(503, errorEnvelope("PERSISTENCE_UNAVAILABLE", "The database is temporarily unavailable.")),
+    );
+    render(<App />);
+    const u = user();
+
+    await reachRetryMode(u);
+
+    // The button being live while the LIVE option elsewhere is closed would
+    // otherwise read as an inconsistency rather than a deliberate distinction.
+    await screen.findByText(
+      /New Live Claude runs are currently unavailable\. Recovery of an existing request is still allowed\./,
+    );
+  });
+
+  it("keeps the job, the key, and recovery mode when the server refuses a new run", async () => {
+    // No keyed run exists, so the server applies the ordinary new-run rules and
+    // rejects. The tab must not conclude anything from that beyond "try again".
+    capabilityQueue = [AVAILABLE(), AVAILABLE(), UNAVAILABLE()];
+    capabilityFallback = UNAVAILABLE;
+    const fetchMock = mockFetch(
+      jsonResponse(201, { data: jobResponse() }),
+      jsonResponse(503, errorEnvelope("PERSISTENCE_UNAVAILABLE", "The database is temporarily unavailable.")),
+      jsonResponse(429, errorEnvelope("LIVE_RUN_BUDGET_EXHAUSTED", "The live agent run allowance for today has been used.")),
+    );
+    render(<App />);
+    const u = user();
+
+    await reachRetryMode(u);
+    await u.type(screen.getByLabelText("Live demo access token"), "second-entry");
+    await u.click(screen.getByRole("button", { name: "Recover Live Run" }));
+
+    await screen.findByText("The live agent run allowance for today has been used.");
+    // Same job, still recoverable, and NO fallback to FAKE anywhere.
+    expect(screen.getAllByText(JOB_ID).length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: "Recover Live Run" })).toBeInTheDocument();
+    for (const call of investigationCalls(fetchMock)) {
+      const body = (call[1] as RequestInit).body;
+      if (body) expect(String(body)).not.toContain("FAKE");
+    }
+
+    // A second recovery attempt repeats the SAME key — a rejection is never a
+    // reason to mint a new one.
+    const keys = runCreates(fetchMock).map(
+      (call) => ((call[1] as RequestInit).headers as Record<string, string>)["Idempotency-Key"],
+    );
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  it("still requires a freshly typed token", async () => {
+    capabilityQueue = [AVAILABLE(), AVAILABLE(), UNAVAILABLE()];
+    capabilityFallback = UNAVAILABLE;
+    const fetchMock = mockFetch(
+      jsonResponse(201, { data: jobResponse() }),
+      jsonResponse(503, errorEnvelope("PERSISTENCE_UNAVAILABLE", "The database is temporarily unavailable.")),
+    );
+    render(<App />);
+    const u = user();
+
+    await reachRetryMode(u);
+
+    // Availability was never what made a token necessary — the protected path
+    // requires one unconditionally, and the failure cleared the field.
+    expect(screen.getByLabelText("Live demo access token")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Recover Live Run" })).toBeDisabled();
+    expect(runCreates(fetchMock)).toHaveLength(1);
+  });
+
+  it("refreshes availability AFTER the recovery, never to decide whether to send it", async () => {
+    // mount, first preflight, post-failure refresh — and then one more, after
+    // the recovery resolves. The refresh that follows is best-effort reporting;
+    // no refresh precedes the request.
+    capabilityQueue = [AVAILABLE(), AVAILABLE(), UNAVAILABLE()];
+    capabilityFallback = UNAVAILABLE;
+    const fetchMock = mockFetch(
+      jsonResponse(201, { data: jobResponse() }),
+      jsonResponse(503, errorEnvelope("PERSISTENCE_UNAVAILABLE", "The database is temporarily unavailable.")),
+      jsonResponse(200, { data: liveRunDetail() }),
+      jsonResponse(200, { data: approvalView() }),
+    );
+    render(<App />);
+    const u = user();
+
+    await reachRetryMode(u);
+    // Everything from here on is the recovery, in order.
+    const beforeRecovery = fetchMock.mock.calls.length;
+    const capabilitiesBefore = capabilityCalls(fetchMock).length;
+
+    await u.type(screen.getByLabelText("Live demo access token"), "second-entry");
+    await u.click(screen.getByRole("button", { name: "Recover Live Run" }));
+    await screen.findByRole("heading", { name: "Investigation timeline" });
+
+    const sinceClick = fetchMock.mock.calls.slice(beforeRecovery).map((call) => String(call[0]));
+    const runPost = sinceClick.findIndex((url) => url.includes("/runs"));
+    expect(runPost).toBeGreaterThanOrEqual(0);
+    // THE ORDERING ASSERTION: not one capability read stands between the click
+    // and the run request. A preflight would necessarily appear here.
+    expect(sinceClick.slice(0, runPost)).not.toContain("/v1/capabilities");
+
+    // And the best-effort refresh AFTER the terminal outcome still happens — it
+    // reports, it does not gate.
+    await waitFor(() => expect(capabilityCalls(fetchMock).length).toBeGreaterThan(capabilitiesBefore));
+    // The recovered run is untouched by it.
+    expect(screen.getByRole("heading", { name: "Investigation timeline" })).toBeInTheDocument();
+  });
+
+  it("keeps recovery usable across a focus refresh that reports AVAILABLE again", async () => {
+    capabilityQueue = [AVAILABLE(), AVAILABLE(), UNAVAILABLE()];
     capabilityFallback = AVAILABLE;
     const fetchMock = mockFetch(
       jsonResponse(201, { data: jobResponse() }),
@@ -360,33 +531,53 @@ describe("retained-job retry preflight", () => {
     const u = user();
 
     await reachRetryMode(u);
-    await u.type(screen.getByLabelText("Live demo access token"), "second-entry");
-    await u.click(screen.getByRole("button", { name: "Retry Live Run" }));
-    await screen.findByText(/still here to retry/);
 
-    // The server recovers; the tab notices on focus.
+    // The server recovers; the tab notices on focus. Recovery was never blocked,
+    // so this changes only the explanatory copy.
     window.dispatchEvent(new Event("focus"));
     await waitFor(() => expect(liveRadioIsIrrelevantHere()).toBe(true));
 
-    // The retry button stays DISABLED until a token is typed — a LIVE request
-    // always needs one, whatever the capability snapshot says.
-    expect(screen.getByRole("button", { name: "Retry Live Run" })).toBeDisabled();
+    // The button stays DISABLED until a token is typed — a LIVE request always
+    // needs one, whatever the capability snapshot says.
+    expect(screen.getByRole("button", { name: "Recover Live Run" })).toBeDisabled();
 
     await u.type(screen.getByLabelText("Live demo access token"), "third-entry");
-    expect(screen.getByRole("button", { name: "Retry Live Run" })).toBeEnabled();
-    await u.click(screen.getByRole("button", { name: "Retry Live Run" }));
+    expect(screen.getByRole("button", { name: "Recover Live Run" })).toBeEnabled();
+    await u.click(screen.getByRole("button", { name: "Recover Live Run" }));
     await screen.findByRole("heading", { name: "Investigation timeline" });
 
-    // Still exactly one job, and the retry carried the freshly typed token.
-    const runCreates = investigationCalls(fetchMock).filter(
-      (call) => String(call[0]).includes("/runs") && (call[1] as RequestInit).method === "POST",
-    );
-    expect(runCreates).toHaveLength(2);
-    const headers = (runCreates[1]![1] as RequestInit).headers as Record<string, string>;
+    expect(runCreates(fetchMock)).toHaveLength(2);
+    const headers = (runCreates(fetchMock)[1]![1] as RequestInit).headers as Record<string, string>;
     expect(headers[HEADER]).toBe("third-entry");
     expect(
       investigationCalls(fetchMock).filter((call) => String(call[0]).endsWith("/v1/agent-jobs")),
     ).toHaveLength(1);
+  });
+});
+
+/**
+ * The CREATION preflight is untouched. It removes an avoidable failure — an
+ * AgentJob created for a run that never had a chance — which is a different
+ * thing from blocking a recovery of a run that may already exist.
+ */
+describe("the new-investigation preflight is unchanged", () => {
+  it("still creates no job when the fresh answer is UNAVAILABLE", async () => {
+    capabilityQueue = [AVAILABLE(), UNAVAILABLE()];
+    capabilityFallback = UNAVAILABLE;
+    const fetchMock = mockFetch();
+    const randomUUID = vi.spyOn(crypto, "randomUUID");
+    render(<App />);
+    const u = user();
+
+    await waitFor(() => expect(liveRadio()).toBeEnabled());
+    await u.type(screen.getByLabelText("Issue Summary"), SUMMARY);
+    await u.click(liveRadio());
+    await u.type(screen.getByLabelText("Live demo access token"), TOKEN);
+    await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+
+    await screen.findByText("Live Claude is temporarily unavailable. No investigation job was created.");
+    expect(investigationCalls(fetchMock)).toHaveLength(0);
+    expect(randomUUID).not.toHaveBeenCalled();
   });
 });
 
@@ -517,11 +708,11 @@ describe("every LIVE request requires a token", () => {
     await u.click(liveRadio());
     await u.type(screen.getByLabelText("Live demo access token"), TOKEN);
     await u.click(screen.getByRole("button", { name: "Run Investigation" }));
-    await screen.findByRole("heading", { name: "Retry Live Run" });
+    await screen.findByRole("heading", { name: "Recover Live Run" });
 
     // The token was cleared on the failure, so the retry cannot be submitted.
     expect(screen.getByLabelText("Live demo access token")).toHaveValue("");
-    expect(screen.getByRole("button", { name: "Retry Live Run" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Recover Live Run" })).toBeDisabled();
 
     // Job create + refused run, and nothing more.
     expect(investigationCalls(fetchMock)).toHaveLength(2);
@@ -531,8 +722,8 @@ describe("every LIVE request requires a token", () => {
 
 describe("a failed LIVE retry refreshes availability", () => {
   it("keeps the original error, the job, and retry mode, and disables LIVE", async () => {
-    // mount, first preflight, post-failure refresh, retry preflight (AVAILABLE),
-    // then the post-retry-failure refresh reports the day has closed.
+    // mount, first preflight, post-failure refresh, then the post-recovery-
+    // failure refresh reports the day has closed. There is no retry preflight.
     capabilityQueue = [AVAILABLE(), AVAILABLE(), AVAILABLE(), AVAILABLE()];
     capabilityFallback = UNAVAILABLE;
     const fetchMock = mockFetch(
@@ -548,10 +739,10 @@ describe("a failed LIVE retry refreshes availability", () => {
     await u.click(liveRadio());
     await u.type(screen.getByLabelText("Live demo access token"), TOKEN);
     await u.click(screen.getByRole("button", { name: "Run Investigation" }));
-    await screen.findByRole("heading", { name: "Retry Live Run" });
+    await screen.findByRole("heading", { name: "Recover Live Run" });
 
     await u.type(screen.getByLabelText("Live demo access token"), "second-entry");
-    await u.click(screen.getByRole("button", { name: "Retry Live Run" }));
+    await u.click(screen.getByRole("button", { name: "Recover Live Run" }));
 
     // The retry's OWN error is what the user sees — the refresh that follows
     // cannot replace it.
@@ -559,7 +750,7 @@ describe("a failed LIVE retry refreshes availability", () => {
 
     // The recovery path survives: same job, still in retry mode.
     expect(screen.getAllByText(JOB_ID).length).toBeGreaterThan(0);
-    expect(screen.getByRole("heading", { name: "Retry Live Run" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Recover Live Run" })).toBeInTheDocument();
 
     // Exactly one job, two run attempts, and no FAKE request anywhere.
     const jobCreates = investigationCalls(fetchMock).filter(
