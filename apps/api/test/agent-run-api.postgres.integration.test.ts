@@ -105,25 +105,25 @@ const APPROVAL_EMPTY_ACTIONS_REPORT = { ...APPROVAL_ELIGIBLE_REPORT, suggestedAc
 const APPROVAL_SAMPLE_TRACE = [{ type: "REPORT_GENERATED" as const }];
 
 async function createEligibleApprovalRun(prisma: PrismaClient, ticketId: string) {
-  const job = await createJob(prisma, { ticketId, summary: "s" });
+  const job = await createJob(prisma, { ticketId, summary: "Approval fixture run" });
   const started = await startRun(prisma, job.id, "FAKE", null);
   return finalizeCompleted(prisma, started.run.id, APPROVAL_SAMPLE_TRACE, APPROVAL_ELIGIBLE_REPORT);
 }
 
 async function createIneligibleEmptyActionsRun(prisma: PrismaClient, ticketId: string) {
-  const job = await createJob(prisma, { ticketId, summary: "s" });
+  const job = await createJob(prisma, { ticketId, summary: "Approval fixture run" });
   const started = await startRun(prisma, job.id, "FAKE", null);
   return finalizeCompleted(prisma, started.run.id, APPROVAL_SAMPLE_TRACE, APPROVAL_EMPTY_ACTIONS_REPORT);
 }
 
 async function createRunningApprovalRun(prisma: PrismaClient, ticketId: string) {
-  const job = await createJob(prisma, { ticketId, summary: "s" });
+  const job = await createJob(prisma, { ticketId, summary: "Approval fixture run" });
   const started = await startRun(prisma, job.id, "FAKE", null);
   return started.run;
 }
 
 async function createFailedApprovalRun(prisma: PrismaClient, ticketId: string) {
-  const job = await createJob(prisma, { ticketId, summary: "s" });
+  const job = await createJob(prisma, { ticketId, summary: "Approval fixture run" });
   const started = await startRun(prisma, job.id, "FAKE", null);
   return finalizeFailed(prisma, started.run.id, APPROVAL_SAMPLE_TRACE, "TOOL_NOT_FOUND");
 }
@@ -229,10 +229,10 @@ describe("job read model", () => {
   it("allows duplicate ticketId submissions, creating separate jobs", async () => {
     const first = await request(testApp.app.getHttpServer())
       .post("/v1/agent-jobs")
-      .send({ ticketId: "TICKET-DUP", summary: "first" });
+      .send({ ticketId: "TICKET-DUP", summary: "first duplicate submission" });
     const second = await request(testApp.app.getHttpServer())
       .post("/v1/agent-jobs")
-      .send({ ticketId: "TICKET-DUP", summary: "second" });
+      .send({ ticketId: "TICKET-DUP", summary: "second duplicate submission" });
 
     expect(first.status).toBe(201);
     expect(second.status).toBe(201);

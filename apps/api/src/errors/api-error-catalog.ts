@@ -13,7 +13,12 @@ export type ApiErrorCode =
   | "AGENT_RUN_NOT_APPROVAL_ELIGIBLE"
   | "AGENT_RUN_APPROVAL_ALREADY_DECIDED"
   | "LIVE_NOT_CONFIGURED"
-  | "LIVE_RUNS_DISABLED";
+  | "LIVE_RUNS_DISABLED"
+  | "LIVE_RUN_ACCESS_DENIED"
+  | "LIVE_RUN_RATE_LIMITED"
+  | "LIVE_RUN_CONCURRENCY_LIMIT"
+  | "LIVE_RUN_ATTEMPT_LIMIT"
+  | "LIVE_RUN_BUDGET_EXHAUSTED";
 
 interface ApiErrorCatalogEntry {
   readonly status: number;
@@ -92,5 +97,36 @@ export const API_ERROR_CATALOG: Readonly<Record<ApiErrorCode, ApiErrorCatalogEnt
   LIVE_RUNS_DISABLED: {
     status: 503,
     message: "Live agent runs are currently disabled.",
+  },
+  // 401, not 403: the caller may retry with a credential. The message is fixed
+  // and says nothing about whether a token was supplied, whether it was
+  // well-formed, or how close it was — every rejection reads identically, and
+  // the provided value is never echoed.
+  LIVE_RUN_ACCESS_DENIED: {
+    status: 401,
+    message: "A valid live demo access token is required for a live agent run.",
+  },
+  // The four 429s below are all admission failures decided before any AgentRun
+  // row exists, so no run resource is created and no reservation is consumed.
+  //
+  // Distinct codes, one status. A caller that reads the code can tell "slow
+  // down" from "this job is used up" from "the demo is done for today" — which
+  // is genuinely actionable and reveals nothing quantitative. No message
+  // carries a limit, a count, a remaining quota, or a budget figure.
+  LIVE_RUN_RATE_LIMITED: {
+    status: 429,
+    message: "Too many live agent run requests. Retry after the interval given in Retry-After.",
+  },
+  LIVE_RUN_CONCURRENCY_LIMIT: {
+    status: 429,
+    message: "Another live agent run is already in progress. Retry shortly.",
+  },
+  LIVE_RUN_ATTEMPT_LIMIT: {
+    status: 429,
+    message: "This agent job has reached its live run attempt limit.",
+  },
+  LIVE_RUN_BUDGET_EXHAUSTED: {
+    status: 429,
+    message: "The live agent run allowance for today has been used. The deterministic demo remains available.",
   },
 };

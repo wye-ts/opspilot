@@ -303,3 +303,166 @@ pnpm run test:integration:sequential                # packages/database's suite,
   Also PR 6B2 — the deployed frontend currently offers no way to request a live run.
 
 The human-approval workflow — `POST`/`GET /v1/agent-runs/:runId/approval`, recording a decision only, never executing it — was future work as of Milestone 6B; it is implemented as of Milestone 6C. See §3/§4 above and `docs/13-approval-workflow.md` for the full design and implementation record.
+
+
+---
+
+## 10. PR 6B2 — live admission, usage, and capabilities
+
+### 10.1 Canonical admission order
+
+Identical in code, tests, and this document. Steps 4–8 are skipped entirely for
+`FAKE`; step 1 applies to every request.
+
+```text
+ 1. validate the requested provider mode        -> REQUEST_BODY_INVALID (400)
+ 2. verify live capability                      -> LIVE_NOT_CONFIGURED (503)
+ 3. kill switch                                 -> LIVE_RUNS_DISABLED (503)
+ 4. shared access token                         -> LIVE_RUN_ACCESS_DENIED (401)
+ 5. per-client rate limit                       -> LIVE_RUN_RATE_LIMITED (429)
+ 6. advisory budget pre-check (non-authoritative)-> LIVE_RUN_BUDGET_EXHAUSTED (429)
+                                                -> PERSISTENCE_UNAVAILABLE (503) if the read itself fails
+    closed by ANY of: daily run count used up | accumulated estimate over the
+    ceiling | pricing_unknown_runs > 0 | an UNRECONCILED reservation
+    (runs_completed != runs_reserved)  — see 10.1.1
+ 7. acquire concurrency lease (limit is exactly 1) -> LIVE_RUN_CONCURRENCY_LIMIT (429)
+ 8. AUTHORITATIVE TRANSACTION
+      lock AgentJob -> verify -> count LIVE runs -> reserve daily budget
+      -> allocate attempt_number -> insert AgentRun
+                                                -> AGENT_JOB_NOT_FOUND (404)
+                                                -> LIVE_RUN_ATTEMPT_LIMIT (429)
+                                                -> LIVE_RUN_BUDGET_EXHAUSTED (429)
+      COMMIT — before any provider call
+ 9. execute the orchestrator under the composed abort signal
+10. resolve abort provenance; finalize with persisted usage
+11. reconcile the budget against the RESERVATION's date  (exception-safe)
+12. release the concurrency lease                        (inner finally, always)
+```
+
+Capability is checked before the kill switch so an operator on a server with no
+credential sees `LIVE_NOT_CONFIGURED` rather than a misleading "disabled". The
+token is checked before the rate limit so an unauthenticated caller cannot
+consume a client's rate-limit allowance.
+
+A database outage has **one** public contract wherever it lands. A
+`PersistenceError` from step 6's advisory read maps to the same
+`503 PERSISTENCE_UNAVAILABLE` that step 8's authoritative transaction already
+produced; the earlier behaviour let it escape as `500 INTERNAL_ERROR`, so the
+same outage read as "we broke" or "try again shortly" depending only on timing.
+It fails **closed**: no lease is taken, no transaction is opened, no run row is
+created, and no provider is constructed. Non-persistence failures are re-thrown
+untouched rather than being dressed up as a transient 503. The public body is the
+fixed catalog message — never a database message, SQL, or DSN.
+
+Every admitted or rejected LIVE request emits **exactly one** structured line
+(`event: "live_run_admission"`) carrying the decision and the fixed catalog code,
+and nothing else — no token, no client address, no budget figure, no headroom.
+It is emitted once per call in `admit`, on every exit path, so a rejection added
+later is logged without anyone remembering to. The anonymous capabilities probe
+(`isAvailable`) is deliberately **not** logged: it runs on every page load.
+
+Step 7's limit is **exactly one** concurrent live run, and
+`LIVE_RUN_MAX_CONCURRENCY` accepts no other value. That is what makes the
+documented cost-ceiling bound — the **observed reconciled estimate** crossing the
+ceiling by at most **one in-flight logical run** — true for every accepted
+configuration rather than only for the default; see
+[CI/CD and deployment](08-cicd-deployment.md) §25.2.1.
+
+The bound is on the ESTIMATE, not on money. **Actual provider billing may be
+higher** after an ambiguous network outcome or a process termination, and the
+estimated-cost gate is not an actual-spend hard cap. The hard controls are the
+daily run count, the per-job attempt cap, and the per-attempt output ceiling.
+
+### 10.1.1 An unreconciled reservation closes the day
+
+A reservation commits **before** the provider runs; the cost is added afterwards
+by reconciliation (step 11). A reconciliation failure therefore leaves the row
+with an accurate run count and **stale cost figures** — both
+`estimated_cost_nano_usd` and `pricing_unknown_runs` are missing a run that has
+already executed.
+
+Admitting further runs against those figures would make the observed-estimate
+gate fail **open**. So the counters are the latch: both the advisory pre-check
+and the authoritative reservation statement require
+
+```sql
+live_run_budget.runs_completed = live_run_budget.runs_reserved
+```
+
+and an outstanding reservation closes the UTC day by itself — no run row, no
+provider, no Anthropic call. The latch is durable (it is the PostgreSQL row, not
+process memory), so it survives a restart and applies to every instance.
+
+The refusal is the **same opaque 429** as an exhausted count, a crossed ceiling,
+or unknown pricing, and `/v1/capabilities` reports the same
+`UNAVAILABLE` / `NOT_APPLICABLE` body. A caller cannot tell which condition
+closed the day. Recovery is the next UTC day, which starts from a clean row; see
+[CI/CD and deployment](08-cicd-deployment.md) §25.2.3.
+
+**No LIVE rejection ever silently retries as FAKE.**
+
+### 10.2 Where the failure happens decides the status
+
+**Before an `AgentRun` row exists** — no run is created, an error envelope is
+returned: 400 / 401 / 404 / 429 / 503 as above.
+
+**After the row exists — `201 Created`**, with the persisted run and the usual
+`Location` header, even when `status` is `FAILED`. The resource genuinely was
+created: the UI gets a `runId`, the timeline stays reachable, and a later `GET`
+is consistent. `AGENT_PROVIDER_UNAVAILABLE` (502) and `AGENT_RUN_TIMED_OUT`
+(504) remain **absent** as public controller errors — they contradicted a
+finalized run resource. The distinctions survive as `failure_code` on the row.
+
+**On an actual client disconnect** no response body is written at all, because
+the connection is gone. The run still finalizes `FAILED` with
+`PROVIDER_CANCELLED`.
+
+### 10.3 `GET /v1/capabilities`
+
+```json
+{ "liveAgentRuns": "AVAILABLE" | "UNAVAILABLE",
+  "liveAccess":    "TOKEN_REQUIRED" | "NOT_APPLICABLE" }
+```
+
+Opacity is the contract. Capability absent, kill switch off, no token
+configured, and budget exhausted all render as exactly `UNAVAILABLE` — an
+anonymous visitor learns that LIVE cannot be started and nothing else. No budget
+values, no counts, no key or configuration details, no provider probe, and no
+paid request. `PUBLIC` is absent from the type, not merely unset.
+
+`/v1/health/ready` stays service and database readiness only. An exhausted daily
+budget is not an unhealthy deployment, and putting product state on the probe
+Render restarts containers over would make it one.
+
+### 10.4 Money on the wire
+
+`estimatedCostUsd` is a decimal **string** or `null` — never a JSON number.
+Internally the money path is integer nanoUSD (`bigint`) end to end, with no
+float intermediate and no reverse conversion from a USD number.
+
+`null` means the cost is **not known**, which covers three cases:
+
+- every FAKE run, which made no provider call;
+- any LIVE run whose pricing could not be established;
+- any run with `possibleUnobservedCost` — where the stored figure is a **lower
+  bound**, not a total.
+
+The third case is the subtle one. A first-turn timeout stores `0` while tokens
+may genuinely have been billed; a failure on turn two stores only turn one's
+cost. Publishing either would state a precise number known to be too low, and
+`$0.00` would go further and assert the run was free. The observed bound stays in
+PostgreSQL for audit; the API simply declines to present it as a total.
+Consumers hide the row rather than rendering `$0.00`.
+
+### 10.5 Input bounds
+
+`ticketId` is a trimmed 1–64 characters; `summary` is a trimmed 15–2000. The
+value is trimmed **once**, at the request boundary, and the normalized result is
+what gets persisted. The backend is authoritative — the browser's counter and
+disabled button are an affordance, and a request that bypasses the UI with a
+short summary still receives a 400.
+
+Stored rows are revalidated against a deliberately looser schema
+(`StoredTicketContextSchema`), so rows written before these bounds existed stay
+readable rather than becoming 500s. A tightened input rule must never invalidate
+history.

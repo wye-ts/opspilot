@@ -1,4 +1,8 @@
-import { ApprovalDecisionSchema, TicketContextSchema as _TicketContextSchema } from "@opspilot/contracts";
+import {
+  ApprovalDecisionSchema,
+  StoredTicketContextSchema as _StoredTicketContextSchema,
+  TicketContextSchema as _TicketContextSchema,
+} from "@opspilot/contracts";
 import { z, type ZodType } from "zod";
 
 import { PersistenceError } from "./errors";
@@ -11,6 +15,12 @@ import { PersistenceError } from "./errors";
 // forward — see packages/agent-runtime/src/index.ts) for backward
 // compatibility of existing internal import sites.
 export const TicketContextSchema = _TicketContextSchema;
+
+// The stored-row counterpart. Applies to reads only — see the schema's own
+// doc comment in @opspilot/contracts for why the write bounds (trimmed
+// summary 15–2000, ticketId ≤ 64) must not be enforced against rows that were
+// already persisted under the older, looser rule.
+export const StoredTicketContextSchema = _StoredTicketContextSchema;
 
 export function validateOrThrow<T>(schema: ZodType<T>, value: unknown, context: string): T {
   const result = schema.safeParse(value);

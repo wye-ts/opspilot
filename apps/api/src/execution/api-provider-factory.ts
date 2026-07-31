@@ -8,6 +8,7 @@ import {
   type AnthropicMessagesClient,
   type ClaudeProviderLogEvent,
   type LiveCapability,
+  type RunProviderUsageCollector,
   type SupportedClaudeModel,
 } from "@opspilot/provider-claude";
 
@@ -23,7 +24,18 @@ import { createDeterministicScenario } from "./deterministic-scenario";
  * provider package for the same reason.
  */
 export interface AgentProviderFactory {
-  createProvider(job: AgentJobRecord, requestedMode: AgentRunProviderMode): LlmProvider;
+  /**
+   * `collector` is supplied only for a LIVE run, by AgentRunService, which owns
+   * its lifecycle. When present it is attached as a SECOND consumer of the
+   * adapter's existing per-turn logger — the structured log line still goes out
+   * exactly as before, and the collector simply also sees each event. That is why
+   * usage accounting needed no new instrumentation in the adapter.
+   */
+  createProvider(
+    job: AgentJobRecord,
+    requestedMode: AgentRunProviderMode,
+    collector?: RunProviderUsageCollector,
+  ): LlmProvider;
 }
 
 export interface AgentProviderFactoryOptions {
@@ -69,11 +81,26 @@ export function createAgentProviderFactory(
   const client = options.client ?? createAnthropicClientFor(liveCapability);
 
   return {
-    createProvider(job: AgentJobRecord, requestedMode: AgentRunProviderMode): LlmProvider {
+    createProvider(
+      job: AgentJobRecord,
+      requestedMode: AgentRunProviderMode,
+      collector?: RunProviderUsageCollector,
+    ): LlmProvider {
       const selection: LlmProviderSelection<SupportedClaudeModel> =
         requestedMode === "LIVE"
           ? { providerMode: "LIVE", modelIdentifier: SUPPORTED_CLAUDE_MODEL }
           : { providerMode: "FAKE" };
+
+      // Fan out to both consumers when a collector is present. The collector runs
+      // FIRST so a throw from the log sink — which writes to stdout and can fail
+      // on a closed pipe — cannot cost the run its usage accounting.
+      const logger =
+        collector === undefined
+          ? options.logger
+          : (event: ClaudeProviderLogEvent) => {
+              collector.record(event);
+              options.logger?.(event);
+            };
 
       // The factory's LIVE branch throws when no Anthropic configuration was
       // supplied, rather than quietly returning the deterministic provider.
@@ -85,7 +112,7 @@ export function createAgentProviderFactory(
         fakeScenario: createDeterministicScenario(job),
         ...(liveCapability.kind === "present" ? { anthropic: liveCapability.anthropic } : {}),
         ...(client !== undefined ? { client } : {}),
-        ...(options.logger !== undefined ? { logger: options.logger } : {}),
+        ...(logger !== undefined ? { logger } : {}),
       }).createProvider(selection);
     },
   };

@@ -2,7 +2,12 @@ import { z } from "zod";
 import { describe, expect, it } from "vitest";
 
 import { PersistenceError } from "./errors";
-import { AgentRunApprovalRowSchema, TicketContextSchema, validateOrThrow } from "./validation";
+import {
+  AgentRunApprovalRowSchema,
+  StoredTicketContextSchema,
+  TicketContextSchema,
+  validateOrThrow,
+} from "./validation";
 
 describe("validateOrThrow", () => {
   const schema = z.object({ id: z.string().min(1) }).strict();
@@ -37,16 +42,42 @@ describe("validateOrThrow", () => {
 });
 
 describe("TicketContextSchema", () => {
+  const validSummary = "Elevated error rate on billing";
+
   it("accepts the narrow { ticketId, summary } shape", () => {
-    expect(TicketContextSchema.safeParse({ ticketId: "TKT-1", summary: "s" }).success).toBe(true);
+    expect(TicketContextSchema.safeParse({ ticketId: "TKT-1", summary: validSummary }).success).toBe(true);
   });
 
   it("rejects extra fields (strict) and missing fields", () => {
-    expect(TicketContextSchema.safeParse({ ticketId: "TKT-1", summary: "s", extra: 1 }).success).toBe(
+    expect(
+      TicketContextSchema.safeParse({ ticketId: "TKT-1", summary: validSummary, extra: 1 }).success,
+    ).toBe(false);
+    expect(TicketContextSchema.safeParse({ ticketId: "TKT-1" }).success).toBe(false);
+    expect(TicketContextSchema.safeParse({ ticketId: "", summary: validSummary }).success).toBe(false);
+  });
+
+  it("enforces the trimmed 15-character summary floor at the write boundary", () => {
+    expect(TicketContextSchema.safeParse({ ticketId: "TKT-1", summary: "s" }).success).toBe(false);
+    expect(TicketContextSchema.safeParse({ ticketId: "TKT-1", summary: "   ".repeat(10) }).success).toBe(
       false,
     );
-    expect(TicketContextSchema.safeParse({ ticketId: "TKT-1" }).success).toBe(false);
-    expect(TicketContextSchema.safeParse({ ticketId: "", summary: "s" }).success).toBe(false);
+  });
+});
+
+describe("StoredTicketContextSchema", () => {
+  it("accepts a row persisted before the write-path bounds existed", () => {
+    // Re-exported here (not just from @opspilot/contracts) because this is the
+    // schema the persistence read path actually uses — fromTicketContextRead.
+    expect(StoredTicketContextSchema.safeParse({ ticketId: "TKT-1", summary: "s" }).success).toBe(true);
+    expect(TicketContextSchema.safeParse({ ticketId: "TKT-1", summary: "s" }).success).toBe(false);
+  });
+
+  it("still rejects a malformed row", () => {
+    expect(StoredTicketContextSchema.safeParse({ ticketId: "TKT-1" }).success).toBe(false);
+    expect(StoredTicketContextSchema.safeParse({ ticketId: "", summary: "s" }).success).toBe(false);
+    expect(
+      StoredTicketContextSchema.safeParse({ ticketId: "TKT-1", summary: "s", extra: 1 }).success,
+    ).toBe(false);
   });
 });
 

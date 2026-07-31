@@ -1,9 +1,19 @@
 import { Module } from "@nestjs/common";
+import { isLiveRunBudgetOpen, type PrismaClientHandle } from "@opspilot/database";
 
+import { PRISMA_CLIENT_HANDLE } from "../persistence/prisma.tokens";
 import { createAgentProviderFactory } from "./api-provider-factory";
-import { AGENT_PROVIDER_FACTORY, RUN_EXECUTION_CONFIG } from "./execution.tokens";
+import {
+  AGENT_PROVIDER_FACTORY,
+  LIVE_RUN_ADMISSION,
+  RUN_EXECUTION_CONFIG,
+  USAGE_HOOKS,
+} from "./execution.tokens";
+import { createLiveRunAdmissionController } from "./live-run-admission";
+import { logLiveRunAdmissionDecision } from "./live-run-budget-log";
 import { logProviderEvent } from "./provider-event-log";
 import { parseRunExecutionConfig, type RunExecutionConfig } from "./run-execution-config";
+import { createApiUsageHooks } from "./usage-hooks";
 
 /**
  * Reads the environment exactly once, at module-instantiation time, and builds
@@ -22,6 +32,11 @@ import { parseRunExecutionConfig, type RunExecutionConfig } from "./run-executio
  * It no longer does: LIVE is a per-request choice now, and whether the process
  * may serve it is a separate question answered by `liveCapability` and the
  * kill switch.
+ *
+ * PR 6B2 adds the admission controller and the usage hooks. Both are singletons
+ * deliberately: the rate limiter's buckets and the concurrency semaphore's
+ * counter ARE the safeguard state, so a per-request instance would reset them on
+ * every call and enforce nothing at all.
  */
 @Module({
   providers: [
@@ -38,7 +53,28 @@ import { parseRunExecutionConfig, type RunExecutionConfig } from "./run-executio
         }),
       inject: [RUN_EXECUTION_CONFIG],
     },
+    {
+      provide: USAGE_HOOKS,
+      useFactory: () => createApiUsageHooks(),
+    },
+    {
+      provide: LIVE_RUN_ADMISSION,
+      // Takes an `isBudgetOpen` callback rather than the Prisma handle itself, so
+      // live-run-admission.ts stays free of persistence concerns and is
+      // unit-testable with no database at all.
+      useFactory: (config: RunExecutionConfig, handle: PrismaClientHandle) =>
+        createLiveRunAdmissionController({
+          config,
+          isBudgetOpen: (budget) => isLiveRunBudgetOpen(handle.prisma, budget),
+          // The production sink for the one-line-per-decision admission record.
+          // Passed explicitly rather than left to the default so this module —
+          // the single place the real controller is built — states what the
+          // deployment actually logs.
+          logDecision: logLiveRunAdmissionDecision,
+        }),
+      inject: [RUN_EXECUTION_CONFIG, PRISMA_CLIENT_HANDLE],
+    },
   ],
-  exports: [RUN_EXECUTION_CONFIG, AGENT_PROVIDER_FACTORY],
+  exports: [RUN_EXECUTION_CONFIG, AGENT_PROVIDER_FACTORY, USAGE_HOOKS, LIVE_RUN_ADMISSION],
 })
 export class RunExecutionModule {}

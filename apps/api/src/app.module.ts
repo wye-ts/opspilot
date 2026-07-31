@@ -4,6 +4,7 @@ import type { PrismaClientHandle } from "@opspilot/database";
 import { AgentJobsModule } from "./agent-jobs/agent-jobs.module";
 import { AgentRunApprovalsModule } from "./agent-run-approvals/agent-run-approvals.module";
 import { AgentRunsModule } from "./agent-runs/agent-runs.module";
+import { CapabilitiesModule } from "./capabilities/capabilities.module";
 import { NotFoundModule } from "./common/not-found.module";
 import { HealthModule } from "./health/health.module";
 import { PrismaModule } from "./persistence/prisma.module";
@@ -24,6 +25,7 @@ export class AppModule {
         AgentJobsModule,
         AgentRunsModule,
         AgentRunApprovalsModule,
+        CapabilitiesModule,
         HealthModule,
         NotFoundModule,
       ],

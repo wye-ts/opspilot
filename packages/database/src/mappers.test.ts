@@ -33,11 +33,45 @@ describe("toTicketContextWrite / fromTicketContextRead", () => {
   it("round-trips a valid ticket context and derives externalTicketId", () => {
     const { ticketContext, externalTicketId } = toTicketContextWrite({
       ticketId: "TKT-1",
-      summary: "Summary",
+      summary: "Summary of the reported problem",
     });
-    expect(ticketContext).toEqual({ ticketId: "TKT-1", summary: "Summary" });
+    expect(ticketContext).toEqual({ ticketId: "TKT-1", summary: "Summary of the reported problem" });
     expect(externalTicketId).toBe("TKT-1");
     expect(fromTicketContextRead(ticketContext)).toEqual(ticketContext);
+  });
+
+  it("normalizes on write: the stored value is the trimmed one", () => {
+    const { ticketContext, externalTicketId } = toTicketContextWrite({
+      ticketId: "  TKT-1  ",
+      summary: "  Summary of the reported problem  ",
+    });
+
+    expect(ticketContext).toEqual({ ticketId: "TKT-1", summary: "Summary of the reported problem" });
+    // externalTicketId is derived from the NORMALIZED ticketId, so the
+    // generated column and the JSONB snapshot cannot disagree.
+    expect(externalTicketId).toBe("TKT-1");
+  });
+
+  it("rejects a write whose trimmed summary is shorter than 15 characters", () => {
+    expect(() => toTicketContextWrite({ ticketId: "TKT-1", summary: "too short" })).toThrow(
+      PersistenceError,
+    );
+  });
+
+  // The read path is looser than the write path on purpose: a row persisted
+  // before the 15-character floor existed must stay readable rather than
+  // becoming a 500. See StoredTicketContextSchema in @opspilot/contracts.
+  it("reads back a stored row that the write path would now reject", () => {
+    const legacyRow = { ticketId: "TKT-legacy", summary: "s" };
+
+    expect(fromTicketContextRead(legacyRow)).toEqual(legacyRow);
+    expect(() => toTicketContextWrite(legacyRow)).toThrow(PersistenceError);
+  });
+
+  it("returns a stored row verbatim rather than re-normalizing it on read", () => {
+    const untrimmedRow = { ticketId: " TKT-1 ", summary: " padded stored summary " };
+
+    expect(fromTicketContextRead(untrimmedRow)).toEqual(untrimmedRow);
   });
 
   it("throws PERSISTENCE_VALIDATION_FAILED with a fixed message for an invalid ticket context", () => {
@@ -99,6 +133,53 @@ describe("fromAgentRunRow", () => {
     expect(record.status).toBe("RUNNING");
     expect(record.startedAt).toBe(startedAt.toISOString());
     expect(record.finishedAt).toBeNull();
+  });
+
+  /**
+   * The uncertainty flag has to reach the read model, or the API's DTO mapper has
+   * no way to tell a complete cost from a lower bound and will publish both.
+   */
+  describe("possibleUnobservedCost", () => {
+    const startedAt = new Date("2026-01-01T00:00:00.000Z");
+    const row = (overrides: Record<string, unknown> = {}) => ({
+      id: "run-1",
+      jobId: "job-1",
+      attemptNumber: 1,
+      status: "COMPLETED",
+      providerMode: "LIVE",
+      modelIdentifier: "claude-sonnet-5",
+      startedAt,
+      finishedAt: startedAt,
+      createdAt: startedAt,
+      estimatedCostNanoUsd: 17_956_000n,
+      possibleUnobservedCost: false,
+      ...overrides,
+    });
+
+    it("carries a false flag through unchanged", () => {
+      expect(fromAgentRunRow(row()).possibleUnobservedCost).toBe(false);
+    });
+
+    it("carries a true flag through unchanged, alongside the observed lower bound", () => {
+      const record = fromAgentRunRow(row({ possibleUnobservedCost: true }));
+
+      expect(record.possibleUnobservedCost).toBe(true);
+      // The bound is still returned — it is kept for audit, not discarded.
+      expect(record.estimatedCostNanoUsd).toBe(17_956_000n);
+    });
+
+    it.each([
+      ["a NULL column", { possibleUnobservedCost: null }],
+      ["an absent property", {}],
+    ])("fails closed for %s", (_label, overrides) => {
+      // No recorded usage means no basis for vouching for a figure. Both of these
+      // rows also have a null cost, so nothing is displayed either way — but the
+      // reading that cannot mislead is the one to encode.
+      const base = row({ estimatedCostNanoUsd: null });
+      if (!("possibleUnobservedCost" in overrides)) delete (base as Record<string, unknown>).possibleUnobservedCost;
+
+      expect(fromAgentRunRow({ ...base, ...overrides }).possibleUnobservedCost).toBe(true);
+    });
   });
 });
 
