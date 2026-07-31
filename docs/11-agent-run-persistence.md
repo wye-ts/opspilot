@@ -130,6 +130,7 @@ No `status` column, no `latest_run_id` pointer — there is no queue/claim mecha
 | `started_at` | `TIMESTAMPTZ NOT NULL` | Non-nullable — every row is created already `RUNNING` |
 | `finished_at` | `TIMESTAMPTZ NULL` | Set only on a terminal status |
 | `created_at` | `TIMESTAMPTZ NOT NULL DEFAULT now()` | |
+| `client_request_id` | `UUID NULL` | The client's key for the request that created this run. Set for LIVE only; `NULL` for every FAKE run and every row written before the column existed. Unique per job — see below. |
 
 ### `agent_trace_events`
 
@@ -204,6 +205,166 @@ COMMIT
 Concurrent `startRun` calls for the same job serialize on the `AgentJob` lock and always allocate unique, increasing `attempt_number`s (integration-tested with two real concurrent Prisma clients). `createRun`+`markRunRunning` from an earlier draft of this design were collapsed into this single transaction — a separately-committed `PENDING` row would only have added a crash window with nothing in this milestone to observe or act on it.
 
 A crash after this commits but before finalization leaves the row permanently `RUNNING` — an accepted, explicitly documented gap (§10); there is no reaper this milestone.
+
+### `startLiveRunWithAttemptLimit` — idempotent, bounds-checked, and budget-reserving
+
+The LIVE counterpart of `startRun`, in ONE transaction with a fixed order. Every
+step before the insert is a reason to stop, and stopping costs nothing:
+
+```text
+BEGIN
+  1. SELECT ... FROM agent_jobs WHERE id = $jobId FOR UPDATE   -> PERSISTENCE_NOT_FOUND (404)
+  2. SELECT ... FROM agent_runs
+       WHERE job_id = $jobId AND client_request_id = $key       -> found: REPLAY, return that run
+  3. current-bounds check on the locked ticket context          -> LIVE_RUN_CONTEXT_INVALID (422)
+  4. count LIVE runs for the job                                -> LIVE_RUN_ATTEMPT_LIMIT (429)
+  5. reserve the UTC-day budget row                             -> LIVE_RUN_BUDGET_EXHAUSTED (429)
+  6. allocate attempt_number; INSERT the run WITH its client key
+COMMIT
+```
+
+**Idempotency (step 2).** A `POST /v1/agent-jobs/:jobId/runs` exception does not
+prove that no run was created: finalization can fail *after* the provider
+executed and after the budget was reconciled, and a successful response can be
+lost in transit. Recovery therefore has to be able to say "the same request
+again" and be recognized as such, or re-entering the token buys a second paid
+execution for the first one's ambiguity. The key is client-generated, required
+for LIVE, and carried in an `Idempotency-Key` header (`docs/12-agent-run-api.md`
+§10.6).
+
+The return type is a discriminated union — `LiveRunStartResult` — and the
+discriminant is explicit rather than inferred:
+
+| Outcome | `reservation` | Caller behaviour |
+|---|---|---|
+| `started` | present | Builds the provider, runs the agent, finalizes, reconciles the day. |
+| `replayed` | **absent** | Returns the existing run. No collector, no provider, no finalize, no reconciliation. |
+
+A replayed run may be in **any** state. `RUNNING` is the normal shape of the
+case this exists for — the provider executed and finalization rolled back — and
+it is returned as it stands; the caller's ordinary refresh observes its later
+state. Re-executing because a row looks unfinished is precisely the duplicate
+charge this prevents.
+
+Concurrent duplicates serialize on the `agent_jobs` row lock, so the second
+request cannot read until the first has committed its insert. Standing behind
+that is a **partial unique index**, hand-authored because Prisma's DSL cannot
+express a `WHERE` clause on `@@unique` (the same reason the CHECK constraints in
+§4 are hand-authored):
+
+```sql
+CREATE UNIQUE INDEX "agent_runs_job_id_client_request_id_key"
+  ON "agent_runs" ("job_id", "client_request_id")
+  WHERE "client_request_id" IS NOT NULL;
+```
+
+Scoped to `(job_id, client_request_id)`, never to the key alone: a key names a
+request against ONE job, so reusing it against another job is a different
+request, and no job can replay another job's run. The `WHERE` clause keeps every
+historical and FAKE row out of the index; a total index would also be correct
+(PostgreSQL treats NULLs as distinct) but would index rows the predicate can
+never match.
+
+**LIVE execution eligibility (step 3).** Two rules over the same stored value,
+deliberately different:
+
+```text
+stored-read compatibility  ->  permissive  (StoredTicketContextSchema)
+LIVE execution eligibility ->  current bounds (TicketContextSchema, via isLiveExecutionEligible)
+```
+
+§6 keeps stored rows readable under the looser schema, which is right for a GET:
+a tightened input rule must not invalidate history. But this snapshot is about
+to be sent to a provider that charges for it, so a job created before the
+15–2000 rule could otherwise start a paid run with a summary no current caller
+is allowed to submit.
+
+The test is **canonical form**, not merely "parses". `TicketContextSchema` trims
+before it measures, while the value that actually reaches the provider is the
+stored snapshot, untouched — so a `safeParse().success` check bounds a string
+that is not the one being billed for. A row padded with 200 kB of whitespace
+around a valid 26-character summary satisfies 15–2000 while the paid prompt is
+200,000 characters long. `isLiveExecutionEligible` therefore requires the stored
+value to **already equal** its parsed result:
+
+```ts
+parsed.success &&
+parsed.data.ticketId === context.ticketId &&
+parsed.data.summary  === context.summary
+```
+
+The measured value and the sent value are then the same string by construction.
+The check is a **predicate**, not a transform: an ineligible row is refused, never
+truncated to fit, padded to reach the floor, or normalized into shape — and
+nothing is written back to it. A row that IS admitted is passed through
+byte-for-byte, which is safe precisely because it was already canonical.
+
+FAKE is unaffected — it goes through `startRun`, spends nothing, and has no
+reason to enforce an input rule retroactively.
+
+**Why the replay lookup precedes the bounds check.** A replay returns a run that
+already exists, and therefore money that was already spent (or definitively not
+spent). Refusing to hand that row back because the job's stored summary fails
+today's rule would strand a paid run behind a rule that cannot change what it
+cost. Rejecting a new execution and refusing to acknowledge a finished one are
+different acts; only the first is what the bounds are for.
+
+### `replayLiveRun` — the read-only lookup that precedes spend admission
+
+A read-only sibling of `startLiveRunWithAttemptLimit`, and the reason it exists
+is an ordering defect rather than a missing feature.
+
+```text
+BEGIN
+  1. SELECT ... FROM agent_jobs WHERE id = $jobId FOR UPDATE   -> PERSISTENCE_NOT_FOUND (404)
+  2. SELECT ... FROM agent_runs
+       WHERE job_id = $jobId AND client_request_id = $key
+         AND provider_mode = 'LIVE'                            -> the run, or NULL
+COMMIT
+```
+
+The API used to run every gate governing NEW spending — rate limit, advisory
+budget, concurrency lease — before it ever reached the transaction that performs
+the key lookup above. So a request whose original attempt consumed the day's
+final reservation, or left the day latched by failing to reconcile, could never
+be recovered: the gate its own original attempt closed answered first, and step 2
+was never reached. `docs/12-agent-run-api.md` §10.1.0 has the full ordering.
+
+Splitting the lookup out lets the caller ask "does this request already exist?"
+before it asks "may a new paid execution start?". Three properties make that
+safe:
+
+- **It writes nothing.** No reservation, no attempt count, no insert, no status
+  change. That is what makes it safe to run ahead of the spend gates rather than
+  behind them.
+- **It takes the same `AgentJob` lock the creating transaction takes.** An
+  unlocked `SELECT` could read past an original transaction that has not
+  committed, answer `NULL`, and send the request on to admit a second paid
+  execution. Waiting on the lock means an ambiguous concurrent original either
+  commits its row — after which the lookup returns it — or rolls back, after
+  which `NULL` is the correct answer. Both are integration-tested against a real
+  in-flight transaction on a second Prisma client.
+- **A missing job is `PERSISTENCE_NOT_FOUND`**, exactly as the creating
+  transaction reports it, so one cause has one public contract whichever path met
+  it.
+
+`NULL` is a statement about the database, never about a failure to read it. The
+service layer therefore returns a three-way result — `found` / `absent` /
+`unavailable` — rather than a nullable run: collapsing `unavailable` into
+`absent` would send a request that may already have executed straight into
+new-run admission, which is the exact duplicate charge the key exists to prevent.
+
+The `provider_mode = 'LIVE'` filter restates an invariant rather than adding one:
+`client_request_id` is only ever written by the insert at the end of
+`startLiveRunWithAttemptLimit`, so every row bearing a key is already a LIVE run.
+
+Status is not consulted. `RUNNING`, `COMPLETED` and `FAILED` all replay
+identically, for the reason given above.
+
+**Step 2 of `startLiveRunWithAttemptLimit` is still required.** Two same-key
+requests can both find nothing here and both reach admission; only the locked
+creating transaction can decide which of them inserts the run. This lookup is an
+early exit; that one is the guarantee.
 
 ### `finalizeCompleted` / `finalizeFailed` — exact-replay-safe
 

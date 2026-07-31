@@ -36,6 +36,9 @@ import { createApiUsageHooks } from "../src/execution/usage-hooks";
 const fakeAgentRunService: AgentRunService = {
   createAgentJob: vi.fn(),
   executeAndPersist: vi.fn(),
+  // Defaults to "no run bears this key", so a LIVE request in these suites
+  // reaches new-run admission exactly as it did before step 4b existed.
+  replayLiveRun: vi.fn().mockResolvedValue({ replay: "absent" }),
   retryFinalization: vi.fn(),
   reconcileLiveRunBudget: vi.fn(),
   getAgentRun: vi.fn(),

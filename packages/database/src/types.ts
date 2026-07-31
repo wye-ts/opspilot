@@ -139,14 +139,48 @@ export interface LiveRunBudgetReservation {
   readonly runsReserved: number;
 }
 
-// Returned by startLiveRunWithAttemptLimit: the same locked job snapshot and new
-// run that startRun returns, plus the budget reservation the same transaction
-// consumed. All three commit together or not at all.
+// Returned by startLiveRunWithAttemptLimit when it actually created a run: the
+// same locked job snapshot and new run that startRun returns, plus the budget
+// reservation the same transaction consumed. All three commit together or not at
+// all.
 export interface StartedLiveRun {
+  readonly outcome: "started";
   readonly job: AgentJobRecord;
   readonly run: AgentRunRecord;
   readonly reservation: LiveRunBudgetReservation;
 }
+
+/**
+ * Returned when the request's client key already names a run on this job.
+ *
+ * NO `reservation`, and that absence is the contract rather than an omission. A
+ * replay reserved nothing, incremented nothing, and executed nothing — it only
+ * read. Carrying a reservation here would invite the caller's cleanup block to
+ * reconcile the day's budget a second time for a run that was already reconciled
+ * by the attempt that created it, double-counting its cost.
+ *
+ * The `run` may be in ANY state, RUNNING included. A RUNNING replay is the
+ * normal answer to the case this whole mechanism exists for: the provider
+ * executed, finalization failed, and the row is still RUNNING. It is returned as
+ * it stands and the caller's ordinary refresh path observes its later state.
+ * Re-executing the provider because a row looks unfinished is precisely the
+ * duplicate-spend this prevents.
+ */
+export interface ReplayedLiveRun {
+  readonly outcome: "replayed";
+  readonly job: AgentJobRecord;
+  readonly run: AgentRunRecord;
+}
+
+/**
+ * Started versus replayed, stated EXPLICITLY on a discriminant.
+ *
+ * Deliberately not inferred by the caller from row status, attempt number, or a
+ * null reservation. Those are all correlated with a replay without meaning one,
+ * and every place that guessed would have to guess the same way forever. One
+ * discriminated union, decided by the only code that knows.
+ */
+export type LiveRunStartResult = StartedLiveRun | ReplayedLiveRun;
 
 // The schema-derived type IS the single source of truth — not an
 // independently maintained interface. `note` is OPTIONAL (present-or-absent),

@@ -25,6 +25,7 @@ import {
   getAgentRun as _getAgentRun,
   isLiveRunBudgetOpen as _isLiveRunBudgetOpen,
   reconcileLiveRunBudget as _reconcileLiveRunBudget,
+  replayLiveRun as _replayLiveRun,
   startLiveRunWithAttemptLimit as _startLiveRunWithAttemptLimit,
   startRun as _startRun,
 } from "./repositories/agent-run-repository";
@@ -48,6 +49,7 @@ export const getAgentJob = _getAgentJob;
 export const getAgentRun = _getAgentRun;
 export const startRun = _startRun;
 export const startLiveRunWithAttemptLimit = _startLiveRunWithAttemptLimit;
+export const replayLiveRun = _replayLiveRun;
 export const reconcileLiveRunBudget = _reconcileLiveRunBudget;
 export const isLiveRunBudgetOpen = _isLiveRunBudgetOpen;
 export const currentBudgetDate = _currentBudgetDate;
@@ -85,8 +87,10 @@ export type {
   ProviderMode,
   LiveRunBudgetReservation,
   LiveRunBudgetReservationInput,
+  LiveRunStartResult,
   RecordApprovalDecisionParams,
   RecordApprovalDecisionResult,
+  ReplayedLiveRun,
   RunPricingStatus,
   RunProviderUsageWrite,
   StartedAgentRun,

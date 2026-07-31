@@ -54,6 +54,16 @@ function buildFakeService(overrides: Partial<AgentRunService> = {}): AgentRunSer
   return {
     createAgentJob: vi.fn(),
     executeAndPersist: vi.fn(),
+    /**
+     * Defaults to "no run bears this key".
+     *
+     * The safe default for a fixture, and deliberately so: `absent` is what sends
+     * a request on to the full new-run gauntlet, which is what every pre-existing
+     * test in this file was written to exercise. A default of `found` would have
+     * quietly turned all of them into replay tests that assert nothing about
+     * admission.
+     */
+    replayLiveRun: vi.fn().mockResolvedValue({ replay: "absent" }),
     retryFinalization: vi.fn(),
     reconcileLiveRunBudget: vi.fn(),
     getAgentRun: vi.fn(),
@@ -82,13 +92,30 @@ function buildFakeResponse() {
   } as unknown as import("express").Response;
 }
 
+// A well-formed default so every pre-existing LIVE test keeps exercising what it
+// was written to exercise. The tests that care about the key supply their own —
+// including `null`, which means "send no header at all".
+const DEFAULT_IDEMPOTENCY_KEY = "3f6b1d2c-8f4a-4a1e-9f0b-2c7d5e8a1b34";
+
 function buildFakeRequest(
-  options: { readonly token?: string; readonly ip?: string } = {},
+  options: {
+    readonly token?: string;
+    readonly ip?: string;
+    readonly idempotencyKey?: string | null;
+  } = {},
 ): import("express").Request {
+  const idempotencyKey =
+    options.idempotencyKey === undefined ? DEFAULT_IDEMPOTENCY_KEY : options.idempotencyKey;
   return {
     ip: options.ip ?? "203.0.113.7",
-    header: (name: string) =>
-      name.toLowerCase() === "x-opspilot-demo-token" ? options.token : undefined,
+    header: (name: string) => {
+      const lower = name.toLowerCase();
+      if (lower === "x-opspilot-demo-token") return options.token;
+      // `null` models an absent header — `header()` returns undefined for one,
+      // which is exactly what the schema must reject.
+      if (lower === "idempotency-key") return idempotencyKey ?? undefined;
+      return undefined;
+    },
   } as unknown as import("express").Request;
 }
 
@@ -1194,5 +1221,855 @@ describe("AgentRunsController.createAgentRun — LIVE admission", () => {
       dailyLimit: 10,
       costCeilingNanoUsd: 1_000_000_000n,
     });
+  });
+});
+
+/**
+ * STEP 1b — the client request key.
+ *
+ * A LIVE run's `Idempotency-Key` is what lets a recovery ask for the SAME thing
+ * rather than a second paid one. It is validated with the request body, BEFORE
+ * admission, and the ordering is deliberate: a malformed key must not be able to
+ * consume another client's rate-limit budget or take the single concurrency
+ * lease on its way to a 400.
+ */
+describe("AgentRunsController.createAgentRun — LIVE idempotency key", () => {
+  function liveController() {
+    const executeAndPersist = vi.fn().mockResolvedValue({
+      persistence: "persisted",
+      run: PERSISTED_RUN,
+      usageSummary: null,
+      reservation: null,
+      execution: "started",
+    });
+    const service = buildFakeService({ executeAndPersist });
+    return {
+      executeAndPersist,
+      controller: buildController(servableConfig(), { service }),
+    };
+  }
+
+  function live(
+    controller: AgentRunsController,
+    request: import("express").Request,
+    res = buildFakeResponse(),
+  ) {
+    return controller.createAgentRun("job-1", { providerMode: "LIVE" }, request, res);
+  }
+
+  describe.each([
+    ["absent", null],
+    ["blank", ""],
+    ["whitespace", "   "],
+    ["not a UUID", "not-a-uuid"],
+    ["a UUID with stray text", "3f6b1d2c-8f4a-4a1e-9f0b-2c7d5e8a1b34-extra"],
+    ["oversized", "a".repeat(5_000)],
+  ])("a %s key", (_label, idempotencyKey) => {
+    it("is refused with 400 and never reaches execution", async () => {
+      const { controller, executeAndPersist } = liveController();
+
+      await expect(
+        live(controller, buildFakeRequest({ token: DEMO_TOKEN, idempotencyKey })),
+      ).rejects.toMatchObject({ code: "LIVE_RUN_IDEMPOTENCY_KEY_INVALID", status: 400 });
+
+      // Nothing was created, nothing was reserved, and no provider could have
+      // been built — the rejection happens before the service is touched at all.
+      expect(executeAndPersist).not.toHaveBeenCalled();
+    });
+  });
+
+  it("gives every malformed key the same code and message", async () => {
+    const { controller } = liveController();
+
+    const rejections = await Promise.all(
+      [null, "", "not-a-uuid"].map((key) =>
+        live(controller, buildFakeRequest({ token: DEMO_TOKEN, idempotencyKey: key })).then(
+          () => {
+            throw new Error("expected a rejection");
+          },
+          (error: unknown) => error as ApiError,
+        ),
+      ),
+    );
+
+    // Absent, blank, and malformed are indistinguishable from outside. Telling
+    // them apart would publish how the value is parsed and tells an honest
+    // caller nothing the documented requirement does not.
+    const messages = new Set(rejections.map((error) => `${error.code}:${error.message}`));
+    expect(messages.size).toBe(1);
+    // And the message never echoes what was sent.
+    expect(rejections[2]!.message).not.toContain("not-a-uuid");
+  });
+
+  it("is rejected BEFORE the access token is checked", async () => {
+    const { controller, executeAndPersist } = liveController();
+
+    // No token AND no key. The key wins, because request-shape validation
+    // precedes admission — the same ordering the body pipe already has.
+    await expect(
+      live(controller, buildFakeRequest({ idempotencyKey: null })),
+    ).rejects.toMatchObject({ code: "LIVE_RUN_IDEMPOTENCY_KEY_INVALID" });
+    expect(executeAndPersist).not.toHaveBeenCalled();
+  });
+
+  it("does not consume the rate limit or the concurrency lease", async () => {
+    const { controller } = liveController();
+    const bad = buildFakeRequest({ token: DEMO_TOKEN, idempotencyKey: null });
+
+    // The configured window allows two LIVE requests; three malformed ones
+    // would exhaust it if they were counted. They are not.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await expect(live(controller, bad)).rejects.toMatchObject({
+        code: "LIVE_RUN_IDEMPOTENCY_KEY_INVALID",
+      });
+    }
+
+    // A well-formed request still succeeds, which also proves the single
+    // concurrency slot was never taken and never leaked.
+    await expect(
+      live(controller, buildFakeRequest({ token: DEMO_TOKEN })),
+    ).resolves.toBeTruthy();
+  });
+
+  it("forwards the accepted key to the service, unchanged", async () => {
+    const { controller, executeAndPersist } = liveController();
+    const key = "9c1e7f60-4b2a-4d38-9c55-1f0a3e6b7d21";
+
+    await live(controller, buildFakeRequest({ token: DEMO_TOKEN, idempotencyKey: key }));
+
+    expect(executeAndPersist).toHaveBeenCalledWith(
+      expect.objectContaining({ providerMode: "LIVE", clientRequestId: key }),
+    );
+  });
+
+  it("accepts an uppercase UUID without rewriting it", async () => {
+    const { controller, executeAndPersist } = liveController();
+    const key = "9C1E7F60-4B2A-4D38-9C55-1F0A3E6B7D21";
+
+    await live(controller, buildFakeRequest({ token: DEMO_TOKEN, idempotencyKey: key }));
+
+    // Case folding is the `uuid` column's job, not the controller's: PostgreSQL
+    // stores a canonical form, so the two casings are already the same key.
+    expect(executeAndPersist).toHaveBeenCalledWith(
+      expect.objectContaining({ clientRequestId: key }),
+    );
+  });
+
+  describe("FAKE is untouched", () => {
+    it("needs no key and is sent none", async () => {
+      const executeAndPersist = vi
+        .fn()
+        .mockResolvedValue({ persistence: "persisted", run: PERSISTED_RUN, execution: "started" });
+      const controller = buildController(buildConfig(), {
+        service: buildFakeService({ executeAndPersist }),
+      });
+
+      const result = await controller.createAgentRun(
+        "job-1",
+        { providerMode: "FAKE" },
+        buildFakeRequest({ idempotencyKey: null }),
+        buildFakeResponse(),
+      );
+
+      expect(result).toBeTruthy();
+      const params = executeAndPersist.mock.calls[0]?.[0];
+      expect(params.providerMode).toBe("FAKE");
+      // Not merely absent-by-default: `clientRequestId` is a live-only input and
+      // the service REFUSES a FAKE call that carries one.
+      expect(params.clientRequestId).toBeUndefined();
+    });
+
+    it("ignores a key that a caller sends anyway", async () => {
+      const executeAndPersist = vi
+        .fn()
+        .mockResolvedValue({ persistence: "persisted", run: PERSISTED_RUN, execution: "started" });
+      const controller = buildController(buildConfig(), {
+        service: buildFakeService({ executeAndPersist }),
+      });
+
+      await controller.createAgentRun(
+        "job-1",
+        { providerMode: "FAKE" },
+        buildFakeRequest({ idempotencyKey: "9c1e7f60-4b2a-4d38-9c55-1f0a3e6b7d21" }),
+        buildFakeResponse(),
+      );
+
+      expect(executeAndPersist.mock.calls[0]?.[0].clientRequestId).toBeUndefined();
+    });
+  });
+});
+
+/**
+ * The REPLAY response, and the legacy-context refusal.
+ *
+ * Both are new answers the run endpoint can give, and both are decided by the
+ * authoritative transaction rather than here — the controller's job is to render
+ * them honestly.
+ */
+describe("AgentRunsController.createAgentRun — replay and legacy-context responses", () => {
+  function controllerReturning(result: unknown) {
+    const executeAndPersist = vi.fn().mockResolvedValue(result);
+    return {
+      executeAndPersist,
+      controller: buildController(servableConfig(), {
+        service: buildFakeService({ executeAndPersist }),
+      }),
+    };
+  }
+
+  it("answers 200, not 201, for a replayed run", async () => {
+    const { controller } = controllerReturning({
+      persistence: "persisted",
+      run: PERSISTED_RUN,
+      usageSummary: null,
+      reservation: null,
+      execution: "replayed",
+    });
+    const res = buildFakeResponse();
+
+    const result = await controller.createAgentRun(
+      "job-1",
+      { providerMode: "LIVE" },
+      buildFakeRequest({ token: DEMO_TOKEN }),
+      res,
+    );
+
+    // Nothing was created, so Created would be false — and a client counting
+    // 201s would count one paid attempt too many.
+    expect(res.status).toHaveBeenCalledWith(200);
+    // Location still names where the run lives, and the body is identical to a
+    // freshly created one so a caller that only wants the run need not care.
+    expect(res.setHeader).toHaveBeenCalledWith("Location", "/v1/agent-runs/run-1");
+    expect(result).toEqual({
+      data: expect.objectContaining({ run: expect.objectContaining({ id: "run-1" }) }),
+    });
+  });
+
+  it("answers 201 for a run this request actually started", async () => {
+    const { controller } = controllerReturning({
+      persistence: "persisted",
+      run: PERSISTED_RUN,
+      usageSummary: null,
+      reservation: null,
+      execution: "started",
+    });
+    const res = buildFakeResponse();
+
+    await controller.createAgentRun(
+      "job-1",
+      { providerMode: "LIVE" },
+      buildFakeRequest({ token: DEMO_TOKEN }),
+      res,
+    );
+
+    expect(res.status).toHaveBeenCalledWith(201);
+  });
+
+  it("maps LIVE_RUN_CONTEXT_INVALID to a stable 422 with an actionable message", async () => {
+    const executeAndPersist = vi
+      .fn()
+      .mockRejectedValue(new LiveRunAdmissionError("LIVE_RUN_CONTEXT_INVALID"));
+    const controller = buildController(servableConfig(), {
+      service: buildFakeService({ executeAndPersist }),
+    });
+
+    const error = await controller
+      .createAgentRun("job-1", { providerMode: "LIVE" }, buildFakeRequest({ token: DEMO_TOKEN }), buildFakeResponse())
+      .then(
+        () => {
+          throw new Error("expected a rejection");
+        },
+        (thrown: unknown) => thrown as ApiError,
+      );
+
+    expect(error.code).toBe("LIVE_RUN_CONTEXT_INVALID");
+    // 422, not the 429 the previous two-way ternary would have produced for any
+    // code that was not the attempt limit.
+    expect(error.status).toBe(422);
+    expect(error.message).toContain("15–2000 character summary");
+    // No stored summary, no measured length, no schema name, no SQL.
+    expect(error.message).not.toMatch(/schema|zod|summary\.length|SELECT|ticket_context/i);
+  });
+
+  it("looks the key up BEFORE executing, and never executes on a hit", async () => {
+    const executeAndPersist = vi.fn();
+    const replayLiveRun = vi.fn().mockResolvedValue({ replay: "found", run: PERSISTED_RUN });
+    const controller = buildController(servableConfig(), {
+      service: buildFakeService({ executeAndPersist, replayLiveRun }),
+    });
+    const res = buildFakeResponse();
+
+    const result = await controller.createAgentRun(
+      "job-1",
+      { providerMode: "LIVE" },
+      buildFakeRequest({ token: DEMO_TOKEN }),
+      res,
+    );
+
+    expect(replayLiveRun).toHaveBeenCalledWith({
+      jobId: "job-1",
+      clientRequestId: DEFAULT_IDEMPOTENCY_KEY,
+    });
+    // The whole point: the run is returned without the service ever being asked
+    // to execute one.
+    expect(executeAndPersist).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.setHeader).toHaveBeenCalledWith("Location", "/v1/agent-runs/run-1");
+    expect(result).toEqual({
+      data: expect.objectContaining({ run: expect.objectContaining({ id: "run-1" }) }),
+    });
+  });
+
+  it("still maps the two 429 admission rejections correctly", async () => {
+    for (const [code, status] of [
+      ["LIVE_RUN_ATTEMPT_LIMIT", 429],
+      ["LIVE_RUN_BUDGET_EXHAUSTED", 429],
+    ] as const) {
+      const executeAndPersist = vi.fn().mockRejectedValue(new LiveRunAdmissionError(code));
+      const controller = buildController(servableConfig(), {
+        service: buildFakeService({ executeAndPersist }),
+      });
+
+      await expect(
+        controller.createAgentRun(
+          "job-1",
+          { providerMode: "LIVE" },
+          buildFakeRequest({ token: DEMO_TOKEN }),
+          buildFakeResponse(),
+        ),
+      ).rejects.toMatchObject({ code, status });
+    }
+  });
+});
+
+/**
+ * REPLAY BEFORE SPEND ADMISSION — the ordering defect, and its fix.
+ *
+ * The bug: steps 2–7 ran as one block, so a request could not be RECOGNIZED as a
+ * repeat until after every gate governing NEW spending had let it through. That
+ * made the documented 200 replay unreachable in exactly the situations it exists
+ * for, and the worst of them was self-inflicted:
+ *
+ *   the original request consumes the day's final reservation (or fails to
+ *   reconcile, latching the day) -> its response is lost -> the recovery repeats
+ *   the same key -> the advisory budget gate refuses at step 6, before any
+ *   lookup -> the run that already exists can never be handed back
+ *
+ * The same held for an exhausted rate window and a busy concurrency slot.
+ *
+ * Every test here closes one gate and asserts that a request whose key names an
+ * existing run is still answered 200 — while a request with a NEW key against the
+ * same closed gate is still refused with exactly the code it always was.
+ */
+describe("AgentRunsController.createAgentRun — replay bypasses new-run spend admission", () => {
+  const EXISTING_RUN: PersistedAgentRun = {
+    ...PERSISTED_RUN,
+    run: { ...PERSISTED_RUN.run, providerMode: "LIVE", modelIdentifier: "claude-sonnet-5" },
+  };
+
+  /**
+   * A controller wired so every observable spend gate is watched.
+   *
+   * `isBudgetOpen` is a spy rather than a constant, because "was the budget even
+   * READ?" is a stronger claim than "did the budget answer allow it?" — a replay
+   * must not consult the day's headroom at all.
+   */
+  function build(options: {
+    readonly replay?: unknown;
+    readonly isBudgetOpen?: () => Promise<boolean>;
+    readonly config?: RunExecutionConfig;
+  } = {}) {
+    const executeAndPersist = vi.fn().mockResolvedValue({
+      persistence: "persisted",
+      run: PERSISTED_RUN,
+      usageSummary: null,
+      reservation: null,
+      execution: "started",
+    });
+    const replayLiveRun = vi.fn().mockResolvedValue(options.replay ?? { replay: "absent" });
+    const reconcileLiveRunBudget = vi.fn();
+    const isBudgetOpen = vi.fn(options.isBudgetOpen ?? (async () => true));
+    const service = buildFakeService({ executeAndPersist, replayLiveRun, reconcileLiveRunBudget });
+    const providerFactory = buildFakeProviderFactory();
+    const logDecision = vi.fn<LiveRunAdmissionDecisionLogger>();
+
+    return {
+      executeAndPersist,
+      replayLiveRun,
+      reconcileLiveRunBudget,
+      isBudgetOpen,
+      providerFactory,
+      logDecision,
+      controller: buildController(options.config ?? servableConfig(), {
+        service,
+        providerFactory,
+        isBudgetOpen,
+        logDecision,
+      }),
+    };
+  }
+
+  const FOUND = { replay: "found", run: EXISTING_RUN } as const;
+
+  function live(
+    controller: AgentRunsController,
+    request = buildFakeRequest({ token: DEMO_TOKEN }),
+    res = buildFakeResponse(),
+  ) {
+    return controller.createAgentRun("job-1", { providerMode: "LIVE" }, request, res);
+  }
+
+  /** Every "no new spend happened" assertion, in one place. */
+  function expectNoNewRunWork(harness: ReturnType<typeof build>) {
+    expect(harness.isBudgetOpen).not.toHaveBeenCalled();
+    expect(harness.executeAndPersist).not.toHaveBeenCalled();
+    expect(harness.providerFactory.createProvider).not.toHaveBeenCalled();
+    expect(harness.reconcileLiveRunBudget).not.toHaveBeenCalled();
+  }
+
+  it("replays with 200 when the day's budget is exhausted", async () => {
+    const harness = build({ replay: FOUND, isBudgetOpen: async () => false });
+    const res = buildFakeResponse();
+
+    const result = await live(harness.controller, buildFakeRequest({ token: DEMO_TOKEN }), res);
+
+    // The advisory gate that would have refused a new run was never even read.
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(result).toEqual({
+      data: expect.objectContaining({ run: expect.objectContaining({ id: "run-1" }) }),
+    });
+    expectNoNewRunWork(harness);
+  });
+
+  it("replays with 200 when the day is latched by an unreconciled reservation", async () => {
+    // A latched day is indistinguishable from an exhausted one at this boundary
+    // — `isLiveRunBudgetOpen` answers false for both — which is precisely why the
+    // recovery must not depend on the difference.
+    const harness = build({ replay: FOUND, isBudgetOpen: async () => false });
+
+    await live(harness.controller);
+
+    expectNoNewRunWork(harness);
+  });
+
+  it("replays with 200 when the per-client rate window is exhausted", async () => {
+    const harness = build({ replay: FOUND });
+    const request = buildFakeRequest({ token: DEMO_TOKEN });
+
+    // The window allows 2. Four replays later it is still untouched — a replay
+    // consumes nothing, so it cannot exhaust the window and cannot be refused by
+    // one that a NEW request already exhausted.
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const res = buildFakeResponse();
+      await live(harness.controller, request, res);
+      expect(res.status).toHaveBeenCalledWith(200);
+    }
+
+    expectNoNewRunWork(harness);
+  });
+
+  it("replays with 200 while the single concurrency slot is occupied", async () => {
+    // The realistic race: the ORIGINAL request is still in flight, holding the
+    // one lease, when the recovery arrives. maxConcurrency is 1, so before the
+    // split this recovery was refused 429 — by its own original attempt.
+    const harness = build();
+    let releaseOriginal!: (result: unknown) => void;
+    const originalExecution = new Promise((resolve) => {
+      releaseOriginal = resolve;
+    });
+    harness.executeAndPersist.mockReturnValue(originalExecution);
+
+    // Started, deliberately NOT awaited: the lease is held for the whole call.
+    const original = live(harness.controller);
+    // Settles every intermediate await (the lookup, the advisory read) so the
+    // original is genuinely parked inside executeAndPersist, holding the lease.
+    await vi.waitFor(() => expect(harness.executeAndPersist).toHaveBeenCalled());
+
+    harness.replayLiveRun.mockResolvedValue(FOUND);
+    const res = buildFakeResponse();
+    await live(harness.controller, buildFakeRequest({ token: DEMO_TOKEN }), res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+
+    releaseOriginal({
+      persistence: "persisted",
+      run: PERSISTED_RUN,
+      usageSummary: null,
+      reservation: null,
+      execution: "started",
+    });
+    await original;
+  });
+
+  it("acquires no concurrency lease, so repeated replays never wedge the slot", async () => {
+    // maxConcurrency is 1. If a replay took the lease without releasing it, the
+    // NEW-key request afterwards would come back LIVE_RUN_CONCURRENCY_LIMIT.
+    const harness = build({ replay: FOUND });
+
+    for (let attempt = 0; attempt < 3; attempt += 1) await live(harness.controller);
+
+    harness.replayLiveRun.mockResolvedValue({ replay: "absent" });
+    await expect(live(harness.controller)).resolves.toBeTruthy();
+  });
+
+  describe("a NEW key against the same closed gate is still refused", () => {
+    it("keeps 429 LIVE_RUN_BUDGET_EXHAUSTED when the budget is closed", async () => {
+      const harness = build({ isBudgetOpen: async () => false });
+
+      await expect(live(harness.controller)).rejects.toMatchObject({
+        code: "LIVE_RUN_BUDGET_EXHAUSTED",
+        status: 429,
+      });
+      expect(harness.executeAndPersist).not.toHaveBeenCalled();
+    });
+
+    it("keeps 429 LIVE_RUN_RATE_LIMITED when the window is exhausted", async () => {
+      const harness = build();
+
+      await live(harness.controller);
+      await live(harness.controller);
+
+      await expect(live(harness.controller)).rejects.toMatchObject({
+        code: "LIVE_RUN_RATE_LIMITED",
+        status: 429,
+      });
+    });
+
+    it("keeps 503 PERSISTENCE_UNAVAILABLE when the advisory read fails", async () => {
+      const harness = build({
+        isBudgetOpen: () =>
+          Promise.reject(new PersistenceError("PERSISTENCE_UNAVAILABLE", "connection refused")),
+      });
+
+      await expect(live(harness.controller)).rejects.toMatchObject({
+        code: "PERSISTENCE_UNAVAILABLE",
+        status: 503,
+      });
+    });
+  });
+
+  describe("a replay still requires authorization", () => {
+    it("refuses with 401 before the lookup runs, whatever the key names", async () => {
+      const harness = build({ replay: FOUND });
+
+      await expect(live(harness.controller, buildFakeRequest())).rejects.toMatchObject({
+        code: "LIVE_RUN_ACCESS_DENIED",
+        status: 401,
+      });
+
+      // The decisive assertion: an unauthenticated caller cannot even ask whether
+      // a key exists, so a 200 can never be used to probe for one.
+      expect(harness.replayLiveRun).not.toHaveBeenCalled();
+      expectNoNewRunWork(harness);
+    });
+
+    it("refuses with 503 LIVE_NOT_CONFIGURED before the lookup runs", async () => {
+      const harness = build({ replay: FOUND, config: buildConfig({ liveAgentRunsEnabled: true }) });
+
+      await expect(live(harness.controller)).rejects.toMatchObject({
+        code: "LIVE_NOT_CONFIGURED",
+      });
+      expect(harness.replayLiveRun).not.toHaveBeenCalled();
+    });
+
+    it("refuses with 503 LIVE_RUNS_DISABLED before the lookup runs", async () => {
+      const harness = build({
+        replay: FOUND,
+        config: buildConfig({ liveCapability: LIVE_CAPABILITY_PRESENT }),
+      });
+
+      await expect(live(harness.controller)).rejects.toMatchObject({
+        code: "LIVE_RUNS_DISABLED",
+      });
+      expect(harness.replayLiveRun).not.toHaveBeenCalled();
+    });
+
+    it("refuses a malformed key with 400 before the lookup runs", async () => {
+      const harness = build({ replay: FOUND });
+
+      await expect(
+        live(harness.controller, buildFakeRequest({ token: DEMO_TOKEN, idempotencyKey: null })),
+      ).rejects.toMatchObject({ code: "LIVE_RUN_IDEMPOTENCY_KEY_INVALID", status: 400 });
+      expect(harness.replayLiveRun).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("when the lookup itself cannot complete", () => {
+    it("answers 503 and does NOT fall through to new-run admission", async () => {
+      const harness = build({
+        replay: {
+          replay: "unavailable",
+          error: new PersistenceError("PERSISTENCE_UNAVAILABLE", "connection refused"),
+        },
+      });
+
+      await expect(live(harness.controller)).rejects.toMatchObject({
+        code: "PERSISTENCE_UNAVAILABLE",
+        status: 503,
+      });
+
+      // The unsafe alternative would be to treat "could not read" as "no run
+      // exists" and start a second paid execution for a request that may already
+      // have run. Nothing downstream was touched.
+      expectNoNewRunWork(harness);
+    });
+
+    it("answers 404 AGENT_JOB_NOT_FOUND when the job does not exist", async () => {
+      const harness = build({
+        replay: {
+          replay: "unavailable",
+          error: new PersistenceError("PERSISTENCE_NOT_FOUND", "no job"),
+        },
+      });
+
+      // The same code the authoritative transaction produces for the same cause.
+      await expect(live(harness.controller)).rejects.toMatchObject({
+        code: "AGENT_JOB_NOT_FOUND",
+        status: 404,
+      });
+      expectNoNewRunWork(harness);
+    });
+
+    it("exposes no database message or DSN in the public error", async () => {
+      const harness = build({
+        replay: {
+          replay: "unavailable",
+          error: new PersistenceError(
+            "PERSISTENCE_UNAVAILABLE",
+            'replayLiveRun: postgres://demo_user:hunter2@db.internal/opspilot — SELECT * FROM "agent_runs"',
+          ),
+        },
+      });
+
+      const error = await live(harness.controller).then(
+        () => {
+          throw new Error("expected a rejection");
+        },
+        (thrown: unknown) => thrown as ApiError,
+      );
+
+      expect(error.message).toBe("The database is temporarily unavailable.");
+      expect(JSON.stringify(buildErrorEnvelope(error, "req-1"))).not.toContain("hunter2");
+    });
+  });
+
+  describe("the admission decision log", () => {
+    it("records a replay as `replayed`, exactly once", async () => {
+      const harness = build({ replay: FOUND });
+
+      await live(harness.controller);
+
+      expect(harness.logDecision.mock.calls.map(([params]) => params)).toEqual([
+        { decision: "replayed", code: null },
+      ]);
+    });
+
+    it("records a genuinely admitted run as `admitted`, exactly once", async () => {
+      const harness = build();
+
+      await live(harness.controller);
+
+      expect(harness.logDecision.mock.calls.map(([params]) => params)).toEqual([
+        { decision: "admitted", code: null },
+      ]);
+    });
+
+    it("records a failed lookup as one rejection under its public code", async () => {
+      const harness = build({
+        replay: {
+          replay: "unavailable",
+          error: new PersistenceError("PERSISTENCE_UNAVAILABLE", "connection refused"),
+        },
+      });
+
+      await expect(live(harness.controller)).rejects.toBeInstanceOf(ApiError);
+
+      expect(harness.logDecision.mock.calls.map(([params]) => params)).toEqual([
+        { decision: "rejected", code: "PERSISTENCE_UNAVAILABLE" },
+      ]);
+    });
+
+    /**
+     * THE RACE THIS FILE'S BUG REPORT DESCRIBES.
+     *
+     * The Stage-B lookup (step 4b) finds nothing, so the request proceeds
+     * through every new-run spend gate — but a CONCURRENT same-key request
+     * commits first, and this request's own authoritative transaction (step 8)
+     * discovers that row and answers `execution: "replayed"` instead of
+     * creating one. The decision log must reflect what actually happened, not
+     * what looked likely when the spend gates passed.
+     */
+    it("logs `replayed`, not `admitted`, when the authoritative transaction loses the race", async () => {
+      const harness = build();
+      // replay defaults to "absent" (see `build`), so the request reaches
+      // admitNewRun and passes every spend gate — and ONLY THEN does the
+      // authoritative transaction reveal the concurrent replay.
+      harness.executeAndPersist.mockResolvedValue({
+        persistence: "persisted",
+        run: PERSISTED_RUN,
+        usageSummary: null,
+        reservation: null,
+        execution: "replayed",
+      });
+
+      const res = buildFakeResponse();
+      await live(harness.controller, buildFakeRequest({ token: DEMO_TOKEN }), res);
+
+      // The response is honest about it too — 200, not 201.
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(harness.logDecision.mock.calls.map(([params]) => params)).toEqual([
+        { decision: "replayed", code: null },
+      ]);
+    });
+
+    it("logs `rejected` once when the authoritative transaction refuses before creating or replaying anything", async () => {
+      const harness = build();
+      harness.executeAndPersist.mockRejectedValue(new LiveRunAdmissionError("LIVE_RUN_ATTEMPT_LIMIT"));
+
+      await expect(live(harness.controller)).rejects.toMatchObject({ code: "LIVE_RUN_ATTEMPT_LIMIT" });
+
+      expect(harness.logDecision.mock.calls.map(([params]) => params)).toEqual([
+        { decision: "rejected", code: "LIVE_RUN_ATTEMPT_LIMIT" },
+      ]);
+    });
+
+    it("logs `rejected` once for a run-creation persistence failure — nothing was ever created", async () => {
+      const harness = build();
+      harness.executeAndPersist.mockResolvedValue({
+        persistence: "unavailable",
+        stage: "run-creation",
+        error: new PersistenceError("PERSISTENCE_NOT_FOUND", "no job"),
+      });
+
+      await expect(live(harness.controller)).rejects.toMatchObject({ code: "AGENT_JOB_NOT_FOUND" });
+
+      expect(harness.logDecision.mock.calls.map(([params]) => params)).toEqual([
+        { decision: "rejected", code: "AGENT_JOB_NOT_FOUND" },
+      ]);
+    });
+
+    it("logs `rejected` once for a new-run spend-admission gate closing (budget)", async () => {
+      const harness = build({ isBudgetOpen: async () => false });
+
+      await expect(live(harness.controller)).rejects.toMatchObject({
+        code: "LIVE_RUN_BUDGET_EXHAUSTED",
+      });
+
+      expect(harness.logDecision.mock.calls.map(([params]) => params)).toEqual([
+        { decision: "rejected", code: "LIVE_RUN_BUDGET_EXHAUSTED" },
+      ]);
+    });
+
+    /**
+     * A run that genuinely STARTED keeps its `admitted` classification even
+     * when something later goes wrong — a crashed provider call or a failed
+     * finalization write are facts about EXECUTION, not about admission. Both
+     * are reachable only after the authoritative transaction already created
+     * the run (the replay exit returns long before any provider is built), so
+     * neither is a rejection of admission.
+     */
+    describe("a genuinely started run keeps `admitted` even when it later fails", () => {
+      it("when the provider crashes", async () => {
+        const harness = build();
+        harness.executeAndPersist.mockRejectedValue(
+          new AgentRunServiceError("AGENT_EXECUTION_CRASHED", "run-1"),
+        );
+
+        await expect(live(harness.controller)).rejects.toMatchObject({
+          code: "AGENT_EXECUTION_CRASHED",
+        });
+
+        expect(harness.logDecision.mock.calls.map(([params]) => params)).toEqual([
+          { decision: "admitted", code: null },
+        ]);
+      });
+
+      it("when finalization fails to persist", async () => {
+        const harness = build();
+        harness.executeAndPersist.mockResolvedValue({
+          persistence: "unavailable",
+          stage: "finalization",
+          runId: "run-1",
+          agentResult: { status: "completed", report: {}, trace: [] },
+          error: new PersistenceError("PERSISTENCE_UNAVAILABLE", "db down"),
+          usageSummary: null,
+          reservation: null,
+        });
+
+        await expect(live(harness.controller)).rejects.toMatchObject({
+          code: "PERSISTENCE_UNAVAILABLE",
+        });
+
+        expect(harness.logDecision.mock.calls.map(([params]) => params)).toEqual([
+          { decision: "admitted", code: null },
+        ]);
+      });
+    });
+
+    it("a throwing log sink changes neither the response nor the lease release", async () => {
+      const harness = build();
+      harness.logDecision.mockImplementation(() => {
+        throw new Error("log transport unavailable");
+      });
+
+      const result = await live(harness.controller);
+
+      expect(result).toEqual({
+        data: expect.objectContaining({ run: expect.objectContaining({ id: "run-1" }) }),
+      });
+      // Would be LIVE_RUN_CONCURRENCY_LIMIT if the exploding sink had prevented
+      // the lease from being released.
+      await expect(live(harness.controller)).resolves.toBeTruthy();
+    });
+
+    it("never logs the idempotency key or the access token", async () => {
+      const harness = build();
+      harness.executeAndPersist.mockResolvedValue({
+        persistence: "persisted",
+        run: PERSISTED_RUN,
+        usageSummary: null,
+        reservation: null,
+        execution: "replayed",
+      });
+
+      await live(harness.controller);
+
+      const serialized = JSON.stringify(harness.logDecision.mock.calls);
+      expect(serialized).not.toContain(DEFAULT_IDEMPOTENCY_KEY);
+      expect(serialized).not.toContain(DEMO_TOKEN);
+    });
+  });
+
+  it.each(["RUNNING", "COMPLETED", "FAILED"] as const)(
+    "replays a %s run identically, with no side effects",
+    async (status) => {
+      // Status is deliberately not consulted. A RUNNING replay is the NORMAL
+      // shape of the case this exists for — the provider executed and
+      // finalization failed — and re-running the agent because a row looks
+      // unfinished is the duplicate charge the key prevents.
+      const harness = build({
+        replay: {
+          replay: "found",
+          run: { ...EXISTING_RUN, run: { ...EXISTING_RUN.run, status } },
+        },
+        isBudgetOpen: async () => false,
+      });
+      const res = buildFakeResponse();
+
+      await live(harness.controller, buildFakeRequest({ token: DEMO_TOKEN }), res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expectNoNewRunWork(harness);
+    },
+  );
+
+  it("never downgrades a replay-eligible LIVE request to FAKE", async () => {
+    const harness = build({ replay: FOUND, isBudgetOpen: async () => false });
+
+    await live(harness.controller);
+
+    // No run of ANY mode was started — the returned run is the one that already
+    // existed, and it is LIVE.
+    expect(harness.executeAndPersist).not.toHaveBeenCalled();
   });
 });

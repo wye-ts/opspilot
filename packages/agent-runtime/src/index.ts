@@ -69,6 +69,7 @@ export type {
   AgentRunService,
   ExecuteAndPersistParams,
   ExecuteAndPersistResult,
+  ReplayLiveRunResult,
   RetryFinalizationParams,
 } from "./persistence/agent-run-service";
 // A re-exported `export type { X } from "./y"` would redeclare each

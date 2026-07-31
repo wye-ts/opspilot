@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  isLiveExecutionEligible,
   StoredTicketContextSchema,
   TICKET_ID_MAX_LENGTH,
   TICKET_SUMMARY_MAX_LENGTH,
@@ -226,5 +227,79 @@ describe("StoredTicketContextSchema", () => {
     });
 
     expect(result.success).toBe(false);
+  });
+});
+
+/**
+ * LIVE EXECUTION ELIGIBILITY — the predicate that decides whether a STORED row
+ * may start a NEW paid run.
+ *
+ * The rule is CANONICAL FORM, not parseability, and the distinction is the whole
+ * point. `TicketContextSchema` trims before it measures, while the repository
+ * sends the stored snapshot to the provider — so a `safeParse().success` check
+ * bounds a string that is not the one being billed for. Requiring equality with
+ * the parsed result makes those two the same string.
+ */
+describe("isLiveExecutionEligible", () => {
+  it("admits a value that is already canonical", () => {
+    expect(
+      isLiveExecutionEligible({ ticketId: "TICKET-1", summary: "Elevated API error rate" }),
+    ).toBe(true);
+  });
+
+  it("admits the exact boundary lengths", () => {
+    expect(
+      isLiveExecutionEligible({ ticketId: "T", summary: "y".repeat(TICKET_SUMMARY_MIN_LENGTH) }),
+    ).toBe(true);
+    expect(
+      isLiveExecutionEligible({
+        ticketId: "z".repeat(TICKET_ID_MAX_LENGTH),
+        summary: "y".repeat(TICKET_SUMMARY_MAX_LENGTH),
+      }),
+    ).toBe(true);
+  });
+
+  it("refuses a summary below the floor or above the ceiling", () => {
+    expect(isLiveExecutionEligible({ ticketId: "T", summary: "Disk full" })).toBe(false);
+    expect(
+      isLiveExecutionEligible({ ticketId: "T", summary: "y".repeat(TICKET_SUMMARY_MAX_LENGTH + 1) }),
+    ).toBe(false);
+  });
+
+  it("refuses a padded summary whose TRIMMED value would be valid", () => {
+    // The hole a parse-only check left open: valid once trimmed, and the value
+    // actually sent is the padded original.
+    expect(
+      isLiveExecutionEligible({ ticketId: "T", summary: "  Elevated API error rate  " }),
+    ).toBe(false);
+  });
+
+  it("refuses arbitrarily large padding around valid content", () => {
+    const padded = `${" ".repeat(50_000)}Elevated API error rate${" ".repeat(50_000)}`;
+    expect(padded.trim().length).toBeGreaterThanOrEqual(TICKET_SUMMARY_MIN_LENGTH);
+    expect(isLiveExecutionEligible({ ticketId: "T", summary: padded })).toBe(false);
+  });
+
+  it("refuses a padded ticket id", () => {
+    expect(
+      isLiveExecutionEligible({ ticketId: " TICKET-1 ", summary: "Elevated API error rate" }),
+    ).toBe(false);
+  });
+
+  it("refuses a trailing newline", () => {
+    // Invisible in any UI and invisible to a character counter, but it is still
+    // a byte the provider would be sent and a byte the bound never saw.
+    expect(
+      isLiveExecutionEligible({ ticketId: "T", summary: "Elevated API error rate\n" }),
+    ).toBe(false);
+  });
+
+  it("agrees with the write schema on every value the write schema accepts unchanged", () => {
+    // The invariant that keeps the two rules from drifting: anything a current
+    // caller can submit and have stored verbatim is, by definition, eligible.
+    for (const summary of ["Elevated API error rate", "y".repeat(TICKET_SUMMARY_MIN_LENGTH)]) {
+      const parsed = TicketContextSchema.parse({ ticketId: "TICKET-1", summary });
+      expect(isLiveExecutionEligible(parsed)).toBe(true);
+    }
   });
 });

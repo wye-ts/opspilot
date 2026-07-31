@@ -18,7 +18,9 @@ export type ApiErrorCode =
   | "LIVE_RUN_RATE_LIMITED"
   | "LIVE_RUN_CONCURRENCY_LIMIT"
   | "LIVE_RUN_ATTEMPT_LIMIT"
-  | "LIVE_RUN_BUDGET_EXHAUSTED";
+  | "LIVE_RUN_BUDGET_EXHAUSTED"
+  | "LIVE_RUN_IDEMPOTENCY_KEY_INVALID"
+  | "LIVE_RUN_CONTEXT_INVALID";
 
 interface ApiErrorCatalogEntry {
   readonly status: number;
@@ -128,5 +130,32 @@ export const API_ERROR_CATALOG: Readonly<Record<ApiErrorCode, ApiErrorCatalogEnt
   LIVE_RUN_BUDGET_EXHAUSTED: {
     status: 429,
     message: "The live agent run allowance for today has been used. The deterministic demo remains available.",
+  },
+  // 400, and decided in the same breath as body validation — before the token
+  // check, before the rate limiter, and before any lease is taken. A malformed
+  // key is a malformed request, exactly like a misspelled providerMode, and the
+  // body pipe already answers that class of problem before admission runs.
+  //
+  // The message names the requirement rather than the offending value: it never
+  // echoes what was sent, and it never reports whether a key was absent or
+  // merely wrong, so it cannot be used to probe what the server already has.
+  LIVE_RUN_IDEMPOTENCY_KEY_INVALID: {
+    status: 400,
+    message: "A live agent run requires an Idempotency-Key header containing a UUID.",
+  },
+  // 422, not 409 and not 400. The request itself is well-formed (400 would be
+  // wrong) and nothing is concurrently conflicting with it (409 would imply a
+  // race that resolving could clear). The referenced job is simply not something
+  // this server will execute in LIVE mode: it was created under older input
+  // rules, and repeating the request will never change that.
+  //
+  // The message is actionable and says nothing internal — no stored summary, no
+  // measured length, no schema name, no SQL. It states the current rule, which
+  // is public and already enforced on POST /v1/agent-jobs, and tells the caller
+  // the one thing that works.
+  LIVE_RUN_CONTEXT_INVALID: {
+    status: 422,
+    message:
+      "This investigation was created under older input rules and cannot run in LIVE mode. Start a new investigation with a 15–2000 character summary.",
   },
 };

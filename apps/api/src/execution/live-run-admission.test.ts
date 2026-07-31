@@ -35,13 +35,41 @@ function build(overrides: {
   readonly now?: () => Date;
   readonly logDecision?: LiveRunAdmissionDecisionLogger;
 } = {}) {
-  return createLiveRunAdmissionController({
+  const controller = createLiveRunAdmissionController({
     config: overrides.config ?? servableConfig(),
     isBudgetOpen: overrides.isBudgetOpen ?? (async () => true),
     ...(overrides.now ? { now: overrides.now } : {}),
     // Silent unless a test opts in, so the suite's output stays readable.
     logDecision: overrides.logDecision ?? (() => undefined),
   });
+
+  return {
+    ...controller,
+    /**
+     * The two stages run back to back, as the controller runs them for a request
+     * whose key names no existing run.
+     *
+     * Most tests below are about the SEQUENCE of gates, which the split did not
+     * change — so they say "admit this request" once rather than restating the
+     * two-call shape thirty times. The tests that are specifically about the
+     * split call `authorize` and `admitNewRun` themselves.
+     */
+    // `async` on purpose: Stage A throws SYNCHRONOUSLY, and every caller below
+    // asserts with `.rejects`.
+    //
+    // Settles `recordAdmitted()` on success, modelling the ordinary case this
+    // admission-only suite doesn't itself exercise: the authoritative
+    // transaction (step 8, owned by the controller, not this module) went on to
+    // create a genuinely new run. The tests specifically about the race — where
+    // that transaction instead resolves as a replay — settle the recorder
+    // themselves; see "the decision log across the split" below.
+    admit: async (request: Request) => {
+      const authorized = controller.authorize(request);
+      const lease = await controller.admitNewRun(request, authorized);
+      authorized.recordAdmitted();
+      return lease;
+    },
+  };
 }
 
 /**
@@ -344,5 +372,269 @@ describe("createLiveRunAdmissionController — admission decision log", () => {
     await controller.isAvailable();
 
     expect(logDecision).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * THE TWO STAGES, and what each one is allowed to touch.
+ *
+ * The defect this split closes: a request could not be recognized as a repeat of
+ * an existing one until after every gate that governs NEW spending had let it
+ * through. So the run created by an original request that consumed the day's last
+ * reservation could never be handed back — the gate that request itself closed
+ * answered first, and the lookup that would have found the run was never reached.
+ *
+ * Authorization must therefore hold nothing and consume nothing: it has to be
+ * safe to run for a request that turns out to need no spend admission at all.
+ */
+describe("createLiveRunAdmissionController — authorize versus admitNewRun", () => {
+  it("authorizes a valid request without consuming the rate-limit allowance", async () => {
+    // The window allows 2. Ten authorizations later, both are still there —
+    // which is what makes a replay free.
+    const controller = build();
+
+    for (let attempt = 0; attempt < 10; attempt += 1) controller.authorize(request());
+
+    // The lease is released between the two, since maxConcurrency is 1 and this
+    // test is about the rate window, not the slot.
+    const first = await controller.admitNewRun(request(), controller.authorize(request()));
+    first.concurrencyLease.release();
+    const second = await controller.admitNewRun(request(), controller.authorize(request()));
+    second.concurrencyLease.release();
+  });
+
+  it("authorizes without reading the budget at all", () => {
+    let reads = 0;
+    const controller = build({
+      isBudgetOpen: async () => {
+        reads += 1;
+        return true;
+      },
+    });
+
+    controller.authorize(request());
+
+    // A closed or unreadable day must not be able to refuse a recovery, and the
+    // only way to guarantee that is not to ask.
+    expect(reads).toBe(0);
+  });
+
+  it("authorizes without taking the concurrency lease", async () => {
+    // maxConcurrency is 1. If authorize took the slot, this admission would come
+    // back LIVE_RUN_CONCURRENCY_LIMIT rather than succeeding.
+    const controller = build();
+
+    controller.authorize(request());
+    controller.authorize(request());
+
+    const authorized = controller.authorize(request());
+    await expect(controller.admitNewRun(request(), authorized)).resolves.toBeDefined();
+  });
+
+  it.each([
+    ["capability absent", { config: parseRunExecutionConfig({ LIVE_AGENT_RUNS_ENABLED: "true" }) }, request(), "LIVE_NOT_CONFIGURED"],
+    [
+      "kill switch off",
+      {
+        config: parseRunExecutionConfig({
+          ANTHROPIC_API_KEY: "sk-ant-test-do-not-use-0123456789",
+          ANTHROPIC_MODEL: "claude-sonnet-5",
+        }),
+      },
+      request(),
+      "LIVE_RUNS_DISABLED",
+    ],
+    ["wrong token", {}, request({ token: "wrong" }), "LIVE_RUN_ACCESS_DENIED"],
+  ])("rejects %s at Stage A, before any new-run gate", (_label, options, req, code) => {
+    const controller = build(options);
+
+    // Every one of these applies to a REPLAY too: idempotency is not an
+    // authentication bypass, and it is not a way around the kill switch.
+    expect(() => controller.authorize(req)).toThrow(expect.objectContaining({ code }));
+  });
+
+  it("keeps the new-run gates in their canonical order behind Stage A", async () => {
+    // Budget closed AND the rate window about to run out. The rate limiter is
+    // step 5 and the budget is step 6, so the third request must report the rate
+    // limit — proving admitNewRun did not reorder them on its way out of admit().
+    const controller = build({ isBudgetOpen: async () => false });
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const authorized = controller.authorize(request());
+      await expect(controller.admitNewRun(request(), authorized)).rejects.toMatchObject({
+        code: "LIVE_RUN_BUDGET_EXHAUSTED",
+      });
+    }
+
+    const authorized = controller.authorize(request());
+    await expect(controller.admitNewRun(request(), authorized)).rejects.toMatchObject({
+      code: "LIVE_RUN_RATE_LIMITED",
+    });
+  });
+
+  describe("the decision log across the split", () => {
+    /**
+     * THE RACE THIS SUITE EXISTS TO CLOSE.
+     *
+     * `admitNewRun` resolving is not proof that a new run was created — only
+     * that the request may go on to the authoritative transaction. A concurrent
+     * same-key request can still commit first, in which case THIS request's own
+     * transaction discovers the row and resolves as a replay. Logging `admitted`
+     * as soon as the lease was acquired would misreport that outcome.
+     */
+    it("does not log anything merely because admitNewRun succeeded", async () => {
+      const logDecision = vi.fn<LiveRunAdmissionDecisionLogger>();
+      const controller = build({ logDecision });
+
+      const authorized = controller.authorize(request());
+      await controller.admitNewRun(request(), authorized);
+
+      // The authoritative transaction has not run yet, from this module's point
+      // of view — it could still resolve either way, so nothing is settled.
+      expect(logDecision).not.toHaveBeenCalled();
+    });
+
+    it("emits exactly one admitted line once the caller confirms a genuinely started run", async () => {
+      const logDecision = vi.fn<LiveRunAdmissionDecisionLogger>();
+      const controller = build({ logDecision });
+
+      const authorized = controller.authorize(request());
+      await controller.admitNewRun(request(), authorized);
+      // Stands in for the controller's `recordExecutionDecision`, called once
+      // `executeAndPersist` returns `execution: "started"`.
+      authorized.recordAdmitted();
+
+      // Two calls to this module, ONE line. Splitting the stages must not
+      // double the log.
+      expect(logDecision.mock.calls.map(([params]) => params)).toEqual([
+        { decision: "admitted", code: null },
+      ]);
+    });
+
+    it("emits exactly one replayed line when the authoritative transaction loses the race", async () => {
+      const logDecision = vi.fn<LiveRunAdmissionDecisionLogger>();
+      const controller = build({ logDecision });
+
+      const authorized = controller.authorize(request());
+      await controller.admitNewRun(request(), authorized);
+      // A concurrent same-key request committed first, so THIS request's
+      // authoritative transaction returned `execution: "replayed"` instead of
+      // creating anything — even though every spend gate had already passed.
+      authorized.recordReplayed();
+
+      expect(logDecision.mock.calls.map(([params]) => params)).toEqual([
+        { decision: "replayed", code: null },
+      ]);
+    });
+
+    it("emits exactly one replayed line when the caller reports a replay", async () => {
+      const logDecision = vi.fn<LiveRunAdmissionDecisionLogger>();
+      const controller = build({ logDecision });
+
+      const authorized = controller.authorize(request());
+      authorized.recordReplayed();
+
+      // `replayed`, not `admitted`: no allowance was consumed, no lease taken,
+      // no run created. Counting it as an admission would make a free recovery
+      // indistinguishable from a paid execution in the operator's log.
+      expect(logDecision.mock.calls.map(([params]) => params)).toEqual([
+        { decision: "replayed", code: null },
+      ]);
+    });
+
+    it("records a rejection raised between the stages, under its catalog code", () => {
+      const logDecision = vi.fn<LiveRunAdmissionDecisionLogger>();
+      const controller = build({ logDecision });
+
+      const authorized = controller.authorize(request());
+      authorized.recordRejected(new ApiError("PERSISTENCE_UNAVAILABLE"));
+
+      expect(logDecision).toHaveBeenCalledWith({
+        decision: "rejected",
+        code: "PERSISTENCE_UNAVAILABLE",
+      });
+    });
+
+    it("logs no code for a non-ApiError raised between the stages", () => {
+      const logDecision = vi.fn<LiveRunAdmissionDecisionLogger>();
+      const controller = build({ logDecision });
+
+      controller.authorize(request()).recordRejected(new TypeError("internal detail"));
+
+      expect(logDecision).toHaveBeenCalledWith({ decision: "rejected", code: null });
+      expect(JSON.stringify(logDecision.mock.calls)).not.toContain("internal detail");
+    });
+
+    it("keeps the FIRST decision when a caller records twice", async () => {
+      const logDecision = vi.fn<LiveRunAdmissionDecisionLogger>();
+      const controller = build({ logDecision });
+
+      const authorized = controller.authorize(request());
+      authorized.recordReplayed();
+      // A replay never reaches admitNewRun; doing it anyway proves the recorder
+      // is one-shot rather than relying on the call sites to be disciplined.
+      await controller.admitNewRun(request(), authorized);
+      authorized.recordRejected(new ApiError("LIVE_RUN_ACCESS_DENIED"));
+
+      expect(logDecision.mock.calls.map(([params]) => params)).toEqual([
+        { decision: "replayed", code: null },
+      ]);
+    });
+
+    it("emits one line, not two, when Stage A rejects", () => {
+      const logDecision = vi.fn<LiveRunAdmissionDecisionLogger>();
+      const controller = build({ logDecision });
+
+      expect(() => controller.authorize(request({ token: "wrong" }))).toThrow(ApiError);
+
+      expect(logDecision).toHaveBeenCalledTimes(1);
+      expect(logDecision).toHaveBeenCalledWith({
+        decision: "rejected",
+        code: "LIVE_RUN_ACCESS_DENIED",
+      });
+    });
+
+    it("never logs the token or the client address across either stage", async () => {
+      const logDecision = vi.fn<LiveRunAdmissionDecisionLogger>();
+      const controller = build({ logDecision });
+
+      const authorized = controller.authorize(request({ token: DEMO_TOKEN, ip: "198.51.100.42" }));
+      authorized.recordReplayed();
+
+      const serialized = JSON.stringify(logDecision.mock.calls);
+      expect(serialized).not.toContain(DEMO_TOKEN);
+      expect(serialized).not.toContain("198.51.100.42");
+    });
+
+    it("admitNewRun hands over the lease untouched by the sink — it never logs on success", async () => {
+      const controller = build({
+        logDecision: () => {
+          throw new Error("log transport unavailable");
+        },
+      });
+
+      const authorized = controller.authorize(request());
+      const lease = await controller.admitNewRun(request(), authorized);
+
+      expect(lease.concurrencyLease).toBeDefined();
+      lease.concurrencyLease.release();
+    });
+
+    it("recordAdmitted with an exploding sink still leaves the lease usable", async () => {
+      // The scenario that used to be dangerous, now one step later: by the time
+      // the CALLER settles `admitted`, the lease is already held. An escaping
+      // throw here must not prevent the caller from releasing it.
+      const controller = build({
+        logDecision: () => {
+          throw new Error("log transport unavailable");
+        },
+      });
+
+      const authorized = controller.authorize(request());
+      const lease = await controller.admitNewRun(request(), authorized);
+
+      expect(() => authorized.recordAdmitted()).not.toThrow();
+      lease.concurrencyLease.release();
+    });
   });
 });

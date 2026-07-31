@@ -39,6 +39,19 @@ model AgentRun {
   // indistinguishable from a deterministic one.
   //
   // Cost is BigInt nanoUSD, never a float: see apps/api/src/execution/nano-usd.ts.
+  /// The client-generated key that made this run's CREATION idempotent, or NULL
+  /// for a run created before the key existed (and for every FAKE run, which is
+  /// free to repeat).
+  ///
+  /// Uniqueness is `(job_id, client_request_id) WHERE client_request_id IS NOT
+  /// NULL` — a PARTIAL unique index, hand-authored in the migration because
+  /// Prisma's DSL cannot express a WHERE clause on `@@unique`. Declaring a plain
+  /// `@@unique` here instead would generate a DIFFERENT (total) index and put
+  /// the schema permanently at odds with the migration, so this field is
+  /// deliberately declared WITHOUT one. Same reasoning as the CHECK constraints
+  /// this schema also leaves to hand-authored SQL.
+  clientRequestId String? @map("client_request_id") @db.Uuid
+
   providerCallsObserved  Int?     @map("provider_calls_observed")
   inputTokens            Int?     @map("input_tokens")
   outputTokens           Int?     @map("output_tokens")

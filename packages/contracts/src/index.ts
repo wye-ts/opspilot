@@ -28,12 +28,17 @@ import {
   RetrievalSummaryEntrySchema as _RetrievalSummaryEntrySchema,
 } from "./agent-trace-event";
 import {
+  isLiveExecutionEligible as _isLiveExecutionEligible,
   StoredTicketContextSchema as _StoredTicketContextSchema,
   TICKET_ID_MAX_LENGTH as _TICKET_ID_MAX_LENGTH,
   TICKET_SUMMARY_MAX_LENGTH as _TICKET_SUMMARY_MAX_LENGTH,
   TICKET_SUMMARY_MIN_LENGTH as _TICKET_SUMMARY_MIN_LENGTH,
   TicketContextSchema as _TicketContextSchema,
 } from "./ticket-context";
+import {
+  LIVE_RUN_IDEMPOTENCY_KEY_HEADER as _LIVE_RUN_IDEMPOTENCY_KEY_HEADER,
+  LiveRunIdempotencyKeySchema as _LiveRunIdempotencyKeySchema,
+} from "./live-run-idempotency";
 
 export const ApprovalDecisionSchema = _ApprovalDecisionSchema;
 export const RecordApprovalDecisionInputSchema = _RecordApprovalDecisionInputSchema;
@@ -53,6 +58,9 @@ export const StoredTicketContextSchema = _StoredTicketContextSchema;
 export const TICKET_ID_MAX_LENGTH = _TICKET_ID_MAX_LENGTH;
 export const TICKET_SUMMARY_MIN_LENGTH = _TICKET_SUMMARY_MIN_LENGTH;
 export const TICKET_SUMMARY_MAX_LENGTH = _TICKET_SUMMARY_MAX_LENGTH;
+export const isLiveExecutionEligible = _isLiveExecutionEligible;
+export const LIVE_RUN_IDEMPOTENCY_KEY_HEADER = _LIVE_RUN_IDEMPOTENCY_KEY_HEADER;
+export const LiveRunIdempotencyKeySchema = _LiveRunIdempotencyKeySchema;
 
 export type { ApprovalDecision, RecordApprovalDecisionInput } from "./agent-run-approval";
 export type {

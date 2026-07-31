@@ -4,12 +4,13 @@ import type {
   AgentRunRecord,
   LiveRunBudgetReservation,
   LiveRunBudgetReservationInput,
+  LiveRunStartResult,
   PersistedAgentJob,
   PersistedAgentRun,
   ProviderMode,
+  ReplayedLiveRun,
   RunProviderUsageWrite,
   StartedAgentRun,
-  StartedLiveRun,
 } from "@opspilot/database";
 
 // The narrow surface AgentRunService depends on — implemented for real by
@@ -35,13 +36,41 @@ export interface AgentRunRepositoryInterface {
    * takes no reservation, has no attempt cap, and must not pay for either. See
    * the implementation in @opspilot/database for the lock order and the
    * properties the single transaction buys.
+   *
+   * IDEMPOTENT ON `clientRequestId`. Repeating a key that already names a run on
+   * this job returns that run as `outcome: "replayed"` — no reservation, no
+   * attempt, no insert — and the caller MUST NOT execute a provider for it. That
+   * discriminant, not the returned row's status, is what says which happened.
    */
   startLiveRunWithAttemptLimit(params: {
     readonly jobId: string;
     readonly modelIdentifier: string | null;
     readonly maxLiveAttempts: number;
     readonly budget: LiveRunBudgetReservationInput;
-  }): Promise<StartedLiveRun>;
+    readonly clientRequestId: string;
+  }): Promise<LiveRunStartResult>;
+  /**
+   * Whether this key already names a LIVE run on this job — READ ONLY.
+   *
+   * The recovery half of idempotency, separated from `startLiveRunWithAttemptLimit`
+   * so the caller can answer "does this request already exist?" BEFORE it asks
+   * "may a new paid execution start?". Those are different questions, and running
+   * the second one first is what made a documented 200 replay unreachable
+   * whenever the day's budget, the rate window, or the concurrency slot was
+   * closed — including when the request's own original attempt was what closed it.
+   *
+   * Takes the same AgentJob lock the creating transaction does, so it cannot read
+   * past an in-flight original and wrongly conclude that nothing was created.
+   * Performs no write, consumes no attempt, and takes no reservation.
+   *
+   * `null` means no run bears this key, which is NOT permission to start one —
+   * the caller still runs every new-run gate, and the authoritative transaction
+   * still rechecks the key under the lock.
+   */
+  replayLiveRun(params: {
+    readonly jobId: string;
+    readonly clientRequestId: string;
+  }): Promise<ReplayedLiveRun | null>;
   // `usage` is omitted for FAKE, which is what leaves the six usage columns
   // NULL for a deterministic run. It is written in the same statement that sets
   // the terminal status — never a second update afterwards.

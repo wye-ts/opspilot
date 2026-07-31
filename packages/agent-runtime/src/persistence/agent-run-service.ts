@@ -6,6 +6,7 @@ import {
   getAgentRun as dbGetAgentRun,
   PersistenceError,
   reconcileLiveRunBudget as dbReconcileLiveRunBudget,
+  replayLiveRun as dbReplayLiveRun,
   startLiveRunWithAttemptLimit as dbStartLiveRunWithAttemptLimit,
   startRun as dbStartRun,
   type AgentJobRecord,
@@ -52,6 +53,7 @@ export function createPrismaAgentRunRepository(prisma: PrismaClient): AgentRunRe
     startRun: (jobId, providerMode, modelIdentifier) =>
       dbStartRun(prisma, jobId, providerMode, modelIdentifier),
     startLiveRunWithAttemptLimit: (params) => dbStartLiveRunWithAttemptLimit(prisma, params),
+    replayLiveRun: (params) => dbReplayLiveRun(prisma, params),
     finalizeCompleted: (runId, trace, report, usage) =>
       dbFinalizeCompleted(prisma, runId, trace, report, usage),
     finalizeFailed: (runId, trace, code, usage) => dbFinalizeFailed(prisma, runId, trace, code, usage),
@@ -113,7 +115,7 @@ export interface ExecuteAndPersistParams<
   readonly createProvider: (job: AgentJobRecord, collector?: TCollector) => LlmProvider;
   readonly modelIdentifier?: string | null;
   /**
-   * REQUIRED, all three, when `providerMode` is `"LIVE"`; FORBIDDEN, all three,
+   * REQUIRED, all four, when `providerMode` is `"LIVE"`; FORBIDDEN, all four,
    * otherwise. Optional in the type only because a FAKE call must be able to omit
    * them — `resolveLiveInputs` enforces the real rule at runtime, before any
    * repository call.
@@ -125,6 +127,17 @@ export interface ExecuteAndPersistParams<
   readonly usageHooks?: AgentRunUsageHooks<TCollector>;
   readonly liveAttemptLimit?: number;
   readonly budgetReservationInput?: LiveRunBudgetReservationInput;
+  /**
+   * The caller's key for THIS live run request — the fourth live-only input, and
+   * subject to exactly the same all-or-nothing rule as the other three.
+   *
+   * It belongs in this group rather than beside `modelIdentifier` because it is
+   * a SAFEGUARD, not a descriptor: without it a repeated request creates a second
+   * paid attempt, which is the same class of failure as a missing budget
+   * reservation. Making it optional in the type only (like the others) is what
+   * lets a FAKE call omit it; `resolveLiveInputs` enforces the real rule.
+   */
+  readonly clientRequestId?: string;
   /**
    * Supplied for a LIVE run so the persisted failure code can distinguish "ran
    * out of time" from "caller went away" — the merged signal alone cannot,
@@ -154,6 +167,21 @@ export type ExecuteAndPersistResult =
       readonly run: PersistedAgentRun;
       readonly usageSummary: RunProviderUsageSummary | null;
       readonly reservation: LiveRunBudgetReservation | null;
+      /**
+       * Whether this call actually ran the agent, or returned a run an EARLIER
+       * call with the same client key had already created.
+       *
+       * Explicit, because every other signal is ambiguous. A replayed run may be
+       * RUNNING (finalization failed after the provider executed), COMPLETED, or
+       * FAILED; a freshly started one is any of those too. `usageSummary: null`
+       * is likewise true of both a replay and a FAKE run. Only the code that
+       * performed the lookup knows, so only it says.
+       *
+       * `"replayed"` always carries `usageSummary: null` and `reservation: null`
+       * — a replay measured nothing and reserved nothing, and the attempt that
+       * created the run already reconciled the day from its own figures.
+       */
+      readonly execution: "started" | "replayed";
     }
   // Failure before any AgentRun row exists — no runId to retry against, and no
   // provider call happened, so there is nothing to reconcile either.
@@ -176,7 +204,7 @@ export type ExecuteAndPersistResult =
     };
 
 /**
- * The three inputs a LIVE run cannot execute without, resolved together.
+ * The four inputs a LIVE run cannot execute without, resolved together.
  *
  * `null` is the FAKE answer, and it is a different thing from "some inputs were
  * missing" — which is an error, not a mode.
@@ -185,6 +213,7 @@ interface LiveExecutionInputs<TCollector extends AgentRunUsageCollector> {
   readonly usageHooks: AgentRunUsageHooks<TCollector>;
   readonly liveAttemptLimit: number;
   readonly budgetReservationInput: LiveRunBudgetReservationInput;
+  readonly clientRequestId: string;
 }
 
 /**
@@ -203,7 +232,7 @@ interface LiveExecutionInputs<TCollector extends AgentRunUsageCollector> {
  * So the declared mode is authoritative and the inputs must agree with it:
  *
  *   FAKE  → no live input is permitted → startRun, no collector
- *   LIVE  → all three are required     → startLiveRunWithAttemptLimit, one collector
+ *   LIVE  → all four are required      → startLiveRunWithAttemptLimit, one collector
  *
  * Both directions are enforced. Rejecting live inputs on a FAKE run matters as
  * much as requiring them on a LIVE one: a FAKE call carrying a budget
@@ -216,11 +245,12 @@ interface LiveExecutionInputs<TCollector extends AgentRunUsageCollector> {
 function resolveLiveInputs<TCollector extends AgentRunUsageCollector>(
   params: ExecuteAndPersistParams<TCollector>,
 ): LiveExecutionInputs<TCollector> | null {
-  const { usageHooks, liveAttemptLimit, budgetReservationInput } = params;
+  const { usageHooks, liveAttemptLimit, budgetReservationInput, clientRequestId } = params;
   const present = {
     usageHooks: usageHooks !== undefined,
     liveAttemptLimit: liveAttemptLimit !== undefined,
     budgetReservationInput: budgetReservationInput !== undefined,
+    clientRequestId: clientRequestId !== undefined,
   };
   const names = (wanted: boolean) =>
     Object.entries(present)
@@ -229,7 +259,12 @@ function resolveLiveInputs<TCollector extends AgentRunUsageCollector>(
       .join(", ");
 
   if (params.providerMode !== "LIVE") {
-    if (present.usageHooks || present.liveAttemptLimit || present.budgetReservationInput) {
+    if (
+      present.usageHooks ||
+      present.liveAttemptLimit ||
+      present.budgetReservationInput ||
+      present.clientRequestId
+    ) {
       throw new AgentRunConfigurationError(
         `executeAndPersist: providerMode "${params.providerMode}" does not accept live-only inputs (${names(true)}).`,
       );
@@ -240,13 +275,18 @@ function resolveLiveInputs<TCollector extends AgentRunUsageCollector>(
   // Re-tested individually rather than via the booleans above so TypeScript
   // narrows each field — this is what makes the returned object's non-optional
   // types real rather than asserted.
-  if (usageHooks === undefined || liveAttemptLimit === undefined || budgetReservationInput === undefined) {
+  if (
+    usageHooks === undefined ||
+    liveAttemptLimit === undefined ||
+    budgetReservationInput === undefined ||
+    clientRequestId === undefined
+  ) {
     throw new AgentRunConfigurationError(
       `executeAndPersist: providerMode "LIVE" requires every live safeguard input (missing: ${names(false)}).`,
     );
   }
 
-  return { usageHooks, liveAttemptLimit, budgetReservationInput };
+  return { usageHooks, liveAttemptLimit, budgetReservationInput, clientRequestId };
 }
 
 /**
@@ -280,11 +320,50 @@ export interface RetryFinalizationParams {
   readonly usageSummary: RunProviderUsageSummary | null;
 }
 
+/**
+ * The answer to "does this request already exist?", asked BEFORE "may a new paid
+ * execution start?".
+ *
+ * Three cases, stated explicitly rather than collapsed into a nullable run:
+ *
+ *   found        the key already names a run — return it, admit nothing
+ *   absent       no run bears the key — the caller may go on to new-run admission
+ *   unavailable  the lookup itself failed — the caller must NOT go on
+ *
+ * `absent` and `unavailable` are the pair that must never be confused. Treating a
+ * failed lookup as "no run exists" would send a request that may already have
+ * executed straight into new-run admission, which is precisely the duplicate paid
+ * attempt the key exists to prevent. A nullable return would have made that the
+ * easy mistake to write; a third case makes it one you have to choose.
+ */
+export type ReplayLiveRunResult =
+  | { readonly replay: "found"; readonly run: PersistedAgentRun }
+  | { readonly replay: "absent" }
+  | { readonly replay: "unavailable"; readonly error: PersistenceError };
+
 export interface AgentRunService {
   createAgentJob(ticketContext: unknown): Promise<AgentJobRecord>;
   executeAndPersist<TCollector extends AgentRunUsageCollector = AgentRunUsageCollector>(
     params: ExecuteAndPersistParams<TCollector>,
   ): Promise<ExecuteAndPersistResult>;
+  /**
+   * Recovers an existing keyed LIVE run, without admitting a new one.
+   *
+   * Deliberately NOT folded into `executeAndPersist`. That method's job is to run
+   * an agent, and everything it needs to do so — a budget reservation, an attempt
+   * limit, usage hooks — is exactly what a recovery must NOT require. Asking for
+   * them in order to answer "did this already happen?" is what made the answer
+   * unreachable whenever the day's spend admission was closed.
+   *
+   * Builds no collector, constructs no provider, executes nothing, finalizes
+   * nothing, and returns no reservation for the caller to reconcile. The run it
+   * returns was created — and paid for, if it got that far — by the attempt that
+   * created it.
+   */
+  replayLiveRun(params: {
+    readonly jobId: string;
+    readonly clientRequestId: string;
+  }): Promise<ReplayLiveRunResult>;
   // retryFinalization is caller-controlled, in-memory retry ONLY, valid
   // while the original AgentOrchestratorResult is still held by the calling
   // process. It handles a failed finalization call and an uncertain
@@ -370,6 +449,9 @@ async function finalize(
       run: await repository.getAgentRun(runId),
       usageSummary,
       reservation,
+      // `finalize` is only ever reached by a run this process actually executed
+      // — a replay returns long before this, without building a provider.
+      execution: "started",
     };
   } catch (error) {
     if (error instanceof PersistenceError) {
@@ -404,15 +486,50 @@ export function createAgentRunService(repository: AgentRunRepositoryInterface): 
       let reservation: LiveRunBudgetReservation | null = null;
       try {
         if (live !== null) {
-          // The atomic path: locks the job, enforces the per-job live attempt
-          // limit, reserves the day's budget, and inserts the run — then
-          // COMMITS, before any provider call below.
+          // The atomic path: locks the job, replays a repeated client key,
+          // revalidates the stored context against current LIVE bounds, enforces
+          // the per-job live attempt limit, reserves the day's budget, and
+          // inserts the run — then COMMITS, before any provider call below.
           const startedLive = await repository.startLiveRunWithAttemptLimit({
             jobId: params.jobId,
             modelIdentifier: params.modelIdentifier ?? null,
             maxLiveAttempts: live.liveAttemptLimit,
             budget: live.budgetReservationInput,
+            clientRequestId: live.clientRequestId,
           });
+
+          /**
+           * THE REPLAY EXIT, and everything it steps over is the point.
+           *
+           * Returning here means no collector is created, no provider is
+           * constructed, no orchestrator runs, nothing is finalized, and no
+           * reservation is handed to the caller's cleanup to reconcile. The run
+           * this returns was created — and paid for, if it got that far — by an
+           * earlier request carrying the same key.
+           *
+           * The row's STATUS is deliberately not consulted. A RUNNING replay is
+           * the normal shape of the case this exists for: the provider executed
+           * and finalization failed. Re-running the agent because the row looks
+           * unfinished is exactly the duplicate paid execution the key prevents.
+           * If that run does finalize later, the caller's ordinary refresh sees
+           * it; if it never does, it stays RUNNING, which is a pre-existing
+           * recovery gap and not something a second charge would fix.
+           *
+           * `getAgentRun` runs inside this try/catch on purpose: if the read
+           * fails, the caller gets the `run-creation` unavailable variant (503)
+           * and retrying with the SAME key replays again. A retry after this
+           * point can never execute a provider.
+           */
+          if (startedLive.outcome === "replayed") {
+            return {
+              persistence: "persisted",
+              run: await repository.getAgentRun(startedLive.run.id),
+              usageSummary: null,
+              reservation: null,
+              execution: "replayed",
+            };
+          }
+
           started = { job: startedLive.job, run: startedLive.run };
           reservation = startedLive.reservation;
         } else {
@@ -533,6 +650,27 @@ export function createAgentRunService(repository: AgentRunRepositoryInterface): 
       const usageSummary = collector?.snapshot() ?? null;
 
       return finalize(repository, started.run.id, resolvedResult, usageSummary, reservation);
+    },
+
+    async replayLiveRun({ jobId, clientRequestId }) {
+      try {
+        const found = await repository.replayLiveRun({ jobId, clientRequestId });
+        if (found === null) return { replay: "absent" };
+        // Re-read through getAgentRun so a replay's body is produced by the SAME
+        // read model a fresh run's is — trace, outcome and job included. The
+        // locked lookup returns only the run row, which is all it needs to decide
+        // the question; assembling the response from it here would be a second,
+        // subtly different projection of the same run.
+        return { replay: "found", run: await repository.getAgentRun(found.run.id) };
+      } catch (error) {
+        if (error instanceof PersistenceError) {
+          // Carried out rather than thrown, so the caller has to handle it. A
+          // missing job arrives here too (PERSISTENCE_NOT_FOUND) and becomes the
+          // same 404 the creating transaction produces for it.
+          return { replay: "unavailable", error };
+        }
+        throw error;
+      }
     },
 
     /**

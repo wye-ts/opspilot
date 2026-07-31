@@ -1,4 +1,4 @@
-import type { AgentTraceEvent } from "@opspilot/contracts";
+import { isLiveExecutionEligible, type AgentTraceEvent } from "@opspilot/contracts";
 
 import type { PrismaClient } from "../client";
 // NOTE: verified against the actual installed Prisma 7.9.0 `prisma-client`
@@ -22,12 +22,13 @@ import type {
   AgentRunRecord,
   LiveRunBudgetReservation,
   LiveRunBudgetReservationInput,
+  LiveRunStartResult,
   PersistedAgentJob,
   PersistedAgentRun,
   ProviderMode,
+  ReplayedLiveRun,
   RunProviderUsageWrite,
   StartedAgentRun,
-  StartedLiveRun,
 } from "../types";
 
 /**
@@ -138,10 +139,34 @@ export async function startRun(
  *
  *   BEGIN
  *     1. SELECT agent_jobs FOR UPDATE          -> PERSISTENCE_NOT_FOUND (404)
- *     2. count LIVE runs for the job           -> LIVE_RUN_ATTEMPT_LIMIT (429)
- *     3. reserve the UTC-day budget row        -> LIVE_RUN_BUDGET_EXHAUSTED (429)
- *     4. allocate attempt_number; INSERT the run
+ *     2. replay lookup by client key           -> returns the EXISTING run, done
+ *     3. stored context vs. current bounds     -> LIVE_RUN_CONTEXT_INVALID (422)
+ *     4. count LIVE runs for the job           -> LIVE_RUN_ATTEMPT_LIMIT (429)
+ *     5. reserve the UTC-day budget row        -> LIVE_RUN_BUDGET_EXHAUSTED (429)
+ *     6. allocate attempt_number; INSERT the run with its client key
  *   COMMIT
+ *
+ * STEPS 2 AND 3 ARE BOTH BEFORE EVERY SIDE EFFECT — before the attempt count,
+ * before the reservation, before the insert, and therefore before the provider
+ * is ever constructed by the caller. A replay and a rejection each cost exactly
+ * one locked read.
+ *
+ * STEP 2 IS THE SECOND KEY LOOKUP A LIVE REQUEST PERFORMS, and it is not
+ * redundant. The API now runs a read-only `replayLiveRun` BEFORE the new-run
+ * spend gates, so an already-created run can be recovered even when the day's
+ * budget, the rate window, or the concurrency slot is closed. That first lookup
+ * cannot decide the case where two requests carrying the SAME key both found
+ * nothing and both went on to admission: only this one, under the lock that
+ * serializes creation, can. The first lookup is an early exit; this one is the
+ * guarantee.
+ *
+ * WHY THE REPLAY LOOKUP COMES FIRST, ahead of the context check. A replay
+ * returns a run that already exists, which means the money was already spent (or
+ * definitively not spent) by the attempt that created it. Refusing to hand that
+ * row back because the job's stored summary fails today's bounds would strand a
+ * paid run behind a rule that cannot change what it cost. Rejecting a NEW
+ * execution and refusing to acknowledge a COMPLETED one are different acts; only
+ * the first is what the bounds are for.
  *
  * Why the checks live INSIDE this transaction rather than in a cheap admission
  * query beforehand: a read-then-check ("count LIVE runs; if under the cap,
@@ -173,9 +198,15 @@ export async function startLiveRunWithAttemptLimit(
     readonly modelIdentifier: string | null;
     readonly maxLiveAttempts: number;
     readonly budget: LiveRunBudgetReservationInput;
+    /**
+     * The caller's key for THIS request, required for every LIVE run. Repeating
+     * it is what makes recovery safe; a fresh one is a new paid attempt by
+     * definition. See @opspilot/contracts' LIVE_RUN_IDEMPOTENCY_KEY_HEADER.
+     */
+    readonly clientRequestId: string;
   },
-): Promise<StartedLiveRun> {
-  const { jobId, modelIdentifier, maxLiveAttempts, budget } = params;
+): Promise<LiveRunStartResult> {
+  const { jobId, modelIdentifier, maxLiveAttempts, budget, clientRequestId } = params;
 
   try {
     const result = await prisma.$transaction(async (tx) => {
@@ -194,7 +225,57 @@ export async function startLiveRunWithAttemptLimit(
 
       const jobRecord = fromAgentJobRow(jobRow);
 
-      // 2. Counted under the job lock, so the value cannot change between the
+      // 2. REPLAY LOOKUP, under the same job lock that serializes creation.
+      //
+      //    The lock is what makes this correct rather than merely likely: two
+      //    concurrent requests carrying the same key cannot both find nothing,
+      //    because the second cannot read until the first has committed its
+      //    insert. The partial unique index on (job_id, client_request_id) then
+      //    stands behind that as a durable guarantee — see the migration.
+      //
+      //    Deliberately NOT filtered by provider_mode or status. The key is only
+      //    ever written by the insert at the end of this function, so any row
+      //    bearing it is a LIVE run this same path created; and a RUNNING row is
+      //    the exact case this mechanism exists for — the provider executed and
+      //    finalization failed. Returning it unchanged, and letting the caller's
+      //    ordinary refresh observe its later state, is the entire point.
+      const replayed = await tx.agentRun.findFirst({ where: { jobId, clientRequestId } });
+      if (replayed) {
+        return { kind: "replayed" as const, jobRecord, runRow: replayed };
+      }
+
+      // 3. STORED CONTEXT vs. CURRENT LIVE EXECUTION BOUNDS.
+      //
+      //    fromAgentJobRow above validated this row against the permissive
+      //    StoredTicketContextSchema, which is right for a read: history stays
+      //    readable. But this snapshot is about to be sent to a provider that
+      //    CHARGES for it, and a job created before the 15..2000 rule existed
+      //    would otherwise start a paid run with a summary no current caller is
+      //    allowed to submit.
+      //
+      //    The test is CANONICAL FORM, not merely "parses". The value that
+      //    reaches the provider is `jobRecord.ticketContext` — this stored
+      //    snapshot, untouched — while the schema trims before it measures. A
+      //    row padded with megabytes of whitespace around a valid 20-character
+      //    summary would therefore satisfy a 15..2000 bound that was never
+      //    applied to the string actually billed for. Requiring the stored value
+      //    to already equal its parsed form makes the measured value and the
+      //    sent value the same string. See isLiveExecutionEligible.
+      //
+      //    Placed here, under the lock and ahead of every side effect, so a
+      //    rejection consumes no attempt, no reservation, and no provider call —
+      //    the transaction simply rolls back. Nothing is truncated, padded, or
+      //    rewritten to make a row fit, and nothing is written back: the run is
+      //    refused and the row stays exactly as it is.
+      //
+      //    FAKE is unaffected and stays legacy-compatible. It goes through
+      //    startRun, spends nothing, and has no reason to enforce an input rule
+      //    retroactively.
+      if (!isLiveExecutionEligible(jobRecord.ticketContext)) {
+        throw new LiveRunAdmissionError("LIVE_RUN_CONTEXT_INVALID");
+      }
+
+      // 4. Counted under the job lock, so the value cannot change between the
       //    check and the insert below. Uses the agent_runs(job_id, provider_mode)
       //    index added in the same migration as live_run_budget.
       const [liveCountRow] = await tx.$queryRaw<{ liveRuns: number }[]>`
@@ -207,7 +288,7 @@ export async function startLiveRunWithAttemptLimit(
         throw new LiveRunAdmissionError("LIVE_RUN_ATTEMPT_LIMIT");
       }
 
-      // 3. Reserve the day. A single statement does insert-or-increment with the
+      // 5. Reserve the day. A single statement does insert-or-increment with the
       //    gate in its WHERE clause, so the read and the write cannot be
       //    separated by another transaction. Zero returned rows means the gate
       //    is closed — the run count is used up, the accumulated cost has
@@ -254,7 +335,7 @@ export async function startLiveRunWithAttemptLimit(
         throw new LiveRunAdmissionError("LIVE_RUN_BUDGET_EXHAUSTED");
       }
 
-      // 4. attempt_number counts ALL attempts, live and deterministic alike —
+      // 6. attempt_number counts ALL attempts, live and deterministic alike —
       //    it is the run's ordinal within the job, not a live-only counter. The
       //    attempt LIMIT above counts only LIVE rows, which is why the two
       //    numbers legitimately differ.
@@ -271,13 +352,27 @@ export async function startLiveRunWithAttemptLimit(
           startedAt: new Date(),
           providerMode: "LIVE",
           modelIdentifier,
+          // Written in the SAME statement that creates the run, inside the same
+          // transaction as the reservation. There is no window in which a run
+          // exists without its key: a crash between the two is impossible
+          // because there are not two.
+          clientRequestId,
         },
       });
 
-      return { jobRecord, runRow, reservationRow };
+      return { kind: "started" as const, jobRecord, runRow, reservationRow };
     });
 
+    if (result.kind === "replayed") {
+      return {
+        outcome: "replayed",
+        job: result.jobRecord,
+        run: fromAgentRunRow(result.runRow),
+      };
+    }
+
     return {
+      outcome: "started",
       job: result.jobRecord,
       run: fromAgentRunRow(result.runRow),
       reservation: {
@@ -292,6 +387,96 @@ export async function startLiveRunWithAttemptLimit(
     // normalized into one — normalizeDatabaseError would turn it into a 503.
     if (error instanceof LiveRunAdmissionError) throw error;
     throw normalizeDatabaseError(error, "startLiveRunWithAttemptLimit");
+  }
+}
+
+/**
+ * Finds the run a client key already names on a job — and does NOTHING else.
+ *
+ * A read-only sibling of `startLiveRunWithAttemptLimit`, existing so that
+ * RECOVERING an existing request and ADMITTING a new paid one can be separated in
+ * the caller. The API used to run every new-run spend gate (rate limit, advisory
+ * budget, concurrency lease) before it ever reached the transaction that performs
+ * the key lookup, which made the documented 200 replay unreachable in exactly the
+ * situations it exists for: a request whose original attempt consumed the final
+ * daily reservation, or left the day latched, could never be recovered, because
+ * the gate its own original attempt closed answered first.
+ *
+ *   BEGIN
+ *     1. SELECT agent_jobs FOR UPDATE       -> PERSISTENCE_NOT_FOUND (404)
+ *     2. SELECT the LIVE run bearing the key
+ *   COMMIT
+ *
+ * THE JOB LOCK IS THE POINT, and an unlocked SELECT would not do. A recovery
+ * racing its own original request must not be able to read past it while that
+ * request's transaction is still open: it would see no row, conclude "nothing was
+ * created", and go on to admit a second paid execution. Taking the SAME AgentJob
+ * lock the creating transaction holds makes the two serialize, so the recovery
+ * either waits and then sees the committed row, or waits and then correctly sees
+ * nothing because the original rolled back.
+ *
+ * NO WRITE OF ANY KIND. No attempt count, no reservation, no insert, no status
+ * change — which is what makes it safe to run before the spend gates rather than
+ * after them. A missing job is reported as PERSISTENCE_NOT_FOUND, exactly as the
+ * creating transaction reports it, so a request naming a job that does not exist
+ * gets the same 404 whichever path answered it.
+ *
+ * The `providerMode` filter restates an invariant rather than adding one: the key
+ * column is only ever written by the insert at the end of
+ * `startLiveRunWithAttemptLimit`, so every row bearing a key is already a LIVE
+ * run. Saying so here means this query cannot start returning something else if
+ * that ever changes.
+ *
+ * Status is deliberately NOT consulted. RUNNING, COMPLETED and FAILED all replay
+ * identically — a RUNNING row is the normal shape of the case this mechanism
+ * exists for (the provider executed and finalization failed), and re-running the
+ * agent because a row looks unfinished is precisely the duplicate charge the key
+ * prevents.
+ */
+export async function replayLiveRun(
+  prisma: PrismaClient,
+  params: { readonly jobId: string; readonly clientRequestId: string },
+): Promise<ReplayedLiveRun | null> {
+  const { jobId, clientRequestId } = params;
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      // Same lock, same order, same source-of-truth guarantee as the creating
+      // transaction — see startLiveRunWithAttemptLimit step 1.
+      const jobRows = await tx.$queryRaw<
+        { id: string; ticketContext: unknown; externalTicketId: string; createdAt: Date }[]
+      >`
+        SELECT id, ticket_context AS "ticketContext", external_ticket_id AS "externalTicketId",
+               created_at AS "createdAt"
+        FROM agent_jobs WHERE id = ${jobId}::uuid FOR UPDATE`;
+      const [jobRow] = jobRows;
+      if (!jobRow) {
+        throw new PersistenceError("PERSISTENCE_NOT_FOUND", `AgentJob ${jobId} not found`);
+      }
+
+      // Validated against the PERMISSIVE stored schema, like every other read.
+      // A replay must stay readable for a job today's input rules would refuse:
+      // the run it returns was already created, and possibly already paid for, so
+      // a rule about what may START cannot change what a finished run cost. The
+      // strict LIVE eligibility check belongs to new execution only, and lives in
+      // startLiveRunWithAttemptLimit.
+      const jobRecord = fromAgentJobRow(jobRow);
+
+      const runRow = await tx.agentRun.findFirst({
+        where: { jobId, clientRequestId, providerMode: "LIVE" },
+      });
+
+      return runRow === null ? null : { jobRecord, runRow };
+    });
+
+    if (result === null) return null;
+    return {
+      outcome: "replayed",
+      job: result.jobRecord,
+      run: fromAgentRunRow(result.runRow),
+    };
+  } catch (error) {
+    throw normalizeDatabaseError(error, "replayLiveRun");
   }
 }
 

@@ -22,7 +22,7 @@ internally generated ticket IDs — no editable Ticket ID field
 read-only Investigation Timeline
 read-only Generated Report, including suggested-action cards
 the "Approval workflow demo" checkbox and its report-level effect
-partial-failure recovery via Retry Run (FAKE) and Retry Live Run mode (LIVE)
+partial-failure recovery via Retry Run (FAKE) and Recover Live Run mode (LIVE)
 the four-state approval panel (NOT_ELIGIBLE / PENDING / APPROVED / REJECTED)
 recording an approve/reject decision, with 201/200/409 handling
 a reusable two-column run-detail layout (PR 5C): a flexible main reading
@@ -117,13 +117,13 @@ An explicit `phase` state (`idle | creating-job | running-agent | loading-approv
 |---|---|
 | Job creation fails | The safe API error is shown. **No run request is issued.** Nothing is committed to the page — no job, run, timeline, or report. |
 | Job creation succeeds, run creation fails (**FAKE**) | The created job's metadata (Ticket ID, Job ID) is retained and displayed. The safe API error is shown. A **Retry Run** button appears and, when clicked, calls **only** `POST /v1/agent-jobs/:jobId/runs` for the same job, followed by the same approval fetch — a second job is never created automatically. |
-| Job creation succeeds, run creation fails (**LIVE**) | Same retention, but the retry needs a credential the app deliberately no longer holds (§13.2), so there is no Retry Run button. The **form itself switches into "Retry Live Run" mode** against the retained job: the ticket, summary, and provider are shown read-only, the token field starts empty, and submitting calls `retryLiveRunWithToken`, which issues **only** `POST /v1/agent-jobs/:retainedJobId/runs`. See §7.1. |
+| Job creation succeeds, run creation fails (**LIVE**) | Same retention, but recovery needs a credential the app deliberately no longer holds (§13.2), so there is no Retry Run button. The **form itself switches into "Recover Live Run" mode** against the retained job: the ticket, summary, and provider are shown read-only, the token field starts empty, and submitting calls `retryLiveRunWithToken`, which issues **only** `POST /v1/agent-jobs/:retainedJobId/runs` — carrying the same `Idempotency-Key` as the failed attempt, so a run the first request may already have created is returned rather than duplicated (§7.2). See §7.1. |
 | Run created, approval fetch fails | The safe API error is shown, but **the run, timeline, and report stay rendered.** The run projection is the primary artifact; approval is an annotation on it (§8). |
 | A new investigation starts | The prior job, run, approval, timeline, report, error, and notice state are all cleared before the new request is issued. A fresh internal ticket ID is generated unless **Approval workflow demo** is checked. |
 
 Retry Run is offered only while a job exists with no run (i.e., only after a run-creation failure) — it is never offered after a successful run.
 
-### 7.1 LIVE retry mode
+### 7.1 LIVE recovery mode
 
 A LIVE partial failure used to be a **false instruction**. The page said to
 re-enter the token and try again, but the only submit control was the ordinary
@@ -148,27 +148,92 @@ rejection is actually observed, so:
 | Situation | `liveRetryPending` | What the form shows |
 |---|---|---|
 | First LIVE run in flight | `false` | Ordinary busy UI — editable summary, provider radios, "Running agent…" |
-| First LIVE run refused | `true` | Retry Live Run mode |
-| Retry in flight | `true` | Retry Live Run mode, busy — it does **not** snap back to creation mode |
-| Retry refused again | `true` | Retry Live Run mode, token cleared for re-entry |
-| Retry succeeded | `false` | The run, rendered normally |
+| First LIVE run refused | `true` | Recover Live Run mode |
+| Recovery in flight | `true` | Recover Live Run mode, busy — it does **not** snap back to creation mode |
+| Recovery refused again | `true` | Recover Live Run mode, token cleared for re-entry |
+| Recovery succeeded | `false` | The run, rendered normally |
 | Start new investigation | `false` | The ordinary creation form, fully reset |
 
 An aborted or superseded request never sets it: a cancelled request is not a
 refusal.
 
-| Property | Retry Live Run mode |
+| Property | Recover Live Run mode |
 |---|---|
 | Job | The **retained** job. `retryLiveRunWithToken` closes over `job.id` and never calls `createAgentJob` — the retained id is the only job identifier in scope. |
 | Ticket + summary | Rendered read-only as facts about a committed row, in a `<dl>` rather than disabled inputs. The editable summary field is **hidden**, so the UI never implies a retry could change the investigation. |
 | Provider mode | Fixed to LIVE. The radio group is not rendered, so a retry cannot become a FAKE run. |
 | Approval demo | Unavailable, as for any live run. |
 | Token | Field starts **empty** and is cleared again on every terminal outcome. |
-| Repeated failure | The same job is retained and stays retryable. A `LIVE_RUN_ATTEMPT_LIMIT` rejection is the safeguard working — it proves the server counted *this* job's live runs. |
+| Request identity | The **same** `Idempotency-Key` the failed attempt sent — see §7.2. This is what makes recovery safe rather than expensive. |
+| Availability | **Not consulted.** There is no capability preflight: availability governs starting a NEW paid run, not recovering one that may already exist — and the request being recovered is very often what closed it. See §13.1.1. |
+| Repeated failure | The same job is retained and stays recoverable. A `LIVE_RUN_ATTEMPT_LIMIT` rejection is the safeguard working — it proves the server counted *this* job's live runs. |
 | Escape | A **Start new investigation** button clears the retained partial workflow **and the form's own state** — summary, provider (back to FAKE), approval-demo, token, and the double-submit ref — by remounting the form on a changed `key`. Local state only: it issues no request, creates no replacement job, and deletes nothing on the server. |
 
 FAKE is untouched: it keeps the Retry Run button, and no code path can attach a
-token header to a FAKE request (§13.2).
+token header or an idempotency key to a FAKE request (§13.2, §7.2).
+
+---
+
+### 7.2 The client request key
+
+**Why "recover" and not "retry".** The failure that puts the form into this mode
+is ambiguous. `startAgentRun` throwing does not prove that no run was created:
+finalization can fail *after* the provider executed and after the budget was
+reconciled (the API answers `PERSISTENCE_UNAVAILABLE`, which it also uses for a
+pre-run outage), and a successful response can simply be lost in transit. The tab
+used to offer recovery for all of these, and that recovery was a second paid
+execution.
+
+No allowlist of error codes could have fixed it — a transport failure has no code
+at all. What distinguishes "the same request again" from "a new request" is
+something the client carries, so the client carries it: one UUID per LIVE
+investigation, sent as `Idempotency-Key` (`docs/12-agent-run-api.md` §10.6).
+
+**The rule, in one sentence:** a new key is generated only when a new `AgentJob`
+is, never because a request failed.
+
+| Event | Key |
+|---|---|
+| A LIVE investigation is submitted | Freshly generated, before the job is created |
+| The first run request fails, however | **Kept** — this is precisely the ambiguous case |
+| A recovery is submitted | The **same** key, alongside a freshly typed token |
+| A recovery fails again | **Kept** |
+| A run body is rendered (`201` or `200`) | Cleared — there is no ambiguity left to resolve |
+| **Start new investigation** | Cleared — a new investigation is a new request |
+| A FAKE run | Never generated |
+
+**Key and token have opposite lifetimes, on purpose.** The token authorizes one
+run, lives only as a function argument, and must be retyped after any outcome.
+The key names one request, is ordinary component state, and *survives* failure so
+it can be repeated. They are never stored together, and the key is not a
+credential: it authorizes nothing.
+
+**What the user sees.** A `200` response means the server recognized the key and
+returned a run an earlier request had already created. The page says so — *"Recovered
+the original live run — no new run was started."* — and renders that run, exiting
+recovery mode. A replayed run may still be `RUNNING`, which is the normal residue
+of a failed finalization; the Refresh control observes its later state. A `201`
+means the recovery genuinely started the run, and no such notice appears.
+
+**The notice is composed ONCE, after approval loads.** The flow used to announce
+the replay and then load approval, which announced its own thing — so a `PENDING`
+approval silently overwrote the one message explaining why no second paid attempt
+was consumed. The two facts do not compete; both are true. `replayed` is
+therefore carried through the approval step and a single message is emitted:
+
+| Run response | Approval result | Notice |
+|---|---|---|
+| `200` replayed | `PENDING` | *Recovered the original live run — no new run was started. Human approval required.* |
+| `200` replayed | anything else | *Recovered the original live run — no new run was started.* |
+| `200` replayed | the approval GET **failed** | the replay confirmation, unchanged — the approval error renders separately in the error banner |
+| `201` started | `PENDING` | *Investigation completed. Human approval required.* — unchanged from every other creation path |
+| `201` started | anything else | unchanged |
+
+The replay confirmation survives an approval-load failure deliberately: "no
+second paid attempt was consumed" is a fact about the run, and a failed GET
+cannot unmake it. No second live region is introduced — two polite
+announcements racing each other is how this went wrong in the first place, so
+the fix composes one message inside the existing `notice` region (§9).
 
 ---
 
@@ -439,10 +504,11 @@ a backgrounded tab wakes no database:
 | --- | --- |
 | Mount | The initial answer. |
 | Before a new LIVE investigation | Preflight — see below. |
-| Before a retained-job LIVE retry | Preflight, without giving up the recovery path. |
-| After every terminal LIVE outcome | The run itself likely changed the answer. |
+| After every terminal LIVE outcome, **including a recovery** | The run itself likely changed the answer. Best-effort reporting; it never decides whether a request may be sent. |
 | `window` focus / `visibilitychange` when visible | The user came back to a tab that may have been idle for hours. |
 | After **Start new investigation** | The form is back at the start; it should reflect the server now. |
+
+A retained-job recovery deliberately has **no** preflight — see §13.1.1.
 
 **Race and abort ownership.** The refresh has its own `AbortController` and its
 own generation counter, deliberately separate from the investigation's. Sharing
@@ -459,19 +525,16 @@ never offer one the server would refuse. A refresh failure never replaces the ru
 result or the error already on screen, and nothing about the response is logged.
 
 **Preflight.** Before a new LIVE investigation generates a ticket ID or calls
-`createAgentJob`, and before a retained-job retry calls `startAgentRun`, the
-capabilities are refreshed and must report `AVAILABLE` + `TOKEN_REQUIRED`. If
-they do not:
+`createAgentJob`, the capabilities are refreshed and must report `AVAILABLE` +
+`TOKEN_REQUIRED`. If they do not:
 
-| | New LIVE investigation | Retained-job LIVE retry |
-| --- | --- | --- |
-| Ticket ID generated | no | n/a |
-| `createAgentJob` sent | **no** | **no** |
-| `startAgentRun` sent | **no** | **no** |
-| Silent FAKE fallback | **never** | **never** |
-| Retained job | n/a | **kept** |
-| Retry mode | n/a | **kept** |
-| Notice | "Live Claude is temporarily unavailable. No investigation job was created." | "Live Claude is temporarily unavailable. The investigation is still here to retry." |
+| | New LIVE investigation |
+| --- | --- |
+| Ticket ID generated | no |
+| `createAgentJob` sent | **no** |
+| `startAgentRun` sent | **no** |
+| Silent FAKE fallback | **never** |
+| Notice | "Live Claude is temporarily unavailable. No investigation job was created." |
 
 **The preflight is advisory, not atomic.** The **backend admission path remains
 authoritative** — the token check, rate limit, budget gate, concurrency lease,
@@ -484,6 +547,66 @@ tab could have known and created an AgentJob row anyway.
 No capability reason and no budget figure is ever exposed: the response is the
 same opaque `UNAVAILABLE` / `NOT_APPLICABLE` body whichever condition closed the
 day.
+
+### 13.1.1 Recovery is NOT gated on capabilities
+
+A retained-job recovery ran the same preflight, and that was wrong.
+
+```text
+capabilities            ->  may a NEW paid live run be started?
+retained-key recovery   ->  return the run an earlier request may already have
+                            created — no new spend admission
+```
+
+`/v1/capabilities` reports `UNAVAILABLE` when the day's allowance is used up and
+when an unreconciled reservation has latched the day (`docs/12-agent-run-api.md`
+§10.1.1). Those are the states the request being recovered most often
+**created** — the original attempt consumes the day's final reservation, its
+answer is lost, and the tab then refuses to send the one request that would hand
+that run back. The browser was enforcing a rule the server does not have, against
+the exact case the retained key exists for.
+
+The server now answers a retained key from an authenticated, locked replay lookup
+that runs **before** any spend gate (`docs/12-agent-run-api.md` §10.1.0), so the
+request is worth sending whatever the last capability read said.
+
+**Recovery submits when all four are true**, and nothing else is consulted:
+
+```text
+a retained job exists
+a retained Idempotency-Key exists
+a freshly typed, non-empty token
+no investigation request already in flight
+```
+
+| | Retained-job LIVE recovery |
+| --- | --- |
+| Capability preflight | **none** |
+| Submits while capabilities is `UNAVAILABLE` or `null` | **yes** |
+| `createAgentJob` sent | **never** — no second job, no second ticket id |
+| `Idempotency-Key` | the **same** one the failed attempt sent |
+| Access token | **freshly typed**, never retained (§13.2) |
+| Capability refresh | **after** the outcome, best-effort; never a gate |
+
+**A token is still required.** Availability was never what made one necessary —
+the protected path requires authentication unconditionally, so the button stays
+disabled until the field is non-empty regardless of the snapshot.
+
+**When new runs are closed, the recovery banner says so** rather than leaving the
+user to reconcile a live button with a disabled LIVE option elsewhere:
+
+> New Live Claude runs are currently unavailable. Recovery of an existing request
+> is still allowed.
+
+It promises nothing about the outcome, deliberately. The server may still refuse
+for provider configuration, the kill switch, an invalid token, a persistence
+failure, or because no run was ever created for this key — in which case the
+ordinary new-run rules apply and may reject it.
+
+**If the server does refuse**, the retained job and the same request key are both
+**kept**, the form stays in recovery mode, the token is cleared through the
+existing terminal transition, the server's own rejection is what the user sees,
+and there is **no** new key and **no** FAKE fallback.
 
 ### 13.2 Access token — memory only
 
@@ -498,7 +621,7 @@ day.
 | Cleared when switching back to FAKE | explicit reset in `selectMode` |
 | Never copied into parent/app state | `App` keeps only `activeProviderMode`; the token reaches `startAgentRun` as a local argument and goes out of scope when the workflow returns |
 | Cleared on every terminal outcome | the form clears the field on the busy→idle edge, so success, failure, and cancellation all end the same way |
-| Not reusable for a retry | a failed LIVE run offers no **Retry Run** button — there is no token to retry with. The form's Retry Live Run mode (§7.1) takes a freshly typed token as a function argument, never from state |
+| Not reusable for a recovery | a failed LIVE run offers no **Retry Run** button — there is no token to retry with. The form's Recover Live Run mode (§7.1) takes a freshly typed token as a function argument, never from state. The idempotency key is the deliberate opposite: reused, and never stored beside the token (§7.2) |
 | Rendered as `type="password"` | asserted |
 | Never echoed in an error | the 401 message is the fixed catalog string |
 

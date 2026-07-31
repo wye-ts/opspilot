@@ -66,3 +66,51 @@ export const StoredTicketContextSchema = z
   .strict();
 
 export type StoredTicketContext = z.infer<typeof StoredTicketContextSchema>;
+
+/**
+ * Whether a STORED ticket context may be sent to the PAID provider path.
+ *
+ * The split this closes, stated plainly:
+ *
+ *   stored-read compatibility  →  permissive  (StoredTicketContextSchema)
+ *   LIVE execution eligibility →  current bounds (TicketContextSchema)
+ *
+ * StoredTicketContextSchema stays permissive for exactly the reasons documented
+ * above it, and that is correct for a GET. But `startLiveRunWithAttemptLimit`
+ * reads the very same stored snapshot and hands it to a provider that charges
+ * for it — so a job created before the 15..2000 rule existed could start a LIVE
+ * run with a summary that no current caller is allowed to submit. A tightened
+ * input rule must not invalidate history, and it must not be bypassable either;
+ * those are two different requirements and they need two different checks.
+ *
+ * Deliberately a PREDICATE over the stored value rather than a transform. It
+ * answers eligibility and returns nothing: an ineligible context is refused, not
+ * truncated to fit, padded to reach the floor, or quietly rewritten. Silently
+ * editing the text a paid run is billed for would be worse than refusing it.
+ *
+ * CANONICAL FORM IS REQUIRED, not merely parseability — and the difference is a
+ * real hole, not a nicety. `TicketContextSchema` TRIMS before it measures, and
+ * the repository sends the STORED value to the provider, not the schema's parsed
+ * output. So `"    " * 50_000 + "Elevated error rate" + "    " * 50_000` parses
+ * happily against the 15..2000 rule while the prompt actually billed for is
+ * hundreds of kilobytes. Checking `safeParse().success` alone therefore enforced
+ * a bound on a value nobody was going to send.
+ *
+ * Requiring the stored value to already EQUAL the parsed result closes that by
+ * construction: what the bounds were measured against and what the provider
+ * receives become the same string, so the check cannot be about a different
+ * value than the run. Any row that would have to be normalized to qualify is
+ * refused instead of normalized.
+ *
+ * Only NEW executions are held to this. Historical reads stay permissive and
+ * byte-for-byte (StoredTicketContextSchema), and an existing run is still
+ * replayable — see the ordering note in the repository transaction.
+ */
+export function isLiveExecutionEligible(context: StoredTicketContext): boolean {
+  const parsed = TicketContextSchema.safeParse(context);
+  return (
+    parsed.success &&
+    parsed.data.ticketId === context.ticketId &&
+    parsed.data.summary === context.summary
+  );
+}

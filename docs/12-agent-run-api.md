@@ -95,10 +95,17 @@ Duplicate `ticketId` submissions are allowed and create separate jobs — `ticke
 
 `jobId` must be a UUID. Body accepts only an absent body or `{}` — any other value is rejected (see §5). No pre-read of the job happens before execution: the ticket context used by the run is loaded exclusively from the row `AgentRunService.executeAndPersist`'s own `startRun` call locks inside its own transaction.
 
+A **LIVE** run additionally requires an `Idempotency-Key` header containing a
+UUID (§10.6). FAKE requires none and stores none.
+
 `201 Created`, with `Location: /v1/agent-runs/<runId>`:
 ```json
 { "data": { "job": {...}, "run": {...}, "trace": [...], "outcome": {...} } }
 ```
+
+`200 OK`, same body and same `Location`, when a LIVE request's `Idempotency-Key`
+already names a run on this job — the server returns that run and creates
+nothing (§10.6).
 
 ### `GET /v1/agent-jobs/:jobId`
 
@@ -166,6 +173,8 @@ Every error response uses one envelope shape:
 | `INTERNAL_ERROR` | 500 | An unexpected internal error occurred. |
 | `AGENT_RUN_NOT_APPROVAL_ELIGIBLE` | 409 | The agent run is not eligible for an approval decision. (Milestone 6C — see `docs/13-approval-workflow.md`.) |
 | `AGENT_RUN_APPROVAL_ALREADY_DECIDED` | 409 | The agent run already has a recorded approval decision that does not match this request. (Milestone 6C — see `docs/13-approval-workflow.md`.) |
+| `LIVE_RUN_IDEMPOTENCY_KEY_INVALID` | 400 | A live agent run requires an Idempotency-Key header containing a UUID. (§10.6) |
+| `LIVE_RUN_CONTEXT_INVALID` | 422 | This investigation was created under older input rules and cannot run in LIVE mode. Start a new investigation with a 15–2000 character summary. (§10.7) |
 
 `PersistenceError` is mapped by both its own code and the operation that produced it (`errors/map-domain-error.ts`) — the same underlying `PERSISTENCE_NOT_FOUND` code means `AGENT_JOB_NOT_FOUND` on a job read, `AGENT_RUN_NOT_FOUND` on a run read, `AGENT_JOB_NOT_FOUND` when `startRun` can't find the job, and `INTERNAL_DATA_INVALID` if a run row vanishes mid-finalization. Any value that isn't a recognized `PersistenceError`/`AgentRunServiceError` — including a non-`Error` throw — maps to a fixed `INTERNAL_ERROR`.
 
@@ -311,14 +320,29 @@ The human-approval workflow — `POST`/`GET /v1/agent-runs/:runId/approval`, rec
 
 ### 10.1 Canonical admission order
 
-Identical in code, tests, and this document. Steps 4–8 are skipped entirely for
+Identical in code, tests, and this document. Steps 2–8 are skipped entirely for
 `FAKE`; step 1 applies to every request.
+
+The order has **three phases**, and which phase a step belongs to is the point —
+see §10.1.0.
 
 ```text
  1. validate the requested provider mode        -> REQUEST_BODY_INVALID (400)
+1b. validate the Idempotency-Key (LIVE only)    -> LIVE_RUN_IDEMPOTENCY_KEY_INVALID (400)
+
+    ── AUTHORIZATION — required for a replay AND for a new run ──────────────
  2. verify live capability                      -> LIVE_NOT_CONFIGURED (503)
  3. kill switch                                 -> LIVE_RUNS_DISABLED (503)
  4. shared access token                         -> LIVE_RUN_ACCESS_DENIED (401)
+
+    ── REPLAY LOOKUP — read-only, holds nothing, consumes nothing ───────────
+4b. lock AgentJob -> find the LIVE AgentRun bearing this key -> commit
+      a row exists  -> 200 OK with that run; steps 5–12 do not happen
+      no row        -> continue to step 5
+                                                -> AGENT_JOB_NOT_FOUND (404)
+                                                -> PERSISTENCE_UNAVAILABLE (503)
+
+    ── SPEND ADMISSION — permission to start a NEW paid execution ───────────
  5. per-client rate limit                       -> LIVE_RUN_RATE_LIMITED (429)
  6. advisory budget pre-check (non-authoritative)-> LIVE_RUN_BUDGET_EXHAUSTED (429)
                                                 -> PERSISTENCE_UNAVAILABLE (503) if the read itself fails
@@ -327,9 +351,10 @@ Identical in code, tests, and this document. Steps 4–8 are skipped entirely fo
     (runs_completed != runs_reserved)  — see 10.1.1
  7. acquire concurrency lease (limit is exactly 1) -> LIVE_RUN_CONCURRENCY_LIMIT (429)
  8. AUTHORITATIVE TRANSACTION
-      lock AgentJob -> verify -> count LIVE runs -> reserve daily budget
-      -> allocate attempt_number -> insert AgentRun
+      lock AgentJob -> RECHECK the key -> verify context -> count LIVE runs
+      -> reserve daily budget -> allocate attempt_number -> insert AgentRun
                                                 -> AGENT_JOB_NOT_FOUND (404)
+                                                -> LIVE_RUN_CONTEXT_INVALID (422)
                                                 -> LIVE_RUN_ATTEMPT_LIMIT (429)
                                                 -> LIVE_RUN_BUDGET_EXHAUSTED (429)
       COMMIT — before any provider call
@@ -344,6 +369,60 @@ credential sees `LIVE_NOT_CONFIGURED` rather than a misleading "disabled". The
 token is checked before the rate limit so an unauthenticated caller cannot
 consume a client's rate-limit allowance.
 
+### 10.1.0 Spend admission versus authenticated replay
+
+Two questions, deliberately not one:
+
+```text
+capabilities / steps 5–8   ->  permission to start a NEW paid LIVE execution
+authenticated same-key replay (step 4b)
+                           ->  recovery of an EXISTING request; no new spend
+                               admission, no reservation, no attempt, no lease
+```
+
+Steps 2–7 used to run as a single block, so a request could not be **recognized**
+as a repeat until every gate governing new spending had already let it through.
+That made the documented `200` replay unreachable in exactly the situations it
+exists for, and the worst of them was self-inflicted:
+
+```text
+the original request consumes the day's final reservation (or fails to
+reconcile, latching the day) -> its response is lost -> the recovery repeats
+the same Idempotency-Key -> the advisory budget gate refuses at step 6, before
+any lookup -> the run that already exists can never be handed back
+```
+
+The same held for an exhausted rate window and a busy concurrency slot.
+
+So the lookup moved in front of the spend gates, and three properties keep it
+safe:
+
+- **Replay is not an authentication bypass.** Steps 2–4 still run first, and they
+  run identically for a replay and for a new run. An unauthenticated caller
+  receives the same `401` whether or not the key names a run, so the endpoint
+  cannot be used to probe which keys exist.
+- **The lookup takes the AgentJob lock.** A plain unlocked `SELECT` could read
+  past an original transaction that has not committed yet, answer "nothing was
+  created", and send the request on to admit a second paid execution. Waiting on
+  the same lock means an ambiguous concurrent original either commits its row —
+  after which the recovery sees it — or rolls back, after which the recovery
+  correctly sees nothing.
+- **A failed lookup does not fall through.** "Could not read" is answered as
+  `503`, never as "no run exists". Treating the two alike is precisely how a
+  request that may already have executed becomes a second paid one.
+
+**Nothing is relaxed for a new key.** A request whose key names no run runs the
+identical gates, in the identical order, with the identical codes.
+
+**Step 8 still rechecks the key**, under the lock that serializes creation, and
+that is not redundant with step 4b. Two requests carrying the same key can both
+find nothing at 4b and both reach admission; only the locked transaction can
+decide which of them creates the run. Step 4b is an early exit; step 8 is the
+guarantee.
+
+A replay accepts `RUNNING`, `COMPLETED` and `FAILED` rows identically — status is
+never what decides a replay.
+
 A database outage has **one** public contract wherever it lands. A
 `PersistenceError` from step 6's advisory read maps to the same
 `503 PERSISTENCE_UNAVAILABLE` that step 8's authoritative transaction already
@@ -354,11 +433,39 @@ created, and no provider is constructed. Non-persistence failures are re-thrown
 untouched rather than being dressed up as a transient 503. The public body is the
 fixed catalog message — never a database message, SQL, or DSN.
 
-Every admitted or rejected LIVE request emits **exactly one** structured line
+Every LIVE request emits **exactly one** structured line
 (`event: "live_run_admission"`) carrying the decision and the fixed catalog code,
 and nothing else — no token, no client address, no budget figure, no headroom.
-It is emitted once per call in `admit`, on every exit path, so a rejection added
-later is logged without anyone remembering to. The anonymous capabilities probe
+`decision` is one of three closed values:
+
+```text
+admitted   the AUTHORITATIVE transaction (step 8) actually created a new run —
+           or, if the provider or finalization later failed, already ran one
+replayed   answered from step 4b, OR the step-8 transaction itself resolved
+           `execution: "replayed"` — either way: no allowance, no lease, no
+           attempt, no spend
+rejected   refused; `code` carries the fixed catalog identifier
+```
+
+**`admitted` is settled from step 8's result, never from step 5–7 passing.**
+Passing the rate limit, the advisory budget check, and taking the concurrency
+lease proves only that a request MAY reach the authoritative transaction — not
+that the transaction will create a new run. A concurrent request carrying the
+*same* key can still commit first, in which case this request's own step 8
+discovers that row and answers `execution: "replayed"` instead, after every
+spend gate had already passed it. Settling `admitted` as soon as the lease was
+acquired would misreport that outcome as a paid execution that never happened.
+
+A run that genuinely started keeps its `admitted` classification even when a
+*later* step fails — a crashed provider call or a failed finalization write are
+facts about execution, not about admission, and both are reachable only after
+step 8 already created the run.
+
+`replayed` is separate from `admitted` because collapsing them would make a free
+recovery indistinguishable from a paid execution in the one place an operator
+looks to count them. Exactly-one-line is structural rather than a convention: a
+one-shot recorder is created per request when it is authorized, every stage
+records through it, and the first record wins. The anonymous capabilities probe
 (`isAvailable`) is deliberately **not** logged: it runs on every page load.
 
 Step 7's limit is **exactly one** concurrent live run, and
@@ -465,4 +572,120 @@ short summary still receives a 400.
 Stored rows are revalidated against a deliberately looser schema
 (`StoredTicketContextSchema`), so rows written before these bounds existed stay
 readable rather than becoming 500s. A tightened input rule must never invalidate
-history.
+history — but it must not be bypassable either, which is a different requirement
+and needs a different check (§10.7).
+
+---
+
+### 10.6 Idempotent LIVE run creation
+
+**The problem.** A `POST /v1/agent-jobs/:jobId/runs` exception does not prove
+that no run was created. Two shapes are unavoidable:
+
+1. Finalization persistence fails **after** the provider executed and after the
+   budget was reconciled. The API answers `PERSISTENCE_UNAVAILABLE` — the same
+   code it uses for a pre-run outage.
+2. The network loses a successful response after the server committed, executed,
+   and finalized.
+
+In both, the client has an ambiguous failure and a job with no visible run. If
+its recovery is an ordinary new request, that recovery is a **second paid
+execution**. Allowlisting error codes cannot fix this: a transport failure has
+no code, and `PERSISTENCE_UNAVAILABLE` is genuinely raised at both stages.
+
+**The contract.**
+
+```text
+POST /v1/agent-jobs/:jobId/runs
+Idempotency-Key: <UUID>          # required for providerMode: "LIVE"
+```
+
+| Situation | Status | Effect |
+|---|---|---|
+| No run on this job bears the key | `201` | Exactly one run is created and executed. |
+| A run on this job bears the key | `200` | That run is returned. No provider call, no reservation, no attempt consumed. |
+| Absent, blank, malformed, or oversized key on LIVE | `400` | `LIVE_RUN_IDEMPOTENCY_KEY_INVALID`. Rejected before admission. |
+| FAKE, with or without a key | `201` | The key is ignored and never stored. A deterministic run spends nothing, so repeating one is harmless. |
+
+`200` rather than `201` because the request created nothing: a client counting
+`201`s would otherwise count one paid attempt too many. `Location` is sent on
+both, and the body is byte-identical, so a caller that only wants the run need
+not care which happened.
+
+**A replayed `RUNNING` row is valid** and is returned as it stands — it is the
+normal residue of a failed finalization. `GET /v1/agent-runs/:runId` observes its
+later state. The server never re-executes because a row looks unfinished.
+
+**Where the key is validated.** In step 1b (request validation), *before*
+everything else — the same position the Zod body pipe already occupies. A
+malformed key therefore cannot consume another client's rate-limit budget or
+take the single concurrency lease on its way to being rejected. Absent, blank,
+malformed, and oversized all produce one code and one message; distinguishing
+them would publish how the value is parsed and tells an honest caller nothing.
+
+**Where the key is looked up.** Twice, and both are load-bearing:
+
+| Step | What it is | Why |
+|---|---|---|
+| 4b | A locked, read-only lookup **before** the spend gates | So a run that already exists can be recovered when the day's budget, the rate window, or the concurrency slot is closed — including when this request's own original attempt is what closed it. See §10.1.0. |
+| 8 | The recheck inside the authoritative transaction | So two same-key requests that both found nothing at 4b still produce exactly one run. |
+
+A replay therefore consumes **no** rate-limit slot, reads **no** budget, takes
+**no** concurrency lease, counts **no** attempt, and reserves **nothing**. It is
+free in the ledger as well as in the provider. It still requires the same
+authorization every new run does: capability, kill switch, and a valid access
+token are checked first, so a `401` is returned identically whether or not the
+key names a run.
+
+**The key is not a credential.** It authorizes nothing — it names a request. It
+is deliberately *reused* across recovery attempts, which is the exact opposite
+of the live access token's lifetime (`docs/14-web-ui.md` §13.2), and the two are
+never stored together. It is equally deliberately not written to logs.
+
+Uniqueness is enforced per job by a partial unique index on
+`(job_id, client_request_id)` — see `docs/11-agent-run-persistence.md` §5. A key
+reused against a different job is simply a different request, and no job can
+replay another job's run.
+
+---
+
+### 10.7 LIVE execution eligibility for legacy jobs
+
+Stored-read permissiveness (§10.5) is correct for a GET and wrong for a paid
+run. `startLiveRunWithAttemptLimit` reads the same stored snapshot and sends it
+to a provider that charges for it, so a job created before the current bounds
+existed could start a LIVE run with a summary no current caller may submit.
+
+```text
+stored-read compatibility  ->  permissive
+LIVE execution eligibility ->  current bounds AND already-canonical form
+                               (ticketId 1–64, summary 15–2000, and the stored
+                                value equal to its own trimmed parse)
+```
+
+Canonical form, not merely parseability. The schema trims before it measures
+while the provider is sent the stored value, so checking parseability alone
+would bound a different string than the one billed for: 200 kB of whitespace
+around a valid 26-character summary passes 15–2000 and produces a 200,000-
+character prompt. Requiring the stored value to equal its parsed result makes
+those two the same string.
+
+The check runs inside the authoritative transaction, after the job row is locked
+and **before** the attempt count, the budget reservation, the run insert, and any
+provider construction. A rejection therefore consumes no attempt, no reservation,
+and no provider call — the transaction simply rolls back.
+
+An ineligible job is refused with **422 `LIVE_RUN_CONTEXT_INVALID`**: the request
+is well-formed (not a 400) and nothing is concurrently conflicting with it (not a
+409) — the referenced job is simply not something this server will execute in
+LIVE mode, and repeating the request will never change that. The message states
+the current rule and the one thing that works; it never echoes the stored
+summary, its length, a schema name, or any SQL.
+
+Nothing is truncated, padded, normalized, or written back to make a job fit —
+the row is refused and left exactly as it is. FAKE stays fully compatible with
+legacy rows: it spends nothing.
+
+One ordering consequence, deliberate: the idempotency lookup runs **before** this
+check, so an existing run on an ineligible job is still replayable. A rule about
+what may start cannot change what a finished run already cost.

@@ -1,8 +1,16 @@
-export type LiveRunAdmissionErrorCode = "LIVE_RUN_ATTEMPT_LIMIT" | "LIVE_RUN_BUDGET_EXHAUSTED";
+export type LiveRunAdmissionErrorCode =
+  | "LIVE_RUN_ATTEMPT_LIMIT"
+  | "LIVE_RUN_BUDGET_EXHAUSTED"
+  | "LIVE_RUN_CONTEXT_INVALID";
 
 const MESSAGES: Record<LiveRunAdmissionErrorCode, string> = {
   LIVE_RUN_ATTEMPT_LIMIT: "The agent job has reached its live run attempt limit.",
   LIVE_RUN_BUDGET_EXHAUSTED: "The live agent run allowance for the current UTC day has been used.",
+  // Says WHICH rule was not met and nothing about the offending value — no
+  // stored summary, no measured length, no field name beyond the two the public
+  // message already names. See the catalog entry this maps to.
+  LIVE_RUN_CONTEXT_INVALID:
+    "The agent job's stored ticket context does not satisfy the current live execution bounds.",
 };
 
 /**
