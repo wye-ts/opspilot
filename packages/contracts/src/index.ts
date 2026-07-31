@@ -16,6 +16,7 @@ import {
   ResolutionReportSchema as _ResolutionReportSchema,
   SuggestedActionSchema as _SuggestedActionSchema,
 } from "./resolution-report";
+import { summarizeReportValidationIssues as _summarizeReportValidationIssues } from "./resolution-report-validation";
 import {
   AgentProtocolErrorCodeSchema as _AgentProtocolErrorCodeSchema,
   AgentTurnResultSchema as _AgentTurnResultSchema,
@@ -46,6 +47,7 @@ export const EvidenceReferenceSchema = _EvidenceReferenceSchema;
 export const IncidentCategorySchema = _IncidentCategorySchema;
 export const ResolutionReportSchema = _ResolutionReportSchema;
 export const SuggestedActionSchema = _SuggestedActionSchema;
+export const summarizeReportValidationIssues = _summarizeReportValidationIssues;
 export const AgentProtocolErrorCodeSchema = _AgentProtocolErrorCodeSchema;
 export const AgentTurnResultSchema = _AgentTurnResultSchema;
 export const DiagnosticToolRequestSchema = _DiagnosticToolRequestSchema;
@@ -69,6 +71,7 @@ export type {
   ResolutionReport,
   SuggestedAction,
 } from "./resolution-report";
+export type { ReportValidationIssue } from "./resolution-report-validation";
 export type {
   AgentProtocolErrorCode,
   AgentTurnResult,
