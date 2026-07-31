@@ -43,6 +43,9 @@ describe("mapAgentJobDetailResponse", () => {
         startedAt: "2026-01-01T00:01:00.000Z",
         finishedAt: "2026-01-01T00:02:00.000Z",
         createdAt: "2026-01-01T00:01:00.000Z",
+        // FAKE runs never carry a measured cost — see AgentRunRecord.
+        estimatedCostNanoUsd: null,
+        possibleUnobservedCost: false,
       },
     ],
   };
@@ -78,6 +81,9 @@ describe("mapAgentJobDetailResponse", () => {
           startedAt: "2026-01-01T00:03:00.000Z",
           finishedAt: null,
           createdAt: "2026-01-01T00:03:00.000Z",
+          // FAKE runs never carry a measured cost — see AgentRunRecord.
+          estimatedCostNanoUsd: null,
+          possibleUnobservedCost: false,
         },
       ],
     };

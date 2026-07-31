@@ -481,7 +481,7 @@ downgrade. `AGENT_RUN_PROVIDER_MODE=LIVE` with capability absent also **fails st
 | `LIVE_RUN_ACCESS_TOKEN` | access gate | unset | non-empty when set | 6B2 |
 | `LIVE_RUN_MAX_OUTPUT_TOKENS` | budget | `1024` | integer 256–4096 | 6B2 |
 | `LIVE_RUN_MAX_ATTEMPTS_PER_JOB` | budget | `2` | integer 1–10 | 6B2 |
-| `LIVE_RUN_MAX_CONCURRENCY` | concurrency | `1` | integer 1–4 | 6B2 |
+| `LIVE_RUN_MAX_CONCURRENCY` | concurrency | `1` | **exactly `1`** (see note below) | 6B2 |
 | `LIVE_RUN_RATE_LIMIT_MAX` | rate limit | `2` | integer 1–60 | 6B2 |
 | `LIVE_RUN_RATE_LIMIT_WINDOW_MS` | rate limit | `60000` | integer 1 000–3 600 000 | 6B2 |
 | `LIVE_RUN_DAILY_LIMIT` | budget | `10` | integer 1–1000 | 6B2 |
@@ -820,13 +820,63 @@ See §5.3 for the full controller. The invariants, asserted by test:
 
 ```text
 reconciliation failure
-→ logged at error level
+→ logged at error level (fixed shape, sanitized, non-throwing)
 → never overrides the run response or result
 → never prevents concurrency release
+→ LEAVES runs_reserved > runs_completed, which durably closes the day
 ```
 
-The nested `try/finally` guarantees the last point structurally: the lease release sits in the
+The nested `try/finally` guarantees the third point structurally: the lease release sits in the
 inner `finally`, so it runs whether reconciliation succeeded, threw, or was skipped.
+
+**Implementation correction (PR 6B2).** An earlier revision of this plan justified swallowing the
+failure on the grounds that the reservation is committed up front, so the cap can never be
+under-counted. That is true of the daily **run count** and false of **cost accounting**, and the
+two were conflated:
+
+| After a failed reconciliation | State |
+| --- | --- |
+| `runs_reserved` | Correct — incremented before execution, never decremented |
+| `runs_completed` | Stale — missing the run that just executed |
+| `estimated_cost_nano_usd` | **Stale** — missing that run's cost |
+| `pricing_unknown_runs` | **Stale** — missing that run's uncertainty |
+
+Continuing to admit runs against those figures would gate spending on numbers known to be
+incomplete: the observed-estimate cost ceiling and the unknown-pricing gate would both fail
+**open**, leaving only the hard daily run count to stop the day. A single failed reconciliation
+early in the day could therefore be followed by the full remaining run allowance, all of it
+unaccounted.
+
+The counters are now the latch. Both the authoritative reservation statement and
+`isLiveRunBudgetOpen` require `runs_completed = runs_reserved`, so an outstanding reservation
+closes the day by itself:
+
+```text
+runs_completed !== runs_reserved
+→ advisory budget check reports closed
+→ authoritative reservation returns no row
+→ no AgentRun is created
+→ no provider is constructed or called
+```
+
+The latch lives in PostgreSQL, not in process memory: it survives a restart and is shared by every
+instance, neither of which an in-process flag would achieve.
+
+**Recovery posture for this release.** No background repair worker, and no repair endpoint —
+adding an unauthenticated one would be a larger hazard than the problem it solves. The safe,
+documented behaviour is:
+
+```text
+reconciliation failure
+→ the current run's response is preserved
+→ the UTC-day budget row remains unreconciled
+→ further LIVE runs for that UTC day fail closed
+→ the next UTC day starts from a new row and admits normally
+```
+
+An explicitly authorized future repair mechanism may reopen a stuck row; until then the cost of a
+failed reconciliation is bounded at "the rest of that one UTC day", which is the correct direction
+to fail for a spend control.
 
 ### 10.3 Getting the usage summary out on every path
 
@@ -846,8 +896,9 @@ sub-cases:
   is internal only — it is never serialized into an HTTP response.
 
 The reconciliation failure log is a fixed-shape structured line carrying `budgetDate`, `runId`,
-and the error's `name`/`message` **only** — no credential, no demo token, no prompt, no provider
-response body, no stack trace.
+and two **closed classifications** (`errorName`, `errorCode`) **only** — never the error's raw
+message, and no credential, demo token, prompt, provider response body, SQL, DSN, or stack trace.
+Emission is best-effort: a throwing log sink cannot replace the response or strand the lease.
 
 ### 10.4 Tests
 
@@ -1187,7 +1238,9 @@ byte, in the same test.
 **Worst-case daily output cost, exactly:**
 
 ```text
-1024 output tokens/turn × 2 turns × 10 runs = 20,480 output tokens/day
+1024 output tokens/attempt × 2 turns × (0 retries + 1) × 10 runs = 20,480 output tokens/day
+(the (maxRetries + 1) factor is 1 only because the protected public path requires
+ANTHROPIC_MAX_RETRIES=0; see docs/08-cicd-deployment.md §25.2.2)
 20,480 × 10,000 nanoUSD/token (claude-sonnet-5 introductory output rate, $10/MTok)
 = 204,800,000 nanoUSD = $0.2048/day
 ```
@@ -1204,7 +1257,17 @@ rest of the UTC day.
 
 > The daily **run count** is hard.
 > The daily **cost estimate** stops later runs after reconciliation.
-> Actual spend can exceed the estimate ceiling by one bounded run.
+> The OBSERVED RECONCILED ESTIMATE can cross the estimate ceiling by at most one
+> in-flight logical run. Actual provider billing may be higher — after an
+> ambiguous network outcome or a process termination — and is NOT bounded by that
+> statement.
+>
+> **Implementation correction (PR 6B2).** This holds only at a concurrency of 1.
+> The planned range `1–4` was therefore narrowed to exactly `1` during
+> implementation: at concurrency *N*, all *N* runs can observe an accumulated
+> cost below the ceiling, reserve, and spend before any reconciles, making the
+> bound *N* runs rather than one. `LIVE_RUN_MAX_CONCURRENCY` now fails startup on
+> any value other than `1`. See docs/08-cicd-deployment.md §25.2.1.
 
 The $1.00 figure is **not** a hard dollar cap and is never described as one.
 
@@ -1566,7 +1629,8 @@ RAG is still not browser-wired; approved actions are recorded, never executed; t
 authentication and no RBAC** — a shared demo token is a spend gate, not identity; **rate limits
 are not identity**, and proxy/`X-Forwarded-For` behaviour behind Render is unverified;
 process-local safeguards reset on every restart and cold start; the daily **run count** is hard
-while the daily **dollar figure** is a post-run estimate that can be exceeded by one bounded run;
+while the daily **dollar figure** is a post-run estimate that can be exceeded by at most one
+bounded run (true because concurrency is pinned to exactly 1 — see the correction in §13.1);
 the cost estimate is a **lower bound** because retried-and-abandoned attempts are unobservable;
 cancellation covers provider calls only; a `RUNNING` row can still be orphaned by a genuine
 process crash (no reaper); and the public deployment is **not Portfolio Ready** until live

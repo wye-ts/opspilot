@@ -204,6 +204,59 @@ html {
   align-items: center;
   gap: var(--space-3);
   margin-bottom: var(--space-4);
+  flex-wrap: wrap;
+}
+
+/* Stands in for the Retry Run button when the failed run was LIVE — the token
+   is not retained, so the retry has to start from the form's retry mode. */
+.investigation-summary-retry-note {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+}
+
+/* The form's "Retry Live Run" mode. Reads as a distinct state rather than as
+   the ordinary creation form with fields missing. */
+.form-retry-banner {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: var(--space-3);
+  background: var(--color-surface-muted, transparent);
+}
+
+.form-retry-heading {
+  margin: 0 0 var(--space-2);
+  font-size: 1rem;
+}
+
+/* Read-only facts about the retained job — a <dl>, never disabled inputs, which
+   would be announced as form fields the user cannot edit. */
+.form-retry-details {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-3) 0 0;
+}
+
+.form-retry-details dt {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+}
+
+.form-retry-details dd {
+  margin: 0;
+}
+
+.form-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.form-secondary-action {
+  background: none;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
 }
 
 .status-badge {

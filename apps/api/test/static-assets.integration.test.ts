@@ -22,10 +22,14 @@ import type { AgentProviderFactory } from "../src/execution/api-provider-factory
 import {
   AGENT_RUN_SERVICE,
   AGENT_PROVIDER_FACTORY,
+  LIVE_RUN_ADMISSION,
   RUN_EXECUTION_CONFIG,
   TOOL_REGISTRY,
+  USAGE_HOOKS,
 } from "../src/execution/execution.tokens";
-import type { RunExecutionConfig } from "../src/execution/run-execution-config";
+import { createLiveRunAdmissionController } from "../src/execution/live-run-admission";
+import { parseRunExecutionConfig, type RunExecutionConfig } from "../src/execution/run-execution-config";
+import { createApiUsageHooks } from "../src/execution/usage-hooks";
 import { HealthController } from "../src/health/health.controller";
 import { PRISMA_CLIENT_HANDLE } from "../src/persistence/prisma.tokens";
 
@@ -37,7 +41,11 @@ import { PRISMA_CLIENT_HANDLE } from "../src/persistence/prisma.tokens";
 const fakeAgentRunService: AgentRunService = {
   createAgentJob: vi.fn(),
   executeAndPersist: vi.fn(),
+  // Defaults to "no run bears this key", so a LIVE request in these suites
+  // reaches new-run admission exactly as it did before step 4b existed.
+  replayLiveRun: vi.fn().mockResolvedValue({ replay: "absent" }),
   retryFinalization: vi.fn(),
+  reconcileLiveRunBudget: vi.fn(),
   getAgentRun: vi.fn(),
   getAgentJob: vi.fn(),
 };
@@ -46,12 +54,9 @@ const fakeProviderFactory: AgentProviderFactory = { createProvider: vi.fn() };
 // The safest posture a deployment can be in: deterministic by default, no live
 // capability, kill switch off. This suite is about static-asset routing and
 // should not depend on the live path at all.
-const runExecutionConfig: RunExecutionConfig = {
-  defaultRequestMode: "FAKE",
-  liveCapability: { kind: "absent" },
-  liveAgentRunsEnabled: false,
-  providerDeadlineMs: 120_000,
-};
+// Derived from the real parser on an empty environment, so the fixture tracks
+// the shipped defaults instead of drifting from them.
+const runExecutionConfig: RunExecutionConfig = parseRunExecutionConfig({});
 const fakeQueryRaw = vi.fn().mockResolvedValue([{ "?column?": 1 }]);
 const fakePrismaHandle = { prisma: { $queryRaw: fakeQueryRaw } } as unknown as PrismaClientHandle;
 
@@ -65,6 +70,18 @@ const fakePrismaHandle = { prisma: { $queryRaw: fakeQueryRaw } } as unknown as P
     { provide: TOOL_REGISTRY, useValue: fakeToolRegistry },
     { provide: AGENT_PROVIDER_FACTORY, useValue: fakeProviderFactory },
     { provide: RUN_EXECUTION_CONFIG, useValue: runExecutionConfig },
+    // The REAL admission controller over a stub budget read. These suites are
+    // about HTTP transport and static assets, and the config above has no live
+    // capability, so admission refuses every LIVE request long before the
+    // budget matters — but the controller still has to be constructible.
+    {
+      provide: LIVE_RUN_ADMISSION,
+      useValue: createLiveRunAdmissionController({
+        config: runExecutionConfig,
+        isBudgetOpen: async () => true,
+      }),
+    },
+    { provide: USAGE_HOOKS, useValue: createApiUsageHooks() },
     { provide: PRISMA_CLIENT_HANDLE, useValue: fakePrismaHandle },
   ],
 })

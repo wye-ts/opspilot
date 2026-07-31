@@ -21,10 +21,17 @@ import type {
   ProviderMode,
   TicketContext,
 } from "./types";
-import { AgentRunApprovalRowSchema, TicketContextSchema, validateOrThrow } from "./validation";
+import {
+  AgentRunApprovalRowSchema,
+  StoredTicketContextSchema,
+  TicketContextSchema,
+  validateOrThrow,
+} from "./validation";
 
 const AgentTraceEventArraySchema = AgentTraceEventSchema.array();
 
+// The WRITE boundary: enforces the trimmed 15–2000 summary / ≤64 ticketId
+// bounds and returns the NORMALIZED value, which is what actually gets stored.
 export function toTicketContextWrite(value: unknown): {
   ticketContext: TicketContext;
   externalTicketId: string;
@@ -33,8 +40,13 @@ export function toTicketContextWrite(value: unknown): {
   return { ticketContext, externalTicketId: ticketContext.ticketId };
 }
 
+// The READ boundary: revalidates the stored snapshot against the looser
+// StoredTicketContextSchema, deliberately NOT the write schema. A row accepted
+// under the pre-milestone `min(1)` rule stays readable, and the value is
+// returned exactly as persisted rather than re-normalized on the way out. See
+// StoredTicketContextSchema in @opspilot/contracts.
 export function fromTicketContextRead(value: unknown): TicketContext {
-  return validateOrThrow(TicketContextSchema, value, "Stored ticket context");
+  return validateOrThrow(StoredTicketContextSchema, value, "Stored ticket context");
 }
 
 export function fromAgentJobRow(row: {
@@ -61,6 +73,8 @@ export function fromAgentRunRow(row: {
   startedAt: Date;
   finishedAt: Date | null;
   createdAt: Date;
+  estimatedCostNanoUsd?: bigint | null;
+  possibleUnobservedCost?: boolean | null;
 }): AgentRunRecord {
   return {
     id: row.id,
@@ -72,6 +86,17 @@ export function fromAgentRunRow(row: {
     startedAt: row.startedAt.toISOString(),
     finishedAt: row.finishedAt ? row.finishedAt.toISOString() : null,
     createdAt: row.createdAt.toISOString(),
+    // Carried as a bigint all the way to the DTO boundary, which formats it to a
+    // decimal string. It is never handed to JSON.stringify, which throws on one
+    // — and that throw is a useful backstop rather than a hazard.
+    estimatedCostNanoUsd: row.estimatedCostNanoUsd ?? null,
+    // Absent or NULL means the run never recorded usage at all — every FAKE run,
+    // and any run that has not finalized. `true` is the fail-closed reading:
+    // "we cannot vouch for this figure". It costs nothing in practice, because a
+    // row with no usage also has a null cost and is hidden on that basis alone;
+    // it matters only if the two columns could ever disagree, and then hiding is
+    // the answer that cannot mislead.
+    possibleUnobservedCost: row.possibleUnobservedCost ?? true,
   };
 }
 
