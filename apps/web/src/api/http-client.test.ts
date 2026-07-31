@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createAgentJob, getAgentRun, startAgentRun } from "./endpoints";
+import { createAgentJob, getAgentRun, startAgentRun, getCapabilities } from "./endpoints";
 import { ApiRequestError, request } from "./http-client";
 
 function jsonResponse(status: number, body: unknown, headers: Record<string, string> = {}): Response {
@@ -141,14 +141,57 @@ describe("endpoint functions", () => {
     expect(init?.body).toBe(JSON.stringify({ ticketId: "DEMO-1", summary: "test" }));
   });
 
-  it("startAgentRun sends no body at all", async () => {
+  it("startAgentRun sends the explicit provider mode and no token for FAKE", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(201, { data: {} }));
-    await startAgentRun("job-1");
+    await startAgentRun({ jobId: "job-1", providerMode: "FAKE" });
 
     const [url, init] = vi.mocked(fetch).mock.calls[0]!;
     expect(url).toBe("/v1/agent-jobs/job-1/runs");
+    expect(init?.body).toBe(JSON.stringify({ providerMode: "FAKE" }));
+    // The deterministic demo carries no credential material whatsoever.
+    expect(init?.headers).toEqual({ "Content-Type": "application/json" });
+  });
+
+  it("startAgentRun attaches the demo token header only on the LIVE branch", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(201, { data: {} }));
+    await startAgentRun({ jobId: "job-1", providerMode: "LIVE", liveAccessToken: "tok-abc" });
+
+    const [url, init] = vi.mocked(fetch).mock.calls[0]!;
+    // The token is a HEADER, never part of the URL — a token in a query string
+    // reaches access logs, Referer headers, and browser history.
+    expect(String(url)).toBe("/v1/agent-jobs/job-1/runs");
+    expect(String(url)).not.toContain("tok-abc");
+    expect(init?.headers).toMatchObject({ "X-OpsPilot-Demo-Token": "tok-abc" });
+    expect(init?.body).toBe(JSON.stringify({ providerMode: "LIVE" }));
+  });
+
+  it("startAgentRun omits the token header when a LIVE request has no token", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(201, { data: {} }));
+    await startAgentRun({ jobId: "job-1", providerMode: "LIVE" });
+
+    const [, init] = vi.mocked(fetch).mock.calls[0]!;
+    expect(init?.headers).not.toHaveProperty("X-OpsPilot-Demo-Token");
+  });
+
+  it("startAgentRun never sends a token on a FAKE request even if one is supplied", async () => {
+    // Defence in depth: the form clears the token when switching to FAKE, and
+    // this layer would drop it regardless.
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(201, { data: {} }));
+    await startAgentRun({ jobId: "job-1", providerMode: "FAKE", liveAccessToken: "tok-abc" });
+
+    const [url, init] = vi.mocked(fetch).mock.calls[0]!;
+    expect(init?.headers).not.toHaveProperty("X-OpsPilot-Demo-Token");
+    expect(JSON.stringify(init)).not.toContain("tok-abc");
+    expect(String(url)).not.toContain("tok-abc");
+  });
+
+  it("getCapabilities calls a relative /v1/capabilities path with no body", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(200, { data: {} }));
+    await getCapabilities();
+
+    const [url, init] = vi.mocked(fetch).mock.calls[0]!;
+    expect(url).toBe("/v1/capabilities");
     expect(init?.body).toBeUndefined();
-    expect(init?.headers).toBeUndefined();
   });
 
   it("getAgentRun calls a relative /v1/agent-runs/:id path with no body", async () => {

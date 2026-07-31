@@ -22,7 +22,7 @@ internally generated ticket IDs — no editable Ticket ID field
 read-only Investigation Timeline
 read-only Generated Report, including suggested-action cards
 the "Approval workflow demo" checkbox and its report-level effect
-partial-failure recovery via Retry Run
+partial-failure recovery via Retry Run (FAKE) and Retry Live Run mode (LIVE)
 the four-state approval panel (NOT_ELIGIBLE / PENDING / APPROVED / REJECTED)
 recording an approve/reject decision, with 201/200/409 handling
 a reusable two-column run-detail layout (PR 5C): a flexible main reading
@@ -116,11 +116,59 @@ An explicit `phase` state (`idle | creating-job | running-agent | loading-approv
 | Failure point | Behavior |
 |---|---|
 | Job creation fails | The safe API error is shown. **No run request is issued.** Nothing is committed to the page — no job, run, timeline, or report. |
-| Job creation succeeds, run creation fails | The created job's metadata (Ticket ID, Job ID) is retained and displayed. The safe API error is shown. A **Retry Run** button appears and, when clicked, calls **only** `POST /v1/agent-jobs/:jobId/runs` for the same job, followed by the same approval fetch — a second job is never created automatically. |
+| Job creation succeeds, run creation fails (**FAKE**) | The created job's metadata (Ticket ID, Job ID) is retained and displayed. The safe API error is shown. A **Retry Run** button appears and, when clicked, calls **only** `POST /v1/agent-jobs/:jobId/runs` for the same job, followed by the same approval fetch — a second job is never created automatically. |
+| Job creation succeeds, run creation fails (**LIVE**) | Same retention, but the retry needs a credential the app deliberately no longer holds (§13.2), so there is no Retry Run button. The **form itself switches into "Retry Live Run" mode** against the retained job: the ticket, summary, and provider are shown read-only, the token field starts empty, and submitting calls `retryLiveRunWithToken`, which issues **only** `POST /v1/agent-jobs/:retainedJobId/runs`. See §7.1. |
 | Run created, approval fetch fails | The safe API error is shown, but **the run, timeline, and report stay rendered.** The run projection is the primary artifact; approval is an annotation on it (§8). |
 | A new investigation starts | The prior job, run, approval, timeline, report, error, and notice state are all cleared before the new request is issued. A fresh internal ticket ID is generated unless **Approval workflow demo** is checked. |
 
 Retry Run is offered only while a job exists with no run (i.e., only after a run-creation failure) — it is never offered after a successful run.
+
+### 7.1 LIVE retry mode
+
+A LIVE partial failure used to be a **false instruction**. The page said to
+re-enter the token and try again, but the only submit control was the ordinary
+new-investigation form, which generates a fresh ticket ID and POSTs a **new**
+`AgentJob`. Retrying therefore created a duplicate job, stranded the original,
+bypassed the retained job's per-job live attempt history, and consumed a fresh
+daily reservation under a different job.
+
+The form now has an explicit second mode, entered whenever a job exists with no
+run and the last submission was LIVE:
+
+**Entered only on a CONFIRMED failure.** `job !== null && run === null &&
+activeProviderMode === "LIVE"` is true in two different situations: a LIVE run
+that was **refused**, and a LIVE run that is still **in flight** — the window
+between `setJob(createdJob)` and the run request resolving. Deriving retry mode
+from those fields alone told the user "the live run could not be started" while
+that run was still going, and cleared the token field mid-request.
+
+An explicit `liveRetryPending` flag now separates them. It is set **only** where a
+rejection is actually observed, so:
+
+| Situation | `liveRetryPending` | What the form shows |
+|---|---|---|
+| First LIVE run in flight | `false` | Ordinary busy UI — editable summary, provider radios, "Running agent…" |
+| First LIVE run refused | `true` | Retry Live Run mode |
+| Retry in flight | `true` | Retry Live Run mode, busy — it does **not** snap back to creation mode |
+| Retry refused again | `true` | Retry Live Run mode, token cleared for re-entry |
+| Retry succeeded | `false` | The run, rendered normally |
+| Start new investigation | `false` | The ordinary creation form, fully reset |
+
+An aborted or superseded request never sets it: a cancelled request is not a
+refusal.
+
+| Property | Retry Live Run mode |
+|---|---|
+| Job | The **retained** job. `retryLiveRunWithToken` closes over `job.id` and never calls `createAgentJob` — the retained id is the only job identifier in scope. |
+| Ticket + summary | Rendered read-only as facts about a committed row, in a `<dl>` rather than disabled inputs. The editable summary field is **hidden**, so the UI never implies a retry could change the investigation. |
+| Provider mode | Fixed to LIVE. The radio group is not rendered, so a retry cannot become a FAKE run. |
+| Approval demo | Unavailable, as for any live run. |
+| Token | Field starts **empty** and is cleared again on every terminal outcome. |
+| Repeated failure | The same job is retained and stays retryable. A `LIVE_RUN_ATTEMPT_LIMIT` rejection is the safeguard working — it proves the server counted *this* job's live runs. |
+| Escape | A **Start new investigation** button clears the retained partial workflow **and the form's own state** — summary, provider (back to FAKE), approval-demo, token, and the double-submit ref — by remounting the form on a changed `key`. Local state only: it issues no request, creates no replacement job, and deletes nothing on the server. |
+
+FAKE is untouched: it keeps the Retry Run button, and no code path can attach a
+token header to a FAKE request (§13.2).
 
 ---
 
@@ -335,3 +383,149 @@ pnpm --filter @opspilot/web run preview  # serves the production build at http:/
 **Executing an approved action** — actually performing `UPDATE_TICKET_STATUS`, `CREATE_ESCALATION`, or `DRAFT_CUSTOMER_REPLY` against a real downstream system once a decision is `APPROVED` — is unbuilt anywhere in OpsPilot, not only in `apps/web`. It would need its own design: target systems, credentials, retry/idempotency semantics, and an audit trail distinct from the approval record itself, none of which this milestone specifies. Editing or revoking a terminal decision remains an explicit non-goal (§1) for the same reason `docs/13-approval-workflow.md` §5 gives: there is no product requirement motivating it yet, and adding one silently would let a "decision" stop meaning what an auditor expects it to mean.
 
 **A historical-run list** (browse past investigations, reopen an old run's report and decision) is not implemented in PR 5C. §8.8 documents why the Run Context Panel's props were deliberately kept generic (`run`/`trace`/`approval`/decision-callback only) so this future list can reuse the same run-detail grid per selected row without another layout redesign. Live-deployment evidence, screenshots, and cold-start observations for this milestone are tracked separately (PR 5D), not in this document.
+
+
+---
+
+## 13. PR 6B2 — provider selector, access token, and run cost
+
+Deliberately minimal and additive. The approval UI, trace timeline, report
+panel, and layout are untouched.
+
+### 13.1 Mode selector
+
+A two-option radio group in `InvestigationForm`, defaulting to **FAKE**.
+
+| | Demo — FAKE | Live Claude |
+| --- | --- | --- |
+| Copy | "Deterministic, fast, no model cost." | "Real `claude-sonnet-5`. Protected by availability and usage limits." |
+| Approval-demo checkbox | shown | **hidden**, and `approvalDemo` is cleared on switching |
+| Access-token field | hidden | shown when the server says a token is required |
+| Request body | `{"providerMode":"FAKE"}` | `{"providerMode":"LIVE"}` |
+
+When `GET /v1/capabilities` reports `UNAVAILABLE`, the LIVE option renders
+**disabled with a visible reason** — "Live Claude is temporarily unavailable —
+the deterministic demo is always available" — rather than hidden. A hidden
+control makes the feature look absent rather than protected. Capabilities that
+have not loaded yet are treated as unavailable, so the option is never briefly
+offered before the server has said it is available.
+
+A live run never uses `TICKET-APPROVAL-DEMO`: the deterministic approval
+scenario has no meaning for a live provider, so `approvalDemo` is cleared both
+on switching to LIVE and again at submit.
+
+#### 13.1.1 Capabilities are a dynamic, fail-closed hint
+
+`GET /v1/capabilities` answers a question whose truth **changes on its own**:
+another client reserves or reconciles a LIVE run, the daily count or the observed
+estimate reaches its limit, unknown pricing closes the gate, an unreconciled
+reservation latches the UTC day shut (§25.2.3 of docs/08), midnight opens a fresh
+budget row, an operator flips the kill switch, or a database outage clears.
+
+Reading it once at mount therefore went stale for the tab's whole lifetime:
+
+```text
+initially UNAVAILABLE -> server becomes AVAILABLE -> tab stays disabled
+                         until the user reloads
+initially AVAILABLE   -> server becomes UNAVAILABLE -> tab still offers LIVE
+                         -> createAgentJob succeeds -> startAgentRun refused
+                         -> an avoidable retained partial workflow
+```
+
+It is now refreshed at six points, all event-driven — there is **no polling**, so
+a backgrounded tab wakes no database:
+
+| Trigger | Why |
+| --- | --- |
+| Mount | The initial answer. |
+| Before a new LIVE investigation | Preflight — see below. |
+| Before a retained-job LIVE retry | Preflight, without giving up the recovery path. |
+| After every terminal LIVE outcome | The run itself likely changed the answer. |
+| `window` focus / `visibilitychange` when visible | The user came back to a tab that may have been idle for hours. |
+| After **Start new investigation** | The form is back at the start; it should reflect the server now. |
+
+**Race and abort ownership.** The refresh has its own `AbortController` and its
+own generation counter, deliberately separate from the investigation's. Sharing
+them would mean starting an investigation cancels a capability read and — far
+worse — that a background focus refresh aborts a run the user is waiting on. Each
+refresh aborts only the previous refresh and bumps its own generation; a response
+whose generation is no longer current is discarded, so two refreshes resolving
+out of order cannot leave the older answer on screen. Unmount aborts the
+outstanding read and removes both listeners.
+
+**Fail closed.** Any failure — including an abort — leaves `null`, which the form
+treats as LIVE unavailable. A transient error can only ever hide the LIVE option,
+never offer one the server would refuse. A refresh failure never replaces the run
+result or the error already on screen, and nothing about the response is logged.
+
+**Preflight.** Before a new LIVE investigation generates a ticket ID or calls
+`createAgentJob`, and before a retained-job retry calls `startAgentRun`, the
+capabilities are refreshed and must report `AVAILABLE` + `TOKEN_REQUIRED`. If
+they do not:
+
+| | New LIVE investigation | Retained-job LIVE retry |
+| --- | --- | --- |
+| Ticket ID generated | no | n/a |
+| `createAgentJob` sent | **no** | **no** |
+| `startAgentRun` sent | **no** | **no** |
+| Silent FAKE fallback | **never** | **never** |
+| Retained job | n/a | **kept** |
+| Retry mode | n/a | **kept** |
+| Notice | "Live Claude is temporarily unavailable. No investigation job was created." | "Live Claude is temporarily unavailable. The investigation is still here to retry." |
+
+**The preflight is advisory, not atomic.** The **backend admission path remains
+authoritative** — the token check, rate limit, budget gate, concurrency lease,
+and the reservation transaction all still run, and all still decide. The
+preflight cannot close the window between the check and the request, so a race
+can still be rejected server-side; that outcome is exactly the retained partial
+workflow §7.1 already handles. What it removes is the *avoidable* case, where the
+tab could have known and created an AgentJob row anyway.
+
+No capability reason and no budget figure is ever exposed: the response is the
+same opaque `UNAVAILABLE` / `NOT_APPLICABLE` body whichever condition closed the
+day.
+
+### 13.2 Access token — memory only
+
+| Rule | How it is enforced |
+| --- | --- |
+| Held in React component state only | plain `useState`; no storage call exists anywhere in `apps/web` |
+| Never in `localStorage` / `sessionStorage` | asserted by a test spying on `Storage.prototype.setItem`, **and** by a production bundle-guard rule (`web-storage-write`) that fails the build on any such access |
+| Never in a URL, query string, or hash | asserted after typing |
+| Never persisted server-side | no DTO or column carries it |
+| Sent only on LIVE, via `X-OpsPilot-Demo-Token` | asserted on both branches; a FAKE request omits the header entirely, even if a token is somehow present |
+| Cleared on reload | in-memory state, by construction |
+| Cleared when switching back to FAKE | explicit reset in `selectMode` |
+| Never copied into parent/app state | `App` keeps only `activeProviderMode`; the token reaches `startAgentRun` as a local argument and goes out of scope when the workflow returns |
+| Cleared on every terminal outcome | the form clears the field on the busy→idle edge, so success, failure, and cancellation all end the same way |
+| Not reusable for a retry | a failed LIVE run offers no **Retry Run** button — there is no token to retry with. The form's Retry Live Run mode (§7.1) takes a freshly typed token as a function argument, never from state |
+| Rendered as `type="password"` | asserted |
+| Never echoed in an error | the 401 message is the fixed catalog string |
+
+A backend rejection (401/429/503) surfaces as an error banner. There is **no
+silent retry and no fallback to FAKE** — a refused live run stays refused.
+
+### 13.3 Summary affordance
+
+```text
+Describe the issue in at least 15 characters.
+8 / 15
+```
+
+The counter measures the **trimmed** length, and submit is disabled outside
+15–2000 trimmed characters. Affordance only: the backend remains authoritative.
+
+### 13.4 Run display
+
+`RunOverviewPanel` gains three rows, all from data the API already returns:
+
+| Row | Source | When absent |
+| --- | --- | --- |
+| Provider mode | `run.providerMode` — the **persisted** value | never |
+| Model | `run.modelIdentifier` | `—` for FAKE |
+| Estimated cost | `run.estimatedCostUsd` (a string) | **row hidden entirely** — FAKE, unknown pricing, or a cost the API judged incomplete (§12.4 of docs/12) |
+
+The badge renders the persisted mode verbatim; the *requested* mode is never
+displayed, so a run requested as LIVE but persisted as FAKE reads FAKE. A null
+cost renders nothing at all — never `$0.00`, which would assert a measured free
+run.

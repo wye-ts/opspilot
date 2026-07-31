@@ -8,6 +8,15 @@ export interface InvestigationSummaryProps {
   readonly job: AgentJobResponse;
   readonly run: AgentRunRecordView | null;
   readonly showRetryRun: boolean;
+  /**
+   * Shown INSTEAD of the Retry Run button when the failed run was LIVE.
+   *
+   * The app does not retain the live demo access token past the request it
+   * authorized, so there is nothing to retry with. Saying so is better than
+   * offering a button that would come back 401, and better than silently
+   * omitting the affordance with no explanation.
+   */
+  readonly showLiveRetryTokenNotice: boolean;
   readonly retryDisabled: boolean;
   readonly onRetryRun: () => void;
   readonly refreshDisabled: boolean;
@@ -23,6 +32,7 @@ export function InvestigationSummary({
   job,
   run,
   showRetryRun,
+  showLiveRetryTokenNotice,
   retryDisabled,
   onRetryRun,
   refreshDisabled,
@@ -51,6 +61,13 @@ export function InvestigationSummary({
           <button type="button" onClick={onRetryRun} disabled={retryDisabled}>
             Retry Run
           </button>
+        ) : null}
+
+        {showLiveRetryTokenNotice ? (
+          <p className="investigation-summary-retry-note">
+            Use the <strong>Retry Live Run</strong> form above to retry this same investigation —
+            re-enter the live demo access token to continue.
+          </p>
         ) : null}
       </div>
 
