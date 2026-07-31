@@ -3,6 +3,17 @@ import { API_ERROR_CATALOG, type ApiErrorCode } from "./api-error-catalog";
 export interface ApiErrorOptions {
   readonly runId?: string;
   readonly cause?: unknown;
+  /**
+   * Seconds until the caller may retry, emitted as the standard `Retry-After`
+   * response header by AllExceptionsFilter.
+   *
+   * A header rather than a body field, and deliberately the ONLY quantitative
+   * thing a rejected LIVE request learns. `X-RateLimit-Limit` /
+   * `X-RateLimit-Remaining` are not sent: they publish the exact limit and the
+   * remaining quota, which tells an abuser precisely how hard they may push,
+   * for no benefit to an honest caller that already knows when to retry.
+   */
+  readonly retryAfterSeconds?: number;
 }
 
 // The only exception type the API's controllers/filters ever throw or catch
@@ -14,6 +25,7 @@ export class ApiError extends Error {
   readonly code: ApiErrorCode;
   readonly status: number;
   readonly runId?: string;
+  readonly retryAfterSeconds?: number;
 
   constructor(code: ApiErrorCode, options?: ApiErrorOptions) {
     const entry = API_ERROR_CATALOG[code];
@@ -23,6 +35,9 @@ export class ApiError extends Error {
     this.status = entry.status;
     if (options?.runId !== undefined) {
       this.runId = options.runId;
+    }
+    if (options?.retryAfterSeconds !== undefined) {
+      this.retryAfterSeconds = options.retryAfterSeconds;
     }
   }
 }

@@ -27,7 +27,13 @@ import {
   AgentTraceEventSchema as _AgentTraceEventSchema,
   RetrievalSummaryEntrySchema as _RetrievalSummaryEntrySchema,
 } from "./agent-trace-event";
-import { TicketContextSchema as _TicketContextSchema } from "./ticket-context";
+import {
+  StoredTicketContextSchema as _StoredTicketContextSchema,
+  TICKET_ID_MAX_LENGTH as _TICKET_ID_MAX_LENGTH,
+  TICKET_SUMMARY_MAX_LENGTH as _TICKET_SUMMARY_MAX_LENGTH,
+  TICKET_SUMMARY_MIN_LENGTH as _TICKET_SUMMARY_MIN_LENGTH,
+  TicketContextSchema as _TicketContextSchema,
+} from "./ticket-context";
 
 export const ApprovalDecisionSchema = _ApprovalDecisionSchema;
 export const RecordApprovalDecisionInputSchema = _RecordApprovalDecisionInputSchema;
@@ -43,6 +49,10 @@ export const AgentOrchestratorErrorCodeSchema = _AgentOrchestratorErrorCodeSchem
 export const AgentTraceEventSchema = _AgentTraceEventSchema;
 export const RetrievalSummaryEntrySchema = _RetrievalSummaryEntrySchema;
 export const TicketContextSchema = _TicketContextSchema;
+export const StoredTicketContextSchema = _StoredTicketContextSchema;
+export const TICKET_ID_MAX_LENGTH = _TICKET_ID_MAX_LENGTH;
+export const TICKET_SUMMARY_MIN_LENGTH = _TICKET_SUMMARY_MIN_LENGTH;
+export const TICKET_SUMMARY_MAX_LENGTH = _TICKET_SUMMARY_MAX_LENGTH;
 
 export type { ApprovalDecision, RecordApprovalDecisionInput } from "./agent-run-approval";
 export type {
@@ -59,4 +69,4 @@ export type {
 } from "./agent-turn";
 export type { AgentOrchestratorErrorCode } from "./agent-orchestrator";
 export type { AgentTraceEvent, RetrievalSummaryEntry } from "./agent-trace-event";
-export type { TicketContext } from "./ticket-context";
+export type { StoredTicketContext, TicketContext } from "./ticket-context";

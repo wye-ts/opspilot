@@ -54,9 +54,99 @@ services:
       # docs/08-cicd-deployment.md). Render supplies PORT itself;
       # apps/api/src/main.ts already reads it.
       #
-      # ANTHROPIC_API_KEY is deliberately NOT declared here. Adding it is a
-      # PR 6B2 rollout step gated on explicit owner authorization, and until
-      # then the deployment has no credential to spend: live capability resolves
-      # to "absent" and a LIVE request is refused with 503 LIVE_NOT_CONFIGURED.
       - key: DATABASE_URL
+        sync: false
+      # PR 6B2 safeguards. Declared with their shipped defaults so the values in
+      # force are visible in review rather than implicit in code — none of them
+      # enables anything on its own, and all are inert while the kill switch
+      # above is false.
+      #
+      # Honest scope, so these numbers are not over-read:
+      #   - the daily RUN COUNT is hard: it is reserved inside the same
+      #     transaction that creates the run, before any Anthropic call;
+      #   - the daily COST CEILING is post-run accounting on an ESTIMATE, not a
+      #     hard cap on money. It stops SUBSEQUENT runs once crossed, so the
+      #     OBSERVED RECONCILED ESTIMATE can cross the ceiling by at most one
+      #     IN-FLIGHT LOGICAL RUN — true only because LIVE_RUN_MAX_CONCURRENCY
+      #     is exactly 1 (see below). ACTUAL PROVIDER BILLING MAY BE HIGHER,
+      #     after an ambiguous network outcome or a process termination, and is
+      #     not bounded by that one-run statement;
+      #   - the rate limit and the concurrency lease are PER PROCESS. On this
+      #     free single-instance plan that is also the global limit; on any
+      #     multi-instance plan it is not.
+      - key: LIVE_RUN_MAX_OUTPUT_TOKENS
+        value: "1024"
+      - key: LIVE_RUN_MAX_ATTEMPTS_PER_JOB
+        value: "2"
+      # Exactly 1, and not tunable in this release: any other value fails
+      # startup. Raising it would make the one-in-flight-run estimate bound above
+      # false, since N concurrent runs can each reserve before any reconciles.
+      - key: LIVE_RUN_MAX_CONCURRENCY
+        value: "1"
+      - key: LIVE_RUN_RATE_LIMIT_MAX
+        value: "2"
+      - key: LIVE_RUN_RATE_LIMIT_WINDOW_MS
+        value: "60000"
+      - key: LIVE_RUN_DAILY_LIMIT
+        value: "10"
+      - key: LIVE_RUN_DAILY_COST_CEILING_USD
+        value: "1.00"
+      # The number of reverse-proxy hops whose X-Forwarded-For may be trusted,
+      # which is what the per-client rate limit derives its identity from.
+      #
+      # REQUIRES EMPIRICAL VERIFICATION. Render's chain length is not
+      # authoritatively documented, and this blueprint makes no claim about
+      # whether Render strips, replaces, or appends a client-supplied
+      # X-Forwarded-For. Until it is measured against the deployed service (see
+      # docs/08-cicd-deployment.md), treat client-supplied X-Forwarded-For as
+      # untrusted and rely on the global daily cap rather than on per-IP limits.
+      - key: TRUST_PROXY_HOPS
+        value: "1"
+      # Opaque SDK retries are FORBIDDEN on the protected public LIVE path, and
+      # the API refuses to start with any other value once capability is present
+      # and the kill switch is on.
+      #
+      # A retried request reports only the last attempt: an earlier attempt may
+      # have reached the provider and may have been billed, and nothing in the
+      # response says whether it did. A run's cost therefore could not be stated
+      # honestly. The per-job live attempt limit is the explicit, durable retry
+      # boundary instead — it allocates a real AgentRun row, counts against the
+      # job's cap, and reserves its own budget slot.
+      #
+      # Safe and inert to ship now: it is not a secret, and with no credential
+      # and the kill switch false it constrains nothing.
+      - key: ANTHROPIC_MAX_RETRIES
+        value: "0"
+      # The three rollout inputs, ALL deliberately unset here — declared only so
+      # the deployment documents what it would need, never so it has them.
+      #
+      # ANTHROPIC_API_KEY and ANTHROPIC_MODEL must be set TOGETHER. The provider
+      # parser rejects a partial Anthropic configuration in BOTH directions — a
+      # key with no model and a model with no key each fail startup — so setting
+      # one alone takes the service down rather than leaving it deterministic.
+      # That is why the model is declared here as `sync: false` rather than
+      # carrying a value: a shipped `ANTHROPIC_MODEL` with no key would be
+      # exactly the partial configuration the parser refuses.
+      #
+      # The supported value for the model is:  claude-sonnet-5
+      # It is a one-member allowlist; no other model is validated for the current
+      # request policy (see packages/provider-claude/src/claude-model.ts).
+      #
+      # Adding a key does NOT by itself enable paid execution.
+      # LIVE_AGENT_RUNS_ENABLED above must also be true, and a
+      # LIVE_RUN_ACCESS_TOKEN must be set — the server refuses to start with a
+      # credential and the switch on but no token, rather than serving a
+      # tokenless public LIVE path.
+      #
+      # LIVE_RUN_ACCESS_TOKEN: the shared demo token. Equally, setting the kill
+      # switch alone is insufficient without all of these. The first public LIVE
+      # release stays token-protected; there is no public tokenless mode.
+      #
+      # Setting any of them is a rollout step gated on explicit owner
+      # authorization — see docs/08-cicd-deployment.md for the required order.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ANTHROPIC_MODEL
+        sync: false
+      - key: LIVE_RUN_ACCESS_TOKEN
         sync: false

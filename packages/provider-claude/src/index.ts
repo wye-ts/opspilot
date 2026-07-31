@@ -38,6 +38,7 @@ import {
   createAnthropicClient as _createAnthropicClient,
   createLlmProviderFactory as _createLlmProviderFactory,
 } from "./create-llm-provider";
+import { createRunProviderUsageCollector as _createRunProviderUsageCollector } from "./run-provider-usage-collector";
 
 // Provider-neutral TYPES are re-exported so a consumer needs one import for
 // the provider path. Provider-neutral *values* (LlmProviderError,
@@ -113,3 +114,9 @@ export type LiveProviderUnavailableError = InstanceType<typeof LiveProviderUnava
 export const createAnthropicClient = _createAnthropicClient;
 export const createLlmProviderFactory = _createLlmProviderFactory;
 export type { LlmProviderFactoryOptions } from "./create-llm-provider";
+
+export const createRunProviderUsageCollector = _createRunProviderUsageCollector;
+export type {
+  RunProviderUsageCollector,
+  RunProviderUsageSummary,
+} from "./run-provider-usage-collector";
