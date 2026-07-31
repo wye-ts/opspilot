@@ -42,6 +42,16 @@ export interface AgentRunRecordView {
   readonly startedAt: string;
   readonly finishedAt: string | null;
   readonly createdAt: string;
+  /**
+   * A decimal USD STRING, or null when the cost is not known.
+   *
+   * A string, never a number: money as a JSON number would be a float here,
+   * reintroducing the rounding the server's integer nanoUSD path exists to
+   * prevent. Null covers every FAKE run (no provider call was made) and any LIVE
+   * run whose pricing could not be established — the UI hides the row entirely
+   * rather than rendering "$0.00", which would assert a measured free run.
+   */
+  readonly estimatedCostUsd: string | null;
 }
 
 // run.status/outcome.code are typed string, not narrowed unions — the API
@@ -75,6 +85,19 @@ export interface ApprovalView {
   readonly reviewerName: string | null;
   readonly note: string | null;
   readonly decidedAt: string | null;
+}
+
+/**
+ * What the server will let this browser do right now.
+ *
+ * Deliberately opaque: `UNAVAILABLE` covers capability absent, kill switch off,
+ * and daily budget exhausted alike, so the UI cannot report which safeguard is
+ * engaged even if it wanted to. There is no `PUBLIC` access mode in this
+ * release — LIVE is always token-protected when it is available at all.
+ */
+export interface CapabilitiesView {
+  readonly liveAgentRuns: "AVAILABLE" | "UNAVAILABLE";
+  readonly liveAccess: "TOKEN_REQUIRED" | "NOT_APPLICABLE";
 }
 
 export interface ApiSuccessEnvelope<T> {

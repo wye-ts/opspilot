@@ -90,6 +90,25 @@ export const FORBIDDEN_PATTERNS: readonly ForbiddenPattern[] = [
     reason: "A literal Anthropic credential reached the browser.",
     pattern: /\bsk-ant-[A-Za-z0-9_-]{8,}/,
   },
+  // Added in PR 6B2, when the browser gained a live demo access token field.
+  //
+  // The token is held in React state and sent as a request header, and nothing
+  // in apps/web writes to Web Storage at all today. These two rules turn that
+  // from a property of the current code into one the build enforces: the moment
+  // any source — this feature's or another's — reaches for persistent storage,
+  // the production build fails rather than silently persisting a shared
+  // credential on a visitor's device.
+  {
+    rule: "web-storage-write",
+    reason:
+      "Browser storage was used. The live demo access token must stay in memory only, so no source may write to localStorage or sessionStorage.",
+    pattern: /\b(?:localStorage|sessionStorage)\s*(?:\.\s*(?:setItem|getItem|removeItem|clear)\b|\[)/,
+  },
+  {
+    rule: "live-token-env-name",
+    reason: "The shared live access token variable name reached the browser.",
+    pattern: /\bLIVE_RUN_ACCESS_TOKEN\b/,
+  },
 ];
 
 // One violation per rule per file, anchored at the first match: a minified
