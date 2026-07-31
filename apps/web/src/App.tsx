@@ -687,7 +687,7 @@ export function App() {
     <div className="app-shell">
       <header className="app-header">
         <h1>OpsPilot — Agent Investigation Console</h1>
-        <p className="app-header-note">Local-only, deterministic provider — no live model calls.</p>
+        <p className="app-header-note">Run investigations with the deterministic demo or protected Live Claude.</p>
       </header>
 
       {error !== null ? <ErrorBanner error={error} onDismiss={() => setError(null)} /> : null}
