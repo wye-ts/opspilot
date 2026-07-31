@@ -186,3 +186,36 @@ describe("rule table", () => {
     expect(explainRule("not-a-rule")).toBe("not-a-rule");
   });
 });
+
+// PR 6B2 — the live demo access token must never reach persistent storage.
+describe("token-containment rules", () => {
+  it.each([
+    ['localStorage.setItem("t", token)', "a localStorage write"],
+    ["sessionStorage.setItem('t', token)", "a sessionStorage write"],
+    ["localStorage.getItem('t')", "a localStorage read"],
+    ['window.sessionStorage["token"]', "bracket access"],
+    ["localStorage .setItem('t', v)", "whitespace before the call"],
+  ])("flags %o (%s)", (contents) => {
+    const violations = findBundleViolations("assets/index.js", contents);
+    expect(violations.map((violation) => violation.rule)).toContain("web-storage-write");
+  });
+
+  it("does not flag prose that merely mentions storage", () => {
+    // The rule targets an actual access, not the word — a comment or a copy
+    // string explaining that nothing is stored must not fail the build.
+    const contents = "Used only for this browser session. Not stored on this device. localStorage is never used.";
+    const violations = findBundleViolations("assets/index.js", contents);
+
+    expect(violations.map((violation) => violation.rule)).not.toContain("web-storage-write");
+  });
+
+  it("flags the server-side token variable name", () => {
+    const violations = findBundleViolations("assets/index.js", 'const x = "LIVE_RUN_ACCESS_TOKEN";');
+    expect(violations.map((violation) => violation.rule)).toContain("live-token-env-name");
+  });
+
+  it("permits the header name, which the browser legitimately sends", () => {
+    const violations = findBundleViolations("assets/index.js", '"X-OpsPilot-Demo-Token"');
+    expect(violations).toEqual([]);
+  });
+});

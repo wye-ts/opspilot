@@ -13,7 +13,14 @@ export type ApiErrorCode =
   | "AGENT_RUN_NOT_APPROVAL_ELIGIBLE"
   | "AGENT_RUN_APPROVAL_ALREADY_DECIDED"
   | "LIVE_NOT_CONFIGURED"
-  | "LIVE_RUNS_DISABLED";
+  | "LIVE_RUNS_DISABLED"
+  | "LIVE_RUN_ACCESS_DENIED"
+  | "LIVE_RUN_RATE_LIMITED"
+  | "LIVE_RUN_CONCURRENCY_LIMIT"
+  | "LIVE_RUN_ATTEMPT_LIMIT"
+  | "LIVE_RUN_BUDGET_EXHAUSTED"
+  | "LIVE_RUN_IDEMPOTENCY_KEY_INVALID"
+  | "LIVE_RUN_CONTEXT_INVALID";
 
 interface ApiErrorCatalogEntry {
   readonly status: number;
@@ -92,5 +99,63 @@ export const API_ERROR_CATALOG: Readonly<Record<ApiErrorCode, ApiErrorCatalogEnt
   LIVE_RUNS_DISABLED: {
     status: 503,
     message: "Live agent runs are currently disabled.",
+  },
+  // 401, not 403: the caller may retry with a credential. The message is fixed
+  // and says nothing about whether a token was supplied, whether it was
+  // well-formed, or how close it was — every rejection reads identically, and
+  // the provided value is never echoed.
+  LIVE_RUN_ACCESS_DENIED: {
+    status: 401,
+    message: "A valid live demo access token is required for a live agent run.",
+  },
+  // The four 429s below are all admission failures decided before any AgentRun
+  // row exists, so no run resource is created and no reservation is consumed.
+  //
+  // Distinct codes, one status. A caller that reads the code can tell "slow
+  // down" from "this job is used up" from "the demo is done for today" — which
+  // is genuinely actionable and reveals nothing quantitative. No message
+  // carries a limit, a count, a remaining quota, or a budget figure.
+  LIVE_RUN_RATE_LIMITED: {
+    status: 429,
+    message: "Too many live agent run requests. Retry after the interval given in Retry-After.",
+  },
+  LIVE_RUN_CONCURRENCY_LIMIT: {
+    status: 429,
+    message: "Another live agent run is already in progress. Retry shortly.",
+  },
+  LIVE_RUN_ATTEMPT_LIMIT: {
+    status: 429,
+    message: "This agent job has reached its live run attempt limit.",
+  },
+  LIVE_RUN_BUDGET_EXHAUSTED: {
+    status: 429,
+    message: "The live agent run allowance for today has been used. The deterministic demo remains available.",
+  },
+  // 400, and decided in the same breath as body validation — before the token
+  // check, before the rate limiter, and before any lease is taken. A malformed
+  // key is a malformed request, exactly like a misspelled providerMode, and the
+  // body pipe already answers that class of problem before admission runs.
+  //
+  // The message names the requirement rather than the offending value: it never
+  // echoes what was sent, and it never reports whether a key was absent or
+  // merely wrong, so it cannot be used to probe what the server already has.
+  LIVE_RUN_IDEMPOTENCY_KEY_INVALID: {
+    status: 400,
+    message: "A live agent run requires an Idempotency-Key header containing a UUID.",
+  },
+  // 422, not 409 and not 400. The request itself is well-formed (400 would be
+  // wrong) and nothing is concurrently conflicting with it (409 would imply a
+  // race that resolving could clear). The referenced job is simply not something
+  // this server will execute in LIVE mode: it was created under older input
+  // rules, and repeating the request will never change that.
+  //
+  // The message is actionable and says nothing internal — no stored summary, no
+  // measured length, no schema name, no SQL. It states the current rule, which
+  // is public and already enforced on POST /v1/agent-jobs, and tells the caller
+  // the one thing that works.
+  LIVE_RUN_CONTEXT_INVALID: {
+    status: 422,
+    message:
+      "This investigation was created under older input rules and cannot run in LIVE mode. Start a new investigation with a 15–2000 character summary.",
   },
 };

@@ -61,6 +61,16 @@ export interface RequestOptions {
   readonly method?: "GET" | "POST";
   readonly body?: unknown;
   readonly signal?: AbortSignal | undefined;
+  /**
+   * Extra request headers. The only current use is the live demo access token,
+   * which is why this is a header rather than anything that could reach a URL:
+   * a token in a query string ends up in access logs, `Referer` headers, and
+   * browser history, none of which the gate could then undo.
+   *
+   * Values are passed straight to fetch and never logged, stored, or retained
+   * here.
+   */
+  readonly headers?: Readonly<Record<string, string>>;
 }
 
 // The only source file that calls fetch. Every path is relative (/v1/...) —
@@ -73,9 +83,13 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   // under exactOptionalPropertyTypes, assigning `key: undefined` to a
   // RequestInit property is a type error distinct from omitting the key.
   const init: RequestInit = { method: options.method ?? "GET" };
+  const headers: Record<string, string> = { ...options.headers };
   if (hasBody) {
-    init.headers = { "Content-Type": "application/json" };
+    headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(options.body);
+  }
+  if (Object.keys(headers).length > 0) {
+    init.headers = headers;
   }
   if (options.signal !== undefined) {
     init.signal = options.signal;

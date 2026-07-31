@@ -22,6 +22,14 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     const apiError = this.toApiError(exception);
 
+    // Retry-After is a response HEADER, never an envelope field: it is the one
+    // quantitative hint a rejected caller gets, and the standard header is what
+    // an HTTP client already knows how to honour. No X-RateLimit-* headers are
+    // emitted alongside it — see ApiErrorOptions.retryAfterSeconds.
+    if (apiError.retryAfterSeconds !== undefined) {
+      response.setHeader("Retry-After", String(apiError.retryAfterSeconds));
+    }
+
     response.status(apiError.status).json(buildErrorEnvelope(apiError, requestId));
   }
 

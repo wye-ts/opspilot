@@ -12,15 +12,21 @@
 
 import { createPrismaClient as _createPrismaClient } from "./client";
 import { AgentRunApprovalError as _AgentRunApprovalError } from "./approval-errors";
+import { LiveRunAdmissionError as _LiveRunAdmissionError } from "./live-run-errors";
 import { PersistenceError as _PersistenceError, normalizeDatabaseError as _normalizeDatabaseError } from "./errors";
 import { FAILURE_DISPLAY_MESSAGES as _FAILURE_DISPLAY_MESSAGES } from "./failure-messages";
 import { TicketContextSchema as _TicketContextSchema, validateOrThrow as _validateOrThrow } from "./validation";
 import {
   createJob as _createJob,
+  currentBudgetDate as _currentBudgetDate,
   finalizeCompleted as _finalizeCompleted,
   finalizeFailed as _finalizeFailed,
   getAgentJob as _getAgentJob,
   getAgentRun as _getAgentRun,
+  isLiveRunBudgetOpen as _isLiveRunBudgetOpen,
+  reconcileLiveRunBudget as _reconcileLiveRunBudget,
+  replayLiveRun as _replayLiveRun,
+  startLiveRunWithAttemptLimit as _startLiveRunWithAttemptLimit,
   startRun as _startRun,
 } from "./repositories/agent-run-repository";
 import {
@@ -30,6 +36,7 @@ import {
 
 export const createPrismaClient = _createPrismaClient;
 export const AgentRunApprovalError = _AgentRunApprovalError;
+export const LiveRunAdmissionError = _LiveRunAdmissionError;
 export const PersistenceError = _PersistenceError;
 export const normalizeDatabaseError = _normalizeDatabaseError;
 export const FAILURE_DISPLAY_MESSAGES = _FAILURE_DISPLAY_MESSAGES;
@@ -41,6 +48,11 @@ export const finalizeFailed = _finalizeFailed;
 export const getAgentJob = _getAgentJob;
 export const getAgentRun = _getAgentRun;
 export const startRun = _startRun;
+export const startLiveRunWithAttemptLimit = _startLiveRunWithAttemptLimit;
+export const replayLiveRun = _replayLiveRun;
+export const reconcileLiveRunBudget = _reconcileLiveRunBudget;
+export const isLiveRunBudgetOpen = _isLiveRunBudgetOpen;
+export const currentBudgetDate = _currentBudgetDate;
 export const recordApprovalDecision = _recordApprovalDecision;
 export const getApprovalDecision = _getApprovalDecision;
 
@@ -57,6 +69,9 @@ export type { PersistenceErrorCode } from "./errors";
 // Same TS2323-avoidance pattern as PersistenceError above.
 export type AgentRunApprovalError = InstanceType<typeof AgentRunApprovalError>;
 export type { AgentRunApprovalErrorCode } from "./approval-errors";
+// Same TS2323-avoidance pattern as PersistenceError above.
+export type LiveRunAdmissionError = InstanceType<typeof LiveRunAdmissionError>;
+export type { LiveRunAdmissionErrorCode } from "./live-run-errors";
 export type {
   AgentJobRecord,
   AgentRunApprovalRecord,
@@ -70,8 +85,15 @@ export type {
   PersistedAgentJob,
   PersistedAgentRun,
   ProviderMode,
+  LiveRunBudgetReservation,
+  LiveRunBudgetReservationInput,
+  LiveRunStartResult,
   RecordApprovalDecisionParams,
   RecordApprovalDecisionResult,
+  ReplayedLiveRun,
+  RunPricingStatus,
+  RunProviderUsageWrite,
   StartedAgentRun,
+  StartedLiveRun,
   TicketContext,
 } from "./types";

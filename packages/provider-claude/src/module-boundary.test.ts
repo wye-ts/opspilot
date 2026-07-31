@@ -34,9 +34,10 @@ const PROVIDERS_DIR = join(process.cwd(), "src");
 
 const FORBIDDEN_WORKSPACE_PACKAGES = new Set(["@opspilot/database", "@opspilot/provider-claude"]);
 
-// Every .ts file the package ships or tests, as of PR 6B1. A move that drops a
-// file would otherwise leave the assertions below passing over a smaller set.
-const EXPECTED_SOURCE_FILE_COUNT = 18;
+// Every .ts file the package ships or tests, as of PR 6B2 — which added
+// run-provider-usage-collector.ts and its test to PR 6B1's 18. A move that drops
+// a file would otherwise leave the assertions below passing over a smaller set.
+const EXPECTED_SOURCE_FILE_COUNT = 20;
 
 const ALLOWED_BARE_SPECIFIERS = new Set(["@anthropic-ai/sdk", "zod", "vitest"]);
 

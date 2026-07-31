@@ -46,7 +46,7 @@ afterEach(async () => {
 });
 
 async function createRunningRun() {
-  const createdJob = await createJob(prisma, { ticketId: "TKT-1", summary: "Summary" });
+  const createdJob = await createJob(prisma, { ticketId: "TKT-1", summary: "Repository fixture run" });
   // Use the job snapshot startRun itself loaded from PostgreSQL (under its
   // own row lock), not the one createJob returned — this is now the only
   // source of truth for a run's ticket context.
@@ -78,7 +78,7 @@ describe("startRun", () => {
   });
 
   it("allocates unique, increasing attempt numbers for concurrent starts on the same job", async () => {
-    const job = await createJob(prisma, { ticketId: "TKT-concurrent", summary: "s" });
+    const job = await createJob(prisma, { ticketId: "TKT-concurrent", summary: "Concurrent fixture run" });
     const second = createPrismaClient();
     try {
       const [startedA, startedB] = await Promise.all([
@@ -100,13 +100,17 @@ describe("startRun", () => {
     expect(started.run.jobId).toBe(job.id);
   });
 
-  it("rolls back and returns PERSISTENCE_VALIDATION_FAILED when the locked job row fails TicketContextSchema, inserting no AgentRun", async () => {
+  it("rolls back and returns PERSISTENCE_VALIDATION_FAILED when the locked job row fails StoredTicketContextSchema, inserting no AgentRun", async () => {
     // Passes every CHECK constraint (jsonb_typeof is 'object'; external_ticket_id
     // equals ticket_context->>'ticketId' and is non-empty) but is missing the
-    // required `summary` field — only TicketContextSchema's runtime
+    // required `summary` field — only StoredTicketContextSchema's runtime
     // validation catches this. Not a weakening of any production
     // constraint: this row simply cannot be produced by createJob/the
     // mapper, only by a raw SQL insert bypassing them, as here.
+    //
+    // A row with a SHORT summary is deliberately NOT a failure here: the read
+    // path accepts what was legal when it was written (see
+    // StoredTicketContextSchema). Only a structurally malformed row fails.
     const [insertedRow] = await prisma.$queryRaw<{ id: string }[]>`
       INSERT INTO agent_jobs (ticket_context, external_ticket_id)
       VALUES ('{"ticketId": "TKT-malformed"}'::jsonb, 'TKT-malformed')
@@ -136,7 +140,7 @@ describe("startRun", () => {
   });
 
   it("never accepts a raw-SQL-inserted PENDING status", async () => {
-    const job = await createJob(prisma, { ticketId: "TKT-pending", summary: "s" });
+    const job = await createJob(prisma, { ticketId: "TKT-pending", summary: "Pending fixture run" });
     await expect(
       prisma.$executeRaw`INSERT INTO agent_runs (job_id, attempt_number, status, provider_mode, started_at)
         VALUES (${job.id}::uuid, 1, 'PENDING', 'FAKE', now())`,
@@ -425,7 +429,7 @@ describe("getAgentRun", () => {
 
 describe("getAgentJob", () => {
   it("returns the job snapshot with zero runs when no run has ever been started", async () => {
-    const job = await createJob(prisma, { ticketId: "TKT-zero-runs", summary: "No runs yet" });
+    const job = await createJob(prisma, { ticketId: "TKT-zero-runs", summary: "No runs started yet" });
     const persisted = await getAgentJob(prisma, job.id);
     expect(persisted.job).toEqual(job);
     expect(persisted.runs).toEqual([]);
@@ -484,7 +488,7 @@ describe("connection unavailability", () => {
     const unreachable = createPrismaClient();
     process.env.DATABASE_URL = previous;
     try {
-      await expect(createJob(unreachable.prisma, { ticketId: "TKT-1", summary: "s" })).rejects.toMatchObject(
+      await expect(createJob(unreachable.prisma, { ticketId: "TKT-1", summary: "Unreachable fixture run" })).rejects.toMatchObject(
         { code: "PERSISTENCE_UNAVAILABLE" },
       );
     } finally {

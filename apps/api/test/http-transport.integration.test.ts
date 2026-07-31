@@ -20,10 +20,14 @@ import type { AgentProviderFactory } from "../src/execution/api-provider-factory
 import {
   AGENT_RUN_SERVICE,
   AGENT_PROVIDER_FACTORY,
+  LIVE_RUN_ADMISSION,
   RUN_EXECUTION_CONFIG,
   TOOL_REGISTRY,
+  USAGE_HOOKS,
 } from "../src/execution/execution.tokens";
-import type { RunExecutionConfig } from "../src/execution/run-execution-config";
+import { createLiveRunAdmissionController } from "../src/execution/live-run-admission";
+import { parseRunExecutionConfig, type RunExecutionConfig } from "../src/execution/run-execution-config";
+import { createApiUsageHooks } from "../src/execution/usage-hooks";
 
 // Mocked-service HTTP transport suite — real Nest HTTP app, real Express
 // middleware pipeline (reproduced in the exact production order), Supertest.
@@ -32,7 +36,11 @@ import type { RunExecutionConfig } from "../src/execution/run-execution-config";
 const fakeAgentRunService: AgentRunService = {
   createAgentJob: vi.fn(),
   executeAndPersist: vi.fn(),
+  // Defaults to "no run bears this key", so a LIVE request in these suites
+  // reaches new-run admission exactly as it did before step 4b existed.
+  replayLiveRun: vi.fn().mockResolvedValue({ replay: "absent" }),
   retryFinalization: vi.fn(),
+  reconcileLiveRunBudget: vi.fn(),
   getAgentRun: vi.fn(),
   getAgentJob: vi.fn(),
 };
@@ -42,12 +50,9 @@ const fakeProviderFactory: AgentProviderFactory = { createProvider: vi.fn() };
 // capability, kill switch off. This suite exercises the HTTP transport, which
 // should not depend on the live path at all — and with this config a stray LIVE
 // request would be refused rather than attempted.
-const runExecutionConfig: RunExecutionConfig = {
-  defaultRequestMode: "FAKE",
-  liveCapability: { kind: "absent" },
-  liveAgentRunsEnabled: false,
-  providerDeadlineMs: 120_000,
-};
+// Derived from the real parser on an empty environment, so the fixture tracks
+// the shipped defaults instead of drifting from them.
+const runExecutionConfig: RunExecutionConfig = parseRunExecutionConfig({});
 const fakeAgentRunApprovalService: AgentRunApprovalService = {
   recordApprovalDecision: vi.fn(),
   getApprovalDecision: vi.fn(),
@@ -63,6 +68,18 @@ const fakeAgentRunApprovalService: AgentRunApprovalService = {
     { provide: TOOL_REGISTRY, useValue: fakeToolRegistry },
     { provide: AGENT_PROVIDER_FACTORY, useValue: fakeProviderFactory },
     { provide: RUN_EXECUTION_CONFIG, useValue: runExecutionConfig },
+    // The REAL admission controller over a stub budget read. These suites are
+    // about HTTP transport and static assets, and the config above has no live
+    // capability, so admission refuses every LIVE request long before the
+    // budget matters — but the controller still has to be constructible.
+    {
+      provide: LIVE_RUN_ADMISSION,
+      useValue: createLiveRunAdmissionController({
+        config: runExecutionConfig,
+        isBudgetOpen: async () => true,
+      }),
+    },
+    { provide: USAGE_HOOKS, useValue: createApiUsageHooks() },
     { provide: AGENT_RUN_APPROVAL_SERVICE, useValue: fakeAgentRunApprovalService },
   ],
 })
@@ -85,6 +102,9 @@ const RUN = {
   startedAt: "2026-01-01T00:01:00.000Z",
   finishedAt: "2026-01-01T00:02:00.000Z",
   createdAt: "2026-01-01T00:01:00.000Z",
+  // A FAKE run made no provider call, so there is no measured cost.
+  estimatedCostNanoUsd: null,
+  possibleUnobservedCost: false,
 };
 
 const PERSISTED_RUN = {
@@ -319,7 +339,7 @@ describe("domain error branches", () => {
 
     const res = await request(app.getHttpServer())
       .post("/v1/agent-jobs")
-      .send({ ticketId: "T", summary: "s" });
+      .send({ ticketId: "T", summary: "A conflicting submission" });
 
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe("PERSISTENCE_CONFLICT");

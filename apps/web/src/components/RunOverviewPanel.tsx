@@ -41,6 +41,31 @@ export function RunOverviewPanel({ run, trace, suggestedActionCount, eligibility
           <dt>Duration</dt>
           <dd>{formatDuration(run.startedAt, run.finishedAt)}</dd>
         </div>
+        {/*
+          Rendered VERBATIM from the persisted run, never from whichever mode the
+          form happened to request. A run that was requested as LIVE but persisted
+          as FAKE must read FAKE — the badge states what actually executed.
+        */}
+        <div>
+          <dt>Provider mode</dt>
+          <dd>{run.providerMode}</dd>
+        </div>
+        <div>
+          <dt>Model</dt>
+          <dd>{run.modelIdentifier ?? "—"}</dd>
+        </div>
+        {/*
+          Hidden ENTIRELY when the cost is unknown. Rendering "$0.00" would assert
+          a measured free run, which is a different claim from "we did not
+          measure this" — and for a FAKE run there was never a provider call to
+          measure.
+        */}
+        {run.estimatedCostUsd !== null ? (
+          <div>
+            <dt>Estimated cost</dt>
+            <dd>${run.estimatedCostUsd}</dd>
+          </div>
+        ) : null}
         <div>
           <dt>Trace events</dt>
           <dd>{trace.length}</dd>

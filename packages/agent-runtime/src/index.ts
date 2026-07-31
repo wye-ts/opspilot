@@ -17,7 +17,10 @@ import {
   createAgentRunService as _createAgentRunService,
   createPrismaAgentRunRepository as _createPrismaAgentRunRepository,
 } from "./persistence/agent-run-service";
-import { AgentRunServiceError as _AgentRunServiceError } from "./persistence/agent-run-service-error";
+import {
+  AgentRunConfigurationError as _AgentRunConfigurationError,
+  AgentRunServiceError as _AgentRunServiceError,
+} from "./persistence/agent-run-service-error";
 import {
   runAgentOrchestrator as _runAgentOrchestrator,
   findInvalidEvidence as _findInvalidEvidence,
@@ -42,6 +45,7 @@ import { INJECTION_PROBE_CHUNK as _INJECTION_PROBE_CHUNK } from "./rag/injection
 export const createAgentRunService = _createAgentRunService;
 export const createPrismaAgentRunRepository = _createPrismaAgentRunRepository;
 export const AgentRunServiceError = _AgentRunServiceError;
+export const AgentRunConfigurationError = _AgentRunConfigurationError;
 export const runAgentOrchestrator = _runAgentOrchestrator;
 export const findInvalidEvidence = _findInvalidEvidence;
 export const LlmProviderError = _LlmProviderError;
@@ -65,6 +69,8 @@ export type {
   AgentRunService,
   ExecuteAndPersistParams,
   ExecuteAndPersistResult,
+  ReplayLiveRunResult,
+  RetryFinalizationParams,
 } from "./persistence/agent-run-service";
 // A re-exported `export type { X } from "./y"` would redeclare each
 // plain-const value export above (TS2323). A local type-alias declaration
@@ -73,7 +79,16 @@ export type {
 // namespaces under one name. This restores every class below as an
 // ordinary type usable at consumer call sites without `InstanceType<typeof X>`.
 export type AgentRunServiceError = InstanceType<typeof AgentRunServiceError>;
-export type { AgentRunServiceErrorCode } from "./persistence/agent-run-service-error";
+export type AgentRunConfigurationError = InstanceType<typeof AgentRunConfigurationError>;
+export type {
+  AgentRunExecutionContext,
+  AgentRunServiceErrorCode,
+} from "./persistence/agent-run-service-error";
+export type {
+  AgentRunUsageCollector,
+  AgentRunUsageHooks,
+  RunProviderUsageSummary,
+} from "./persistence/run-provider-usage";
 
 export type {
   AgentOrchestratorParams,

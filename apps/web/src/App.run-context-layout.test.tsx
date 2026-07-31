@@ -30,6 +30,8 @@ function runDetail(overrides: Partial<AgentRunDetail> = {}): AgentRunDetail {
       attemptNumber: 1,
       status: "COMPLETED",
       providerMode: "FAKE",
+      // A FAKE run made no provider call, so there is no measured cost.
+      estimatedCostUsd: null,
       modelIdentifier: null,
       startedAt: "2026-07-23T10:00:00.000Z",
       finishedAt: "2026-07-23T10:00:01.000Z",
@@ -99,6 +101,23 @@ async function submitDemo(user: ReturnType<typeof userEvent.setup>, summary = "A
   await user.click(screen.getByRole("button", { name: "Run Investigation" }));
 }
 
+/**
+ * The app reads GET /v1/capabilities once on mount, before any user interaction,
+ * so it is always the first fetch of a test. Each test's mock chain therefore
+ * begins with this response, and `apiCalls()` filters it back out — every
+ * assertion below is about the investigation workflow, not the capability probe.
+ *
+ * UNAVAILABLE keeps the LIVE option disabled, which is the posture these
+ * deterministic workflow tests exercise.
+ */
+function capabilitiesResponse(): Response {
+  return jsonResponse(200, { data: { liveAgentRuns: "UNAVAILABLE", liveAccess: "NOT_APPLICABLE" } });
+}
+
+function apiCalls() {
+  return vi.mocked(fetch).mock.calls.filter((call) => String(call[0]) !== "/v1/capabilities");
+}
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -110,6 +129,7 @@ describe("Run Context Panel layout", () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn());
     vi.mocked(fetch)
+      .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
@@ -126,6 +146,7 @@ describe("Run Context Panel layout", () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn());
     vi.mocked(fetch)
+      .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
@@ -144,6 +165,7 @@ describe("Run Context Panel layout", () => {
     vi.stubGlobal("fetch", vi.fn());
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
+      .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "NOT_ELIGIBLE" }) }));
@@ -159,6 +181,7 @@ describe("Run Context Panel layout", () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn());
     vi.mocked(fetch)
+      .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
       .mockResolvedValueOnce(
@@ -178,6 +201,7 @@ describe("Run Context Panel layout", () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn());
     vi.mocked(fetch)
+      .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
       .mockResolvedValueOnce(
@@ -197,6 +221,7 @@ describe("Run Context Panel layout", () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn());
     vi.mocked(fetch)
+      .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
@@ -214,6 +239,7 @@ describe("Run Context Panel layout", () => {
     vi.stubGlobal("fetch", vi.fn());
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
+      .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
       .mockResolvedValueOnce(
@@ -234,6 +260,7 @@ describe("Run Context Panel layout", () => {
     vi.stubGlobal("fetch", vi.fn());
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
+      .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "NOT_ELIGIBLE" }) }));
@@ -256,6 +283,7 @@ describe("Run Context Panel layout", () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn());
     vi.mocked(fetch)
+      .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
@@ -272,6 +300,7 @@ describe("Run Context Panel layout", () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn());
     vi.mocked(fetch)
+      .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
       .mockResolvedValueOnce(
@@ -292,6 +321,7 @@ describe("Run Context Panel layout", () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn());
     vi.mocked(fetch)
+      .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
       .mockResolvedValueOnce(
@@ -312,6 +342,7 @@ describe("Run Context Panel layout", () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn());
     vi.mocked(fetch)
+      .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
@@ -337,6 +368,7 @@ describe("Run Context Panel layout", () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn());
     vi.mocked(fetch)
+      .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
@@ -362,6 +394,7 @@ describe("Run Context Panel layout", () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn());
     vi.mocked(fetch)
+      .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
@@ -380,6 +413,7 @@ describe("Run Context Panel layout", () => {
     vi.stubGlobal("fetch", vi.fn());
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
+      .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(
         jsonResponse(503, errorEnvelope("PERSISTENCE_UNAVAILABLE", "The database is temporarily unavailable.")),
@@ -403,6 +437,7 @@ describe("Run Context Panel layout", () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn());
     vi.mocked(fetch)
+      .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
@@ -426,6 +461,7 @@ describe("Run Context Panel layout", () => {
     vi.stubGlobal("fetch", vi.fn());
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
+      .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "NOT_ELIGIBLE" }) }));
@@ -447,6 +483,7 @@ describe("Run Context Panel layout", () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn());
     vi.mocked(fetch)
+      .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
@@ -464,6 +501,7 @@ describe("Run Context Panel layout", () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn());
     vi.mocked(fetch)
+      .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));

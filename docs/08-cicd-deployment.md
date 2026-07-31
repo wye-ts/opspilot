@@ -819,3 +819,231 @@ In addition to §11 (CI-specific):
   assumed.
 - **A bad migration blocks every deploy** (§21) — accepted as the safer default over starting an
   application against a schema it does not match.
+
+
+---
+
+## 25. PR 6B2 — protected live-run safeguards
+
+### 25.1 Three independent conditions, none implying the others
+
+A single paid Anthropic request requires **all three** of these to be true:
+
+| # | Condition | Variable(s) |
+| --- | --- | --- |
+| 1 | Live capability exists | `ANTHROPIC_API_KEY` + `ANTHROPIC_MODEL` |
+| 2 | The kill switch is off | `LIVE_AGENT_RUNS_ENABLED=true` |
+| 3 | Callers can authenticate | `LIVE_RUN_ACCESS_TOKEN` |
+
+Stated plainly, because each is easy to over-read:
+
+- **Adding a key alone does not enable paid execution.** With the switch at its
+  default `false`, every LIVE request is refused with `503 LIVE_RUNS_DISABLED`
+  before any Anthropic object is constructed.
+- **Turning the kill switch on alone is insufficient.** With capability present
+  and the switch on but no token configured, the process **fails to start**
+  rather than serving a tokenless public LIVE path. That is deliberate: an
+  operator who set the switch clearly intended live runs, so silently disabling
+  them would be the same misleading half-configured state a partial Anthropic
+  config already refuses.
+- **The first public LIVE release remains token-protected.** There is no public
+  tokenless mode, and `/v1/capabilities` cannot advertise one — `PUBLIC` is
+  absent from the response type, not merely unset.
+
+`render.yaml` ships with `AGENT_RUN_PROVIDER_MODE=FAKE` and
+`LIVE_AGENT_RUNS_ENABLED=false`, and declares both secrets with `sync: false`
+and **no values**.
+
+### 25.2 What each safeguard actually guarantees
+
+| Control | Strength | Honest scope |
+| --- | --- | --- |
+| Per-job live attempt limit | **Hard** | Enforced inside the run-creation transaction, under the `AgentJob` row lock. Two concurrent requests for the final attempt yield exactly one winner. |
+| Daily live run count | **Hard** | Reserved inside the same transaction, which commits *before* any provider call. |
+| Max output tokens/attempt | **Hard** | Per **provider attempt**. Daily envelope = `maxOutputTokens × maxAgentTurns × (maxRetries + 1) × dailyRunLimit` = `1024 × 2 × 1 × 10` = **20,480** output tokens/day at shipped defaults, where `(maxRetries + 1) = 1` only because the protected path requires `ANTHROPIC_MAX_RETRIES=0`. |
+| Daily cost ceiling | **Not a hard cap** | Post-run accounting on an **estimate**. Crossing it refuses *subsequent* runs, so the **observed reconciled estimate** can cross the ceiling by at most **one in-flight logical run** — see §25.2.1. **Actual provider billing may be higher** after an ambiguous network outcome or a process termination; the estimated-cost gate is not an actual-spend cap. |
+| Unreconciled reservation | **Fail-closed latch** | A reservation commits before the provider runs and the cost is added after. If reconciliation fails, the row keeps an accurate run count but stale cost figures, so the day is closed to further LIVE runs until `runs_completed = runs_reserved` again — see §25.2.3. Durable, so it survives a restart. |
+| SDK retries | **Forbidden on the public path** | `ANTHROPIC_MAX_RETRIES` must be exactly `0` once capability is present and the kill switch is on, or startup fails. A retried request reports only the last attempt — an earlier one **may** have reached the provider and **may** have been billed, and nothing in the response says whether it did — so no run's cost could be stated honestly. |
+| Per-client rate limit | Best effort | In-process, resets on restart. Raises the cost of casual abuse. **Not identity, not a spend guarantee.** |
+| Concurrency lease | Best effort | Per process, and pinned to **exactly 1** (§25.2.1). On the free single-instance plan this is also the global limit; on any multi-instance plan it is not. |
+| Kill switch | Operator control | Defeatable by anyone who can edit the environment. |
+
+#### 25.2.1 Why concurrency is pinned to exactly 1
+
+`LIVE_RUN_MAX_CONCURRENCY` accepts **only** the value `1`. Any other value —
+including plausible ones like `2` — fails startup with an error naming the
+variable.
+
+This is not caution for its own sake; the one-run overrun bound depends on it.
+The cost ceiling is *post-run* accounting **on an estimate**: a run reserves its
+slot, spends, and only afterwards contributes to the accumulated figure that
+closes the gate. At concurrency 1 the worst case is one logical run in flight
+when the ceiling is crossed, so the **observed reconciled estimate** overruns by
+one in-flight logical run. At concurrency *N*, all *N* runs can observe an
+accumulated cost below the ceiling, all *N* reserve, and all *N* execute before
+any of them reconciles — making the overrun bound *N* runs.
+
+Accepting `1..4` while documenting a one-run bound would make the safety claim
+false for three of the four accepted values. Pinning the value is the stronger
+and simpler choice for a first public release, and it costs nothing here: the
+deployment is a free single-instance plan, the lease rejects rather than queues,
+and `1` was the approved initial value. **Raising it later requires re-deriving
+and re-documenting the overrun bound as a deliberate act** — which is exactly the
+review the pinned constant forces.
+
+**The bound is on the estimate, not on money.** Actual provider billing may be
+higher than any figure recorded here — an ambiguous network outcome or a process
+termination can leave real spend that no estimate ever observed. The
+estimated-cost gate is **not** an actual-spend hard cap. The hard controls are
+the daily run count, the per-job attempt cap, and the per-attempt output ceiling.
+
+**Cost accounting is a lower bound, and the public path narrows why.** With
+`ANTHROPIC_MAX_RETRIES > 0`, a turn that fails once and succeeds on retry reports
+only the final attempt's usage; the SDK exposes no per-attempt accounting, so an
+abandoned-but-billed attempt is not observable. The collector therefore marks
+**every** retry-configured success `possibleUnobservedCost`, and the protected
+public path refuses to start with a non-zero value at all (§25.2.2). A run whose
+cost cannot be established increments `pricing_unknown_runs` and **closes the
+cost gate for the remainder of that UTC day** rather than being recorded as free.
+
+#### 25.2.2 Why the public path forbids SDK retries
+
+`ANTHROPIC_MAX_RETRIES` must be exactly `0` whenever live capability is present
+**and** `LIVE_AGENT_RUNS_ENABLED=true`. Any other value fails startup with an
+error naming the variable and never its value.
+
+A retried request surfaces only the last attempt. An earlier attempt **may** have
+reached the provider and **may** have been billed — nothing in the Messages
+response says whether a retry happened at all. So with retries enabled no run's
+cost can be claimed as complete: every live run would report an unknown cost,
+every run would increment `pricing_unknown_runs`, and the day's cost gate would
+close after the first run. Honest, but useless.
+
+The per-job **live attempt limit** is the retry mechanism instead. It is explicit
+and durable: a retry allocates a real `AgentRun` row, counts against the job's
+cap, and reserves its own budget slot — every property an in-SDK retry lacks.
+
+The restriction is scoped to the protected public path. With the kill switch off,
+a worker or manually operated flow keeps the provider package's own default and
+range: the operator is present, the spend is theirs, and no public caller is
+exposed to the ambiguity.
+
+#### 25.2.3 Why an unreconciled reservation closes the day
+
+A LIVE reservation is committed **before** the provider runs — that is what makes
+the daily run count hard. The run's cost is added **after**, by reconciliation.
+The two halves are deliberately separate: the budget must stay durable even when
+finalizing the run itself failed.
+
+If reconciliation fails, the row is left in a specific, asymmetric state:
+
+| Field | After a failed reconciliation |
+| --- | --- |
+| `runs_reserved` | **Correct** — incremented before execution, never decremented |
+| `runs_completed` | Stale — missing the run that just executed |
+| `estimated_cost_nano_usd` | **Stale** — missing that run's cost |
+| `pricing_unknown_runs` | **Stale** — missing that run's uncertainty |
+
+An earlier revision reasoned that swallowing the failure was safe because the
+reservation is committed up front, so the cap can never be under-counted. That is
+true of the **run count** and false of **cost accounting**, and conflating them
+was the defect. Continuing to admit runs would have gated spending on figures
+known to be incomplete: the cost ceiling and the unknown-pricing gate would both
+fail **open**, leaving only the hard run count to stop the day.
+
+The counters are therefore the latch. Both `isLiveRunBudgetOpen` and the
+authoritative reservation statement require:
+
+```sql
+live_run_budget.runs_completed = live_run_budget.runs_reserved
+```
+
+so an outstanding reservation closes the UTC day by itself:
+
+```text
+runs_completed != runs_reserved
+-> advisory budget check reports closed
+-> authoritative reservation returns no row
+-> no AgentRun is created
+-> no provider is constructed or called
+```
+
+The latch is the **PostgreSQL row**, not process memory. An in-process flag would
+vanish on restart and would not be shared across instances; this survives both.
+The `INSERT` arm of the reservation statement is unaffected, so the first
+reservation of a new UTC day always succeeds even if yesterday's row is latched.
+
+**Recovery posture for this release.** No background repair worker, and
+deliberately **no repair endpoint** — an unauthenticated one would be a larger
+hazard than the problem it solves. The safe behaviour is:
+
+```text
+reconciliation failure
+-> the current run's response is preserved (still 201, still the run's id)
+-> the concurrency lease is still released
+-> the UTC-day budget row remains unreconciled
+-> further LIVE runs for that UTC day fail closed
+-> the next UTC day starts from a new row and admits normally
+```
+
+The cost of a failed reconciliation is bounded at "the rest of that one UTC day",
+which is the correct direction for a spend control to fail. An explicitly
+authorized future repair mechanism may reopen a stuck row.
+
+Nothing about the refusal is distinguishable from the outside: it is the same
+opaque `429 LIVE_RUN_BUDGET_EXHAUSTED`, and `/v1/capabilities` returns the same
+`UNAVAILABLE` / `NOT_APPLICABLE` body as every other unavailable reason.
+
+### 25.3 `TRUST_PROXY_HOPS` requires empirical verification
+
+The per-client rate limit derives its identity from `req.ip`, which is only
+meaningful because `main.ts` sets a **numeric** hop count —
+`app.set("trust proxy", TRUST_PROXY_HOPS)`. `trust proxy: true` is never used:
+it makes Express take the *leftmost* `X-Forwarded-For` entry, i.e. whatever the
+client sent, which would make every rate-limit bucket client-selectable.
+
+> **NOT YET VERIFIED.** Render's proxy chain length is not authoritatively
+> documented, and this repository makes no claim about whether Render strips,
+> replaces, or appends a client-supplied `X-Forwarded-For`.
+>
+> To verify: send a request to the deployed service with a known bogus
+> `X-Forwarded-For` and log `req.ips` alongside `req.socket.remoteAddress`.
+> Record the result here.
+>
+> Until then, treat client-supplied `X-Forwarded-For` as untrusted and rely on
+> the **global daily cap**, not on per-IP limiting.
+
+### 25.4 Remaining rollout steps
+
+Each requires explicit owner authorization and none has been performed. **The
+order matters, and step 1 is one step, not two.**
+
+1. Set `ANTHROPIC_API_KEY` **and** `ANTHROPIC_MODEL` together, then restart.
+
+   `parseProviderConfig` rejects a *partial* Anthropic configuration in both
+   directions — a key with no model and a model with no key each **fail
+   startup**. Setting only the key would therefore take the service down on the
+   next restart, with the kill switch still off and no live capability gained.
+   Both are declared in `render.yaml` as `sync: false` with no values, so neither
+   is shipped and both are set the same way.
+
+   The supported model value is `claude-sonnet-5` — a one-member allowlist; no
+   other model is validated for the current request policy.
+
+2. Confirm `ANTHROPIC_MAX_RETRIES=0`. It ships in `render.yaml` with that value,
+   so this is a verification rather than a change — but the API refuses to start
+   once capability is present and the switch is on if it is anything else
+   (§25.2.2), so confirm it before step 4 rather than discovering it there.
+3. Set `LIVE_RUN_ACCESS_TOKEN` in the Render dashboard. Startup fails with a
+   credential present and the switch on but no token, so this precedes step 4.
+4. Flip `LIVE_AGENT_RUNS_ENABLED` to `true`.
+5. Verify `TRUST_PROXY_HOPS` empirically (§25.3) and record the result.
+6. Execute one live run and capture the evidence.
+
+Steps 1–3 are all reversible and none of them starts spending: after step 3 the
+deployment is fully configured, still `FAKE`-only, and still refuses every LIVE
+request. Step 4 is the single action that makes paid execution possible.
+
+**The public deployment is not portfolio-ready until live evidence exists.**
+Shipping the safeguards is not the same as demonstrating a live run, and this
+milestone deliberately claims only the former.

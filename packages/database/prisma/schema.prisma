@@ -32,12 +32,65 @@ model AgentRun {
   finishedAt      DateTime? @map("finished_at") @db.Timestamptz(6)
   createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
+  // Per-run provider usage, all NULLABLE and all left NULL for a FAKE run.
+  // "Not measured" and "measured as zero" are different facts, and a FAKE run
+  // makes no provider call at all — writing 0 would claim a measurement that
+  // never happened, and would make a genuine zero-cost LIVE run
+  // indistinguishable from a deterministic one.
+  //
+  // Cost is BigInt nanoUSD, never a float: see apps/api/src/execution/nano-usd.ts.
+  /// The client-generated key that made this run's CREATION idempotent, or NULL
+  /// for a run created before the key existed (and for every FAKE run, which is
+  /// free to repeat).
+  ///
+  /// Uniqueness is `(job_id, client_request_id) WHERE client_request_id IS NOT
+  /// NULL` — a PARTIAL unique index, hand-authored in the migration because
+  /// Prisma's DSL cannot express a WHERE clause on `@@unique`. Declaring a plain
+  /// `@@unique` here instead would generate a DIFFERENT (total) index and put
+  /// the schema permanently at odds with the migration, so this field is
+  /// deliberately declared WITHOUT one. Same reasoning as the CHECK constraints
+  /// this schema also leaves to hand-authored SQL.
+  clientRequestId String? @map("client_request_id") @db.Uuid
+
+  providerCallsObserved  Int?     @map("provider_calls_observed")
+  inputTokens            Int?     @map("input_tokens")
+  outputTokens           Int?     @map("output_tokens")
+  estimatedCostNanoUsd   BigInt?  @map("estimated_cost_nano_usd")
+  pricingStatus          String?  @map("pricing_status")
+  possibleUnobservedCost Boolean? @map("possible_unobserved_cost")
+
   job         AgentJob          @relation(fields: [jobId], references: [id], onDelete: Cascade)
   traceEvents AgentTraceEvent[]
   approval    AgentRunApproval?
 
   @@unique([jobId, attemptNumber])
+  // Supports the in-transaction "count LIVE runs for this job" that enforces
+  // the per-job live attempt limit (see startLiveRunWithAttemptLimit).
+  @@index([jobId, providerMode])
   @@map("agent_runs")
+}
+
+/// One row per UTC day. The durable half of the live-run budget: the daily run
+/// count is reserved inside the same transaction that creates the run, so it is
+/// a HARD cap, while the cost figure is reconciled after the run finishes and
+/// therefore only stops SUBSEQUENT runs.
+///
+/// `budget_date` is the primary key and the only access path — there is no
+/// surrogate id, because "the budget for a given UTC day" is exactly the
+/// identity of a row here. A new day gets a new row on first use; no cron job,
+/// no reset task, and process restarts are irrelevant.
+model LiveRunBudget {
+  budgetDate           DateTime @id @map("budget_date") @db.Date
+  runsReserved         Int      @default(0) @map("runs_reserved")
+  runsCompleted        Int      @default(0) @map("runs_completed")
+  estimatedCostNanoUsd BigInt   @default(0) @map("estimated_cost_nano_usd")
+  /// Number of runs whose true cost could not be established. Any value above
+  /// zero closes the cost gate for the rest of the day — an unknown cost is
+  /// never reconciled as a known $0.
+  pricingUnknownRuns   Int      @default(0) @map("pricing_unknown_runs")
+  updatedAt            DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("live_run_budget")
 }
 
 model AgentRunApproval {

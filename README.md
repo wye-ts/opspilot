@@ -81,7 +81,7 @@ only the safe deterministic configuration.
 | Diagnostic tool execution | Implemented with validated inputs and normalized evidence | Available with the deterministic scenario |
 | Persisted trace and report | Implemented in PostgreSQL | Available through Neon PostgreSQL |
 | Approval recording | Implemented; approve/reject decisions are persisted | Available for the approval demo scenario |
-| Real Claude provider | Implemented for worker scripts and per-run API selection | Disabled; no public paid model execution |
+| Real Claude provider | Implemented for worker scripts and per-run API selection, behind a token, rate limit, concurrency lease, and durable daily budget | Disabled; no public paid model execution |
 | Browser/API RAG | Not wired; RAG exists in worker/offline evaluation paths | Unavailable |
 | Action execution | Not implemented | Unavailable |
 | Authentication/RBAC | Not implemented | Unavailable |
@@ -101,10 +101,47 @@ An omitted API selection uses `AGENT_RUN_PROVIDER_MODE`, which defaults to `FAKE
 **A requested `LIVE` run is never silently downgraded to `FAKE`**: unavailable or disabled live
 execution is rejected before a run row or provider call is created.
 
-The current browser does not expose a `FAKE`/`LIVE` selector. The public Render service sets
-`AGENT_RUN_PROVIDER_MODE=FAKE` and `LIVE_AGENT_RUNS_ENABLED=false`, and does not provide public paid
-Claude execution. Shared demo-token protection, rate limiting, concurrency limiting, and a durable
-PostgreSQL daily cost budget are not implemented yet.
+The browser exposes a `Demo — FAKE` / `Live Claude` selector, defaulting to FAKE. The LIVE option
+renders **disabled with a visible reason** unless `GET /v1/capabilities` reports it available, and a
+live run additionally requires a shared demo token entered into a session-only field — held in React
+state, never written to `localStorage`, `sessionStorage`, or any URL.
+
+Availability is **dynamic, not a mount-time snapshot**: it is re-read on focus, on tab visibility,
+before a live run is started, and after every live run finishes, so a tab reflects what the server
+can serve now rather than what it could when the page loaded. It is a fail-closed *hint* — the
+backend admission path remains authoritative.
+
+Live runs are protected by a shared demo token, a per-client rate limit, a per-instance concurrency
+lease, an atomic per-job attempt cap, and a durable PostgreSQL daily run budget with post-run cost
+reconciliation. Their honest strengths differ and are documented rather than glossed:
+
+- the **daily run count** and the **per-job attempt cap** are hard — both are reserved inside the
+  same transaction that creates the run, which commits before any Anthropic call;
+- the **daily cost ceiling** is post-run accounting on an **estimate**, **not** a hard cap on
+  money: it stops subsequent runs once crossed, so the *observed reconciled estimate* can cross the
+  ceiling by **at most one in-flight logical run** — a bound that holds because exactly one live run
+  may be in flight at a time (`LIVE_RUN_MAX_CONCURRENCY` is pinned to `1` and any other value fails
+  startup). **Actual provider billing may be higher**, after an ambiguous network outcome or a
+  process termination;
+- the **per-attempt output ceiling** is hard, giving a daily output envelope of
+  `maxOutputTokens x maxAgentTurns x (maxRetries + 1) x dailyRunLimit` — `1024 x 2 x 1 x 10 =
+  20,480` output tokens/day at shipped defaults, where the `+ 1` factor is `1` only because the
+  protected path requires `ANTHROPIC_MAX_RETRIES=0`;
+- the **rate limit** and **concurrency lease** are per process, and reset on restart;
+- **cost figures are a lower bound** — an abandoned-but-billed retry attempt is not observable,
+  which is why the public path forbids SDK retries outright.
+
+Three separate conditions must all hold before a paid request is possible, and none implies the
+others: Anthropic configuration present, `LIVE_AGENT_RUNS_ENABLED=true`, and a configured
+`LIVE_RUN_ACCESS_TOKEN`. Adding a key alone does not enable paid execution, and enabling the kill
+switch without a token **fails startup** rather than exposing a tokenless public LIVE path — there
+is no public tokenless mode.
+
+The public Render service sets `AGENT_RUN_PROVIDER_MODE=FAKE` and `LIVE_AGENT_RUNS_ENABLED=false`,
+declares both secrets with no values, and does not provide public paid Claude execution. **No live
+run has been executed against the deployment, so the public demo is not yet portfolio-ready for
+live evidence** — see [CI/CD and deployment](docs/08-cicd-deployment.md) §25 for the remaining
+rollout steps, each of which requires explicit owner authorization.
 
 See [Agent Run API](docs/12-agent-run-api.md) for the request and error contracts.
 

@@ -41,27 +41,27 @@ afterEach(async () => {
 });
 
 async function createEligibleCompletedRun(client: PrismaClient = prisma) {
-  const job = await createJob(client, { ticketId: "TKT-approval-eligible", summary: "s" });
+  const job = await createJob(client, { ticketId: "TKT-approval-eligible", summary: "Approval eligible run" });
   const started = await startRun(client, job.id, "FAKE", null);
   const run = await finalizeCompleted(client, started.run.id, SAMPLE_TRACE, ELIGIBLE_REPORT);
   return { job, run };
 }
 
 async function createIneligibleEmptyActionsRun(client: PrismaClient = prisma) {
-  const job = await createJob(client, { ticketId: "TKT-approval-empty", summary: "s" });
+  const job = await createJob(client, { ticketId: "TKT-approval-empty", summary: "Approval empty actions run" });
   const started = await startRun(client, job.id, "FAKE", null);
   const run = await finalizeCompleted(client, started.run.id, SAMPLE_TRACE, EMPTY_ACTIONS_REPORT);
   return { job, run };
 }
 
 async function createRunningRun(client: PrismaClient = prisma) {
-  const job = await createJob(client, { ticketId: "TKT-approval-running", summary: "s" });
+  const job = await createJob(client, { ticketId: "TKT-approval-running", summary: "Approval running run" });
   const started = await startRun(client, job.id, "FAKE", null);
   return { job, run: started.run };
 }
 
 async function createFailedRun(client: PrismaClient = prisma) {
-  const job = await createJob(client, { ticketId: "TKT-approval-failed", summary: "s" });
+  const job = await createJob(client, { ticketId: "TKT-approval-failed", summary: "Approval failed run" });
   const started = await startRun(client, job.id, "FAKE", null);
   const run = await finalizeFailed(client, started.run.id, SAMPLE_TRACE, "TOOL_NOT_FOUND");
   return { job, run };
