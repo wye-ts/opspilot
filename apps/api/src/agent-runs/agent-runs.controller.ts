@@ -35,6 +35,7 @@ import type {
   LiveRunAdmissionController,
 } from "../execution/live-run-admission";
 import { logBudgetReconciliationFailure } from "../execution/live-run-budget-log";
+import { logReportValidationFailure } from "../execution/report-validation-log";
 import { createRunAbortHandles } from "../execution/run-abort-context";
 import type { RunExecutionConfig } from "../execution/run-execution-config";
 import type { ApiUsageHooks } from "../execution/usage-hooks";
@@ -176,6 +177,7 @@ export class AgentRunsController {
         // locks and returns (see docs/12-agent-run-api.md).
         createProvider: (job) => this.providerFactory.createProvider(job, "FAKE"),
         toolRegistry: this.toolRegistry,
+        onReportSchemaInvalid: logReportValidationFailure,
       });
     } catch (error) {
       if (error instanceof AgentRunServiceError) {
@@ -303,6 +305,7 @@ export class AgentRunsController {
         // provider to be cancelled by one signal while finalization resolves
         // abort provenance from another.
         abortContext: abort.context,
+        onReportSchemaInvalid: logReportValidationFailure,
       });
 
       // Settled from the AUTHORITATIVE result, before responding — not from

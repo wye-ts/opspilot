@@ -196,6 +196,42 @@ describe("buildSystemPrompt", () => {
       expect(buildSystemPrompt(phase)).not.toContain("RAG_CHUNK evidence is not available");
     }
   });
+
+  it("states every bound the canonical prompt currently carries, on BOTH phases, since submit_resolution_report is offered as a tool on both — a voluntary INVESTIGATION-turn submission must see them too, not only a forced FINALIZATION one", () => {
+    for (const phase of ["INVESTIGATION", "FINALIZATION"] as const) {
+      const prompt = buildSystemPrompt(phase);
+
+      // Top-level string fields.
+      expect(prompt).toContain("summary: 1-1000 characters");
+      expect(prompt).toContain("rootCause: 1-1500 characters");
+      expect(prompt).toContain("customerImpact: 1-1000 characters");
+      expect(prompt).toContain("recommendedResolution: 1-2000 characters");
+
+      // confidence.
+      expect(prompt).toContain("a decimal fraction between 0 and 1 inclusive");
+      expect(prompt).toContain("Never a percentage (never 70)");
+
+      // evidence: array count plus every nested field.
+      expect(prompt).toContain("an array of 1 to 10 entries");
+      expect(prompt).toContain("evidenceId: 1-128 characters");
+      expect(prompt).toContain("finding: 1-500 characters");
+
+      // suggestedActions: array count plus every action type's payload fields.
+      expect(prompt).toContain("an array of 0 to 3 entries");
+      expect(prompt).toContain("type UPDATE_TICKET_STATUS: payload.reason is 1-500 characters");
+      expect(prompt).toContain("type CREATE_ESCALATION: payload.team is 1-100 characters");
+      expect(prompt).toContain("payload.reason is 1-500 characters");
+      expect(prompt).toContain("type DRAFT_CUSTOMER_REPLY: payload.subject is 1-200 characters");
+      expect(prompt).toContain("payload.body is 1-4000 characters");
+    }
+  });
+
+  it("only FINALIZATION forces the model to call submit_resolution_report now", () => {
+    expect(buildSystemPrompt("FINALIZATION")).toContain("You must call submit_resolution_report now");
+    expect(buildSystemPrompt("INVESTIGATION")).not.toContain(
+      "You must call submit_resolution_report now",
+    );
+  });
 });
 
 describe("normalizeClaudeMessage", () => {
@@ -298,6 +334,29 @@ describe("normalizeClaudeMessage", () => {
 
   it("delegates zero tool calls (no report) to normalizeDiagnosticToolRequests as protocol_error", () => {
     const message = buildFakeMessage({ stop_reason: "end_turn", content: [] });
+
+    const result = normalizeClaudeMessage(message, context);
+
+    expect(result.type).toBe("protocol_error");
+    if (result.type !== "protocol_error") throw new Error("unreachable");
+    expect(result.code).toBe("PROVIDER_PROTOCOL_INVALID");
+  });
+
+  it("never parses a markdown/prose text response as an embedded report — a text-only reply is protocol_error, not an alternate report format", () => {
+    // There is no markdown-fence/JSON-in-prose extraction path anywhere in
+    // this codebase: the report only ever arrives via the submit_resolution_report
+    // tool_use block (see claude-tool-schemas.ts). A Claude reply that tries to
+    // answer in prose — even if that prose happens to contain a fenced JSON
+    // object shaped like a valid report — must not be treated as a submission.
+    const message = buildFakeMessage({
+      stop_reason: "end_turn",
+      content: [
+        {
+          type: "text",
+          text: '```json\n{"category":"SERVICE_DEGRADATION","summary":"x"}\n```',
+        } as Anthropic.TextBlock,
+      ],
+    });
 
     const result = normalizeClaudeMessage(message, context);
 

@@ -327,6 +327,58 @@ describe("runAgentOrchestrator", () => {
     if (result.status !== "failed") throw new Error("unreachable");
     expect(result.code).toBe("REPORT_SCHEMA_INVALID");
     expect(result.trace).toEqual([]);
+    expect(result.reportValidationIssues).toEqual([
+      { path: ["summary"], code: "invalid_type", expectedType: "string", receivedType: "undefined" },
+      { path: ["rootCause"], code: "invalid_type", expectedType: "string", receivedType: "undefined" },
+      {
+        path: ["customerImpact"],
+        code: "invalid_type",
+        expectedType: "string",
+        receivedType: "undefined",
+      },
+      {
+        path: ["recommendedResolution"],
+        code: "invalid_type",
+        expectedType: "string",
+        receivedType: "undefined",
+      },
+      { path: ["confidence"], code: "invalid_type", expectedType: "number", receivedType: "undefined" },
+      { path: ["evidence"], code: "invalid_type", expectedType: "array", receivedType: "undefined" },
+      {
+        path: ["suggestedActions"],
+        code: "invalid_type",
+        expectedType: "array",
+        receivedType: "undefined",
+      },
+    ]);
+  });
+
+  it("fails with REPORT_SCHEMA_INVALID and a sanitized bound-violation diagnostic — never the raw value — when a structurally complete report exceeds a bound the Claude-facing tool schema does not convey", async () => {
+    // The real LIVE incident's failure class: toStrictInputSchema strips
+    // minimum/maximum from what Claude sees (claude-tool-schemas.ts), so a
+    // well-typed report can still violate confidence's 0-1 bound.
+    const provider = new FakeLlmProvider({
+      id: "confidence-percentage",
+      turns: [
+        { kind: "report_submission", usage, rawInput: { ...validReport, confidence: 70 } },
+      ],
+    });
+    const registry = new InMemoryToolRegistry([getServiceStatusTool]);
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: registry,
+      initialConversation: [ticketContext],
+    });
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.code).toBe("REPORT_SCHEMA_INVALID");
+    expect(result.message).toBe("The submitted resolution report failed schema validation.");
+    expect(result.reportValidationIssues).toEqual([
+      { path: ["confidence"], code: "too_big", origin: "number", bound: 1 },
+    ]);
+    expect(JSON.stringify(result.reportValidationIssues)).not.toContain("70");
   });
 
   it("fails with PROVIDER_PROTOCOL_INVALID without a third provider call, when a second diagnostic tool request replaces the required report", async () => {
