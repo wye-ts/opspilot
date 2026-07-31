@@ -469,6 +469,56 @@ describe("executeAndPersist", () => {
     expect(result.persistence).toBe("persisted");
   });
 
+  it("invokes onReportSchemaInvalid with a sanitized diagnostic — never the raw report — exactly once when the orchestrator fails with REPORT_SCHEMA_INVALID, and still persists the failed run normally", async () => {
+    const { repository, finalizeFailedCodes } = createFakeRepository();
+    const service = createAgentRunService(repository);
+    const onReportSchemaInvalid = vi.fn();
+    const usage = { inputTokens: 1, outputTokens: 1 };
+    const invalidConfidenceScenario: FakeAgentScenario = {
+      id: "invalid-confidence",
+      // A structurally complete report (the drift class behind the real LIVE
+      // incident): confidence given as a percentage, which the stripped
+      // Claude-facing tool schema never told the model was out of bounds.
+      turns: [{ kind: "report_submission", usage, rawInput: { ...VALID_REPORT, confidence: 70 } }],
+    };
+
+    const result = await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "FAKE",
+      createProvider: () => new FakeLlmProvider(invalidConfidenceScenario),
+      toolRegistry: toolRegistryWithServiceStatus(),
+      onReportSchemaInvalid,
+    });
+
+    expect(onReportSchemaInvalid).toHaveBeenCalledTimes(1);
+    expect(onReportSchemaInvalid).toHaveBeenCalledWith({
+      runId: "run-1",
+      providerMode: "FAKE",
+      modelIdentifier: null,
+      issues: [{ path: ["confidence"], code: "too_big", origin: "number", bound: 1 }],
+    });
+    expect(JSON.stringify(onReportSchemaInvalid.mock.calls[0])).not.toContain("70");
+
+    expect(result.persistence).toBe("persisted");
+    expect(finalizeFailedCodes).toEqual(["REPORT_SCHEMA_INVALID"]);
+  });
+
+  it("never invokes onReportSchemaInvalid for a different failure code", async () => {
+    const { repository } = createFakeRepository();
+    const service = createAgentRunService(repository);
+    const onReportSchemaInvalid = vi.fn();
+
+    await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "FAKE",
+      createProvider: () => providerThrowingCategory("RATE_LIMIT"),
+      toolRegistry: toolRegistryWithServiceStatus(),
+      onReportSchemaInvalid,
+    });
+
+    expect(onReportSchemaInvalid).not.toHaveBeenCalled();
+  });
+
   it("returns stage: run-creation when startRun fails, without ever calling createProvider or the orchestrator", async () => {
     const startRunError = new PersistenceError("PERSISTENCE_UNAVAILABLE", "db down");
     const { repository, calls } = createFakeRepository({ startRunError });
@@ -1071,6 +1121,48 @@ describe("executeAndPersist — service-owned usage collector", () => {
     expect((finalizeUsage[0] as { estimatedCostNanoUsd: bigint }).estimatedCostNanoUsd).toBe(
       result.usageSummary?.estimatedCostNanoUsd,
     );
+  });
+
+  it("does not skip finalize() when onReportSchemaInvalid throws — the run still persists as REPORT_SCHEMA_INVALID exactly once, usage/cost are still recorded for the LIVE run, no second provider call happens, and the thrown error never reaches the caller", async () => {
+    const { repository, finalizeFailedCodes, finalizeUsage, calls } = createFakeRepository();
+    const service = createAgentRunService(repository);
+    const counting = countingCollector();
+    const reportUsage = { inputTokens: 1, outputTokens: 1 };
+    const invalidConfidenceScenario: FakeAgentScenario = {
+      id: "invalid-confidence-throwing-hook",
+      turns: [
+        { kind: "report_submission", usage: reportUsage, rawInput: { ...VALID_REPORT, confidence: 70 } },
+      ],
+    };
+    const provider = new FakeLlmProvider(invalidConfidenceScenario);
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+    const onReportSchemaInvalid = vi.fn(() => {
+      throw new Error("logger blew up");
+    });
+
+    const result = await service.executeAndPersist({
+      ...liveParams(counting.collector, provider),
+      onReportSchemaInvalid,
+    });
+
+    expect(onReportSchemaInvalid).toHaveBeenCalledTimes(1);
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(1);
+    expect(calls.finalizeFailed).toBe(1);
+    expect(finalizeFailedCodes).toEqual(["REPORT_SCHEMA_INVALID"]);
+    // The result is the ordinary persisted shape — nothing about the thrown
+    // hook error is present in it, and awaiting executeAndPersist resolved
+    // rather than rejected, which is itself proof the throw never escaped.
+    expect(result.persistence).toBe("persisted");
+    expect(finalizeUsage).toEqual([
+      {
+        providerCallsObserved: 2,
+        inputTokens: 1_200,
+        outputTokens: 400,
+        estimatedCostNanoUsd: 17_956_000n,
+        pricingStatus: "CURRENT",
+        possibleUnobservedCost: false,
+      },
+    ]);
   });
 
   it("returns the reservation the transaction committed", async () => {

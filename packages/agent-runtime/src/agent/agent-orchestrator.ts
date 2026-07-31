@@ -1,9 +1,11 @@
 import {
   ResolutionReportSchema,
+  summarizeReportValidationIssues,
   type AgentOrchestratorErrorCode,
   type AgentTraceEvent,
   type AgentTurnResult,
   type EvidenceReference,
+  type ReportValidationIssue,
   type ResolutionReport,
   type RetrievalSummaryEntry,
 } from "@opspilot/contracts";
@@ -75,14 +77,28 @@ export type AgentOrchestratorResult =
       readonly code: AgentOrchestratorErrorCode;
       readonly message: string;
       readonly trace: readonly AgentTraceEvent[];
+      /**
+       * Populated only for REPORT_SCHEMA_INVALID, from
+       * summarizeReportValidationIssues — safe to log (paths, codes,
+       * expected/received type names, our own schema's static bounds), never
+       * the raw report Claude submitted. Absent for every other failure code.
+       */
+      readonly reportValidationIssues?: readonly ReportValidationIssue[];
     };
 
 function failed(
   code: AgentOrchestratorErrorCode,
   message: string,
   trace: readonly AgentTraceEvent[],
+  reportValidationIssues?: readonly ReportValidationIssue[],
 ): AgentOrchestratorResult {
-  return { status: "failed", code, message, trace };
+  return {
+    status: "failed",
+    code,
+    message,
+    trace,
+    ...(reportValidationIssues !== undefined ? { reportValidationIssues } : {}),
+  };
 }
 
 /**
@@ -256,13 +272,22 @@ export async function runAgentOrchestrator(
     }
 
     if (result.type === "report_submission") {
-      const parsedReport = ResolutionReportSchema.safeParse(result.rawInput);
+      // reportInput: true is required for summarizeReportValidationIssues to
+      // derive a real receivedType (zod v4 omits `.input` from issues by
+      // default). The raw value was already fully in memory as
+      // result.rawInput regardless — this doesn't expose anything new, and
+      // the summarizer only ever reads `typeof`/Array.isArray off it, never
+      // the value itself.
+      const parsedReport = ResolutionReportSchema.safeParse(result.rawInput, {
+        reportInput: true,
+      });
 
       if (!parsedReport.success) {
         return failed(
           "REPORT_SCHEMA_INVALID",
           "The submitted resolution report failed schema validation.",
           trace,
+          summarizeReportValidationIssues(parsedReport.error),
         );
       }
 

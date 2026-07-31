@@ -1867,3 +1867,192 @@ that existing mechanism, not to add a new layer of mocking.
   actually fire, before shipping it
 - Recognising that a green unit-test suite proved nothing here, because the transform under test was
   not the transform that ships
+
+---
+
+## 13. Challenge 11 — A Structurally Valid Report That Still Fails Schema Validation
+
+### Context
+
+A controlled LIVE smoke against `main` reached real Claude execution, ran one diagnostic tool call,
+and then failed at finalization with `REPORT_SCHEMA_INVALID` — a well-formed tool call the persisted
+`ResolutionReportSchema` (`packages/contracts`) nonetheless rejected. Every existing test that
+exercised this failure code passed, and had passed since the code was introduced.
+
+### Problem
+
+`submit_resolution_report`'s tool `input_schema` is generated from the same Zod schema
+(`ResolutionReportSchema`) that validates the result, via `toStrictInputSchema`
+(`packages/provider-claude/src/claude-tool-schemas.ts`). The two are supposed to be one contract
+expressed twice. They were not: Anthropic's strict-tool-use JSON Schema subset rejects
+`minLength`/`maxLength`/`minimum`/`maximum`/`maxItems` outright, so `stripUnsupported` deletes them
+before the schema reaches the model. Zod still enforces the real bounds on the way back in. A
+structurally well-typed report — right keys, right types, right enum values — can still violate a
+bound the model was never told existed: `confidence` given as a 0–100 percentage instead of a 0–1
+fraction, more than 3 suggested actions, more than 10 evidence entries, a field past its length cap.
+
+### Why It Is Difficult
+
+The deterministic `FakeLlmProvider` cannot reproduce this failure by construction. Every fixture that
+exercises `REPORT_SCHEMA_INVALID` is a hand-authored `rawInput`, and a human author who wants to
+write an "invalid" report reaches for the obvious kind of invalid — missing fields, wrong enum value
+— which is also the kind Zod's `invalid_type` branch catches regardless of what the model schema
+conveys. Nobody hand-writes a fixture that is structurally complete and correctly typed but exceeds a
+count or length bound, because doing so requires already knowing the exact gap between the two
+schemas. That gap is invisible from either schema in isolation: `ResolutionReportSchema`'s source
+looks authoritative, and the generated tool schema looks like a faithful projection of it, unless you
+read `stripUnsupported`'s key list and notice what it removes.
+
+The second difficulty is that "make validation less strict" is the wrong fix and also the easiest one
+to reach for under pressure — a production failure with real cost attached creates pressure to make
+the failure go away, and loosening `.max()`/`.min()` bounds would make it go away for this run while
+making every future run's data quality worse.
+
+### Failure Modes
+
+- Widening `ResolutionReportSchema`'s bounds to stop rejecting what Claude sends, which stops
+  catching genuinely malformed reports too.
+- Adding a coercion/repair step that rewrites an out-of-bounds value into something that passes,
+  which persists a report describing something Claude did not actually say.
+- Adding a second Claude call to retry finalization, which spends money automatically in response to
+  a schema mismatch, with no accounting or product decision behind that spend.
+- Fixing the specific field this one incident hit (`confidence`) and leaving every other stripped
+  bound (string lengths, `evidence`/`suggestedActions` counts) equally invisible to the model.
+- A diagnostic that logs the issue by re-serializing the failing Zod issue, which reintroduces
+  exactly the raw-model-content-in-logs risk this fix exists to avoid.
+
+### Decision
+
+**State the bounds as prose where the JSON schema cannot carry them; validate exactly as strictly as
+before; make the mismatch observable without retaining what caused it.**
+
+- `ResolutionReportSchema` is untouched. Nothing was widened, made optional, or given a permissive
+  fallback. A report violating any bound still fails `safeParse` and still finalizes as
+  `REPORT_SCHEMA_INVALID`.
+- The shared system prompt (`REPORT_FIELD_BOUNDS`, appended to `BASE_SYSTEM_PROMPT` in
+  `packages/provider-claude/src/claude-message-mapping.ts`) now states every bound
+  `toStrictInputSchema` strips, explicitly, as the only remaining channel that can reach the model:
+  exact field lengths — including the ones nested inside `evidence` entries and `suggestedActions`
+  payloads — `confidence` as a fraction and *not* a percentage, `evidence` 1–10, `suggestedActions`
+  0–3, plus a compact valid example. It reaches BOTH phases, not only the forced finalization turn:
+  `submit_resolution_report` is offered as a tool during INVESTIGATION too (`tool_choice: "auto"`,
+  so Claude may submit voluntarily as soon as it judges the investigation complete), and a voluntary
+  early submission needs the same bounds a forced final one does. `FINALIZATION_SUFFIX` now carries
+  only the "call it now" forcing instruction, appended on top of the shared bounds.
+- `agent-orchestrator.ts` captures a sanitized diagnostic at the moment of failure
+  (`summarizeReportValidationIssues`, `packages/contracts`) — issue paths, Zod issue codes, and
+  expected/received *type names* derived via `typeof`/`Array.isArray`, never a value. It is surfaced
+  through an optional `onReportSchemaInvalid` hook on `AgentRunService.executeAndPersist`, logged by
+  `apps/api` as one JSON line, the same pattern `logProviderEvent` already uses for provider
+  telemetry. The hook is invoked inside its own `try`/`catch` in `AgentRunService` itself, so a
+  throwing caller-supplied hook can never skip `finalize()` — observability must not be able to
+  affect execution, persistence, accounting, or HTTP behavior.
+- No retry, no second Claude call, no coercion. A schema-repair turn is a paid-accounting and product
+  decision, deliberately out of scope for this fix.
+
+### Alternatives Considered
+
+#### Alternative A — restore the stripped bounds so Claude's tool schema is the real contract
+
+Rejected, at least for now. Anthropic's strict-tool-use subset rejects those keywords outright; a
+schema carrying them would either fail at the provider or force dropping `strict: true`, trading a
+structural guarantee (the model literally cannot return the wrong shape of object) for a numeric one
+it can still ignore. Prose is the available channel until the provider's strict-schema subset
+supports more of JSON Schema.
+
+#### Alternative B — coerce or clamp out-of-bounds values (e.g. divide a >1 confidence by 100)
+
+Rejected. A guessed transformation is Claude's actual claim, silently rewritten into something
+different, and persisted as if Claude had said that. The prompt's own constraint ("do not weaken
+validation merely to make this output pass") names this exact failure mode.
+
+#### Alternative C — add a schema-repair retry turn when validation fails
+
+Rejected for this fix. It spends money automatically in direct response to a schema mismatch, which
+is a product and budget-accounting decision this fix does not have authority to make silently, and it
+would need its own reservation/attempt-limit story rather than borrowing the existing one.
+
+#### Alternative D — log the full Zod issue for debuggability
+
+Rejected. `ZodIssue.input`/`.message` can echo the offending value verbatim (an enum mismatch's
+default message includes the received string). The diagnostic only ever reads `.path`, `.code`, this
+codebase's own static bound, and a derived type name.
+
+### Tradeoffs
+
+Prose instructions are a weaker guarantee than a schema constraint — a model can still ignore prose,
+where it structurally cannot return a `tool_use` block missing a required key under `strict: true`.
+This fix accepts that weaker guarantee because the alternative (loosening the real schema, or
+inventing a repair step) trades away something the codebase should not give up. The sanitized
+diagnostic is deliberately generic — a type name and a bound, not a value — which makes some failures
+harder to root-cause from logs alone than a raw dump would; that cost is accepted for the same reason
+the codebase never logs raw provider content anywhere else.
+
+### Implementation Notes
+
+- `reportInput: true` is now passed to `ResolutionReportSchema.safeParse` in `agent-orchestrator.ts`
+  specifically so the summarizer can derive a real `receivedType` — Zod v4 omits `.input` from issues
+  by default. This exposes nothing new: the raw value was already fully in memory as the function's
+  own argument; enabling it only lets the summarizer read a `typeof` off data it already held.
+- `packages/agent-runtime` still performs zero logging of its own, by design (see Challenge 9's
+  provider-adapter boundary). The new diagnostic reaches the log the same way the provider's own
+  telemetry does: an optional callback threaded in from `apps/api`, invoked once, before
+  `finalize()` persists the run.
+
+### Testing Strategy
+
+A contracts-level test drives `summarizeReportValidationIssues` through every relevant Zod issue code
+and asserts the sanitized output never contains the value that triggered it — including a combined
+case with two simultaneous violations. An orchestrator test reproduces the actual failure class (a
+structurally complete report with an out-of-range `confidence`) rather than only the pre-existing
+missing-fields case, and asserts on the attached `reportValidationIssues`. Service-level tests assert
+the hook fires exactly once with the sanitized diagnostic, that the run still persists as
+`REPORT_SCHEMA_INVALID` normally, that the hook never fires for an unrelated failure code, and —
+separately — that a hook which *throws* still leaves `finalize()` running exactly once with usage/cost
+recorded and no second provider call, with the thrown error never reaching the caller. A
+provider-level test asserts BOTH phases' prompts state every bound (including the nested ones), since
+`submit_resolution_report` is offered as a tool on both and a voluntary INVESTIGATION-turn submission
+must see them too; a separate assertion confirms only FINALIZATION carries the "call it now" forcing
+instruction. Another provider-level test confirms a markdown/prose-wrapped response normalizes to
+`protocol_error` rather than being parsed as an embedded report — there is no markdown/JSON-in-prose
+extraction path anywhere in this codebase to begin with.
+
+### Observability
+
+One sanitized log line per `REPORT_SCHEMA_INVALID` failure: run id, provider mode, model, and the
+sanitized issue list (path, code, expected/received type name, this codebase's own static bound).
+Never a value, never the raw report, never a secret, never the idempotency key — matching the
+existing `logProviderEvent` convention rather than adding a second logging shape.
+
+### Interview Explanation
+
+> The bug wasn't in the schema and wasn't in the parser — it was in the gap between two things that
+> looked like the same contract. The tool schema Claude sees and the Zod schema that validates its
+> answer are generated from one source, but Anthropic's strict tool-use mode rejects length/count/range
+> keywords, so they get silently stripped before the model ever sees them. A structurally perfect
+> `tool_use` call can still violate a bound nobody told the model about — a confidence given as 70
+> instead of 0.7, say. No FAKE fixture can catch that, because a human writing a fixture reaches for
+> an obviously-wrong report, not a correctly-typed one with one bound quietly exceeded.
+>
+> The tempting fixes were all wrong in the same direction: loosen the schema, coerce the value, or
+> retry with a second paid call. All three make the specific failure disappear while making the
+> system worse — accepting bad data, inventing what the model didn't say, or spending money
+> automatically in response to a validation error. The fix that survives scrutiny is duller: tell the
+> model the bounds in prose, since that's the only channel left that can carry them, leave the actual
+> validation exactly as strict as before, and make sure that if this happens again, the exact
+> validation issue is recoverable from a log line — as a path and a type name, never a value.
+
+### Resume Relevance
+
+This problem demonstrates:
+
+- Finding a contract-drift bug that neither schema exposes in isolation, by reading the code that
+  projects one into the other
+- Refusing the three fixes that make a production failure disappear while making the system's
+  guarantees worse — loosening validation, coercing a value, and adding a silent paid retry
+- Designing a diagnostic that is useful specifically because of what it deliberately omits, and
+  proving that omission with a test rather than a comment
+- Recognising that a deterministic test double can structurally never reproduce a class of bug, and
+  writing the regression test against the real validation boundary instead
+- Extending an existing sanitized-logging convention rather than inventing a second one, so the two
+  log shapes stay greppable together

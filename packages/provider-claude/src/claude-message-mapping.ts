@@ -118,6 +118,71 @@ chunk.
 - Do not shorten, translate, normalize, or rewrite them.
 - Only the exact supplied evidenceId is valid.`;
 
+// submit_resolution_report's tool input_schema is generated from
+// ResolutionReportSchema (@opspilot/contracts) via toStrictInputSchema, which
+// strips every numeric/length/count bound (minLength, maxLength, minimum,
+// maximum, maxItems, and minItems above 1) because Anthropic's strict
+// tool-use JSON Schema subset rejects them — see the UNSUPPORTED_KEYS
+// comment in claude-tool-schemas.ts. Zod still enforces the real bounds
+// downstream, so a structurally well-typed report that merely exceeds one of
+// them (e.g. a confidence given as a 0-100 percentage, a 4th suggested
+// action, or an over-length nested field) still fails
+// ResolutionReportSchema.safeParse as REPORT_SCHEMA_INVALID even though the
+// tool call itself looked valid. This prose is the only remaining place
+// these bounds reach the model, so state every one of them explicitly —
+// including the ones nested inside evidence entries and suggestedActions
+// payloads — rather than relying on the (silently narrowed) input schema.
+//
+// This is appended to BASE_SYSTEM_PROMPT, not FINALIZATION_SUFFIX:
+// submit_resolution_report is offered as a tool on BOTH phases (Claude may
+// call it voluntarily during INVESTIGATION — see claude-llm-provider.ts's
+// isInvestigation tools array — not only when FINALIZATION forces it), so a
+// voluntary early submission must see these bounds too, not just a forced
+// final-turn one.
+const REPORT_FIELD_BOUNDS = `
+
+If you call submit_resolution_report, its input schema cannot express every
+bound that will be enforced after you call it. All of the following are
+required, in addition to whatever the tool schema shows:
+
+- category: exactly one of SERVICE_DEGRADATION, RATE_LIMITING,
+  AUTHENTICATION, CONFIGURATION, DATA_QUALITY, UNKNOWN.
+- summary: 1-1000 characters.
+- rootCause: 1-1500 characters.
+- customerImpact: 1-1000 characters.
+- recommendedResolution: 1-2000 characters.
+- confidence: a decimal fraction between 0 and 1 inclusive (for example 0.7).
+  Never a percentage (never 70) and never a value outside 0-1.
+- evidence: an array of 1 to 10 entries. At least one is required; never
+  submit more than ten. Each entry is { evidenceId, sourceType, finding }:
+  - evidenceId: 1-128 characters.
+  - sourceType: exactly "RAG_CHUNK" or "TOOL_EXECUTION".
+  - finding: 1-500 characters.
+- suggestedActions: an array of 0 to 3 entries. Empty is allowed; never
+  submit more than three. Each entry's payload has its own length bounds:
+  - type UPDATE_TICKET_STATUS: payload.reason is 1-500 characters.
+  - type CREATE_ESCALATION: payload.team is 1-100 characters;
+    payload.reason is 1-500 characters.
+  - type DRAFT_CUSTOMER_REPLY: payload.subject is 1-200 characters;
+    payload.body is 1-4000 characters.
+
+Call submit_resolution_report with only the report fields above — no
+surrounding prose, markdown, or extra wrapper object.
+
+Example of a minimally valid input:
+{
+  "category": "SERVICE_DEGRADATION",
+  "summary": "Notification service returned elevated error rates.",
+  "rootCause": "Upstream dependency timeout under load.",
+  "customerImpact": "Delayed notification delivery for a subset of users.",
+  "recommendedResolution": "Scale the notification service and monitor error rate.",
+  "confidence": 0.7,
+  "evidence": [
+    { "evidenceId": "<copied exactly from the tool_result>", "sourceType": "TOOL_EXECUTION", "finding": "get_service_status reported DEGRADED." }
+  ],
+  "suggestedActions": []
+}`;
+
 const FINALIZATION_SUFFIX = `
 
 You must call submit_resolution_report now. No further investigation is
@@ -125,5 +190,6 @@ possible; base your report only on evidence already gathered in this
 conversation.`;
 
 export function buildSystemPrompt(phase: AgentTurnPhase): string {
-  return phase === "FINALIZATION" ? BASE_SYSTEM_PROMPT + FINALIZATION_SUFFIX : BASE_SYSTEM_PROMPT;
+  const withBounds = BASE_SYSTEM_PROMPT + REPORT_FIELD_BOUNDS;
+  return phase === "FINALIZATION" ? withBounds + FINALIZATION_SUFFIX : withBounds;
 }

@@ -20,6 +20,8 @@ import {
   type StartedAgentRun,
 } from "@opspilot/database";
 
+import type { ReportValidationIssue } from "@opspilot/contracts";
+
 import {
   runAgentOrchestrator,
   type AgentOrchestratorParams,
@@ -151,6 +153,23 @@ export interface ExecuteAndPersistParams<
    * controller passes only `abortContext`.
    */
   readonly abortContext?: RunAbortContext;
+  /**
+   * Fires exactly once, only when the orchestrator fails with
+   * REPORT_SCHEMA_INVALID, before finalize() persists the run. This package
+   * does no logging itself (see createProvider's own logger for the parallel
+   * pattern at the provider-turn level) — a caller that wants this failure
+   * observable (apps/api does, as a one-line sanitized JSON log analogous to
+   * logProviderEvent) supplies this hook. `issues` is already sanitized by
+   * summarizeReportValidationIssues: paths, codes, expected/received type
+   * names, and this package's own static schema bounds — never the raw
+   * report Claude submitted.
+   */
+  readonly onReportSchemaInvalid?: (diagnostic: {
+    readonly runId: string;
+    readonly providerMode: ProviderMode;
+    readonly modelIdentifier: string | null;
+    readonly issues: readonly ReportValidationIssue[];
+  }) => void;
 }
 
 /**
@@ -634,6 +653,27 @@ export function createAgentRunService(repository: AgentRunRepositoryInterface): 
             reservation,
           },
         });
+      }
+
+      if (agentResult.status === "failed" && agentResult.code === "REPORT_SCHEMA_INVALID") {
+        // Best-effort observability only. A caller-supplied hook throwing must
+        // never skip finalize() below — that would leave an already-known
+        // terminal failure unpersisted and the row stuck RUNNING. This
+        // service owns that guarantee; it cannot rely solely on the concrete
+        // apps/api logger also being non-throwing (see
+        // report-validation-log.ts's own try/catch, which is defense in
+        // depth, not the boundary of record).
+        try {
+          params.onReportSchemaInvalid?.({
+            runId: started.run.id,
+            providerMode: params.providerMode,
+            modelIdentifier: params.modelIdentifier ?? null,
+            issues: agentResult.reportValidationIssues ?? [],
+          });
+        } catch {
+          // Swallowed deliberately: the hook's failure is not this run's
+          // failure, and its error must never reach a caller or a response.
+        }
       }
 
       // Resolved once, here, before finalize is ever called — see
