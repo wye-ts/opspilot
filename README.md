@@ -19,6 +19,16 @@ Render's free service may need time to wake after being idle.
 > including diagnostic tool use, structured report generation, suggested actions, approval handoff,
 > usage/cost persistence, and safe rollback to FAKE-only mode.
 
+Three distinct modes exist, and only one is public today: the **public FAKE demo** above (always
+available, no token, no cost); a **separately verified, owner-only controlled LIVE Claude run**
+(evidence linked below); and a **planned rate-limited public LIVE trial** (heavily limited,
+anonymous, server-authorized — tracked as Milestone 9 issue
+[#39](https://github.com/wye-ts/opspilot/issues/39), not yet built).
+
+The public FAKE demo was independently verified against commit `7df3d92` on 2026-08-01 — browser
+walkthrough, health checks, and persistence proof via the public API. See
+[Live demo evidence](docs/15-live-demo-evidence.md) for the full verification.
+
 ## Why this is more than a chatbot
 
 The application owns the investigation lifecycle instead of handing an unconstrained conversation
