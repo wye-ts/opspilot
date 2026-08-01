@@ -15,6 +15,10 @@ backed by Neon PostgreSQL. It intentionally defaults to the deterministic `FAKE`
 `AGENT_RUN_PROVIDER_MODE=FAKE`, `LIVE_AGENT_RUNS_ENABLED=false`, and no public paid model execution.
 Render's free service may need time to wake after being idle.
 
+> **Real-model validation:** OpsPilot completed a controlled end-to-end Claude run in production,
+> including diagnostic tool use, structured report generation, suggested actions, approval handoff,
+> usage/cost persistence, and safe rollback to FAKE-only mode.
+
 ## Why this is more than a chatbot
 
 The application owns the investigation lifecycle instead of handing an unconstrained conversation
@@ -61,6 +65,8 @@ Key engineering boundaries include:
 - a hard two-provider-turn limit and at most one diagnostic tool call per run;
 - PostgreSQL persistence for jobs, runs, ordered trace events, reports, and approval decisions;
 - fail-closed live-provider configuration and no silent provider fallback;
+- controlled real-model rollout with token protection, idempotent recovery, usage accounting,
+  strict structured-output validation, and fail-closed budget safeguards;
 - a human decision boundary before any proposed action could be acted upon;
 - deterministic unit, integration, evaluation, and Docker smoke coverage;
 - GitHub Actions, a multi-stage Docker build, startup migrations, and health checks;
@@ -138,10 +144,11 @@ switch without a token **fails startup** rather than exposing a tokenless public
 is no public tokenless mode.
 
 The public Render service sets `AGENT_RUN_PROVIDER_MODE=FAKE` and `LIVE_AGENT_RUNS_ENABLED=false`,
-declares both secrets with no values, and does not provide public paid Claude execution. **No live
-run has been executed against the deployment, so the public demo is not yet portfolio-ready for
-live evidence** — see [CI/CD and deployment](docs/08-cicd-deployment.md) §25 for the remaining
-rollout steps, each of which requires explicit owner authorization.
+declares both secrets with no values, and does not provide public paid Claude execution by default.
+A controlled, owner-authorized LIVE run has since been executed and verified against this
+deployment — see [Live validation evidence](#live-validation-evidence) — but public LIVE access
+remains disabled; see [CI/CD and deployment](docs/08-cicd-deployment.md) §25 for the remaining
+rollout steps toward broader LIVE availability, each of which requires explicit owner authorization.
 
 See [Agent Run API](docs/12-agent-run-api.md) for the request and error contracts.
 
@@ -152,6 +159,23 @@ evaluation exist in `apps/worker` and `packages/agent-runtime`; see
 [RAG Design](docs/05-rag-design.md). The public browser/API execution path does not currently
 retrieve runbooks. `apps/api` wires no runbook retriever, and `runbooks/` is excluded from the
 production image.
+
+## Live validation evidence
+
+OpsPilot was validated against a real Claude model in a controlled production rollout.
+
+- First smoke: the provider and diagnostic tool path worked, but strict report validation correctly
+  rejected a malformed report with `REPORT_SCHEMA_INVALID`.
+- Fix: aligned Claude-facing report bounds with the canonical `ResolutionReportSchema` while keeping
+  strict runtime validation and fail-closed behavior.
+- Re-test: completed successfully in LIVE mode with `get_service_status`, a persisted resolution
+  report, two suggested actions, and a pending human-approval decision.
+- Final posture: public LIVE access was disabled again and the deployed demo returned to
+  deterministic FAKE mode.
+
+Evidence:
+- [Initial LIVE smoke failure](docs/evidence/06c-live-claude-smoke-failure.md)
+- [Successful LIVE smoke re-test](docs/evidence/06c-live-claude-smoke-success.md)
 
 ## Local development
 
@@ -272,13 +296,23 @@ See [CI/CD and Deployment](docs/08-cicd-deployment.md).
 
 ## Roadmap
 
-Next:
+**Milestone 8 — Real LLM Provider Integration** ([milestone](https://github.com/wye-ts/opspilot/milestone/8)): substantially complete. Protected LIVE Claude execution, access-token protection, rate/concurrency/attempt/budget safeguards, idempotent recovery, and strict report validation are all live. The `REPORT_SCHEMA_INVALID` production issue is fixed and closed (PR [#32](https://github.com/wye-ts/opspilot/pull/32)). One issue remains open: [#25 — capture live deployment evidence and finalize portfolio documentation](https://github.com/wye-ts/opspilot/issues/25).
 
-- protect public `LIVE` execution with a shared demo access token;
-- add rate and concurrency controls plus a durable PostgreSQL daily budget;
-- add a browser `FAKE`/`LIVE` selector with model, latency, and estimated-cost display.
+**Milestone 9 — Live Investigation Timeline & Progress UX** ([milestone](https://github.com/wye-ts/opspilot/milestone/9)): upgrades the Investigation Timeline from a post-completion audit trail into the primary live execution feedback surface. Tracked as:
 
-Later:
+- [#40](https://github.com/wye-ts/opspilot/issues/40) — umbrella: upgrade the investigation timeline into a live progress tracker
+- [#34](https://github.com/wye-ts/opspilot/issues/34) — Phase A: show immediate frontend-known investigation stages
+- [#35](https://github.com/wye-ts/opspilot/issues/35) — progressively reveal report, actions, and approval after execution
+- [#39](https://github.com/wye-ts/opspilot/issues/39) — add a rate-limited public LIVE trial for portfolio visitors (blocked by #34)
+- [#36](https://github.com/wye-ts/opspilot/issues/36) — define the investigation timeline stage and event contract
+- [#37](https://github.com/wye-ts/opspilot/issues/37) — persist investigation stages and trace events incrementally (blocked by #36)
+- [#38](https://github.com/wye-ts/opspilot/issues/38) — poll active runs and resume timeline state after refresh (blocked by #37)
 
-- move long-running investigations to asynchronous execution;
-- expose real-time investigation stages after a durable execution model exists.
+Execution order: finish remaining Milestone 8 evidence cleanup (#25) → Phase A immediate feedback (#34) → validate with delayed/failure fixtures → rate-limited public LIVE trial (#39) → canonical event contract and incremental persistence (#36, #37) → polling and refresh/reconnect recovery (#38).
+
+The public LIVE trial keeps three modes distinct: `FAKE` demo (always available), a heavily-limited, server-authorized public LIVE trial (anonymous, one run/visitor/day, small global run and cost ceilings, concurrency 1), and private LIVE (existing owner access token, unchanged).
+
+Deferred (not part of Milestone 9):
+
+- [#41](https://github.com/wye-ts/opspilot/issues/41) — refresh the OpsPilot visual system, backlogged until Timeline hierarchy and interaction are validated; not yet assigned to a milestone (Milestone 10 has not been created).
+- Tabs/workspace navigation remains deferred with no active issue.

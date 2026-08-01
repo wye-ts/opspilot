@@ -2024,6 +2024,16 @@ sanitized issue list (path, code, expected/received type name, this codebase's o
 Never a value, never the raw report, never a secret, never the idempotency key — matching the
 existing `logProviderEvent` convention rather than adding a second logging shape.
 
+### Outcome
+
+The real first LIVE smoke exposed a genuine prompt/schema contract gap: strict tool-use validation
+correctly rejected a structurally well-formed but bound-violating report, rather than silently
+accepting it. Restating the shared bounds in prose alongside the sanitized diagnostic fixed the
+failure class without loosening `ResolutionReportSchema` or adding a coercion path. A second, controlled
+production LIVE re-test after the fix completed successfully — see
+[`docs/evidence/06c-live-claude-smoke-success.md`](evidence/06c-live-claude-smoke-success.md). No
+automatic paid retry was added anywhere in this fix; `ANTHROPIC_MAX_RETRIES` stays `0`.
+
 ### Interview Explanation
 
 > The bug wasn't in the schema and wasn't in the parser — it was in the gap between two things that

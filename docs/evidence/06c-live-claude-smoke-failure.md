@@ -169,3 +169,11 @@ git diff --check                                   — clean
 - No automatic or schema-repair retry was added.
 - Usage/cost accounting on a `REPORT_SCHEMA_INVALID` failure is unchanged — `finalize()` still
   persists whatever usage was observed regardless of the failure code.
+
+## Resolution
+
+A controlled production LIVE re-test performed after this fix merged (PR #32, `073bf2f`) completed
+successfully — `REPORT_SCHEMA_INVALID` did not recur. See
+[`docs/evidence/06c-live-claude-smoke-success.md`](./06c-live-claude-smoke-success.md) for the
+sanitized run evidence, what that single run does and does not prove, and confirmation that production
+ended the exercise back at the safe FAKE-only baseline.
