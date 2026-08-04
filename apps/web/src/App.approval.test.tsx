@@ -170,7 +170,7 @@ describe("App approval workflow", () => {
 
     render(<App />);
     await submitOrdinary(user);
-    await screen.findByText("Investigation timeline");
+    await screen.findByText("Agent activity");
     expect(screen.getByText("Generated report")).toBeInTheDocument();
   });
 
@@ -498,7 +498,7 @@ describe("App approval workflow", () => {
 
     render(<App />);
     await submitOrdinary(user);
-    await screen.findByText("Investigation timeline");
+    await screen.findByText("Agent activity");
 
     await screen.findByText("The database is temporarily unavailable.");
     expect(screen.getByText("Generated report")).toBeInTheDocument();

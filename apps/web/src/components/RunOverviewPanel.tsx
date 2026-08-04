@@ -13,12 +13,20 @@ export interface RunOverviewPanelProps {
   // (still loading, or the last fetch failed), never "not eligible", so this
   // panel must never invent an eligibility statement for that case.
   readonly eligibilityNote: ApprovalPresentation | null;
+  /**
+   * Whether ReportPanel is actually mounted for this run (App.tsx:
+   * `run.outcome.type !== "RUNNING"`). A jump link must never target a
+   * heading that does not exist — a RUNNING outcome renders no Generated
+   * report panel at all, so the "Jump to report" link is omitted entirely
+   * rather than pointing at nothing.
+   */
+  readonly showReportLink: boolean;
 }
 
 // Reusable "useful context" card for the Run Context Panel whenever there is
 // no active or terminal decision to show (approval === null, or NOT_ELIGIBLE).
 // Shows only run facts the API already returns — nothing invented.
-export function RunOverviewPanel({ run, trace, suggestedActionCount, eligibilityNote }: RunOverviewPanelProps) {
+export function RunOverviewPanel({ run, trace, suggestedActionCount, eligibilityNote, showReportLink }: RunOverviewPanelProps) {
   const statusPresentation = runStatusBadge(run.status);
 
   return (
@@ -87,8 +95,8 @@ export function RunOverviewPanel({ run, trace, suggestedActionCount, eligibility
       ) : null}
 
       <nav className="run-overview-nav" aria-label="Run sections">
-        <a href="#timeline-heading">Jump to timeline</a>
-        <a href="#report-heading">Jump to report</a>
+        <a href="#timeline-heading">Jump to activity</a>
+        {showReportLink ? <a href="#report-heading">Jump to report</a> : null}
       </nav>
     </section>
   );

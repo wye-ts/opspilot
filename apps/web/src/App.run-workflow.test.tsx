@@ -124,7 +124,7 @@ describe("App investigation workflow", () => {
 
     render(<App />);
     await submit(user, "Elevated error rate");
-    await screen.findByText("Investigation timeline");
+    await screen.findByText("Agent activity");
 
     const calls = apiCalls();
     expect(calls).toHaveLength(3);
@@ -145,7 +145,7 @@ describe("App investigation workflow", () => {
 
     render(<App />);
     await submit(user, "Elevated error rate");
-    await screen.findByText("Investigation timeline");
+    await screen.findByText("Agent activity");
 
     const firstCallInit = apiCalls()[0]?.[1];
     expect(firstCallInit?.body).toBe(JSON.stringify({ ticketId: `DEMO-${UUID_A}`, summary: "Elevated error rate" }));
@@ -164,7 +164,7 @@ describe("App investigation workflow", () => {
 
     render(<App />);
     await submit(user, "First reported issue");
-    await screen.findByText("Investigation timeline");
+    await screen.findByText("Agent activity");
     const firstTicketId = apiCalls()[0]?.[1]?.body as string;
 
     uuidSpy.mockReturnValueOnce(UUID_B);
@@ -194,7 +194,7 @@ describe("App investigation workflow", () => {
 
     render(<App />);
     await submit(user, "Approval demo issue", true);
-    await screen.findByText("Investigation timeline");
+    await screen.findByText("Agent activity");
 
     const firstCallInit = apiCalls()[0]?.[1];
     expect(firstCallInit?.body).toBe(JSON.stringify({ ticketId: "TICKET-APPROVAL-DEMO", summary: "Approval demo issue" }));
@@ -212,7 +212,7 @@ describe("App investigation workflow", () => {
 
     render(<App />);
     await submit(user, "Elevated error rate");
-    await screen.findByText("Investigation timeline");
+    await screen.findByText("Agent activity");
 
     expect(screen.queryByRole("textbox", { name: /ticket/i })).toBeNull();
     expect(screen.getByText(`DEMO-${UUID_A}`).tagName).toBe("DD");
@@ -232,7 +232,7 @@ describe("App investigation workflow", () => {
 
     render(<App />);
     await submit(user, "Elevated error rate");
-    await screen.findByText("Investigation timeline");
+    await screen.findByText("Agent activity");
 
     const items = screen.getAllByRole("listitem").filter((item) => item.className.includes("trace-timeline-item"));
     expect(items[0]).toHaveTextContent("Tool requested");
@@ -240,7 +240,7 @@ describe("App investigation workflow", () => {
     expect(items[2]).toHaveTextContent("Report generated");
   });
 
-  it("an ordinary run's report has zero suggested-action cards", async () => {
+  it("an ordinary run's report renders no Suggested actions section at all", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn());
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
@@ -252,9 +252,11 @@ describe("App investigation workflow", () => {
 
     render(<App />);
     await submit(user, "Elevated error rate");
-    await screen.findByText("Investigation timeline");
+    await screen.findByText("Agent activity");
 
-    expect(screen.getByText("This run produced no suggested actions.")).toBeInTheDocument();
+    // An empty suggestedActions array means the entire
+    // Suggested actions section is absent, not an empty-state message.
+    expect(screen.queryByText("Suggested actions")).toBeNull();
     expect(screen.queryByText("Draft customer reply")).toBeNull();
   });
 
@@ -284,7 +286,7 @@ describe("App investigation workflow", () => {
 
     render(<App />);
     await submit(user, "Approval demo issue", true);
-    await screen.findByText("Investigation timeline");
+    await screen.findByText("Agent activity");
 
     expect(screen.getAllByText("Draft customer reply")).toHaveLength(1);
     expect(screen.getByText("Update")).toBeInTheDocument();
@@ -303,7 +305,7 @@ describe("App investigation workflow", () => {
     await screen.findByText("The request body failed validation.");
     expect(apiCalls()).toHaveLength(1);
     expect(screen.queryByText("Investigation")).toBeNull();
-    expect(screen.queryByText("Investigation timeline")).toBeNull();
+    expect(screen.queryByText("Agent activity")).toBeNull();
   });
 
   it("a run-creation failure retains job metadata and exposes Retry Run, which retries only POST /runs", async () => {
@@ -327,7 +329,7 @@ describe("App investigation workflow", () => {
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
     await user.click(retryButton);
-    await screen.findByText("Investigation timeline");
+    await screen.findByText("Agent activity");
 
     const calls = apiCalls();
     expect(calls).toHaveLength(4);
@@ -349,7 +351,7 @@ describe("App investigation workflow", () => {
 
     render(<App />);
     await submit(user, "First reported issue");
-    await screen.findByText("Investigation timeline");
+    await screen.findByText("Agent activity");
     expect(screen.getByText("job-1")).toBeInTheDocument();
 
     let resolveSecondJob!: (value: Response) => void;
@@ -363,7 +365,7 @@ describe("App investigation workflow", () => {
     await user.type(screen.getByLabelText("Issue Summary"), "Second reported issue");
     await user.click(screen.getByRole("button", { name: "Run Investigation" }));
 
-    await waitFor(() => expect(screen.queryByText("Investigation timeline")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("Agent activity")).toBeNull());
     expect(screen.queryByText("job-1")).toBeNull();
 
     resolveSecondJob(jsonResponse(201, { data: jobResponse({ id: "job-2", ticketId: `DEMO-${UUID_B}` }) }));
@@ -425,28 +427,36 @@ describe("App investigation workflow", () => {
     expect(screen.queryByText(/Suggested actions/)).toBeNull();
   });
 
-  it("renders a RUNNING outcome with the not-yet-produced state and a working Refresh", async () => {
+  // A RUNNING outcome must never render an empty Generated
+  // report panel. Agent activity still shows (trace data exists, even if
+  // empty), and the pre-existing InvestigationSummary Refresh button — not a
+  // second ReportPanel-owned one — is the only refresh affordance.
+  it("renders a RUNNING outcome with no Generated report panel, and a working Refresh", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn());
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
-      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail({ outcome: { type: "RUNNING" } }) }))
-      .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
+      // A RUNNING outcome never triggers the approval fetch — no fourth
+      // mocked response is consumed here.
+      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail({ outcome: { type: "RUNNING" } }) }));
 
     render(<App />);
     await submit(user, "Elevated error rate");
 
-    await screen.findByText("This run has not produced a report yet.");
+    await screen.findByText("Agent activity");
+    expect(screen.queryByText("Generated report")).toBeNull();
+    expect(screen.queryByText("This run has not produced a report yet.")).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Refresh" })).toHaveLength(1);
 
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(200, { data: runDetail() }))
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
-    const refreshButtons = screen.getAllByRole("button", { name: "Refresh" });
-    await user.click(refreshButtons[0]!);
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
 
-    await screen.findByText("This run produced no suggested actions.");
+    await screen.findByText("Generated report");
+    expect(screen.queryByText("Suggested actions")).toBeNull();
   });
 
   it("a rapid double-click produces exactly one workflow submission", async () => {
@@ -463,7 +473,7 @@ describe("App investigation workflow", () => {
     await user.type(screen.getByLabelText("Issue Summary"), "Elevated error rate");
     await user.dblClick(screen.getByRole("button", { name: "Run Investigation" }));
 
-    await screen.findByText("Investigation timeline");
+    await screen.findByText("Agent activity");
     expect(apiCalls()).toHaveLength(3);
     expect(apiCalls().filter((call) => call[0] === "/v1/agent-jobs")).toHaveLength(1);
   });

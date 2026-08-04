@@ -65,8 +65,14 @@ apps/web/
       run-overview-presentation.ts, run-overview-presentation.test.ts
         (shared run-status badge mapping — PR 5C, moved out of
         InvestigationSummary so RunOverviewPanel can share it verbatim)
+    investigation-progress/
+      investigation-progress-stages.ts, investigation-progress-stages.test.ts
+        (pure stage derivation + presentation for the Progress Timeline — §6.1)
+    hooks/
+      useElapsedTime.ts, useElapsedTime.test.ts
     components/
-      InvestigationForm, InvestigationSummary, TraceTimeline, ReportPanel,
+      InvestigationForm, InvestigationSummary, InvestigationProgressTimeline (§6.1),
+      TraceTimeline ("Agent activity" heading — §6.1), ReportPanel,
       SuggestedActionCard, StatusBadge, ErrorBanner,
       ApprovalPanel, ApprovalDecisionForm,
       RunContextPanel, RunOverviewPanel, ActionRequiredBanner (PR 5C)
@@ -74,6 +80,11 @@ apps/web/
     App.run-workflow.test.tsx
     App.approval.test.tsx
     App.run-context-layout.test.tsx (PR 5C)
+    App.progress-timeline.test.tsx (§6.1)
+    App.reveal-boundaries.test.tsx (§6.3)
+    App.new-submission-reset.test.tsx (§6.1)
+    App.live-region-text.test.tsx (§9)
+    App.outcome-aware-progress.test.tsx (§6.4)
     test/setup.ts
 ```
 
@@ -105,11 +116,11 @@ The user clicks **Run Investigation** once. `App.tsx` performs the chained reque
 5. render the approval panel
 ```
 
-Step 2 is safe to treat as complete-and-final because `POST /v1/agent-jobs/:jobId/runs` is fully synchronous — it executes the whole orchestrator loop in the request handler and returns the complete terminal projection (`docs/12-agent-run-api.md` §1). No polling or background refresh is needed anywhere in this workflow, including the approval step.
+Step 2 is safe to treat as complete-and-final because `POST /v1/agent-jobs/:jobId/runs` is fully synchronous — it executes the whole orchestrator loop in the request handler and returns the complete terminal projection (`docs/12-agent-run-api.md` §1). No polling or background refresh is needed anywhere in this workflow, including the approval step. The frontend still branches on the response's `outcome.type` rather than assuming COMPLETED (§6.4) — today's backend does not produce `RUNNING` in practice, but the contract allows it, and the UI honors that rather than mis-announcing success. A `RUNNING` outcome is the one case where the existing Refresh action, not a new request the initial workflow issues itself, is how the browser would ever learn the eventual result — still not polling (#38 remains out of scope).
 
 **The approval fetch is secondary to the run result.** It never gates or unwinds the render of step 3 — the run, timeline, and report are already on the page by the time step 4 starts, and a step-4 failure leaves them exactly as they are (§8).
 
-An explicit `phase` state (`idle | creating-job | running-agent | loading-approval | refreshing-run | submitting-approval`) drives the button label ("Creating investigation…" / "Running agent…" / "Loading approval…" / "Recording decision…") and a persistent `aria-live="polite"` progress region, and disables the form and Retry Run/Refresh/decision controls for the duration of any one workflow. Race safety comes from an `AbortController` (aborts a superseded request) plus a monotonic generation counter (discards a stale response even if abort didn't land in time). The approval fetch chained after a run reuses that same signal and generation rather than starting a new workflow.
+An explicit `phase` state (`idle | checking-availability | creating-job | running-agent | loading-approval | refreshing-run | submitting-approval`) drives the button label ("Creating investigation…" / "Agent investigation in progress…" / "Loading approval state…" / "Recording decision…" — the four request-lifecycle labels sourced from `STAGE_LABELS`, §6.1/§9) and a persistent `aria-live="polite"` progress region, and disables the form and Retry Run/Refresh/decision controls for the duration of any one workflow. Race safety comes from an `AbortController` (aborts a superseded request) plus a monotonic generation counter (discards a stale response even if abort didn't land in time). The approval fetch chained after a run reuses that same signal and generation rather than starting a new workflow.
 
 ### Partial-failure behavior
 
@@ -147,7 +158,7 @@ rejection is actually observed, so:
 
 | Situation | `liveRetryPending` | What the form shows |
 |---|---|---|
-| First LIVE run in flight | `false` | Ordinary busy UI — editable summary, provider radios, "Running agent…" |
+| First LIVE run in flight | `false` | Ordinary busy UI — editable summary, provider radios, "Agent investigation in progress…" |
 | First LIVE run refused | `true` | Recover Live Run mode |
 | Recovery in flight | `true` | Recover Live Run mode, busy — it does **not** snap back to creation mode |
 | Recovery refused again | `true` | Recover Live Run mode, token cleared for re-entry |
@@ -226,8 +237,8 @@ therefore carried through the approval step and a single message is emitted:
 | `200` replayed | `PENDING` | *Recovered the original live run — no new run was started. Human approval required.* |
 | `200` replayed | anything else | *Recovered the original live run — no new run was started.* |
 | `200` replayed | the approval GET **failed** | the replay confirmation, unchanged — the approval error renders separately in the error banner |
-| `201` started | `PENDING` | *Investigation completed. Human approval required.* — unchanged from every other creation path |
-| `201` started | anything else | unchanged |
+| `201` started | `PENDING` | *Investigation complete. Human approval required.* — same canonical wording as every other creation path (§9) |
+| `201` started | anything else | *Investigation complete.* |
 
 The replay confirmation survives an approval-load failure deliberately: "no
 second paid attempt was consumed" is a fact about the run, and a failed GET
@@ -247,20 +258,97 @@ Browser code calls only relative paths (`/v1/agent-jobs`, `/v1/agent-jobs/:jobId
 
 ## 6. Timeline rendering model
 
+### 6.1 Two timelines, deliberately not one
+
+Milestone 9 Phase A (#34/#35) introduced a SECOND timeline-shaped surface, and the two are kept structurally and conceptually separate rather than merged into one component:
+
+| | **Investigation progress** | **Agent activity** |
+|---|---|---|
+| Component | `InvestigationProgressTimeline` (new) | `TraceTimeline` (unchanged, renamed heading only) |
+| Data source | Frontend-known request-lifecycle stages (`availability`\*/`job`/`run`/`approval`), derived in `investigation-progress/investigation-progress-stages.ts` | Backend-reported `AgentTraceEvent[]` (`run.trace`) |
+| Available | **Immediately** on submit, before any request has resolved | Only once `run !== null` — i.e. after the run response arrives |
+| Status vocabulary | `Pending` / `Active` / `Completed` / `Failed` — never a percentage, never advanced by a timer | Ordered, completed-only steps (no live/pending concept — the whole array arrives at once) |
+
+\* `availability` only appears for a LIVE submission.
+
+Why two components rather than one: `TraceTimeline` already existed, tested and shipped, rendering exactly `run.trace` — a POST-HOC, backend-authored list with no notion of "pending" or "in progress" (the whole array arrives already-complete, in one response). Retrofitting frontend-known PRE-run stages into it would have meant teaching one component two unrelated data shapes and two unrelated timing models. `InvestigationProgressTimeline` sits above it in the render order instead. `App.tsx`'s render order is, top to bottom: submitted-issue summary → Investigation progress → (once `run` exists) Agent activity → Generated report → Suggested actions (§6.3, §7) → Approval (§6.3, §8.3/§8.4) — and the two timelines never claim to be the same list.
+
+**Why `approval` is driven by `approvalLoadStatus`, not `phase`.** The `loading-approval` phase is reused by five different code paths in `App.tsx` (`runInvestigation`, `retryRun`, `retryLiveRunWithToken`, `refreshRun`, and the approval-decision 409-conflict re-fetch), so `phase` alone cannot tell "this investigation's approval fetch" apart from "a much later manual Refresh click or decision-conflict reload". `approvalLoadStatus` (`idle`/`loading`/`loaded`/`failed`) is set exclusively by `loadApproval()` when the caller marks that request as part of the tracked workflow.
+
+**`loadApproval(..., { trackInvestigationProgress })`.** Initial COMPLETED settlement, a COMPLETED FAKE retry, and a COMPLETED LIVE recovery pass `trackInvestigationProgress: true`. A Refresh that observes a previously RUNNING run become COMPLETED also passes `true`, because this is the first terminal settlement and first approval load for that investigation. A manual approval Refresh of an already-COMPLETED run and the 409-conflict convergence reload pass `false`: both can happen after the Progress Timeline's approval row has settled and must not rewrite it back to Active or Failed. A FAILED run never starts approval loading, including on FAILED → FAILED Refresh. Transient loading/error UI remains independent from whether the Progress Timeline records the approval request. Covered by the manual-approval-action tests in `App.progress-timeline.test.tsx` and the outcome-aware Refresh tests in `App.outcome-aware-progress.test.tsx`.
+
+**Why a failed stage survives `phase` returning to idle.** Every error path in `App.tsx` sets `phase` back to `"idle"` — the same terminal value a SUCCESS reaches — so `phase` cannot by itself answer "did this fail, and where?" A small `failedStage: InvestigationProgressStageKey | null`, set only at the exact request boundary that failed and cleared only at the start of the next submission/retry, is the one piece of state genuinely new here; everything else about the stage list (which one is active, which are completed) is derived from state that already existed (`phase`, `job`, `run`).
+
+**Why the previous investigation's visible result is cleared BEFORE the LIVE preflight, not after.** `beginNewSubmissionDisplay()` clears `job`/`run`/`approval`/`error`/`notice`/`ticketId`, retry/idempotency ownership, and the prior provider mode, then initializes the new snapshot/progress state in one call made immediately after the empty-token guard and before `refreshCapabilities()` is dispatched. Clearing only after a successful preflight would let a slow or refused preflight render the new availability stage next to the previous investigation's result. The helper is deliberately not used by `retryRun`/`retryLiveRunWithToken`, which resume an existing job and retain its retry ownership. Covered by `App.new-submission-reset.test.tsx`.
+
+**Elapsed time** is two epoch-ms timestamps, `submittedAt`/`submittedFinishedAt`, not a running interval that's paused/resumed. `submittedFinishedAt` is set at the tracked flow's first terminal outcome. Usually that happens during the initial submission or retry; when the first response is RUNNING, a later user-initiated run Refresh can observe RUNNING → COMPLETED/FAILED and freeze the timer at that first terminal observation. RUNNING → RUNNING leaves it untouched, and later Refresh/approval-decision actions cannot restart or refreeze it. `useElapsedTime(startedAt, finishedAt)` (`hooks/useElapsedTime.ts`) ticks at ~1s resolution while `finishedAt` is null and freezes the moment it is set; it is rendered as plain visible text outside the `aria-live` region (§9).
+
+**One canonical stage-label source.** `STAGE_LABELS` (`investigation-progress/investigation-progress-stages.ts`) is the ONLY place the active/completed copy for `availability`/`job`/`run`/`approval` is written. `App.tsx`'s `PHASE_LABELS` — which drives BOTH the submit button's busy text and the sole `role="status"` live region — reads its four request-lifecycle entries directly from `STAGE_LABELS`, rather than maintaining an independently-worded copy that could drift (which is exactly what had happened: the live region said "Running agent…" while the visual stage row said "Agent investigation in progress…"). `refreshing-run`/`submitting-approval`/`idle` are not "stages" and keep their own distinct text. See §9 for the terminal-success and stage-specific-failure announcement text this same module provides.
+
+### 6.2 Agent activity (formerly "Timeline")
+
 - **Ordering source:** array order of `trace`, exactly as the API returns it (`sequence_number ASC`, never re-sorted by the UI).
 - **No per-event timestamps.** `AgentTraceEventSchema` carries no time field — `sequence_number`/`created_at` exist in the database but are never mapped into the response. The timeline therefore uses 1-based step ordinals only. Real timestamps (`startedAt`/`finishedAt`/duration) appear only in the Investigation summary panel, where they are genuine.
 - **All four contract variants render:** `TOOL_REQUESTED`, `TOOL_COMPLETED`, `REPORT_GENERATED`, `RETRIEVAL_COMPLETED` (the last is currently unreachable through `apps/api`, since no retriever is wired into its tool registry — it is implemented because an exhaustive switch over the contract union requires it).
 - **Unknown-event fallback:** an event type outside the current union renders its `type` string only, never a raw payload dump.
 
+### 6.3 Data-driven reveal boundaries
+
+Every surface below `Investigation progress` reveals strictly on real data becoming available — never on a timer, an animation delay, or a fixed pacing. `App.tsx`'s exact rules:
+
+```text
+submission starts
+  -> submitted summary + Investigation progress render immediately
+
+run data exists (run !== null)
+  -> Agent activity renders (TraceTimeline over run.trace, whatever it contains)
+
+run is terminal (outcome.type !== "RUNNING") and has a report/failure to show
+  -> Generated report renders (ReportPanel — COMPLETED or FAILED; never RUNNING)
+
+run is terminal, outcome is COMPLETED, and suggestedActions is non-empty
+  -> Suggested actions renders (SuggestedActionsPanel, a separate component)
+
+the initial approval load has settled (approvalLoadStatus is "loaded" or "failed")
+  and the result is applicable (status is PENDING/APPROVED/REJECTED, not NOT_ELIGIBLE)
+  -> the ActionRequiredBanner and ApprovalPanel render, positioned after Suggested actions
+```
+
+**A `RUNNING` outcome never renders an empty Generated report panel.** `ReportPanel`'s prop type is `ReportableOutcome = Exclude<AgentRunOutcomeView, { type: "RUNNING" }>` — `App.tsx` only mounts it when `run.outcome.type !== "RUNNING"`, so the invariant is checked by the type system, not merely by convention. A RUNNING run can still be refreshed via `InvestigationSummary`'s always-present Refresh button (unconditional on outcome type) — no affordance was lost by removing `ReportPanel`'s own former RUNNING-only Refresh button.
+
+**Suggested actions is a separate, independently-gated component**, not a `<h3>` nested inside `ReportPanel`. An EMPTY `suggestedActions` array renders nothing at all — no heading, no "this run produced no suggested actions" placeholder — because `App.tsx` only mounts `SuggestedActionsPanel` when the array's length is greater than zero; there is nothing to hide with an empty-state message.
+
+**Approval-related UI moved after Suggested actions in DOM order.** `ActionRequiredBanner` used to render before the whole run-detail grid — before Agent activity, Report, and Actions. It now renders as the first child of the `<aside aria-label="Run context">` column, immediately before `RunContextPanel` — still visually adjacent to the Approve/Reject controls, but after the main column's Agent activity/Report/Suggested actions in DOM order (the aside is already a later sibling of the main column). `RunOverviewPanel` (shown while `approval` is `null` or `NOT_ELIGIBLE`) is NOT considered "approval-related" by this rule — it is general run context (status, duration, cost), always available once `run !== null`, and continues to render immediately.
+
+Proven end to end by `App.reveal-boundaries.test.tsx` (six scenarios: unresolved job/run; RUNNING with real trace data; terminal with an empty-actions report; terminal with non-empty actions; an applicable approval appearing only after its load settles, positioned after Suggested actions; the full final order with a non-empty-action, approval-applicable fixture) using controlled/deferred promises throughout — never a `setTimeout` or a snapshot of only the final state.
+
+### 6.4 Outcome-aware run progress
+
+The run stage's status — and everything gated on it — is a function of `run.outcome.type`, never of `run !== null` alone. A run object can exist with a non-terminal (`RUNNING`) or unsuccessful (`FAILED`) outcome, and treating either as "Completed" would announce a success that never happened. `deriveInvestigationProgressStages` (`investigation-progress-stages.ts`) and `App.tsx`'s shared `settleRunOutcome()` helper both branch on the actual outcome:
+
+| Outcome | Run progress stage | Elapsed timer | Approval load | Live-region announcement |
+|---|---|---|---|---|
+| `RUNNING` | **Active** — stays "Agent investigation in progress…" | Keeps ticking | Never starts | None (no terminal claim) |
+| `COMPLETED` | **Completed** | Freezes | Starts, tracked | Success (`"Investigation complete."`, plus "Human approval required." if applicable) |
+| `FAILED` | **Failed** | Freezes | Never starts | Stage-specific failure (`"Investigation failed while running the agent investigation."`) |
+
+**`RUNNING` is a legitimate, possibly long-lived state, not a bug.** Phase A adds no polling (#38 remains explicitly out of scope) — the frontend has no way to learn a `RUNNING` run has finished except the user's own click on the existing Refresh control. The submit button/form still unlocks once the outcome is known (RUNNING included), specifically so Refresh stays reachable; only the Progress Timeline's `run` row and the elapsed clock reflect "still going."
+
+**Refresh behavior depends on the previous outcome.** `refreshRun()` captures the previous outcome before replacing the run projection. A previous RUNNING outcome routes RUNNING → RUNNING/COMPLETED/FAILED through `settleRunOutcome()`: only RUNNING → COMPLETED performs the first tracked approval load, while both terminal transitions freeze elapsed time. A previous COMPLETED outcome keeps the ordinary run-plus-approval Refresh behavior, with that approval load untracked so completed progress cannot regress. A previous FAILED outcome can only remain FAILED: terminal status is immutable in the repository, so FAILED → RUNNING and FAILED → COMPLETED are unsupported domain transitions. FAILED → FAILED refreshes the run projection without loading approval and preserves the failure announcement/report. No polling or automatic resume is introduced; the only observation mechanism for a RUNNING run remains the user's existing Refresh action.
+
+**A LIVE recovery reply is outcome-aware too**, with one added wrinkle: whether the server REPLAYED an existing run (`200`) is a fact about IDEMPOTENCY, independent of that run's outcome. "Recovered the original live run — no new run was started." is shown whenever `replayed` is true — including when the recovered run turns out to be `RUNNING` (a normal, correct answer for what a finalization failure leaves behind) or `FAILED` (combined with the stage-failure text) — never only for a `COMPLETED` replay.
+
+Proven by `App.outcome-aware-progress.test.tsx` (initial RUNNING/FAILED/COMPLETED outcomes; all three Refresh transitions out of RUNNING; FAKE-retry and LIVE-recovery outcome-awareness) and the pre-existing `App.live-idempotency.test.tsx` (a RUNNING replay still announces the recovery confirmation).
+
 ---
 
 ## 7. Report and suggested-action rendering
 
-`ReportPanel` renders all three outcome shapes (`RUNNING`, `FAILED`, `COMPLETED`) and, for `COMPLETED`, every `ResolutionReport` field: category, confidence, summary, root cause, customer impact, recommended resolution, evidence, and suggested actions.
+`ReportPanel` renders the `FAILED` and `COMPLETED` outcome shapes only (§6.3 — `RUNNING` is excluded at the type level and handled by the caller). For `COMPLETED`, every `ResolutionReport` field except suggested actions: category, confidence, summary, root cause, customer impact, recommended resolution, and evidence. It takes no callback props (`onRefresh` was removed — nothing in `ReportPanel` needed it once the RUNNING branch moved out).
 
-`SuggestedActionCard` renders all three currently defined variants (`UPDATE_TICKET_STATUS`, `CREATE_ESCALATION`, `DRAFT_CUSTOMER_REPLY`) exhaustively. A `DRAFT_CUSTOMER_REPLY` body (up to 4000 characters) is rendered in full — `white-space: pre-wrap`, a bounded `max-height`, and vertical scrolling — never truncated.
+`SuggestedActionsPanel` (a sibling component, not nested in `ReportPanel`) renders the suggested-actions list via `SuggestedActionCard`, which renders all three currently defined variants (`UPDATE_TICKET_STATUS`, `CREATE_ESCALATION`, `DRAFT_CUSTOMER_REPLY`) exhaustively. A `DRAFT_CUSTOMER_REPLY` body (up to 4000 characters) is rendered in full — `white-space: pre-wrap`, a bounded `max-height`, and vertical scrolling — never truncated.
 
-**Verified:** an ordinary investigation (unchecked demo checkbox) produces zero suggested-action cards and an always-`NOT_ELIGIBLE` approval panel; checking **Approval workflow demo** (ticket `TICKET-APPROVAL-DEMO`) produces exactly one `DRAFT_CUSTOMER_REPLY` card and a `PENDING` approval panel with a decision form.
+**Verified:** an ordinary investigation (unchecked demo checkbox) produces no Suggested actions section at all and an always-`NOT_ELIGIBLE` approval panel; checking **Approval workflow demo** (ticket `TICKET-APPROVAL-DEMO`) produces a Suggested actions section with exactly one `DRAFT_CUSTOMER_REPLY` card and a `PENDING` approval panel with a decision form.
 
 ---
 
@@ -287,16 +375,18 @@ grid-template-columns: minmax(0, 1fr) minmax(18rem, 22rem);
 
 | Input | Rendered |
 |---|---|
-| `approval === null` | `RunOverviewPanel` — run facts only (status, started/finished, duration, trace-event count, suggested-action count, jump links to the timeline/report sections). **No eligibility claim of any kind** — `null` means "no approval data yet" (still loading, or the last fetch failed), never "not eligible," and conflating the two would misinform a reviewer. |
+| `approval === null` | `RunOverviewPanel` — run facts only (status, started/finished, duration, trace-event count, suggested-action count, a jump link to the Agent activity section, and a **conditional** jump link to the Generated report section). **No eligibility claim of any kind** — `null` means "no approval data yet" (still loading, or the last fetch failed), never "not eligible," and conflating the two would misinform a reviewer. |
 | `approval.status === "NOT_ELIGIBLE"` | The same `RunOverviewPanel` run facts, **plus** the reused `presentApproval("NOT_ELIGIBLE", …)` badge/copy/hint — the exact same "Approval workflow demo" hint text as before, not a duplicated string. |
 | `approval.status === "PENDING"` | `ApprovalPanel`, whose decision semantics remain unchanged, showing the one active decision form. |
 | `approval.status === "APPROVED"` / `"REJECTED"` | `ApprovalPanel`, whose decision semantics remain unchanged, showing the read-only terminal record. |
 
 `ApprovalPanel` itself needed only two small additions for this PR — `tabIndex={-1}` on its heading (§8.5) and a `className` on the terminal note `<dd>` for safe wrapping (§8.6) — its decision semantics, `201`/`200`/`409` handling, and double-submit guard are exactly as documented below, unchanged.
 
+**The "Jump to report" link is conditional** (§6.3, §6.4): `RunOverviewPanel` takes a `showReportLink: boolean` prop, passed down from `App.tsx` as `run.outcome.type !== "RUNNING"` — the exact same condition that gates `ReportPanel` itself. A jump link must never target a heading that was not rendered; for a `RUNNING` outcome (no Generated report panel at all), the link is omitted entirely rather than pointing at nothing. The "Jump to activity" link has no such condition — Agent activity is unconditional on `run !== null`.
+
 ### 8.4 The pending-decision banner
 
-A stateless `ActionRequiredBanner`, rendered by `App.tsx` only when `approval?.status === "PENDING"` (a condition derived from existing state — no new `useState`), appears between the Investigation summary and the run-detail grid:
+A stateless `ActionRequiredBanner`, rendered by `App.tsx` only when `approval?.status === "PENDING"` (a condition derived from existing state — no new `useState`). **Position:** it used to render between the Investigation summary and the run-detail grid — i.e. before Agent activity/Report — which put approval-related UI ahead of the reveal-order it now enforces (§6.3). It now renders as the first child of the `<aside aria-label="Run context">` column, immediately before `RunContextPanel` — after Agent activity, Generated report, and Suggested actions in DOM order, still visually adjacent to the Approve/Reject controls:
 
 ```tsx
 <a className="action-required-banner" href="#approval-heading">
@@ -312,11 +402,17 @@ The existing `role="status" aria-live="polite"` notice region (§4, §9) is the 
 
 | Flow | Resulting notice |
 |---|---|
-| A fresh investigation or Retry Run resolves to `PENDING` | `"Investigation completed. Human approval required."` |
-| An explicit Refresh resolves to `PENDING` | `"Run refreshed. Human approval required."` |
-| An explicit Refresh resolves to anything else | `"Run refreshed."` (unchanged) |
+| A fresh investigation or Retry Run resolves to `COMPLETED` with `PENDING` approval | `"Investigation complete. Human approval required."` |
+| A fresh investigation or Retry Run resolves to `COMPLETED` with any other approval state | `"Investigation complete."` |
+| A fresh investigation or Retry Run resolves to `RUNNING` | No terminal notice; the current stage announcement clears when the request settles. |
+| A fresh investigation or Retry Run resolves to `FAILED` | `"Investigation failed while running the agent investigation."` |
+| Refresh observes `RUNNING → COMPLETED` | The same completion notice as initial settlement, including the approval-required suffix when applicable. |
+| Refresh observes `RUNNING → RUNNING` | `"Run refreshed."` |
+| Refresh observes `RUNNING → FAILED` or `FAILED → FAILED` | `"Investigation failed while running the agent investigation."` |
+| An already-`COMPLETED` Refresh resolves to `PENDING` | `"Run refreshed. Human approval required."` |
+| An already-`COMPLETED` Refresh resolves to any other approval state | `"Run refreshed."` |
 
-`loadApproval()` returns the fetched `ApprovalView | null` (previously `void`); `runInvestigation`/`retryRun`/`refreshRun` each choose the right notice text from that return value, immediately before returning to `idle`. This is the only behavior change in `App.tsx` beyond the JSX restructure — the `phase`/race-safety/`409`-convergence logic is untouched.
+`loadApproval()` returns the fetched `ApprovalView | null`; each settlement path chooses its notice from both the run outcome and, for `COMPLETED`, that approval result. Manual approval Refresh and 409 convergence still use the same request/race-safety machinery, but their approval reads are explicitly untracked so they cannot rewrite completed investigation progress (§6.1/§6.4).
 
 ### 8.6 Long content
 
@@ -355,7 +451,11 @@ If `GET .../approval` fails — after a run completes, after Retry Run, or after
 
 ### 8.7 Test coverage
 
-Structural/DOM-order regressions are covered in `apps/web/src/App.run-context-layout.test.tsx` (banner presence per status, the banner-precedes-Run-detail-region source-order check, exactly one Approve/one Reject button while `PENDING`, the `RunContextPanel` three-way switch, all three notice-wording variants, `tabindex="-1"` on the timeline/report/approval headings, and that a long reviewer note stays a single, non-duplicated `<dd>`); `apps/web/src/run/run-overview-presentation.test.ts` covers the extracted `runStatusBadge` helper's four branches. The one `compareDocumentPosition()` assertion in that file is a structural DOM-order regression check on two elements otherwise located by `getByRole` — not a simulation of user-perceived visual order, since jsdom has no real layout engine. Real `position: sticky` behavior, no-scroll initial visibility on a real viewport, real fragment scrolling/focus, and `prefers-reduced-motion` are exactly the things jsdom cannot prove; they remain open manual-verification items (§11), not yet performed as of this implementation session, and are recorded here as such rather than assumed or claimed as done. All pre-existing suites (`App.approval.test.tsx`, `App.run-workflow.test.tsx`, `components/ApprovalPanel.test.tsx`, `components/ApprovalDecisionForm.test.tsx`, `approval/approval-presentation.test.ts`) pass unmodified — none of their assertions depend on `ApprovalPanel`'s DOM ancestry, any CSS class name, or the notice-region's exact text.
+Structural/DOM-order regressions are covered in `apps/web/src/App.run-context-layout.test.tsx` (banner presence per status, a banner-follows-Run-detail-region source-order check, exactly one Approve/one Reject button while `PENDING`, the `RunContextPanel` three-way switch, all three notice-wording variants, `tabindex="-1"` on the timeline/report/approval headings, and that a long reviewer note stays a single, non-duplicated `<dd>`); `apps/web/src/run/run-overview-presentation.test.ts` covers the extracted `runStatusBadge` helper's four branches. The one `compareDocumentPosition()` assertion in that file is a structural DOM-order regression check on two elements otherwise located by `getByRole` — not a simulation of user-perceived visual order, since jsdom has no real layout engine. Real `position: sticky` behavior, no-scroll initial visibility on a real viewport, real fragment scrolling/focus, and `prefers-reduced-motion` are exactly the things jsdom cannot prove; they remain open manual-verification items (§11), not yet performed as of this implementation session, and are recorded here as such rather than assumed or claimed as done. All pre-existing suites (`App.approval.test.tsx`, `App.run-workflow.test.tsx`, `components/ApprovalPanel.test.tsx`, `components/ApprovalDecisionForm.test.tsx`, `approval/approval-presentation.test.ts`) pass unmodified — none of their assertions depend on `ApprovalPanel`'s DOM ancestry, any CSS class name, or the notice-region's exact text.
+
+**Milestone 9 Phase A (§6.1)** adds `App.progress-timeline.test.tsx` (immediate mount, job/run/approval stage transitions via deferred-promise fixtures, a failed stage surviving `phase` returning to idle, later stages staying Pending, the four `approvalLoadStatus` states, reveal order, approval-load failure not hiding a completed report, LIVE-only availability stage, single `aria-live` region, no percentage ever rendered, Retry Run resetting stage/elapsed state, and the elapsed timer stopping on both success and failure and cleaning up on unmount — `vi.useFakeTimers()` scoped to only those three tests), plus unit-level `investigation-progress/investigation-progress-stages.test.ts` and `hooks/useElapsedTime.test.ts` for the underlying pure derivation and timer hook. The five existing suites containing "Investigation timeline" text assertions (`App.live-idempotency.test.tsx`, `App.approval.test.tsx`, `App.live-retry.test.tsx`, `App.capabilities-refresh.test.tsx`, `App.run-workflow.test.tsx`) were mechanically updated to "Agent activity" — a pure text-synchronization-point rename, no behavioral assertion changed.
+
+**Additional focused coverage** includes: `App.reveal-boundaries.test.tsx` (the six data-driven reveal-boundary scenarios, §6.3); `App.new-submission-reset.test.tsx` (new-submission ownership reset); `App.live-region-text.test.tsx` (exact live-region text and elapsed-tick isolation); and `App.outcome-aware-progress.test.tsx` (§6.4 — initial outcomes, RUNNING refresh transitions, FAILED → FAILED refresh, FAKE retry, LIVE recovery, and jump-link target integrity). `ReportPanel.test.tsx` and `SuggestedActionsPanel.test.tsx` cover their separated component responsibilities.
 
 ### 8.8 Future historical-run compatibility
 
@@ -365,7 +465,33 @@ Structural/DOM-order regressions are covered in `apps/web/src/App.run-context-la
 
 ## 9. Accessibility baseline
 
-One `<h1>`; ordered heading levels per section, including the "Approval" `<h2>` at the same level as "Generated report". Every control has a real, associated `<label>` — no placeholder-as-label, including the reviewer-name and note fields. Native `<button>`/`<textarea>`/`<input>` only, so keyboard operation works without a key handler. `role="alert"` for the error banner; a persistent `aria-live="polite"` region for workflow progress and notices, including the replay/decision-recorded notices and, since PR 5C, the pending-decision announcement (§8.5). `aria-busy` on both the investigation form and the decision form while their respective workflow is active. A visible `:focus-visible` outline. Status is never color-only — `StatusBadge` always renders a text label plus a glyph (`✓` approved, `✕` rejected, `●` pending, `—` not eligible), reused unchanged from run status. WCAG-AA-readable contrast. No horizontal page scroll at 360px width. The timeline is `<ol>`; evidence and suggested actions are `<ul>`; identifiers, report fields, and the terminal approval record are `<dl>`. Terminal approval states are visually and structurally read-only — no button is rendered at all, so there is nothing for a screen reader to announce as an editable control.
+One `<h1>`; ordered heading levels per section, including the "Approval" `<h2>` at the same level as "Generated report". Every control has a real, associated `<label>` — no placeholder-as-label, including the reviewer-name and note fields. Native `<button>`/`<textarea>`/`<input>` only, so keyboard operation works without a key handler. `role="alert"` for the error banner; a persistent `aria-live="polite"` region for workflow progress and notices, including the replay/decision-recorded notices and, since PR 5C, the pending-decision announcement (§8.5). `aria-busy` on both the investigation form and the decision form while their respective workflow is active. A visible `:focus-visible` outline. Status is never color-only — `StatusBadge` always renders a text label plus a glyph (`✓` approved/done, `✕` rejected/failed, `●` pending/active/in progress, `—` not eligible/pending), reused unchanged from run status and, since Milestone 9 Phase A, by the Investigation Progress stage rows (§6.1). WCAG-AA-readable contrast. No horizontal page scroll at 360px width. The timeline is `<ol>`; evidence and suggested actions are `<ul>`; identifiers, report fields, and the terminal approval record are `<dl>`. Terminal approval states are visually and structurally read-only — no button is rendered at all, so there is nothing for a screen reader to announce as an editable control.
+
+**Still exactly one `aria-live` region.** `InvestigationProgressTimeline` deliberately does NOT add a second one. Stage transitions ride the same shared `role="status"` notice region that already exists — this preserves the pre-existing, tested invariant (`App.live-idempotency.test.tsx`, `App.progress-timeline.test.tsx`, and `App.live-region-text.test.tsx` each assert `document.querySelectorAll("[aria-live]")` has length 1, the last with the Progress Timeline actually mounted and mid-stage).
+
+**What the live region actually announces.** It announces the CURRENT active stage and the terminal outcome — it does NOT announce every visual Completed-checkmark transition individually as its own event. Concretely, while `phase` is one of `checking-availability`/`creating-job`/`running-agent`/`loading-approval`, the region's text is exactly that stage's active label, sourced from `STAGE_LABELS` (`investigation-progress/investigation-progress-stages.ts` — the SAME source the visual Progress Timeline rows read, so the two can no longer drift the way they once did: the live region used to say "Running agent…" while the visual row said "Agent investigation in progress…"):
+
+```text
+Checking Live Claude availability…
+Creating investigation…
+Agent investigation in progress…
+Loading approval state…
+```
+
+On terminal SUCCESS, the region announces `"Investigation complete."` (reusing the `run` stage's own completed label), or `"Investigation complete. Human approval required."` when the result is an applicable PENDING approval. On terminal FAILURE of one of the three workflow-stopping stages, the region announces a concise, stage-specific message derived from the same `failedStage` metadata that drives the visual Failed badge — never the raw server/provider error text (that stays in the separate `role="alert"` `ErrorBanner`):
+
+```text
+Investigation failed while creating the investigation.
+Investigation failed while running the agent investigation.
+```
+
+(The LIVE-availability-refusal case keeps its existing, already-specific notice — "Live Claude is temporarily unavailable. No investigation job was created." — rather than a second, more generic phrase.) An approval-load failure does not stop the workflow (the report/trace stay visible, §6.3) and is announced only via the existing `ErrorBanner`, not a stage-specific live-region phrase. All of the above is asserted verbatim, per stage, in `App.live-region-text.test.tsx`.
+
+**The elapsed-time counter is deliberately NOT live-announced.** It renders as plain visible text (`.investigation-progress-elapsed`) outside the `aria-live` region, updating roughly once a second. A live region re-announcing a changing number every second would be unusable with a screen reader; only the discrete stage-label text changes (already covered by the existing notice region) are announced, not the ticking clock. No CSS transition or animation runs on the numeric value itself.
+
+**`prefers-reduced-motion`.** The one new visual transition Phase A introduces — a stage row's border-color change between Pending/Active/Completed/Failed — is disabled entirely under `prefers-reduced-motion: reduce` (`styles.css`), joining the pre-existing `scroll-behavior` guard. No stage's Pending→Active→Completed→Failed progression is itself gated on motion preference — only the visual transition between those states is.
+
+**No stolen focus.** Mounting the Progress Timeline immediately on submit does not move focus away from the control the user just activated, consistent with the pre-existing "no focus is ever forced automatically" rule.
 
 **Since PR 5C:** two named landmarks structure the run-detail page — `role="region" aria-label="Run detail"` (main reading surface) and `<aside aria-label="Run context">` (the Run Context Panel), giving screen-reader users a second, independent path to the decision beyond the visual banner. The timeline, report, and approval headings all carry `tabIndex={-1}`, making them valid native fragment-navigation targets. `html { scroll-behavior: smooth; }` is disabled under `@media (prefers-reduced-motion: reduce)`. No focus is ever forced automatically on page load or run completion — the only new focus behavior is native fragment-navigation focus triggered by an explicit click on the `Action required` banner.
 
@@ -412,8 +538,10 @@ In the browser:
    -> no "Action required" banner appears
 2. Check "Approval workflow demo" and click Run Investigation again
    -> the report shows exactly one DRAFT_CUSTOMER_REPLY suggested action
-   -> the "Action required" banner appears above the run-detail grid
-   -> the notice region reads "Investigation completed. Human approval required."
+   -> the "Action required" banner appears in the Run context column, above the
+      approval decision form (after Agent activity/Report/Suggested actions
+      in DOM order — §6.3/§8.4)
+   -> the notice region reads "Investigation complete. Human approval required."
    -> the Run Context Panel renders PENDING with the decision form, sticky on
       a desktop-width viewport
    -> clicking the banner should scroll to and focus the Approval heading — the

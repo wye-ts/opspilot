@@ -1,8 +1,8 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import type { AgentRunOutcomeView, ResolutionReport } from "../api/types";
-import { ReportPanel } from "./ReportPanel";
+import type { ResolutionReport } from "../api/types";
+import { ReportPanel, type ReportableOutcome } from "./ReportPanel";
 
 const baseReport: ResolutionReport = {
   category: "SERVICE_DEGRADATION",
@@ -17,8 +17,8 @@ const baseReport: ResolutionReport = {
 
 describe("ReportPanel", () => {
   it("renders all six report fields plus evidence for a COMPLETED outcome", () => {
-    const outcome: AgentRunOutcomeView = { type: "COMPLETED", report: baseReport };
-    render(<ReportPanel outcome={outcome} onRefresh={vi.fn()} refreshDisabled={false} />);
+    const outcome: ReportableOutcome = { type: "COMPLETED", report: baseReport };
+    render(<ReportPanel outcome={outcome} />);
 
     expect(screen.getByText(baseReport.category)).toBeInTheDocument();
     expect(screen.getByText("0.75")).toBeInTheDocument();
@@ -29,42 +29,28 @@ describe("ReportPanel", () => {
     expect(screen.getByText(/get_service_status completed successfully/)).toBeInTheDocument();
   });
 
-  it("renders one card per suggested action, all three variants", () => {
+  // Suggested actions moved to SuggestedActionsPanel — this
+  // panel no longer renders them at all, empty or not.
+  it("never renders anything about suggested actions, regardless of the report's own data", () => {
     const report: ResolutionReport = {
       ...baseReport,
-      suggestedActions: [
-        { type: "UPDATE_TICKET_STATUS", payload: { status: "RESOLVED", reason: "Fixed." } },
-        { type: "CREATE_ESCALATION", payload: { team: "platform", reason: "Needs attention.", priority: "HIGH" } },
-        { type: "DRAFT_CUSTOMER_REPLY", payload: { subject: "Update", body: "We are looking into it." } },
-      ],
+      suggestedActions: [{ type: "UPDATE_TICKET_STATUS", payload: { status: "RESOLVED", reason: "Fixed." } }],
     };
-    render(<ReportPanel outcome={{ type: "COMPLETED", report }} onRefresh={vi.fn()} refreshDisabled={false} />);
+    render(<ReportPanel outcome={{ type: "COMPLETED", report }} />);
 
-    expect(screen.getByText("Update ticket status")).toBeInTheDocument();
-    expect(screen.getByText("Create escalation")).toBeInTheDocument();
-    expect(screen.getByText("Draft customer reply")).toBeInTheDocument();
-    expect(screen.getByText("RESOLVED")).toBeInTheDocument();
-    expect(screen.getByText("platform")).toBeInTheDocument();
-    expect(screen.getByText("We are looking into it.")).toBeInTheDocument();
-  });
-
-  it("renders zero suggested actions cleanly", () => {
-    render(<ReportPanel outcome={{ type: "COMPLETED", report: baseReport }} onRefresh={vi.fn()} refreshDisabled={false} />);
-    expect(screen.getByText("This run produced no suggested actions.")).toBeInTheDocument();
+    expect(screen.queryByText(/Suggested actions/)).toBeNull();
+    expect(screen.queryByText("Update ticket status")).toBeNull();
   });
 
   it("renders failure code and message for a FAILED outcome, with no report fields", () => {
-    const outcome: AgentRunOutcomeView = { type: "FAILED", code: "RETRIEVAL_FAILED", message: "Runbook retrieval failed." };
-    render(<ReportPanel outcome={outcome} onRefresh={vi.fn()} refreshDisabled={false} />);
+    const outcome: ReportableOutcome = { type: "FAILED", code: "RETRIEVAL_FAILED", message: "Runbook retrieval failed." };
+    render(<ReportPanel outcome={outcome} />);
 
     expect(screen.getByText("RETRIEVAL_FAILED")).toBeInTheDocument();
     expect(screen.getByText("Runbook retrieval failed.")).toBeInTheDocument();
     expect(screen.queryByText(/Suggested actions/)).toBeNull();
   });
 
-  it("renders the not-yet-produced state for a RUNNING outcome", () => {
-    render(<ReportPanel outcome={{ type: "RUNNING" }} onRefresh={vi.fn()} refreshDisabled={false} />);
-    expect(screen.getByText("This run has not produced a report yet.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
-  });
+  // RUNNING is excluded at the type level now — App.tsx
+  // never mounts this component for a RUNNING outcome at all.
 });

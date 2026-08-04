@@ -148,6 +148,8 @@ html {
 
 .investigation-form,
 .investigation-summary,
+.submitted-summary,
+.investigation-progress,
 .investigation-content section {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -194,9 +196,66 @@ html {
   align-self: flex-start;
 }
 
-.investigation-summary h2 {
+.investigation-summary h2,
+.submitted-summary h2,
+.investigation-progress h2 {
   margin: 0 0 var(--space-3);
   font-size: 1.1rem;
+}
+
+.submitted-summary-details {
+  margin-bottom: var(--space-3);
+}
+
+.submitted-summary-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.investigation-progress-elapsed {
+  margin: 0 0 var(--space-4);
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+}
+
+.investigation-progress-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.investigation-progress-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  /* Only the border color changes between statuses — never a layout shift —
+     and this transition is disabled below for prefers-reduced-motion. */
+  transition: border-color 0.2s ease;
+}
+
+.investigation-progress-item--active {
+  border-color: var(--color-accent);
+}
+
+.investigation-progress-item--failed {
+  border-color: var(--color-danger-text);
+}
+
+.investigation-progress-label {
+  color: var(--color-text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .investigation-progress-item {
+    transition: none;
+  }
 }
 
 .investigation-summary-status {
