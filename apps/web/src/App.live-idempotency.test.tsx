@@ -180,7 +180,7 @@ describe("the key on the wire", () => {
     render(<App />);
 
     await submitLive(user());
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
 
     const [key] = keysSentBy(fetchMock);
     expect(key).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
@@ -197,7 +197,7 @@ describe("the key on the wire", () => {
 
     await u.type(screen.getByLabelText("Issue Summary"), SUMMARY);
     await u.click(screen.getByRole("button", { name: "Run Investigation" }));
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
 
     // A deterministic run spends nothing, so repeating one is harmless and a key
     // would be ceremony. No token header either.
@@ -215,7 +215,7 @@ describe("the key on the wire", () => {
     render(<App />);
 
     await submitLive(user());
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
 
     const call = runCreateCalls(fetchMock)[0]!;
     const key = headersOf(call)[KEY_HEADER]!;
@@ -238,7 +238,7 @@ describe("recovery repeats the key", () => {
     await submitLive(u);
     await screen.findByRole("heading", { name: "Recover Live Run" });
     await submitRecovery(u);
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
 
     const keys = keysSentBy(fetchMock);
     expect(keys).toHaveLength(2);
@@ -263,7 +263,7 @@ describe("recovery repeats the key", () => {
     await submitLive(u);
     await screen.findByRole("heading", { name: "Recover Live Run" });
     await submitRecovery(u);
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
 
     const keys = keysSentBy(fetchMock);
     expect(keys[1]).toBe(keys[0]);
@@ -307,7 +307,7 @@ describe("recovery repeats the key", () => {
     // The field is empty: the credential does not survive the failure.
     expect(screen.getByLabelText("Live demo access token")).toHaveValue("");
     await submitRecovery(u, RECOVERY_TOKEN);
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
 
     const calls = runCreateCalls(fetchMock);
     // The token is FRESH; the key is the SAME. Reusing the credential is what the
@@ -330,7 +330,7 @@ describe("recovery repeats the key", () => {
     await submitLive(u);
     await screen.findByRole("heading", { name: "Recover Live Run" });
     await submitRecovery(u);
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
 
     // Exactly one POST /v1/agent-jobs across both attempts, so exactly one
     // ticket id was ever generated — the id is minted by that call and nowhere
@@ -358,7 +358,7 @@ describe("what a replay looks like to the user", () => {
     await screen.findByRole("heading", { name: "Recover Live Run" });
     await submitRecovery(u);
 
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
     // Recovery is over: the form is back to the ordinary creation form.
     expect(screen.queryByRole("heading", { name: "Recover Live Run" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Recover Live Run" })).toBeNull();
@@ -399,7 +399,7 @@ describe("what a replay looks like to the user", () => {
     await screen.findByRole("heading", { name: "Recover Live Run" });
     await submitRecovery(u);
 
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
     expect(screen.queryByRole("heading", { name: "Recover Live Run" })).toBeNull();
     expect(screen.getAllByText("COMPLETED").length).toBeGreaterThan(0);
   });
@@ -417,7 +417,7 @@ describe("what a replay looks like to the user", () => {
     await submitLive(u);
     await screen.findByRole("heading", { name: "Recover Live Run" });
     await submitRecovery(u);
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
 
     // 201 means the recovery DID start the run — the first attempt never got
     // that far. Claiming otherwise would be the mirror-image lie.
@@ -454,7 +454,7 @@ describe("the notice when a replay meets an approval", () => {
     await submitLive(u);
     await screen.findByRole("heading", { name: "Recover Live Run" });
     await submitRecovery(u);
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
   }
 
   it("says BOTH things when a replayed run also needs approval", async () => {
@@ -509,7 +509,7 @@ describe("the notice when a replay meets an approval", () => {
     await waitFor(() => {
       expect(statusRegion()).toHaveTextContent(/human approval required/i);
     });
-    expect(statusRegion()).toHaveTextContent(/investigation completed/i);
+    expect(statusRegion()).toHaveTextContent(/investigation complete/i);
     // 201 did create the run, so it must not claim otherwise.
     expect(statusRegion()).not.toHaveTextContent(/no new run was started/i);
   });
@@ -550,7 +550,7 @@ describe("the key's lifetime", () => {
     );
 
     await submitLive(u);
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
 
     const keys = keysSentBy(fetchMock);
     expect(keys).toHaveLength(2);
@@ -573,7 +573,7 @@ describe("the key's lifetime", () => {
     const u = user();
 
     await submitLive(u);
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
     await submitLive(u);
     await waitFor(() => expect(runCreateCalls(fetchMock)).toHaveLength(2));
 
@@ -594,7 +594,7 @@ describe("the key's lifetime", () => {
     await submitLive(u);
     await screen.findByRole("heading", { name: "Recover Live Run" });
     await submitRecovery(u);
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
 
     const key = keysSentBy(fetchMock)[0]!;
     // The key is NOT a credential, and the design does not pretend it is — but it

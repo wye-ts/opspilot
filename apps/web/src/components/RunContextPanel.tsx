@@ -8,6 +8,8 @@ export interface RunContextPanelProps {
   readonly trace: readonly AgentTraceEvent[];
   readonly approval: ApprovalView | null;
   readonly suggestedActionCount: number;
+  /** Whether ReportPanel is actually mounted for this run — see RunOverviewPanel. */
+  readonly showReportLink: boolean;
   readonly decisionDisabled: boolean;
   readonly submittingDecision: boolean;
   readonly onDecide: (input: RecordApprovalDecisionInput) => void;
@@ -23,12 +25,21 @@ export function RunContextPanel({
   trace,
   approval,
   suggestedActionCount,
+  showReportLink,
   decisionDisabled,
   submittingDecision,
   onDecide,
 }: RunContextPanelProps) {
   if (approval === null) {
-    return <RunOverviewPanel run={run} trace={trace} suggestedActionCount={suggestedActionCount} eligibilityNote={null} />;
+    return (
+      <RunOverviewPanel
+        run={run}
+        trace={trace}
+        suggestedActionCount={suggestedActionCount}
+        showReportLink={showReportLink}
+        eligibilityNote={null}
+      />
+    );
   }
 
   if (approval.status === "NOT_ELIGIBLE") {
@@ -37,6 +48,7 @@ export function RunContextPanel({
         run={run}
         trace={trace}
         suggestedActionCount={suggestedActionCount}
+        showReportLink={showReportLink}
         // Reuses the existing presentation seam rather than duplicating its
         // copy/hint into a second hand-written string.
         eligibilityNote={presentApproval("NOT_ELIGIBLE", suggestedActionCount)}

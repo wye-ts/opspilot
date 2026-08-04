@@ -1,27 +1,24 @@
 import type { AgentRunOutcomeView } from "../api/types";
-import { SuggestedActionCard } from "./SuggestedActionCard";
+
+// RUNNING is excluded at the type level, not just gated at the call site —
+// App.tsx never passes it, and this makes that invariant checked rather than
+// merely conventional.
+export type ReportableOutcome = Exclude<AgentRunOutcomeView, { readonly type: "RUNNING" }>;
 
 export interface ReportPanelProps {
-  readonly outcome: AgentRunOutcomeView;
-  readonly onRefresh: () => void;
-  readonly refreshDisabled: boolean;
+  readonly outcome: ReportableOutcome;
 }
 
-// Renders all three outcome shapes. COMPLETED renders every ResolutionReport
-// field the contract defines — nothing invented, nothing omitted.
-export function ReportPanel({ outcome, onRefresh, refreshDisabled }: ReportPanelProps) {
-  if (outcome.type === "RUNNING") {
-    return (
-      <section className="report-panel" aria-labelledby="report-heading">
-        <h2 id="report-heading" tabIndex={-1}>Generated report</h2>
-        <p>This run has not produced a report yet.</p>
-        <button type="button" onClick={onRefresh} disabled={refreshDisabled}>
-          Refresh
-        </button>
-      </section>
-    );
-  }
-
+// Renders the COMPLETED and FAILED outcome shapes only. RUNNING is handled
+// by the caller (App.tsx): a RUNNING outcome must never render an empty
+// "Generated report" panel at all, not even a placeholder — Phase A has no
+// polling, so the report may legitimately not exist yet. (A RUNNING run can
+// still be refreshed via InvestigationSummary's always-present Refresh
+// button, so no affordance is lost.)
+//
+// Suggested actions are a SEPARATE component (SuggestedActionsPanel) with
+// its own gating — this panel never renders them.
+export function ReportPanel({ outcome }: ReportPanelProps) {
   if (outcome.type === "FAILED") {
     return (
       <section className="report-panel" aria-labelledby="report-heading">
@@ -82,19 +79,6 @@ export function ReportPanel({ outcome, onRefresh, refreshDisabled }: ReportPanel
           {report.evidence.map((item) => (
             <li key={item.evidenceId}>
               <span className="mono">{item.sourceType}</span> — {item.finding}
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <h3>Suggested actions</h3>
-      {report.suggestedActions.length === 0 ? (
-        <p>This run produced no suggested actions.</p>
-      ) : (
-        <ul className="report-panel-actions">
-          {report.suggestedActions.map((action, index) => (
-            <li key={index}>
-              <SuggestedActionCard action={action} />
             </li>
           ))}
         </ul>
