@@ -142,7 +142,9 @@ describe("Run Context Panel layout", () => {
     expect(banner).toHaveAttribute("href", "#approval-heading");
   });
 
-  it("the banner precedes the named Run detail region in DOM order", async () => {
+  // Approval-related UI (the banner included) must follow Agent activity,
+  // Generated report, and Suggested actions in DOM order.
+  it("the banner follows the named Run detail region in DOM order", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn());
     vi.mocked(fetch)
@@ -157,7 +159,7 @@ describe("Run Context Panel layout", () => {
 
     const banner = screen.getByRole("link", { name: /action required/i });
     const runDetailRegion = screen.getByRole("region", { name: /run detail/i });
-    expect(banner.compareDocumentPosition(runDetailRegion) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(runDetailRegion.compareDocumentPosition(banner) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("NOT_ELIGIBLE does not render the Action required banner", async () => {
@@ -404,7 +406,7 @@ describe("Run Context Panel layout", () => {
     await screen.findByText("Pending");
 
     await waitFor(() =>
-      expect(screen.getByRole("status")).toHaveTextContent("Investigation completed. Human approval required."),
+      expect(screen.getByRole("status")).toHaveTextContent("Investigation complete. Human approval required."),
     );
   });
 
@@ -429,7 +431,7 @@ describe("Run Context Panel layout", () => {
     await user.click(retryButton);
 
     await waitFor(() =>
-      expect(screen.getByRole("status")).toHaveTextContent("Investigation completed. Human approval required."),
+      expect(screen.getByRole("status")).toHaveTextContent("Investigation complete. Human approval required."),
     );
   });
 

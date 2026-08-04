@@ -199,7 +199,7 @@ describe("a stale AVAILABLE is caught by the preflight", () => {
     expect(investigationCalls(fetchMock)).toHaveLength(0);
     expect(randomUUID).not.toHaveBeenCalled();
     // And emphatically no silent downgrade.
-    expect(screen.queryByRole("heading", { name: "Investigation timeline" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Agent activity" })).toBeNull();
   });
 
   it("disables the LIVE option after the refused preflight", async () => {
@@ -230,7 +230,7 @@ describe("a stale AVAILABLE is caught by the preflight", () => {
 
     await u.type(screen.getByLabelText("Issue Summary"), SUMMARY);
     await u.click(screen.getByRole("button", { name: "Run Investigation" }));
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
 
     // The deterministic demo runs whatever LIVE availability says, and it does
     // not spend a capability read to do it: one at mount, none for the run.
@@ -305,7 +305,7 @@ describe("a completed LIVE run refreshes availability", () => {
     await u.type(screen.getByLabelText("Live demo access token"), TOKEN);
     await u.click(screen.getByRole("button", { name: "Run Investigation" }));
 
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
     // The post-terminal refresh reports the day is now closed.
     await waitFor(() => expect(liveRadio()).toBeDisabled());
     // The run itself is untouched by that refresh.
@@ -368,7 +368,7 @@ describe("retained-job recovery ignores the capability snapshot", () => {
     expect(screen.getByRole("button", { name: "Recover Live Run" })).toBeEnabled();
     await u.click(screen.getByRole("button", { name: "Recover Live Run" }));
 
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
 
     // The request WAS sent, carried the original key, and the token was fresh.
     const creates = runCreates(fetchMock);
@@ -402,7 +402,7 @@ describe("retained-job recovery ignores the capability snapshot", () => {
     await u.type(screen.getByLabelText("Live demo access token"), "second-entry");
     await u.click(screen.getByRole("button", { name: "Recover Live Run" }));
 
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
     await screen.findByText(/no new run was started/i);
     expect(screen.queryByRole("heading", { name: "Recover Live Run" })).toBeNull();
   });
@@ -502,7 +502,7 @@ describe("retained-job recovery ignores the capability snapshot", () => {
 
     await u.type(screen.getByLabelText("Live demo access token"), "second-entry");
     await u.click(screen.getByRole("button", { name: "Recover Live Run" }));
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
 
     const sinceClick = fetchMock.mock.calls.slice(beforeRecovery).map((call) => String(call[0]));
     const runPost = sinceClick.findIndex((url) => url.includes("/runs"));
@@ -515,7 +515,7 @@ describe("retained-job recovery ignores the capability snapshot", () => {
     // reports, it does not gate.
     await waitFor(() => expect(capabilityCalls(fetchMock).length).toBeGreaterThan(capabilitiesBefore));
     // The recovered run is untouched by it.
-    expect(screen.getByRole("heading", { name: "Investigation timeline" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Agent activity" })).toBeInTheDocument();
   });
 
   it("keeps recovery usable across a focus refresh that reports AVAILABLE again", async () => {
@@ -544,7 +544,7 @@ describe("retained-job recovery ignores the capability snapshot", () => {
     await u.type(screen.getByLabelText("Live demo access token"), "third-entry");
     expect(screen.getByRole("button", { name: "Recover Live Run" })).toBeEnabled();
     await u.click(screen.getByRole("button", { name: "Recover Live Run" }));
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
 
     expect(runCreates(fetchMock)).toHaveLength(2);
     const headers = (runCreates(fetchMock)[1]![1] as RequestInit).headers as Record<string, string>;
@@ -603,9 +603,9 @@ describe("a refresh failure never disturbs the primary result", () => {
     await u.click(screen.getByRole("button", { name: "Run Investigation" }));
 
     // The run is rendered and STAYS rendered...
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
     await waitFor(() => expect(liveRadio()).toBeDisabled());
-    expect(screen.getByRole("heading", { name: "Investigation timeline" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Agent activity" })).toBeInTheDocument();
 
     // ...and the failure is not narrated to the user.
     expect(screen.queryByText(/network down/i)).toBeNull();
@@ -795,7 +795,7 @@ describe("cleanup", () => {
 
     await u.type(screen.getByLabelText("Issue Summary"), SUMMARY);
     await u.click(screen.getByRole("button", { name: "Run Investigation" }));
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Running agent…"));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Agent investigation in progress…"));
 
     window.dispatchEvent(new Event("focus"));
     await waitFor(() => expect(capabilityCalls(fetchMock)).toHaveLength(2));
@@ -804,6 +804,6 @@ describe("cleanup", () => {
     pendingRun.resolve(
       jsonResponse(201, { data: { ...liveRunDetail(), run: { ...liveRunDetail().run, providerMode: "FAKE" } } }),
     );
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
   });
 });

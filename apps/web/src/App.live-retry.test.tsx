@@ -211,7 +211,7 @@ describe("LIVE partial failure — the retained job", () => {
     // The job survived...
     expect(screen.getAllByText(JOB_ID).length).toBeGreaterThan(0);
     // ...no run was produced...
-    expect(screen.queryByRole("heading", { name: "Investigation timeline" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Agent activity" })).toBeNull();
     // ...and the form now offers the dedicated retry, not a new investigation.
     expect(screen.getByRole("heading", { name: "Recover Live Run" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Recover Live Run" })).toBeInTheDocument();
@@ -331,7 +331,7 @@ describe("LIVE retry — outcomes", () => {
     await screen.findByRole("heading", { name: "Recover Live Run" });
     await submitRetry(u);
 
-    await screen.findByRole("heading", { name: "Investigation timeline" });
+    await screen.findByRole("heading", { name: "Agent activity" });
     // Approval was fetched for the new run.
     expect(
       fetchMock.mock.calls.some((call) => String(call[0]) === "/v1/agent-runs/run-1/approval"),
@@ -420,7 +420,7 @@ describe("an in-flight first LIVE run is not treated as a failure", () => {
     // The job has been created and is on screen...
     await waitFor(() => expect(screen.getAllByText(JOB_ID).length).toBeGreaterThan(0));
     // ...the run request is still outstanding...
-    // The progress region specifically: "Running agent…" is also the submit
+    // The progress region specifically: "Agent investigation in progress…" is also the submit
     // button's label while busy, so a bare text query matches twice.
     //
     // A longer timeout than the 1s default: these tests hold a response open
@@ -428,7 +428,7 @@ describe("an in-flight first LIVE run is not treated as a failure", () => {
     // before this point can approach that default. Raising the wait does not
     // weaken the assertion — the condition is unchanged — it just stops a slow
     // machine from reading as a failure.
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Running agent…"), {
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Agent investigation in progress…"), {
       timeout: 5_000,
     });
 
@@ -451,7 +451,7 @@ describe("an in-flight first LIVE run is not treated as a failure", () => {
     const u = user();
 
     await submitLive(u);
-    // The progress region specifically: "Running agent…" is also the submit
+    // The progress region specifically: "Agent investigation in progress…" is also the submit
     // button's label while busy, so a bare text query matches twice.
     //
     // A longer timeout than the 1s default: these tests hold a response open
@@ -459,7 +459,7 @@ describe("an in-flight first LIVE run is not treated as a failure", () => {
     // before this point can approach that default. Raising the wait does not
     // weaken the assertion — the condition is unchanged — it just stops a slow
     // machine from reading as a failure.
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Running agent…"), {
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Agent investigation in progress…"), {
       timeout: 5_000,
     });
 
@@ -477,7 +477,7 @@ describe("an in-flight first LIVE run is not treated as a failure", () => {
     const u = user();
 
     await submitLive(u);
-    // The progress region specifically: "Running agent…" is also the submit
+    // The progress region specifically: "Agent investigation in progress…" is also the submit
     // button's label while busy, so a bare text query matches twice.
     //
     // A longer timeout than the 1s default: these tests hold a response open
@@ -485,7 +485,7 @@ describe("an in-flight first LIVE run is not treated as a failure", () => {
     // before this point can approach that default. Raising the wait does not
     // weaken the assertion — the condition is unchanged — it just stops a slow
     // machine from reading as a failure.
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Running agent…"), {
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Agent investigation in progress…"), {
       timeout: 5_000,
     });
     expect(screen.queryByRole("heading", { name: "Recover Live Run" })).toBeNull();
@@ -540,7 +540,7 @@ describe("an in-flight first LIVE run is not treated as a failure", () => {
     await submitRetry(u);
 
     // Still in retry mode, still busy.
-    // The progress region specifically: "Running agent…" is also the submit
+    // The progress region specifically: "Agent investigation in progress…" is also the submit
     // button's label while busy, so a bare text query matches twice.
     //
     // A longer timeout than the 1s default: these tests hold a response open
@@ -548,7 +548,7 @@ describe("an in-flight first LIVE run is not treated as a failure", () => {
     // before this point can approach that default. Raising the wait does not
     // weaken the assertion — the condition is unchanged — it just stops a slow
     // machine from reading as a failure.
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Running agent…"), {
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Agent investigation in progress…"), {
       timeout: 5_000,
     });
     expect(screen.getByRole("heading", { name: "Recover Live Run" })).toBeInTheDocument();

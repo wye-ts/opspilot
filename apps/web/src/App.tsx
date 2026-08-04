@@ -19,10 +19,22 @@ import type {
 import { ActionRequiredBanner } from "./components/ActionRequiredBanner";
 import { ErrorBanner, type DisplayableError } from "./components/ErrorBanner";
 import { InvestigationForm, type InvestigationFormSubmission } from "./components/InvestigationForm";
+import { InvestigationProgressTimeline } from "./components/InvestigationProgressTimeline";
 import { InvestigationSummary } from "./components/InvestigationSummary";
 import { ReportPanel } from "./components/ReportPanel";
 import { RunContextPanel } from "./components/RunContextPanel";
+import { SuggestedActionsPanel } from "./components/SuggestedActionsPanel";
 import { TraceTimeline } from "./components/TraceTimeline";
+import { useElapsedTime, formatElapsed } from "./hooks/useElapsedTime";
+import {
+  deriveInvestigationProgressStages,
+  stageFailureAnnouncement,
+  investigationCompleteAnnouncement,
+  APPROVAL_REQUIRED_ANNOUNCEMENT,
+  STAGE_LABELS,
+  type ApprovalLoadStatus,
+  type InvestigationProgressStageKey,
+} from "./investigation-progress/investigation-progress-stages";
 
 type Phase =
   | "idle"
@@ -33,6 +45,13 @@ type Phase =
   | "refreshing-run"
   | "submitting-approval";
 
+/**
+ * The four request-lifecycle phases below read their text from
+ * `STAGE_LABELS` (investigation-progress-stages.ts) — ONE canonical
+ * stage-label source for the visual Progress Timeline, the submit button's
+ * busy copy, and the sole `role="status"` live region, rather than three
+ * independently-worded copies of the same idea that could drift apart.
+ */
 const PHASE_LABELS: Record<Phase, string> = {
   idle: "Run Investigation",
   /**
@@ -46,10 +65,10 @@ const PHASE_LABELS: Record<Phase, string> = {
    * never cleared and the form stayed locked against every later submission,
    * with the token still in the field.
    */
-  "checking-availability": "Checking availability…",
-  "creating-job": "Creating investigation…",
-  "running-agent": "Running agent…",
-  "loading-approval": "Loading approval…",
+  "checking-availability": STAGE_LABELS.availability.active,
+  "creating-job": STAGE_LABELS.job.active,
+  "running-agent": STAGE_LABELS.run.active,
+  "loading-approval": STAGE_LABELS.approval.active,
   "refreshing-run": "Refreshing…",
   "submitting-approval": "Recording decision…",
 };
@@ -173,6 +192,33 @@ export function App() {
    * which no prop-driven effect would clear.
    */
   const [formResetKey, setFormResetKey] = useState(0);
+  /**
+   * The submitted issue/provider snapshot — captured once, before the first
+   * request of a submission, and kept until the user explicitly starts a new
+   * investigation. Distinct from `job`/`run`: this exists to satisfy "the
+   * submitted issue and provider selection remain visible" even in the window
+   * BEFORE `job` exists (during the LIVE preflight or job creation itself),
+   * which no existing state could answer.
+   */
+  const [submittedSummary, setSubmittedSummary] = useState<{
+    readonly summary: string;
+    readonly providerMode: "FAKE" | "LIVE";
+  } | null>(null);
+  // Epoch ms. `submittedAt` starts the elapsed clock; `submittedFinishedAt`
+  // freezes it. Both are reset together at the start of every tracked
+  // submission/retry. Refresh can freeze the clock only when it observes the
+  // current RUNNING run's first terminal outcome; later refresh and approval
+  // actions never restart or refreeze the measurement.
+  const [submittedAt, setSubmittedAt] = useState<number | null>(null);
+  const [submittedFinishedAt, setSubmittedFinishedAt] = useState<number | null>(null);
+  // Set ONLY at the exact request boundary that failed, because `phase`
+  // returns to "idle" on both success and failure and so cannot by itself
+  // tell the Progress Timeline which stage — if any — actually stopped.
+  const [failedStage, setFailedStage] = useState<InvestigationProgressStageKey | null>(null);
+  // See investigation-progress-stages.ts: driven only by the approval fetch
+  // itself, never by `phase`, since `loading-approval` is also reused by
+  // refreshRun and the approval-decision 409-convergence path.
+  const [approvalLoadStatus, setApprovalLoadStatus] = useState<ApprovalLoadStatus>("idle");
 
   const controllerRef = useRef<AbortController | null>(null);
   const generationRef = useRef(0);
@@ -293,16 +339,30 @@ export function App() {
   // right accessible-notice wording for their own flow (see runInvestigation/
   // retryRun/refreshRun) without this function needing to know which flow
   // called it.
+  //
+  // `trackInvestigationProgress` exists because `loading-approval` is a real
+  // GET issued by FIVE different call sites: the initial submission, a FAKE
+  // retry, a LIVE recovery, a manual Refresh, and the 409-conflict
+  // convergence reload. Only the first three (plus a Refresh that discovers
+  // a RUNNING run's first terminal outcome) are steps of "completing THIS
+  // investigation" — an ORDINARY manual Refresh or a 409 reload can happen
+  // long after the Progress Timeline already reads Completed, and must not
+  // flip it back to Active or Failed. Only call sites that are part of the
+  // tracked workflow pass `true`.
   async function loadApproval(
     runId: string,
     signal: AbortSignal,
     generation: number,
-    options: { readonly reportError: boolean },
+    options: { readonly reportError: boolean; readonly trackInvestigationProgress: boolean },
   ): Promise<ApprovalView | null> {
+    if (options.trackInvestigationProgress) setApprovalLoadStatus("loading");
     try {
       const result = await getApproval(runId, signal);
       if (isStale(generation)) return null;
       setApproval(result.data);
+      // A LOADED read, including a NOT_ELIGIBLE result — "loaded" means the
+      // fetch itself succeeded, never a claim about the returned status.
+      if (options.trackInvestigationProgress) setApprovalLoadStatus("loaded");
       return result.data;
     } catch (thrown) {
       if (isAbortError(thrown) || isStale(generation)) return null;
@@ -313,8 +373,88 @@ export function App() {
       // reportError: false is the 409-convergence path — the server's 409
       // message stays on screen instead of being overwritten by this GET's
       // error, and `approval` is left untouched rather than inventing state.
+      if (options.trackInvestigationProgress) setApprovalLoadStatus("failed");
       return null;
     }
+  }
+
+  /**
+   * Clears EVERY piece of state that belongs to the PREVIOUS investigation —
+   * visible result, error/progress/elapsed display, and ownership of the
+   * retry/idempotency machinery — and initializes the NEW submission's
+   * snapshot/progress state. Called before ANY request of a fresh
+   * submission, including the LIVE preflight, so a slow or refused preflight
+   * is never shown next to a stale prior run's full result.
+   *
+   * `activeProviderMode` and `liveRequestKey` are reset HERE rather than
+   * later in `runInvestigation` specifically so nothing between this call and
+   * the eventual `startAgentRun` request can read a value that still belongs
+   * to the investigation being replaced.
+   *
+   * Deliberately NOT used by retryRun/retryLiveRunWithToken: those resume an
+   * EXISTING job and must keep it — and `liveRequestKey`/`liveRetryPending`
+   * with it — intact. This helper is only for a genuinely new submission.
+   */
+  function beginNewSubmissionDisplay(submission: { readonly summary: string; readonly providerMode: "FAKE" | "LIVE" }) {
+    setTicketId(null);
+    setJob(null);
+    setRun(null);
+    setApproval(null);
+    setError(null);
+    setNotice(null);
+    setLiveRetryPending(false);
+    setLiveRequestKey(null);
+    setActiveProviderMode(submission.providerMode);
+    setSubmittedSummary({ summary: submission.summary, providerMode: submission.providerMode });
+    setSubmittedAt(Date.now());
+    setSubmittedFinishedAt(null);
+    setFailedStage(null);
+    setApprovalLoadStatus("idle");
+  }
+
+  /**
+   * Settles the Progress Timeline and elapsed timer according to a run's
+   * ACTUAL outcome, never assuming success from the run merely existing.
+   *
+   * Shared by every place a run can first be observed to have settled: the
+   * initial submission, a FAKE retry, a LIVE recovery, and — when a
+   * previously-RUNNING run is refreshed — the existing Refresh action. Phase A
+   * has no polling (#38 is out of scope), so a `RUNNING` outcome is a legitimate,
+   * possibly long-lived state: the run stage stays Active, the elapsed clock
+   * keeps ticking, and neither approval loading nor a terminal announcement
+   * starts. Only the caller decides what phase/notice to show for a
+   * non-COMPLETED outcome — this function owns only the progress/timer/
+   * approval-loading side effects that must not be duplicated per call site.
+   */
+  async function settleRunOutcome(
+    settledRun: AgentRunDetail,
+    signal: AbortSignal,
+    generation: number,
+  ): Promise<
+    | { readonly outcome: "COMPLETED"; readonly loadedApproval: ApprovalView | null }
+    | { readonly outcome: "FAILED" | "RUNNING" | "STALE" }
+  > {
+    if (settledRun.outcome.type === "RUNNING") {
+      return { outcome: "RUNNING" };
+    }
+    if (settledRun.outcome.type === "FAILED") {
+      // The run REQUEST succeeded — this is the agent's own outcome, not a
+      // transport failure, so it is announced here (not via ErrorBanner) and
+      // never marked via `failedStage`, which is reserved for HTTP-level
+      // failures. `deriveInvestigationProgressStages` reads this directly
+      // from `runOutcomeType`.
+      setNotice(stageFailureAnnouncement("run"));
+      setSubmittedFinishedAt(Date.now());
+      return { outcome: "FAILED" };
+    }
+    setPhase("loading-approval");
+    const loadedApproval = await loadApproval(settledRun.run.id, signal, generation, {
+      reportError: true,
+      trackInvestigationProgress: true,
+    });
+    if (isStale(generation)) return { outcome: "STALE" };
+    setSubmittedFinishedAt(Date.now());
+    return { outcome: "COMPLETED", loadedApproval };
   }
 
   async function runInvestigation(submission: InvestigationFormSubmission) {
@@ -347,7 +487,22 @@ export function App() {
         setNotice("A live demo access token is required for a live run.");
         return;
       }
+    }
 
+    /**
+     * DISPLAY RESET, after the token guard but BEFORE the LIVE preflight.
+     *
+     * Placed here specifically so that even an availability REFUSAL is
+     * visible in a mounted Progress Timeline, next to NOTHING from the prior
+     * investigation — capturing it only after a successful preflight would
+     * mean the one stage most likely to fail (LIVE availability) rendered
+     * next to the previous run's still-visible job/report/approval. An
+     * empty-token submission above never reaches this line, so it never
+     * mounts a Progress Timeline for a request that was never sent.
+     */
+    beginNewSubmissionDisplay(submission);
+
+    if (submission.providerMode === "LIVE") {
       // Phase FIRST, then the await — see PHASE_LABELS["checking-availability"].
       setPhase("checking-availability");
       const fresh = await refreshCapabilities();
@@ -356,8 +511,9 @@ export function App() {
         // createAgentJob, no startAgentRun — and emphatically no silent
         // downgrade to FAKE. The form has already been switched to the
         // fail-closed state by refreshCapabilities.
-        setError(null);
         setNotice("Live Claude is temporarily unavailable. No investigation job was created.");
+        setFailedStage("availability");
+        setSubmittedFinishedAt(Date.now());
         // Back to idle, completing the busy edge: the form unlocks and the token
         // clears, exactly as it does after any other terminal outcome.
         setPhase("idle");
@@ -396,19 +552,11 @@ export function App() {
         : {}),
       ...(requestKey !== null ? { idempotencyKey: requestKey } : {}),
     };
-    // Only the mode is remembered, so a later retry repeats the user's choice
-    // without the credential that authorized the original.
-    setActiveProviderMode(submission.providerMode);
 
+    // job/run/approval/error/notice/liveRetryPending/activeProviderMode/
+    // liveRequestKey were already reset by beginNewSubmissionDisplay() above,
+    // before the LIVE preflight — not here.
     setTicketId(nextTicketId);
-    setJob(null);
-    setRun(null);
-    setApproval(null);
-    setError(null);
-    setNotice(null);
-    // A fresh investigation is never a recovery. Cleared up front so the window
-    // between job creation and the run resolving shows the ORDINARY busy UI.
-    setLiveRetryPending(false);
     setPhase("creating-job");
 
     let createdJob: AgentJobResponse;
@@ -420,6 +568,11 @@ export function App() {
     } catch (thrown) {
       if (isAbortError(thrown) || isStale(generation)) return;
       setError(toDisplayableError(thrown));
+      // Concise, stage-specific — same canonical source as the visual Failed
+      // badge, never the raw server/provider message.
+      setNotice(stageFailureAnnouncement("job"));
+      setFailedStage("job");
+      setSubmittedFinishedAt(Date.now());
       setPhase("idle");
       return;
     }
@@ -454,16 +607,26 @@ export function App() {
         // gate the recovery, which sends regardless (see retryLiveRunWithToken).
         void refreshCapabilities();
       }
+      setNotice(stageFailureAnnouncement("run"));
+      setFailedStage("run");
+      setSubmittedFinishedAt(Date.now());
       setPhase("idle");
       return;
     }
 
-    setPhase("loading-approval");
-    const loadedApproval = await loadApproval(createdRun.run.id, signal, generation, { reportError: true });
-    if (isStale(generation)) return;
-    if (loadedApproval?.status === "PENDING") {
-      setNotice("Investigation completed. Human approval required.");
+    // Outcome-aware: a RUNNING agent outcome stays Active indefinitely (no
+    // polling in Phase A — #38 is out of scope) and a FAILED one is reported
+    // without ever starting approval loading. Only COMPLETED proceeds to the
+    // approval fetch and a terminal-success announcement.
+    const settled = await settleRunOutcome(createdRun, signal, generation);
+    if (settled.outcome === "STALE") return;
+    if (settled.outcome === "COMPLETED") {
+      setNotice(investigationCompleteAnnouncement(settled.loadedApproval?.status === "PENDING"));
     }
+    // RUNNING/FAILED unlock the form the same as COMPLETED, so the existing
+    // Refresh action (RUNNING) or a new submission remain reachable —
+    // settleRunOutcome already set the RUNNING/FAILED-specific notice (or
+    // none, for RUNNING) and froze elapsed time where appropriate.
     setPhase("idle");
 
     // A LIVE run just consumed a reservation, so the day's answer has almost
@@ -481,8 +644,19 @@ export function App() {
     // markup that happens to call it.
     if (activeProviderMode === "LIVE") return;
 
+    // A retry resumes the SAME investigation's progress display, so its
+    // elapsed clock and stage-failure state restart rather than accumulate
+    // from the earlier failed attempt.
+    setSubmittedAt(Date.now());
+    setSubmittedFinishedAt(null);
+    setFailedStage(null);
+    setApprovalLoadStatus("idle");
+
     const { signal, generation } = beginWorkflow();
     setError(null);
+    // A RUNNING retry has no terminal result to announce. Clear the previous
+    // attempt's failure now so it cannot reappear when phase returns to idle.
+    setNotice(null);
     setPhase("running-agent");
     let startedRun: AgentRunDetail;
     try {
@@ -496,6 +670,9 @@ export function App() {
     } catch (thrown) {
       if (isAbortError(thrown) || isStale(generation)) return;
       setError(toDisplayableError(thrown));
+      setNotice(stageFailureAnnouncement("run"));
+      setFailedStage("run");
+      setSubmittedFinishedAt(Date.now());
       setPhase("idle");
       // No capability refresh here: this is the FAKE-only retry, and FAKE
       // availability is not something /v1/capabilities gates. Refreshing would
@@ -503,11 +680,10 @@ export function App() {
       return;
     }
 
-    setPhase("loading-approval");
-    const loadedApproval = await loadApproval(startedRun.run.id, signal, generation, { reportError: true });
-    if (isStale(generation)) return;
-    if (loadedApproval?.status === "PENDING") {
-      setNotice("Investigation completed. Human approval required.");
+    const settled = await settleRunOutcome(startedRun, signal, generation);
+    if (settled.outcome === "STALE") return;
+    if (settled.outcome === "COMPLETED") {
+      setNotice(investigationCompleteAnnouncement(settled.loadedApproval?.status === "PENDING"));
     }
     setPhase("idle");
   }
@@ -606,6 +782,14 @@ export function App() {
      * recovery from happening at all.
      */
 
+    // Same reset as the FAKE retry path (retryRun): resumes this
+    // investigation's progress display rather than accumulating the earlier
+    // failed attempt's elapsed time or stage-failure state.
+    setSubmittedAt(Date.now());
+    setSubmittedFinishedAt(null);
+    setFailedStage(null);
+    setApprovalLoadStatus("idle");
+
     // The same abort/generation machinery every other workflow uses, so a retry
     // racing a new investigation is discarded on the same rule.
     const { signal, generation } = beginWorkflow();
@@ -655,6 +839,9 @@ export function App() {
       // rather than degrading into a state where the only way forward is to
       // create another job.
       setError(toDisplayableError(thrown));
+      setNotice(stageFailureAnnouncement("run"));
+      setFailedStage("run");
+      setSubmittedFinishedAt(Date.now());
       setPhase("idle");
       /**
        * Terminal outcome, so refresh — BEST EFFORT, and strictly AFTER the error
@@ -672,34 +859,52 @@ export function App() {
       return;
     }
 
-    setPhase("loading-approval");
-    const loadedApproval = await loadApproval(startedRun.run.id, signal, generation, { reportError: true });
-    if (isStale(generation)) return;
-
     /**
-     * ONE composed message, chosen here with both facts known.
+     * ONE composed message, chosen here with both the replay fact and the
+     * ACTUAL outcome known — never assuming success from the run merely
+     * existing (outcome-aware, like every other settlement point).
      *
-     * `loadApproval` returns `null` for a failed fetch as well as for a
-     * non-pending one, and reports the failure through the error banner on its
-     * own. That collapse is deliberate here: the replay confirmation must
-     * survive an approval-load failure, because "no second paid attempt was
-     * consumed" is a fact about the run that a failed GET cannot unmake. Failing
-     * to fetch an approval is not a reason to stop saying it.
+     * `settleRunOutcome` returns `loadedApproval: null` for a failed fetch as
+     * well as for a non-pending one, and reports the failure through the
+     * error banner on its own. That collapse is deliberate here: the replay
+     * confirmation must survive an approval-load failure, because "no second
+     * paid attempt was consumed" is a fact about the run that a failed GET
+     * cannot unmake. Failing to fetch an approval is not a reason to stop
+     * saying it.
      *
-     * Still the existing `notice` region — no second live region is introduced,
-     * because two polite announcements racing each other is how this went wrong
-     * in the first place.
+     * Still the existing `notice` region — no second live region is
+     * introduced, because two polite announcements racing each other is how
+     * this went wrong in the first place.
+     *
+     * `replayed` and the run's OUTCOME are independent facts. "No new run
+     * was started" is a statement about IDEMPOTENCY — true the instant the
+     * server answers with a 200 — and holds regardless of whether that
+     * recovered run has itself finished, failed, or is still RUNNING. A
+     * RUNNING replay is a normal, correct answer (exactly what a
+     * finalization failure leaves behind), so it still earns the recovery
+     * confirmation, just without any claim about completion.
      */
-    const APPROVAL_REQUIRED = "Human approval required.";
     const RECOVERED = "Recovered the original live run — no new run was started.";
+    const settled = await settleRunOutcome(startedRun, signal, generation);
+    if (settled.outcome === "STALE") return;
     if (replayed) {
-      setNotice(
-        loadedApproval?.status === "PENDING" ? `${RECOVERED} ${APPROVAL_REQUIRED}` : RECOVERED,
-      );
-    } else if (loadedApproval?.status === "PENDING") {
-      // A genuinely started run keeps the wording every other creation path uses.
-      setNotice(`Investigation completed. ${APPROVAL_REQUIRED}`);
+      if (settled.outcome === "COMPLETED") {
+        setNotice(
+          settled.loadedApproval?.status === "PENDING" ? `${RECOVERED} ${APPROVAL_REQUIRED_ANNOUNCEMENT}` : RECOVERED,
+        );
+      } else if (settled.outcome === "FAILED") {
+        // Both facts matter: no second paid attempt was made, AND it did not
+        // succeed. Overrides settleRunOutcome's generic run-failure notice
+        // with the composed, replay-aware version.
+        setNotice(`${RECOVERED} ${stageFailureAnnouncement("run")}`);
+      } else {
+        setNotice(RECOVERED);
+      }
+    } else if (settled.outcome === "COMPLETED") {
+      setNotice(investigationCompleteAnnouncement(settled.loadedApproval?.status === "PENDING"));
     }
+    // FAILED && !replayed keeps settleRunOutcome's own notice; RUNNING &&
+    // !replayed keeps none, matching every other settlement point.
     setPhase("idle");
     void refreshCapabilities();
   }
@@ -736,6 +941,13 @@ export function App() {
     // and token the form still holds. Without this the user asks for a NEW
     // investigation and gets the old one's inputs staring back at them.
     setFormResetKey((key) => key + 1);
+    // Unmounts the submitted-summary snapshot and the Progress Timeline —
+    // an abandoned attempt's progress is not the next investigation's.
+    setSubmittedSummary(null);
+    setSubmittedAt(null);
+    setSubmittedFinishedAt(null);
+    setFailedStage(null);
+    setApprovalLoadStatus("idle");
     setPhase("idle");
     // Back at the start, so the form should reflect what the server can serve
     // NOW rather than what it could when the abandoned attempt began.
@@ -744,6 +956,10 @@ export function App() {
 
   async function refreshRun() {
     if (run === null) return;
+    // Captured BEFORE `setRun` overwrites it. RUNNING may observe its first
+    // terminal outcome here; COMPLETED refreshes its existing approval view;
+    // FAILED is terminal and permanently approval-ineligible.
+    const previousOutcome = run.outcome.type;
     const { signal, generation } = beginWorkflow();
     setError(null);
     setPhase("refreshing-run");
@@ -760,8 +976,40 @@ export function App() {
       return;
     }
 
+    if (previousOutcome === "RUNNING") {
+      const settled = await settleRunOutcome(refreshedRun, signal, generation);
+      if (settled.outcome === "STALE") return;
+      if (settled.outcome === "COMPLETED") {
+        setNotice(investigationCompleteAnnouncement(settled.loadedApproval?.status === "PENDING"));
+      } else if (settled.outcome === "RUNNING") {
+        // Refreshed, but still running — confirm the click had an effect
+        // without restarting or duplicating the elapsed timer, and without
+        // starting approval loading.
+        setNotice("Run refreshed.");
+      }
+      // FAILED already carries settleRunOutcome's own stage-specific notice.
+      setPhase("idle");
+      return;
+    }
+
+    if (previousOutcome === "FAILED") {
+      // Terminal run outcomes are immutable in the repository, so the only
+      // supported transition here is FAILED -> FAILED. Refresh the projection
+      // and preserve its failure announcement, but never begin approval
+      // settlement for a run that is permanently ineligible.
+      setNotice(stageFailureAnnouncement("run"));
+      setPhase("idle");
+      return;
+    }
+
+    // An ordinary refresh of an already-COMPLETED investigation — not part of
+    // the tracked workflow (loadApproval must not rewrite a frozen Progress
+    // Timeline stage), and worded as a refresh rather than a completion.
     setPhase("loading-approval");
-    const loadedApproval = await loadApproval(refreshedRun.run.id, signal, generation, { reportError: true });
+    const loadedApproval = await loadApproval(refreshedRun.run.id, signal, generation, {
+      reportError: true,
+      trackInvestigationProgress: false,
+    });
     if (isStale(generation)) return;
     setNotice(loadedApproval?.status === "PENDING" ? "Run refreshed. Human approval required." : "Run refreshed.");
     setPhase("idle");
@@ -787,7 +1035,10 @@ export function App() {
       setError(toDisplayableError(thrown));
       if (thrown instanceof ApiRequestError && CONFLICT_APPROVAL_ERROR_CODES.has(thrown.code)) {
         setPhase("loading-approval");
-        await loadApproval(runId, signal, generation, { reportError: false });
+        // The 409-convergence reload is a side effect of submitting a
+        // decision, not a step of completing the tracked investigation —
+        // same reasoning as an ordinary manual Refresh above.
+        await loadApproval(runId, signal, generation, { reportError: false, trackInvestigationProgress: false });
         if (isStale(generation)) return;
       }
       setPhase("idle");
@@ -831,6 +1082,28 @@ export function App() {
   const progressText = isBusy ? PHASE_LABELS[phase] : (notice ?? "");
   const showActionRequiredBanner = approval?.status === "PENDING";
 
+  // The stage the CURRENT phase maps to for the Progress Timeline — "approval"
+  // is deliberately excluded here (see investigation-progress-stages.ts):
+  // `loading-approval` is also reused by refreshRun and the 409-convergence
+  // path, neither of which is part of THIS investigation's tracked progress.
+  const activeProgressStageKey: "availability" | "job" | "run" | null =
+    phase === "checking-availability" ? "availability" : phase === "creating-job" ? "job" : phase === "running-agent" ? "run" : null;
+  const progressStages =
+    submittedSummary !== null
+      ? deriveInvestigationProgressStages({
+          providerMode: submittedSummary.providerMode,
+          activeStageKey: activeProgressStageKey,
+          failedStage,
+          jobCreated: job !== null,
+          // The run stage's status is a function of the AGENT's own outcome,
+          // never of `run !== null` alone — see investigation-progress-stages.ts.
+          runOutcomeType: run?.outcome.type ?? null,
+          approvalLoadStatus,
+        })
+      : [];
+  const elapsedMs = useElapsedTime(submittedAt, submittedFinishedAt);
+  const elapsedLabel = formatElapsed(elapsedMs);
+
   return (
     <div className="app-shell">
       <header className="app-header">
@@ -854,6 +1127,23 @@ export function App() {
         onStartNewInvestigation={startNewInvestigation}
       />
 
+      {submittedSummary !== null ? (
+        <section className="submitted-summary" aria-labelledby="submitted-summary-heading">
+          <h2 id="submitted-summary-heading">Submitted issue</h2>
+          <dl className="submitted-summary-details">
+            <div>
+              <dt>Provider mode</dt>
+              <dd>{submittedSummary.providerMode}</dd>
+            </div>
+          </dl>
+          <p className="submitted-summary-text">{submittedSummary.summary}</p>
+        </section>
+      ) : null}
+
+      {submittedSummary !== null ? (
+        <InvestigationProgressTimeline stages={progressStages} elapsedLabel={elapsedLabel} />
+      ) : null}
+
       {job !== null ? (
         <InvestigationSummary
           ticketId={ticketId ?? ""}
@@ -868,25 +1158,40 @@ export function App() {
         />
       ) : null}
 
-      {showActionRequiredBanner ? <ActionRequiredBanner /> : null}
-
       {run !== null ? (
         <div className="investigation-content">
           <div role="region" aria-label="Run detail" className="investigation-main-column">
             <section aria-labelledby="timeline-heading">
               <h2 id="timeline-heading" tabIndex={-1}>
-                Investigation timeline
+                Agent activity
               </h2>
               <TraceTimeline trace={run.trace} />
             </section>
-            <ReportPanel outcome={run.outcome} onRefresh={refreshRun} refreshDisabled={isBusy} />
+            {/*
+              Data-driven reveal, not timer/animation choreography. A RUNNING
+              outcome renders no Generated report panel at all (not even a
+              placeholder) — Phase A has no polling, so the report may
+              legitimately not exist yet, and claiming otherwise would be
+              dishonest. Suggested actions is a separately gated surface that
+              never mounts for an empty array, so there is nothing to hide
+              with an empty-state message.
+            */}
+            {run.outcome.type !== "RUNNING" ? <ReportPanel outcome={run.outcome} /> : null}
+            {run.outcome.type === "COMPLETED" && run.outcome.report.suggestedActions.length > 0 ? (
+              <SuggestedActionsPanel actions={run.outcome.report.suggestedActions} />
+            ) : null}
           </div>
           <aside className="run-context-column" aria-label="Run context">
+            {/* Follows Agent activity/Report/Suggested actions in DOM order — approval-related UI is never the first thing a reviewer encounters. */}
+            {showActionRequiredBanner ? <ActionRequiredBanner /> : null}
             <RunContextPanel
               run={run.run}
               trace={run.trace}
               approval={approval}
               suggestedActionCount={run.outcome.type === "COMPLETED" ? run.outcome.report.suggestedActions.length : 0}
+              // Same condition as the Generated report panel above — a jump
+              // link must never target a heading that was not rendered.
+              showReportLink={run.outcome.type !== "RUNNING"}
               decisionDisabled={isBusy}
               submittingDecision={phase === "submitting-approval"}
               onDecide={recordDecision}
