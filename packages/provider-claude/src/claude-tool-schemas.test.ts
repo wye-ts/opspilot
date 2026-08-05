@@ -96,6 +96,23 @@ describe("toStrictInputSchema", () => {
     expect(schema.properties.evidence.minItems).toBe(1);
   });
 
+  // Separate from the full `required` equality above, and deliberately
+  // narrower: the production incident (LIVE run 179848c0…) was a report
+  // submitted WITHOUT suggestedActions, so the two facts that make that a
+  // model-compliance failure rather than a schema-conversion bug — the field
+  // is exposed, and it is marked required — get an assertion that names them
+  // and cannot be diluted by an unrelated edit to the field list.
+  it("exposes suggestedActions to Claude as a required array property", () => {
+    const schema = toStrictInputSchema(ResolutionReportSchema) as {
+      required: string[];
+      properties: { suggestedActions: { type: string } };
+    };
+
+    expect(schema.properties.suggestedActions).toBeDefined();
+    expect(schema.properties.suggestedActions.type).toBe("array");
+    expect(schema.required).toContain("suggestedActions");
+  });
+
   it("converts the discriminated suggestedActions union from oneOf to anyOf without losing branches", () => {
     const schema = toStrictInputSchema(ResolutionReportSchema) as {
       properties: {

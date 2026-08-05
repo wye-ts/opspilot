@@ -104,6 +104,18 @@ function statusRegion(): HTMLElement {
   return screen.getByRole("status");
 }
 
+/**
+ * A terminally-failed investigation must not advertise an approval step at
+ * all. Asserting ABSENCE rather than a Pending badge is the point: the
+ * production incident was a run that failed and left the Timeline reading
+ * "Pending — Loading approval state…" forever, because a pending row is
+ * labelled by what it was about to do.
+ */
+function expectNoApprovalStage() {
+  expect(within(progressRegion()).queryByText("Loading approval state…")).toBeNull();
+  expect(within(progressRegion()).queryByText("Approval state loaded")).toBeNull();
+}
+
 /** Every rendered "Jump to X" link must target an element that actually exists. */
 function assertNoDanglingJumpLinks() {
   for (const link of screen.queryAllByRole("link", { name: /jump to/i })) {
@@ -162,13 +174,19 @@ describe("Initial submission — outcome-aware progress", () => {
     await screen.findByText("Generated report");
 
     expect(within(stageRow("Agent investigation in progress…")).getByText("Failed")).toBeInTheDocument();
-    expect(within(stageRow("Loading approval state…")).getByText("Pending")).toBeInTheDocument();
+    expectNoApprovalStage();
     expect(statusRegion()).toHaveTextContent("Investigation failed while running the agent investigation.");
     expect(statusRegion()).not.toHaveTextContent("Investigation complete");
     expect(screen.getByText("RETRIEVAL_FAILED")).toBeInTheDocument();
     expect(screen.getByText("Runbook retrieval failed.")).toBeInTheDocument();
     assertNoDanglingJumpLinks();
     expect(screen.getByRole("link", { name: "Jump to report" })).toBeInTheDocument();
+    // The endpoint is never even reached for a permanently ineligible run —
+    // the omitted Timeline row above is not merely cosmetic.
+    expect(
+      vi.mocked(fetch).mock.calls.filter((call) => String(call[0]) === "/v1/agent-runs/run-1/approval"),
+    ).toHaveLength(0);
+    expect(screen.queryByRole("region", { name: "Approval" })).toBeNull();
 
     const elapsedFrozen = document.querySelector(".investigation-progress-elapsed")?.textContent;
     await vi.advanceTimersByTimeAsync(3000);
@@ -272,7 +290,7 @@ describe("Refresh transitions out of RUNNING", () => {
 
     await screen.findByText("Generated report");
     expect(within(stageRow("Agent investigation in progress…")).getByText("Failed")).toBeInTheDocument();
-    expect(within(stageRow("Loading approval state…")).getByText("Pending")).toBeInTheDocument();
+    expectNoApprovalStage();
     expect(statusRegion()).toHaveTextContent("Investigation failed while running the agent investigation.");
     expect(
       vi.mocked(fetch).mock.calls.filter((call) => String(call[0]) === "/v1/agent-runs/run-1/approval"),
@@ -372,7 +390,7 @@ describe("Refresh of an already-FAILED run", () => {
     expect(approvalGets).toHaveLength(0);
 
     expect(within(stageRow("Agent investigation in progress…")).getByText("Failed")).toBeInTheDocument();
-    expect(within(stageRow("Loading approval state…")).getByText("Pending")).toBeInTheDocument();
+    expectNoApprovalStage();
     expect(screen.getByText("RETRIEVAL_FAILED")).toBeInTheDocument();
     expect(screen.getByText("Runbook retrieval failed.")).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Approval" })).toBeNull();
@@ -412,6 +430,14 @@ describe("LIVE recovery — outcome-aware, not converted to success", () => {
     expect(within(stageRow("Agent investigation in progress…")).getByText("Failed")).toBeInTheDocument();
     expect(statusRegion()).toHaveTextContent("Investigation failed while running the agent investigation.");
     expect(statusRegion()).not.toHaveTextContent("Recovered");
+    // The closest analogue in this suite to the production incident: a LIVE
+    // run that reaches a terminal FAILED outcome must neither fetch approval
+    // nor leave an approval row behind.
+    expectNoApprovalStage();
+    expect(
+      vi.mocked(fetch).mock.calls.filter((call) => String(call[0]) === "/v1/agent-runs/run-1/approval"),
+    ).toHaveLength(0);
+    expect(screen.queryByRole("region", { name: "Approval" })).toBeNull();
   });
 
   it("a genuinely-started (201) recovery returning RUNNING stays Active, not Completed", async () => {
