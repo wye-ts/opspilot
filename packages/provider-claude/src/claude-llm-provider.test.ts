@@ -226,6 +226,26 @@ describe("buildSystemPrompt", () => {
     }
   });
 
+  // The prompt half of the defense in depth behind the LIVE incident: the tool
+  // schema already marked suggestedActions required and Claude still omitted
+  // it, so the prose must state the requirement AND name the value to send
+  // when there is nothing to suggest. Asserted on both phases because
+  // submit_resolution_report is offered as a tool on both.
+  it("requires suggestedActions explicitly and names [] as the empty value, rather than merely permitting it", () => {
+    for (const phase of ["INVESTIGATION", "FINALIZATION"] as const) {
+      const prompt = buildSystemPrompt(phase);
+
+      expect(prompt).toContain("ALWAYS required");
+      expect(prompt).toContain("Never\n  omit this field");
+      expect(prompt).toContain('submit it as an empty array\n  ("suggestedActions": [])');
+      // The worked example carries the same shape, so the two cannot drift.
+      expect(prompt).toContain('"suggestedActions": []');
+      // The old permissive wording is what the model was free to read as
+      // optional; it must not come back.
+      expect(prompt).not.toContain("Empty is allowed");
+    }
+  });
+
   it("only FINALIZATION forces the model to call submit_resolution_report now", () => {
     expect(buildSystemPrompt("FINALIZATION")).toContain("You must call submit_resolution_report now");
     expect(buildSystemPrompt("INVESTIGATION")).not.toContain(
@@ -252,24 +272,77 @@ describe("normalizeClaudeMessage", () => {
     });
   });
 
-  it("normalizes a single submit_resolution_report call to report_submission with rawInput unchanged", () => {
-    const rawInput = { category: "SERVICE_DEGRADATION" };
+  // Helper for the report-input group below: every case differs only in what
+  // the submit_resolution_report tool call carried, so the message plumbing
+  // never obscures the one value under test.
+  function normalizeReportInput(input: unknown) {
     const message = buildFakeMessage({
       stop_reason: "tool_use",
       content: [
         buildToolUseBlock({
           id: "toolu_report",
           name: SUBMIT_RESOLUTION_REPORT_TOOL_NAME,
-          input: rawInput,
+          input,
         }),
       ],
     });
 
     const result = normalizeClaudeMessage(message, context);
-
     expect(result.type).toBe("report_submission");
     if (result.type !== "report_submission") throw new Error("unreachable");
-    expect(result.rawInput).toEqual(rawInput);
+    return result.rawInput;
+  }
+
+  it("normalizes a single submit_resolution_report call to report_submission with rawInput passed through", () => {
+    // Deliberately an INCOMPLETE report that nonetheless carries
+    // suggestedActions: it proves the provider forwards the tool input as-is
+    // and repairs nothing else, leaving validity to ResolutionReportSchema.
+    const rawInput = { category: "SERVICE_DEGRADATION", suggestedActions: [] };
+
+    expect(normalizeReportInput(rawInput)).toEqual(rawInput);
+  });
+
+  // The production incident (LIVE run 179848c0…): Claude completed the
+  // investigation, then submitted a report omitting suggestedActions despite
+  // the field being `required` in the strict tool schema — failing the run
+  // with REPORT_SCHEMA_INVALID. Omission and "no suggested actions" are the
+  // same claim, so the boundary supplies the only value that claim can have.
+  it("normalizes a missing suggestedActions to an empty array", () => {
+    const rawInput = { category: "SERVICE_DEGRADATION", summary: "Elevated errors." };
+
+    expect(normalizeReportInput(rawInput)).toEqual({
+      category: "SERVICE_DEGRADATION",
+      summary: "Elevated errors.",
+      suggestedActions: [],
+    });
+  });
+
+  // The normalization is scoped to `undefined` alone. Every other shape is a
+  // value the model actually asserted, and must reach the strict schema
+  // untouched so it still fails with a diagnostic about the real problem.
+  it.each([
+    ["null", null],
+    ["a string", "none"],
+    ["an object", { first: "UPDATE_TICKET_STATUS" }],
+    ["a malformed array", [{ type: "NOT_A_REAL_ACTION" }]],
+  ])("leaves a suggestedActions of %s untouched", (_label, suggestedActions) => {
+    const rawInput = { category: "SERVICE_DEGRADATION", suggestedActions };
+
+    expect(normalizeReportInput(rawInput)).toEqual(rawInput);
+  });
+
+  it("repairs only suggestedActions and never another missing report field", () => {
+    // `evidence` is equally required and equally an array, and stays missing:
+    // its omission is not semantically equivalent to any particular value.
+    expect(normalizeReportInput({ category: "SERVICE_DEGRADATION" })).toEqual({
+      category: "SERVICE_DEGRADATION",
+      suggestedActions: [],
+    });
+  });
+
+  it("leaves a non-object tool input untouched rather than inventing a report", () => {
+    expect(normalizeReportInput("not-an-object")).toBe("not-an-object");
+    expect(normalizeReportInput(null)).toBeNull();
   });
 
   it("normalizes a refusal stop_reason to protocol_error", () => {

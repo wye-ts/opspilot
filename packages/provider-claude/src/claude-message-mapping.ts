@@ -158,8 +158,10 @@ required, in addition to whatever the tool schema shows:
   - evidenceId: 1-128 characters.
   - sourceType: exactly "RAG_CHUNK" or "TOOL_EXECUTION".
   - finding: 1-500 characters.
-- suggestedActions: an array of 0 to 3 entries. Empty is allowed; never
-  submit more than three. Each entry's payload has its own length bounds:
+- suggestedActions: an array of 0 to 3 entries, and ALWAYS required. Never
+  omit this field: when no action is appropriate, submit it as an empty array
+  ("suggestedActions": []) rather than leaving it out. Never submit more than
+  three. Each entry's payload has its own length bounds:
   - type UPDATE_TICKET_STATUS: payload.reason is 1-500 characters.
   - type CREATE_ESCALATION: payload.team is 1-100 characters;
     payload.reason is 1-500 characters.

@@ -147,6 +147,29 @@ function isAvailabilityCompleted(input: DeriveInvestigationProgressStagesInput):
 }
 
 /**
+ * True once the investigation can no longer reach approval at all: the agent's
+ * own outcome is FAILED (terminal and permanently approval-ineligible), or a
+ * request boundary that stops the whole submission failed before a report
+ * could exist.
+ *
+ * This exists because a stage row is labelled by what it was ABOUT to do (see
+ * STAGE_LABELS) — truthful for a stage still ahead of the workflow, but a lie
+ * for one that will never run. A LIVE run that failed surfaced exactly that:
+ * the approval row sat at "Pending — Loading approval state…" underneath a
+ * terminally FAILED investigation, describing a fetch that App.tsx had
+ * correctly decided never to issue.
+ *
+ * `failedStage === "approval"` is excluded on purpose: an approval-load
+ * failure does NOT stop the workflow, and that row must still render (as
+ * Failed) rather than disappear.
+ */
+function isTerminallyFailedBeforeApproval(input: DeriveInvestigationProgressStagesInput): boolean {
+  return (
+    input.runOutcomeType === "FAILED" || (input.failedStage !== null && input.failedStage !== "approval")
+  );
+}
+
+/**
  * Pure, derived from real request-lifecycle and outcome signals only — no
  * stage is ever advanced by a timer, and no stage is ever assigned a
  * percentage.
@@ -164,8 +187,15 @@ function isAvailabilityCompleted(input: DeriveInvestigationProgressStagesInput):
 export function deriveInvestigationProgressStages(
   input: DeriveInvestigationProgressStagesInput,
 ): readonly InvestigationProgressStageViewModel[] {
-  const keys: readonly InvestigationProgressStageKey[] =
-    input.providerMode === "LIVE" ? ["availability", "job", "run", "approval"] : ["job", "run", "approval"];
+  const workflowKeys: readonly InvestigationProgressStageKey[] =
+    input.providerMode === "LIVE" ? ["availability", "job", "run"] : ["job", "run"];
+  // Omitting the row is the truthful settlement for a stage that can no longer
+  // happen, and matches how `availability` is already omitted for FAKE: the
+  // Timeline lists the stages this investigation actually has, and says
+  // nothing about the ones it does not.
+  const keys: readonly InvestigationProgressStageKey[] = isTerminallyFailedBeforeApproval(input)
+    ? workflowKeys
+    : [...workflowKeys, "approval"];
 
   let blocked = false;
   return keys.map((key) => {

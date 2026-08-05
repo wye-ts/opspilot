@@ -14,6 +14,46 @@ function toDiagnosticToolRequest(block: Anthropic.ToolUseBlock): DiagnosticToolR
   return { toolCallId: block.id, toolName: block.name, input: block.input };
 }
 
+/**
+ * The ONE compatibility repair applied to a submitted report, and deliberately
+ * the narrowest that can exist: a MISSING `suggestedActions` becomes `[]`.
+ *
+ * Justified because omission and "no suggested actions" are the same claim —
+ * `[]` is the only value a well-formed report with nothing to suggest could
+ * carry, so supplying it invents no content the model did not assert. This is
+ * not a hypothetical: a protected LIVE run completed its investigation and
+ * then failed REPORT_SCHEMA_INVALID on exactly this, even though the field is
+ * listed in the `required` array of the strict tool schema Claude was given
+ * (claude-tool-schemas.ts) and `strict: true` was set on the tool. A required
+ * field in a tool schema is not a guarantee the tool call carries it, so the
+ * contract is enforced in depth: schema, prompt (claude-message-mapping.ts),
+ * and this boundary — see docs/10-engineering-challenges.md.
+ *
+ * Everything else is left EXACTLY as received, so ResolutionReportSchema stays
+ * the sole authority on validity:
+ *   - `null`, a string, an object, a malformed array -> untouched, still fails
+ *   - any other missing or invalid report field      -> untouched, still fails
+ * so a genuinely invalid report still produces a REPORT_SCHEMA_INVALID
+ * diagnostic pointing at the real problem, never at a value invented here.
+ *
+ * Lives at the provider/tool-input boundary rather than in the orchestrator,
+ * persistence, or UI: it is a repair for how one provider fills one tool
+ * schema, and the canonical domain contract must not learn about it.
+ */
+function normalizeSubmittedReportInput(rawInput: unknown): unknown {
+  if (rawInput === null || typeof rawInput !== "object" || Array.isArray(rawInput)) {
+    return rawInput;
+  }
+
+  const report = rawInput as Record<string, unknown>;
+  // `undefined` is the ONLY trigger. It covers both an absent key and an
+  // explicitly-undefined one, and deliberately excludes `null` — that is a
+  // value the model did assert, and it must still be rejected.
+  if (report.suggestedActions !== undefined) return rawInput;
+
+  return { ...report, suggestedActions: [] };
+}
+
 function protocolError(
   context: RawProviderTurnContext,
   message: string,
@@ -72,7 +112,7 @@ export function normalizeClaudeMessage(
       type: "report_submission",
       providerRequestId: context.providerRequestId,
       usage: context.usage,
-      rawInput: reportBlock.input,
+      rawInput: normalizeSubmittedReportInput(reportBlock.input),
     };
   }
 
