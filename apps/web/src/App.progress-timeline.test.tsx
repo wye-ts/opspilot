@@ -232,7 +232,11 @@ describe("Investigation progress timeline (#34/#35)", () => {
     // list must still show WHERE it stopped, not silently reset to Pending.
     expect(within(stageRow("Creating investigation…")).getByText("Failed")).toBeInTheDocument();
     expect(within(stageRow("Agent investigation in progress…")).getByText("Pending")).toBeInTheDocument();
-    expect(within(stageRow("Loading approval state…")).getByText("Pending")).toBeInTheDocument();
+    // `run` stays listed as Pending — it is a real stage of this workflow that
+    // was never reached. `approval` is dropped instead: the submission is over,
+    // so a row reading "Pending — Loading approval state…" would describe a
+    // fetch that can never happen.
+    expect(within(progressRegion()).queryByText("Loading approval state…")).toBeNull();
   });
 
   // Requirement 10: approval idle/loading/loaded/failed are distinguishable.

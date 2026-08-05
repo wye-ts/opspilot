@@ -40,11 +40,16 @@ describe("deriveInvestigationProgressStages", () => {
     expect(stages.find((s) => s.key === "run")?.status).toBe("active");
   });
 
-  it("a failed job stage blocks run/approval at pending, even though phase is idle (activeStageKey null)", () => {
+  it("a failed job stage blocks run at pending and drops approval entirely, even though phase is idle (activeStageKey null)", () => {
     const stages = deriveInvestigationProgressStages({ ...BASE, failedStage: "job" });
     expect(stages.find((s) => s.key === "job")?.status).toBe("failed");
     expect(stages.find((s) => s.key === "run")?.status).toBe("pending");
-    expect(stages.find((s) => s.key === "approval")?.status).toBe("pending");
+    // `run` stays listed because the workflow really does contain it — it just
+    // never got there. `approval` is omitted instead of listed as Pending: a
+    // pending row is labelled by what it was ABOUT to do, so keeping it would
+    // read "Pending — Loading approval state…" for a fetch that can no longer
+    // happen. See isTerminallyFailedBeforeApproval.
+    expect(stages.map((s) => s.key)).toEqual(["job", "run"]);
   });
 
   it("a failed run stage marks job completed and run failed", () => {
@@ -76,10 +81,24 @@ describe("deriveInvestigationProgressStages", () => {
       expect(stages.find((s) => s.key === "run")?.status).toBe("completed");
     });
 
-    it("FAILED outcome reads Failed even with no failedStage set — approval stays Pending", () => {
+    // The production incident: a terminally FAILED run is permanently
+    // approval-ineligible, and App.tsx correctly never issues the approval
+    // fetch — so the Timeline must not keep advertising one.
+    it("FAILED outcome reads Failed even with no failedStage set — and approval is omitted, not left Pending", () => {
       const stages = deriveInvestigationProgressStages({ ...BASE, jobCreated: true, runOutcomeType: "FAILED" });
       expect(stages.find((s) => s.key === "run")?.status).toBe("failed");
-      expect(stages.find((s) => s.key === "approval")?.status).toBe("pending");
+      expect(stages.map((s) => s.key)).toEqual(["job", "run"]);
+      expect(stages.some((s) => s.label === "Loading approval state…")).toBe(false);
+    });
+
+    it("keeps the approval stage for an approval-load failure, which does not stop the workflow", () => {
+      const stages = deriveInvestigationProgressStages({
+        ...BASE,
+        jobCreated: true,
+        runOutcomeType: "COMPLETED",
+        approvalLoadStatus: "failed",
+      });
+      expect(stages.find((s) => s.key === "approval")?.status).toBe("failed");
     });
 
     it("availability reads completed once a run exists with ANY outcome, including RUNNING", () => {

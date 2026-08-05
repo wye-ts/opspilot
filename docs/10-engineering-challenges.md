@@ -2066,3 +2066,155 @@ This problem demonstrates:
   writing the regression test against the real validation boundary instead
 - Extending an existing sanitized-logging convention rather than inventing a second one, so the two
   log shapes stay greppable together
+
+## 14. Challenge 12 — A Required Field the Model Simply Did Not Send
+
+### Context
+
+A protected production LIVE run (`runId 179848c0-cac1-4fcc-a248-72b9860029e5`, `claude-sonnet-5`)
+reached the second Claude turn, completed `get_service_status` successfully, and then failed
+`REPORT_SCHEMA_INVALID` on a single issue:
+
+```json
+{ "path": ["suggestedActions"], "code": "invalid_type", "expectedType": "array", "receivedType": "undefined" }
+```
+
+The same run also left the frontend Timeline reading `Pending — Loading approval state…` under a
+terminally `FAILED` investigation.
+
+### Problem
+
+This is *not* Challenge 11's failure class, and the distinction is the whole point. There, the tool
+schema could not carry the constraint (`stripUnsupported` deletes every bound Anthropic's strict
+subset rejects), so the model was never told. Here the model **was** told, by every channel available:
+`suggestedActions` is non-optional in `ResolutionReportSchema`, appears in the generated tool schema's
+`required` array, sits under `additionalProperties: false`, and the tool is sent with `strict: true`.
+It was omitted anyway.
+
+That falsifies an assumption stated in Challenge 11's own Alternative A — that `strict: true` buys "a
+structural guarantee (the model literally cannot return the wrong shape of object)". A `required`
+array in a provider-exposed tool schema is a strong constraint on the model's grammar, not a
+transport-level guarantee your parser can lean on. **Provider-exposed schema and canonical runtime
+schema remain two different things even when one is generated from the other and even when the
+provider claims to enforce it.** The canonical schema is the only contract that actually holds.
+
+Empty collections are the specific shape most exposed to this. `[]` carries no information a model
+feels obliged to state; omitting it and sending it are the same assertion to a reader, so "say nothing"
+is a natural completion when there is nothing to suggest.
+
+### Why It Is Difficult
+
+The generated schema is *correct* — a schema-conversion test asserting the exact `required` array
+passed before this incident and still passes. Reading either schema, the transformer, or the tool
+definition tells you nothing is wrong, because nothing is wrong with them. The defect only exists in
+the gap between what a required field means to a validator and what it means to a sampler.
+
+The deterministic `FakeLlmProvider` cannot reproduce it, for the same structural reason as Challenge
+11: fixtures are hand-authored, and nobody writes a report that is complete except for one empty array.
+
+### Decision
+
+**Keep the canonical contract strict; repair exactly one semantically-empty omission at the provider
+boundary; say it in the prompt as well.** Defense in depth, because the schema layer had already been
+proven insufficient by the incident itself:
+
+- **Schema (unchanged).** `suggestedActions` was already present, required, and correctly typed in the
+  generated tool schema. A focused regression test now asserts those two facts by name, so the
+  incident's premise cannot silently regress inside a broader field-list assertion.
+- **Prompt.** `REPORT_FIELD_BOUNDS` said "Empty is allowed" — permissive wording a model can read as
+  *optional*. It now states the field is always required and names the value to send when there is
+  nothing to suggest (`"suggestedActions": []`), matching the worked example already in the prompt.
+- **Narrow normalization.** `normalizeSubmittedReportInput`
+  (`packages/provider-claude/src/claude-response-normalization.ts`) turns a **missing**
+  `suggestedActions` into `[]` at the provider/tool-input boundary, before validation.
+
+The normalization is deliberately the narrowest repair that can exist, and the constraints matter more
+than the change: only `undefined` triggers it (`null`, strings, objects, and malformed arrays are
+values the model *did* assert and must still fail); no other field is repaired, including the equally
+required `evidence`, whose omission is not equivalent to any particular value; a non-object tool input
+is returned untouched rather than grown into a report. `ResolutionReportSchema` is not widened, made
+optional, or given a `.default()` — persistence and the domain keep the strict contract, and an
+unrepaired invalid report still produces a `REPORT_SCHEMA_INVALID` diagnostic pointing at the real
+problem rather than at a value the boundary invented.
+
+This is the line between **narrow normalization and weakening the domain contract**: a `.default([])`
+on the Zod schema would have fixed this incident in one character and simultaneously made every
+consumer of `ResolutionReport` unable to distinguish "no actions suggested" from "field lost in
+transit" — including persistence, the API projection, and the evaluation harness.
+
+### The Frontend Half — A Stage That Could Never Run
+
+The same failed run left the approval stage at `Pending — Loading approval state…`. `App.tsx` was
+already correct: `settleRunOutcome` returns for a `FAILED` outcome *before* any approval fetch, and no
+path (initial submission, FAKE retry, LIVE recovery, or Refresh) issues one for a permanently
+ineligible run. The bug was purely in the Timeline's rendering contract: stage rows are labelled by
+what they were *about* to do (`STAGE_LABELS`), which is truthful for a stage still ahead of the
+workflow and a lie for one that will never happen.
+
+`deriveInvestigationProgressStages` now omits the approval row entirely once the investigation is
+terminally failed — mirroring how `availability` is already omitted for FAKE runs: the Timeline lists
+the stages an investigation actually has and says nothing about the ones it does not. An
+approval-*load* failure is deliberately excluded from that condition, because it does not stop the
+workflow and its row must still render as Failed.
+
+### Production Diagnostics
+
+The incident was diagnosable at all only because of Challenge 11's sanitized diagnostic: one JSON line
+carrying `path`, `code`, `expectedType`, and `receivedType` was sufficient to identify the exact field
+and the exact failure mode, with no access to the report and no raw model content in the logs. A
+generic "report validation failed" line would have required reproducing a paid LIVE run to learn what
+this one told us for free. `receivedType: "undefined"` — a derived `typeof`, not a value — is what
+distinguishes *omitted* from *malformed*, and therefore what made a narrow repair defensible instead
+of a guess.
+
+### Testing Strategy
+
+Provider-level tests cover the boundary: a missing `suggestedActions` normalizes to `[]`; `null`, a
+string, an object, and a malformed array are each left untouched; no other missing field is repaired;
+a non-object tool input is passed through. A prompt test asserts both phases state the requirement and
+name `[]`, and that the old permissive "Empty is allowed" wording cannot return. Contract-level tests
+lock the production diagnostic exactly as emitted, assert an empty array is a valid report (the
+premise the normalization rests on), and assert `null`/wrong-typed values still fail. Frontend tests
+assert that a terminal `FAILED` run — initial, refreshed, and LIVE-recovered — never calls the approval
+endpoint, renders no approval surface, and shows no approval stage row, while a `COMPLETED` eligible
+run still loads approval exactly once and an approval-load failure still renders its row as Failed.
+
+### Outcome
+
+Fixed locally; **not** verified in production. No LIVE request was made as part of this fix, and no
+claim is made here about post-fix production behavior — the failing run remains the only production
+evidence, and a controlled LIVE re-test is still outstanding.
+
+### Interview Explanation
+
+> We had a run fail validation because Claude omitted a field that was marked `required` in the tool
+> schema, under `strict: true`. The instinct is that this is impossible — so the interesting part is
+> what you conclude when it happens. The wrong conclusion is "the schema is broken," and we checked:
+> the generated schema was correct, and the test asserting it had been passing the whole time.
+>
+> The right conclusion is that a provider-exposed schema and your canonical runtime schema are still
+> two different artifacts, even when you generate one from the other and the provider says it enforces
+> it. `required` constrains sampling; it isn't a transport guarantee. Empty arrays are where that leaks
+> first, because omitting `[]` and sending `[]` mean the same thing to a reader.
+>
+> The one-character fix is `.default([])` on the Zod schema, and it's wrong — it makes the whole system
+> unable to tell "no actions suggested" from "field lost in transit," forever, everywhere. So we
+> repaired exactly one thing at the provider boundary — a *missing* `suggestedActions` becomes `[]`,
+> while `null` or a wrong type still fails — strengthened the prompt from "empty is allowed" to
+> "always send it, send `[]` when there's nothing," and left the domain contract strict. The
+> diagnostic is what made that defensible: `receivedType: "undefined"` told us the field was omitted
+> rather than malformed, which is the difference between a narrow repair and a guess.
+
+### Resume Relevance
+
+This problem demonstrates:
+
+- Distinguishing model noncompliance from schema-conversion drift by verifying the generated artifact
+  directly, instead of assuming the layer that "should" be wrong is
+- Treating a vendor's enforcement guarantee as a strong prior rather than an invariant, and finding the
+  documented assumption in our own design notes that the incident falsified
+- Scoping a compatibility repair to the one case where it invents nothing — and encoding the exclusions
+  (`null`, wrong types, every other field) as tests rather than as a comment
+- Refusing a one-character fix that would have permanently destroyed a distinction the domain needs
+- Recognising that a progress UI which labels a stage by what it was *about* to do becomes a liar the
+  moment that stage can no longer happen

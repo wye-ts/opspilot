@@ -29,6 +29,56 @@ function parseInvalid(overrides: Record<string, unknown>) {
   return summarizeReportValidationIssues(result.error);
 }
 
+describe("suggestedActions contract", () => {
+  // The premise every other case in this file builds on, asserted rather than
+  // assumed: an empty suggestedActions is a fully VALID report, which is why
+  // supplying [] for an omitted field at the provider boundary invents nothing
+  // (see normalizeSubmittedReportInput in @opspilot/provider-claude).
+  it("accepts an empty suggestedActions array", () => {
+    const result = ResolutionReportSchema.safeParse(validReport, { reportInput: true });
+
+    expect(result.success).toBe(true);
+  });
+
+  // The EXACT diagnostic the production LIVE run emitted (runId 179848c0…).
+  // Locked here so the boundary normalization can never be mistaken for a
+  // change to the canonical contract: unrepaired input still fails this way.
+  it("reports the production invalid_type diagnostic for an omitted suggestedActions", () => {
+    const { suggestedActions: _suggestedActions, ...withoutSuggestedActions } = validReport;
+    const result = ResolutionReportSchema.safeParse(withoutSuggestedActions, { reportInput: true });
+    if (result.success) throw new Error("expected validation to fail");
+
+    expect(summarizeReportValidationIssues(result.error)).toEqual([
+      {
+        path: ["suggestedActions"],
+        code: "invalid_type",
+        expectedType: "array",
+        receivedType: "undefined",
+      },
+    ]);
+  });
+
+  // The canonical schema stays strict: only a genuinely ABSENT field is
+  // repaired upstream, so these asserted values must still be rejected here.
+  it("rejects a null suggestedActions rather than treating it as absent", () => {
+    expect(parseInvalid({ suggestedActions: null })).toEqual([
+      { path: ["suggestedActions"], code: "invalid_type", expectedType: "array", receivedType: "null" },
+    ]);
+  });
+
+  // "no" rather than a longer word on purpose: the array's own .max(3) also
+  // runs against a string input's length, so a 4+ character value would add an
+  // unrelated too_big issue and obscure the type mismatch under test.
+  it.each([
+    ["a string", "no", "string"],
+    ["an object", { first: "UPDATE_TICKET_STATUS" }, "object"],
+  ])("rejects a suggestedActions given as %s", (_label, suggestedActions, receivedType) => {
+    expect(parseInvalid({ suggestedActions })).toEqual([
+      { path: ["suggestedActions"], code: "invalid_type", expectedType: "array", receivedType },
+    ]);
+  });
+});
+
 describe("summarizeReportValidationIssues", () => {
   it("reports a too_big issue with the schema's own bound, not the received value, for a percentage-scale confidence", () => {
     // The exact contract-drift class behind the LIVE REPORT_SCHEMA_INVALID
