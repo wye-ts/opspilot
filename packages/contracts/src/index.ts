@@ -40,6 +40,31 @@ import {
   LIVE_RUN_IDEMPOTENCY_KEY_HEADER as _LIVE_RUN_IDEMPOTENCY_KEY_HEADER,
   LiveRunIdempotencyKeySchema as _LiveRunIdempotencyKeySchema,
 } from "./live-run-idempotency";
+import {
+  ExecutionStageProgressListSchema as _ExecutionStageProgressListSchema,
+  ExecutionStageProgressSchema as _ExecutionStageProgressSchema,
+  ExecutionStageProgressStatusSchema as _ExecutionStageProgressStatusSchema,
+  INVESTIGATION_EXECUTION_STAGE_ORDER as _INVESTIGATION_EXECUTION_STAGE_ORDER,
+  InvestigationExecutionStageSchema as _InvestigationExecutionStageSchema,
+  InvestigationRunStatusSchema as _InvestigationRunStatusSchema,
+} from "./investigation-execution-stage";
+import {
+  INVESTIGATION_EVENT_LEGACY_TYPE_COUNT as _INVESTIGATION_EVENT_LEGACY_TYPE_COUNT,
+  INVESTIGATION_EVENT_NEW_WRITE_TYPE_COUNT as _INVESTIGATION_EVENT_NEW_WRITE_TYPE_COUNT,
+  InvestigationEventPayloadSchema as _InvestigationEventPayloadSchema,
+  InvestigationEventRecordPayloadSchema as _InvestigationEventRecordPayloadSchema,
+  InvestigationEventRecordSchema as _InvestigationEventRecordSchema,
+  ReportValidationFailureCodeSchema as _ReportValidationFailureCodeSchema,
+  ToolFailureCodeSchema as _ToolFailureCodeSchema,
+} from "./investigation-event";
+import {
+  hasCanonicalInvestigationLifecycleMarker as _hasCanonicalInvestigationLifecycleMarker,
+  projectToLegacyAgentTraceEvent as _projectToLegacyAgentTraceEvent,
+} from "./investigation-lifecycle-compatibility";
+import {
+  InvestigationEventContractError as _InvestigationEventContractError,
+  deriveExecutionStageProgress as _deriveExecutionStageProgress,
+} from "./investigation-stage-progress-reducer";
 
 export const ApprovalDecisionSchema = _ApprovalDecisionSchema;
 export const RecordApprovalDecisionInputSchema = _RecordApprovalDecisionInputSchema;
@@ -63,6 +88,23 @@ export const TICKET_SUMMARY_MAX_LENGTH = _TICKET_SUMMARY_MAX_LENGTH;
 export const isLiveExecutionEligible = _isLiveExecutionEligible;
 export const LIVE_RUN_IDEMPOTENCY_KEY_HEADER = _LIVE_RUN_IDEMPOTENCY_KEY_HEADER;
 export const LiveRunIdempotencyKeySchema = _LiveRunIdempotencyKeySchema;
+export const InvestigationExecutionStageSchema = _InvestigationExecutionStageSchema;
+export const InvestigationRunStatusSchema = _InvestigationRunStatusSchema;
+export const INVESTIGATION_EXECUTION_STAGE_ORDER = _INVESTIGATION_EXECUTION_STAGE_ORDER;
+export const ExecutionStageProgressStatusSchema = _ExecutionStageProgressStatusSchema;
+export const ExecutionStageProgressSchema = _ExecutionStageProgressSchema;
+export const ExecutionStageProgressListSchema = _ExecutionStageProgressListSchema;
+export const ToolFailureCodeSchema = _ToolFailureCodeSchema;
+export const ReportValidationFailureCodeSchema = _ReportValidationFailureCodeSchema;
+export const InvestigationEventPayloadSchema = _InvestigationEventPayloadSchema;
+export const InvestigationEventRecordPayloadSchema = _InvestigationEventRecordPayloadSchema;
+export const InvestigationEventRecordSchema = _InvestigationEventRecordSchema;
+export const INVESTIGATION_EVENT_NEW_WRITE_TYPE_COUNT = _INVESTIGATION_EVENT_NEW_WRITE_TYPE_COUNT;
+export const INVESTIGATION_EVENT_LEGACY_TYPE_COUNT = _INVESTIGATION_EVENT_LEGACY_TYPE_COUNT;
+export const hasCanonicalInvestigationLifecycleMarker = _hasCanonicalInvestigationLifecycleMarker;
+export const projectToLegacyAgentTraceEvent = _projectToLegacyAgentTraceEvent;
+export const deriveExecutionStageProgress = _deriveExecutionStageProgress;
+export const InvestigationEventContractError = _InvestigationEventContractError;
 
 export type { ApprovalDecision, RecordApprovalDecisionInput } from "./agent-run-approval";
 export type {
@@ -81,3 +123,22 @@ export type {
 export type { AgentOrchestratorErrorCode } from "./agent-orchestrator";
 export type { AgentTraceEvent, RetrievalSummaryEntry } from "./agent-trace-event";
 export type { StoredTicketContext, TicketContext } from "./ticket-context";
+export type {
+  ExecutionStageProgress,
+  ExecutionStageProgressList,
+  ExecutionStageProgressStatus,
+  InvestigationExecutionStage,
+  InvestigationRunStatus,
+} from "./investigation-execution-stage";
+export type {
+  InvestigationEventPayload,
+  InvestigationEventRecord,
+  InvestigationEventRecordPayload,
+  InvestigationEventType,
+  ReportValidationFailureCode,
+  ToolFailureCode,
+} from "./investigation-event";
+export type {
+  DeriveExecutionStageProgressInput,
+  InvestigationEventContractErrorCode,
+} from "./investigation-stage-progress-reducer";
