@@ -1,10 +1,16 @@
 import {
   AgentOrchestratorErrorCodeSchema,
   AgentTraceEventSchema,
+  hasCanonicalInvestigationLifecycleMarker,
+  InvestigationEventPayloadSchema,
+  InvestigationEventRecordSchema,
+  projectToLegacyAgentTraceEvent,
   RecordApprovalDecisionInputSchema,
   ResolutionReportSchema,
   type AgentOrchestratorErrorCode,
   type AgentTraceEvent,
+  type InvestigationEventPayload,
+  type InvestigationEventRecord,
   type ResolutionReport,
 } from "@opspilot/contracts";
 
@@ -120,15 +126,99 @@ export function toTraceEventCreateInputs(
   }));
 }
 
+/**
+ * The canonical-write mapping boundary (docs/reviews/21-...md §4/§7,
+ * Phase A2). Accepts only `InvestigationEventPayload` — the 12 new-write
+ * types — so a legacy `REPORT_GENERATED` payload is rejected here exactly
+ * as it is rejected by `InvestigationEventPayloadSchema` itself: nothing can
+ * construct a fresh legacy-typed canonical write.
+ *
+ * Deliberately produces no `recordedAt`: that value does not exist until a
+ * row is actually inserted (the database's own `created_at`), so this
+ * create-input shape has no field for an application-generated one to occupy.
+ * It also carries nothing resembling `clientRequestId` — that concept
+ * belongs to `agent_runs`, not to an individual ledger event.
+ */
+export interface InvestigationEventCreateInput {
+  runId: string;
+  sequenceNumber: number;
+  eventType: string;
+  payload: InvestigationEventPayload;
+}
+
+export function toInvestigationEventCreateInput(
+  runId: string,
+  sequenceNumber: number,
+  payload: unknown,
+): InvestigationEventCreateInput {
+  const validated = validateOrThrow(InvestigationEventPayloadSchema, payload, "Investigation event payload");
+  return { runId, sequenceNumber, eventType: validated.type, payload: validated };
+}
+
+/**
+ * The canonical-read mapping boundary. `sequence` is the sole ordering key
+ * (never `recordedAt`) and must be exactly contiguous `1..N` — a gap,
+ * duplicate, zero, or non-one-based starting sequence means the stored rows
+ * were never actually written by `appendInvestigationEvent`'s allocator,
+ * which always assigns the next contiguous integer under the run's row
+ * lock. Rejecting this here, before assembling any record, is what stops a
+ * corrupt or partially-written stream from being silently read back as a
+ * plausible-looking prefix.
+ *
+ * `recordedAt` is sourced ONLY from the row's own `created_at` — never from
+ * an application clock read — matching `InvestigationEventRecordSchema`'s
+ * documented meaning of "the database recording time".
+ */
+export function fromInvestigationEventRows(
+  runId: string,
+  rows: ReadonlyArray<{ sequenceNumber: number; payload: unknown; createdAt: Date }>,
+): readonly InvestigationEventRecord[] {
+  rows.forEach((row, index) => {
+    if (row.sequenceNumber !== index + 1) {
+      throw new PersistenceError(
+        "PERSISTENCE_VALIDATION_FAILED",
+        "Stored canonical event sequence is not contiguous starting at 1.",
+      );
+    }
+  });
+  return rows.map((row) =>
+    validateOrThrow(
+      InvestigationEventRecordSchema,
+      {
+        runId,
+        sequence: row.sequenceNumber,
+        recordedAt: row.createdAt.toISOString(),
+        payload: row.payload,
+      },
+      `Investigation event record (sequence ${row.sequenceNumber})`,
+    ),
+  );
+}
+
+/**
+ * Two read modes over one physical ledger (docs/reviews/21-...md §7):
+ *
+ *   canonical marker present -> project through projectToLegacyAgentTraceEvent,
+ *                                dropping lifecycle-only nulls
+ *   canonical marker absent  -> the original, byte-for-byte unchanged
+ *                                AgentTraceEventSchema read path
+ *
+ * Raw `sequence_number` contiguity is enforced FIRST, on the raw rows,
+ * before origin detection or projection ever run — a corrupt stored
+ * sequence is rejected regardless of which format wrote it, and never
+ * silently repaired by dropping the offending row instead of raising.
+ *
+ * The marker check needs only `sequence`/`payload.type` shape (see
+ * `hasCanonicalInvestigationLifecycleMarker`'s own doc comment on why it is
+ * deliberately defensive rather than schema-validating) — the loosely-typed
+ * probe object below is never treated as a real `InvestigationEventRecord`;
+ * `fromInvestigationEventRows` performs the real, fully-validated
+ * conversion once a stream is confirmed canonical.
+ */
 export function fromTraceEventRows(
-  rows: ReadonlyArray<{ sequenceNumber: number; payload: unknown }>,
+  runId: string,
+  rows: ReadonlyArray<{ sequenceNumber: number; payload: unknown; createdAt: Date }>,
 ): readonly AgentTraceEvent[] {
-  // rows must already be ORDER BY sequence_number ASC from the query — this
-  // function does not re-sort, it only revalidates each payload. A gap,
-  // duplicate, zero, or non-one-based starting sequence indicates the
-  // stored trace was never actually written by finalizeCompleted/
-  // finalizeFailed (which always assigns exactly 1..N) — reject it rather
-  // than silently returning a corrupt/partial trace.
   rows.forEach((row, index) => {
     if (row.sequenceNumber !== index + 1) {
       throw new PersistenceError(
@@ -137,6 +227,22 @@ export function fromTraceEventRows(
       );
     }
   });
+
+  const markerProbe = rows.map((row) => ({
+    sequence: row.sequenceNumber,
+    payload: row.payload,
+  })) as unknown as readonly InvestigationEventRecord[];
+
+  if (hasCanonicalInvestigationLifecycleMarker(markerProbe)) {
+    const records = fromInvestigationEventRows(runId, rows);
+    const projected: AgentTraceEvent[] = [];
+    for (const record of records) {
+      const legacyEvent = projectToLegacyAgentTraceEvent(record);
+      if (legacyEvent !== null) projected.push(legacyEvent);
+    }
+    return projected;
+  }
+
   return rows.map((row) =>
     validateOrThrow(AgentTraceEventSchema, row.payload, `Trace event (sequence ${row.sequenceNumber})`),
   );

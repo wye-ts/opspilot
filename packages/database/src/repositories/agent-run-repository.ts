@@ -1,4 +1,10 @@
-import { isLiveExecutionEligible, type AgentTraceEvent } from "@opspilot/contracts";
+import {
+  deriveExecutionStageProgress,
+  InvestigationEventPayloadSchema,
+  isLiveExecutionEligible,
+  type AgentTraceEvent,
+  type InvestigationEventRecord,
+} from "@opspilot/contracts";
 
 import type { PrismaClient } from "../client";
 // NOTE: verified against the actual installed Prisma 7.9.0 `prisma-client`
@@ -11,6 +17,7 @@ import {
   buildOutcome,
   fromAgentJobRow,
   fromAgentRunRow,
+  fromInvestigationEventRows,
   fromTraceEventRows,
   toFailureCodeWrite,
   toReportWrite,
@@ -30,6 +37,17 @@ import type {
   RunProviderUsageWrite,
   StartedAgentRun,
 } from "../types";
+import { validateOrThrow } from "../validation";
+import { resolveCanonicalEventReplay } from "./investigation-event-ledger";
+
+// The two terminal event types must never be written by the generic
+// incremental append below — they are owned exclusively by the terminal
+// finalize transaction (Phase B's finalizeTerminal), which writes the
+// terminal event and the terminal run-status update atomically. A terminal
+// event written here, with no matching status update, is exactly the
+// corruption finalizeTerminal's own RUNNING-branch guard is designed to
+// detect and refuse (docs/reviews/21-...md §4, "terminal-corruption guard").
+const TERMINAL_EVENT_TYPES = new Set(["RUN_COMPLETED", "RUN_FAILED"]);
 
 /**
  * Formats a PostgreSQL DATE as "YYYY-MM-DD" from its UTC components.
@@ -588,6 +606,173 @@ export async function isLiveRunBudgetOpen(
   }
 }
 
+/**
+ * Phase A — INERT. Nothing in the production start/orchestrator/finalize
+ * path calls this yet; it is validated end-to-end by repository integration
+ * tests only, so a later phase can wire it into the real orchestrator
+ * emission points without redesigning the write itself
+ * (docs/reviews/21-issue-37-incremental-event-persistence-plan.md §4/§8).
+ *
+ * Appends exactly one canonical lifecycle event to `runId`'s ledger, inside
+ * one transaction:
+ *
+ *   1. lock the agent_runs row FOR UPDATE
+ *        missing            -> PERSISTENCE_NOT_FOUND
+ *        status <> RUNNING  -> PERSISTENCE_CONFLICT (nothing may follow a terminal event)
+ *   2. resolveCanonicalEventReplay — the all-12 exact-replay policy
+ *        replay   -> return the original record; insert nothing, consume no sequence
+ *        conflict -> PERSISTENCE_CONFLICT, nothing inserted
+ *   3. allocate COALESCE(MAX(sequence_number), 0) + 1, still under the run-row lock
+ *   4. insert, using the database's own created_at for recordedAt
+ *   5. re-read the full canonical stream in sequence order
+ *   6. deriveExecutionStageProgress({ events, runStatus: "RUNNING", now: latestRecordedAt })
+ *        throws -> roll back the whole transaction (including the insert),
+ *                  translate to PERSISTENCE_EVENT_STREAM_INVALID
+ *   7. commit only if the reducer accepted the resulting stream
+ *
+ * Handles only the TEN non-terminal canonical types. RUN_COMPLETED and
+ * RUN_FAILED are rejected outright, before the transaction even opens — see
+ * TERMINAL_EVENT_TYPES above.
+ *
+ * UNIQUE(run_id, sequence_number) remains as defense in depth: the run-row
+ * lock is what makes the allocation race-free, not the constraint.
+ */
+export async function appendInvestigationEvent(
+  prisma: PrismaClient,
+  runId: string,
+  payload: unknown,
+): Promise<InvestigationEventRecord> {
+  // Validate BEFORE the transaction opens — an invalid write never touches
+  // the database (the same house rule every other toXWrite mapper in this
+  // package follows).
+  const validated = validateOrThrow(InvestigationEventPayloadSchema, payload, "Investigation event payload");
+
+  if (TERMINAL_EVENT_TYPES.has(validated.type)) {
+    throw new PersistenceError(
+      "PERSISTENCE_VALIDATION_FAILED",
+      `appendInvestigationEvent must not be used to write ${validated.type}; it is owned exclusively by the terminal finalize transaction.`,
+    );
+  }
+
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const [runRow] = await tx.$queryRaw<{ status: string }[]>`
+        SELECT status FROM agent_runs WHERE id = ${runId}::uuid FOR UPDATE`;
+      if (!runRow) {
+        throw new PersistenceError("PERSISTENCE_NOT_FOUND", `AgentRun ${runId} not found`);
+      }
+      if (runRow.status !== "RUNNING") {
+        throw new PersistenceError(
+          "PERSISTENCE_CONFLICT",
+          `AgentRun ${runId} is not RUNNING; no further canonical event may be appended to it`,
+        );
+      }
+
+      const replay = await resolveCanonicalEventReplay(tx, runId, validated);
+      if (replay.kind === "replay") {
+        // No insert, no sequence consumption — the ambiguous-success-retry
+        // case never reaches allocation, let alone the reducer, so it can
+        // never surface as PERSISTENCE_EVENT_STREAM_INVALID.
+        return {
+          runId,
+          sequence: replay.sequenceNumber,
+          recordedAt: replay.createdAt.toISOString(),
+          payload: validated,
+        };
+      }
+
+      const [maxSequenceRow] = await tx.$queryRaw<{ maxSequence: number }[]>`
+        SELECT COALESCE(MAX(sequence_number), 0)::int AS "maxSequence"
+        FROM agent_trace_events WHERE run_id = ${runId}::uuid`;
+      const nextSequence = (maxSequenceRow?.maxSequence ?? 0) + 1;
+
+      const inserted = await tx.agentTraceEvent.create({
+        data: {
+          runId,
+          sequenceNumber: nextSequence,
+          eventType: validated.type,
+          payload: validated as unknown as Prisma.InputJsonObject,
+        },
+        select: { sequenceNumber: true, createdAt: true },
+      });
+
+      // Re-read the full canonical stream and run it through the SAME
+      // reducer a terminal completion will later be validated against — an
+      // invalid candidate stream must never become durably observable, even
+      // transiently, and re-reading (rather than appending to an in-memory
+      // list) is what makes this check see exactly what is about to commit.
+      const streamRows = await tx.agentTraceEvent.findMany({
+        where: { runId },
+        orderBy: { sequenceNumber: "asc" },
+        select: { sequenceNumber: true, payload: true, createdAt: true },
+      });
+      const events = fromInvestigationEventRows(runId, streamRows);
+      const latestRecordedAt = events[events.length - 1]?.recordedAt ?? inserted.createdAt.toISOString();
+
+      try {
+        deriveExecutionStageProgress({ events, runStatus: "RUNNING", now: latestRecordedAt });
+      } catch (reducerError) {
+        // Rolls back the whole transaction, including the insert above — an
+        // invalid candidate leaves zero new rows. The reducer's own closed
+        // InvestigationEventContractError.code is preserved via `cause` for
+        // structured diagnostics, never surfaced in `.message` (never a
+        // payload, prompt, report, tool input, or secret).
+        throw new PersistenceError(
+          "PERSISTENCE_EVENT_STREAM_INVALID",
+          `Appending ${validated.type} to AgentRun ${runId} would produce a reducer-invalid canonical stream`,
+          { cause: reducerError },
+        );
+      }
+
+      return {
+        runId,
+        sequence: inserted.sequenceNumber,
+        recordedAt: inserted.createdAt.toISOString(),
+        payload: validated,
+      };
+    });
+  } catch (error) {
+    throw normalizeDatabaseError(error, "appendInvestigationEvent");
+  }
+}
+
+/**
+ * Phase A — repository-only, matching `appendInvestigationEvent`: no HTTP
+ * endpoint, no DTO, no controller. Reads the full canonical stream for
+ * `runId` in sequence order — including a mid-flight RUNNING run's partial
+ * prefix, which is the direct proof of #37's headline acceptance criterion
+ * (a run is queryable before it terminates).
+ *
+ * `RepeatableRead`, matching `getAgentRun`'s own consistency guarantee.
+ * Every row is revalidated against `InvestigationEventRecordSchema` and
+ * contiguity is re-checked on every read (`fromInvestigationEventRows`),
+ * independent of what the write path already enforced.
+ */
+export async function getInvestigationEventRecords(
+  prisma: PrismaClient,
+  runId: string,
+): Promise<readonly InvestigationEventRecord[]> {
+  try {
+    const rows = await prisma.$transaction(
+      async (tx) => {
+        const runRow = await tx.agentRun.findUnique({ where: { id: runId }, select: { id: true } });
+        if (!runRow) {
+          throw new PersistenceError("PERSISTENCE_NOT_FOUND", `AgentRun ${runId} not found`);
+        }
+        return tx.agentTraceEvent.findMany({
+          where: { runId },
+          orderBy: { sequenceNumber: "asc" },
+          select: { sequenceNumber: true, payload: true, createdAt: true },
+        });
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+    return fromInvestigationEventRows(runId, rows);
+  } catch (error) {
+    throw normalizeDatabaseError(error, "getInvestigationEventRecords");
+  }
+}
+
 async function finalizeTerminal(
   prisma: PrismaClient,
   runId: string,
@@ -786,7 +971,7 @@ export async function getAgentRun(prisma: PrismaClient, runId: string): Promise<
         const traceRows = await tx.agentTraceEvent.findMany({
           where: { runId },
           orderBy: { sequenceNumber: "asc" },
-          select: { sequenceNumber: true, payload: true },
+          select: { sequenceNumber: true, payload: true, createdAt: true },
         });
         return { run, traceRows };
       },
@@ -796,7 +981,7 @@ export async function getAgentRun(prisma: PrismaClient, runId: string): Promise<
     return {
       job: fromAgentJobRow(result.run.job),
       run: fromAgentRunRow(result.run),
-      trace: fromTraceEventRows(result.traceRows),
+      trace: fromTraceEventRows(runId, result.traceRows),
       outcome: buildOutcome(result.run),
     };
   } catch (error) {

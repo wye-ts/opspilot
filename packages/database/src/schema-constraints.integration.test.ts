@@ -5,6 +5,57 @@ import type { PrismaClient, PrismaClientHandle } from "./client";
 import { createJob, finalizeFailed, startRun } from "./repositories/agent-run-repository";
 import { createTestPrismaClient, truncateAllTables } from "./test/test-db";
 
+// The 13-member InvestigationEventRecordPayloadSchema vocabulary
+// (@opspilot/contracts): the 12 canonical write-eligible types, in the
+// order this migration's CHECK constraint lists them, plus the one legacy
+// read-only type. Hardcoded here (mirroring EXPECTED_CHECK_CONSTRAINT_NAMES'
+// own style above) rather than derived from the Zod discriminated union at
+// runtime, so this test does not depend on internal Zod literal-extraction
+// APIs that can change between versions.
+const EXPECTED_CANONICAL_EVENT_TYPES = [
+  "RUN_CREATED",
+  "AGENT_STARTED",
+  "RETRIEVAL_COMPLETED",
+  "TOOL_REQUESTED",
+  "TOOL_COMPLETED",
+  "TOOL_FAILED",
+  "REPORT_GENERATION_STARTED",
+  "REPORT_SUBMITTED",
+  "REPORT_VALIDATED",
+  "REPORT_VALIDATION_FAILED",
+  "RUN_COMPLETED",
+  "RUN_FAILED",
+  "REPORT_GENERATED",
+] as const;
+
+// A minimal, DB-CHECK-satisfying payload for each of the 13 types — only
+// what agent_trace_events_event_type_matches_chk ("event_type" =
+// "payload"->>'type'") and agent_trace_events_payload_is_object_chk (an
+// object) require. Full application-level shape validation
+// (InvestigationEventPayloadSchema) is covered separately by
+// mappers.test.ts and is deliberately NOT what these DB-constraint tests
+// are proving.
+const SAMPLE_CANONICAL_PAYLOADS: Record<(typeof EXPECTED_CANONICAL_EVENT_TYPES)[number], object> = {
+  RUN_CREATED: { type: "RUN_CREATED" },
+  AGENT_STARTED: { type: "AGENT_STARTED" },
+  RETRIEVAL_COMPLETED: { type: "RETRIEVAL_COMPLETED", chunks: [] },
+  TOOL_REQUESTED: { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" },
+  TOOL_COMPLETED: { type: "TOOL_COMPLETED", toolCallId: "call-1", toolName: "get_service_status" },
+  TOOL_FAILED: {
+    type: "TOOL_FAILED",
+    toolCallId: "call-1",
+    toolName: "get_service_status",
+    failureCode: "TOOL_NOT_FOUND",
+  },
+  REPORT_GENERATION_STARTED: { type: "REPORT_GENERATION_STARTED" },
+  REPORT_SUBMITTED: { type: "REPORT_SUBMITTED" },
+  REPORT_VALIDATED: { type: "REPORT_VALIDATED" },
+  REPORT_VALIDATION_FAILED: { type: "REPORT_VALIDATION_FAILED", failureCode: "REPORT_SCHEMA_INVALID" },
+  RUN_COMPLETED: { type: "RUN_COMPLETED" },
+  RUN_FAILED: { type: "RUN_FAILED", failureCode: "TOOL_NOT_FOUND", failedStage: "DIAGNOSTIC_EXECUTION" },
+  REPORT_GENERATED: { type: "REPORT_GENERATED" },
+};
+
 // The authoritative check that every hand-authored CHECK constraint from the
 // migration still exists — `prisma migrate diff` (db:migrate:drift) cannot
 // see these at all, since Prisma's schema DSL does not model CHECK
@@ -35,6 +86,15 @@ const EXPECTED_CHECK_CONSTRAINT_NAMES = [
 
 let handle: PrismaClientHandle;
 let prisma: PrismaClient;
+
+async function createRunningRunId(): Promise<string> {
+  const job = await createJob(prisma, {
+    ticketId: `TKT-canonical-${Math.random().toString(36).slice(2)}`,
+    summary: "Canonical event-type CHECK constraint fixture run",
+  });
+  const started = await startRun(prisma, job.id, "FAKE", null);
+  return started.run.id;
+}
 
 beforeAll(async () => {
   handle = await createTestPrismaClient();
@@ -189,5 +249,134 @@ describe("agent_run_approvals raw constraint violations", () => {
 
     const after = await prisma.agentRunApproval.count({ where: { runId } });
     expect(after).toBe(0);
+  });
+});
+
+// Issue #37, Phase A — the widened agent_trace_events_event_type_chk and the
+// new all-12 partial unique index
+// (docs/reviews/21-issue-37-incremental-event-persistence-plan.md §3).
+describe("agent_trace_events_event_type_chk — widened for the canonical lifecycle", () => {
+  it("lists exactly the 13 InvestigationEventRecordPayloadSchema types", async () => {
+    async function constraintValues(constraintName: string): Promise<string[]> {
+      const [row] = await prisma.$queryRaw<{ definition: string }[]>`
+        SELECT pg_get_constraintdef(oid) AS definition
+        FROM pg_constraint WHERE conname = ${constraintName}`;
+      if (!row) throw new Error(`constraint ${constraintName} not found`);
+      return [...row.definition.matchAll(/'([^']+)'/g)].map((match) => match[1] as string).sort();
+    }
+
+    expect(await constraintValues("agent_trace_events_event_type_chk")).toEqual(
+      [...EXPECTED_CANONICAL_EVENT_TYPES].sort(),
+    );
+  });
+
+  it("accepts a row for every one of the 13 types on one run, each satisfying event_type_matches_chk", async () => {
+    const runId = await createRunningRunId();
+
+    for (const [index, eventType] of EXPECTED_CANONICAL_EVENT_TYPES.entries()) {
+      await expect(
+        prisma.$executeRaw`
+          INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
+          VALUES (
+            ${runId}::uuid,
+            ${index + 1},
+            ${eventType},
+            ${JSON.stringify(SAMPLE_CANONICAL_PAYLOADS[eventType])}::jsonb
+          )`,
+      ).resolves.toBeTruthy();
+    }
+
+    const count = await prisma.agentTraceEvent.count({ where: { runId } });
+    expect(count).toBe(EXPECTED_CANONICAL_EVENT_TYPES.length);
+  });
+
+  it("rejects an event_type outside the 13-member vocabulary", async () => {
+    const runId = await createRunningRunId();
+
+    await expect(
+      prisma.$executeRaw`
+        INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
+        VALUES (${runId}::uuid, 1, 'NOT_A_REAL_EVENT_TYPE', '{"type":"NOT_A_REAL_EVENT_TYPE"}'::jsonb)`,
+    ).rejects.toBeTruthy();
+  });
+
+  it("rejects event_type/payload.type mismatch even when both are individually legal (event_type_matches_chk)", async () => {
+    const runId = await createRunningRunId();
+
+    await expect(
+      prisma.$executeRaw`
+        INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
+        VALUES (
+          ${runId}::uuid, 1, 'TOOL_REQUESTED',
+          '{"type":"TOOL_COMPLETED","toolCallId":"call-1","toolName":"get_service_status"}'::jsonb
+        )`,
+    ).rejects.toBeTruthy();
+  });
+});
+
+describe("agent_trace_events_run_id_canonical_event_type_key — all-12 partial unique index", () => {
+  it("exists by exact name", async () => {
+    const rows = await prisma.$queryRaw<{ indexname: string }[]>`
+      SELECT indexname FROM pg_indexes
+      WHERE indexname = 'agent_trace_events_run_id_canonical_event_type_key'`;
+    expect(rows).toHaveLength(1);
+  });
+
+  it("rejects a raw duplicate canonical event type for the same run", async () => {
+    const runId = await createRunningRunId();
+
+    await prisma.$executeRaw`
+      INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
+      VALUES (${runId}::uuid, 1, 'AGENT_STARTED', '{"type":"AGENT_STARTED"}'::jsonb)`;
+
+    await expect(
+      prisma.$executeRaw`
+        INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
+        VALUES (${runId}::uuid, 2, 'AGENT_STARTED', '{"type":"AGENT_STARTED"}'::jsonb)`,
+    ).rejects.toBeTruthy();
+  });
+
+  it("does not constrain the legacy REPORT_GENERATED type (excluded from the partial index)", async () => {
+    const runId = await createRunningRunId();
+
+    await prisma.$executeRaw`
+      INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
+      VALUES (${runId}::uuid, 1, 'REPORT_GENERATED', '{"type":"REPORT_GENERATED"}'::jsonb)`;
+
+    // A second REPORT_GENERATED row for the same run is not rejected by this
+    // index — it is excluded from the WHERE clause entirely, since it is
+    // legacy read-only and this migration is only about the 12 canonical
+    // write-eligible types.
+    await expect(
+      prisma.$executeRaw`
+        INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
+        VALUES (${runId}::uuid, 2, 'REPORT_GENERATED', '{"type":"REPORT_GENERATED"}'::jsonb)`,
+    ).resolves.toBeTruthy();
+  });
+});
+
+describe("historical legacy-compatible rows remain valid after the widening migration", () => {
+  it("finalizeFailed still writes and reads back an ordinary 4-type legacy trace", async () => {
+    const job = await createJob(prisma, { ticketId: "TKT-legacy-post-migration", summary: "Legacy write path" });
+    const started = await startRun(prisma, job.id, "FAKE", null);
+
+    const finalized = await finalizeFailed(
+      prisma,
+      started.run.id,
+      [
+        { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" },
+        { type: "TOOL_COMPLETED", toolCallId: "call-1", toolName: "get_service_status" },
+        { type: "REPORT_GENERATED" },
+      ],
+      "TOOL_EXECUTION_FAILED",
+    );
+
+    expect(finalized.status).toBe("FAILED");
+
+    const rows = await prisma.agentTraceEvent.findMany({
+      where: { runId: started.run.id },
+      orderBy: { sequenceNumber: "asc" },
+    });
+    expect(rows.map((r) => r.eventType)).toEqual(["TOOL_REQUESTED", "TOOL_COMPLETED", "REPORT_GENERATED"]);
   });
 });
