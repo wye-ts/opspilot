@@ -3,12 +3,12 @@
 | Field | Value |
 |---|---|
 | Document | Engineering Challenges and Design Decisions |
-| Version | 1.10 |
+| Version | 1.12 |
 | Status | Living Document |
 | Project | OpsPilot |
 | Purpose | Capture difficult engineering problems, design decisions, tradeoffs, and interview-ready explanations |
 | Related Documents | `docs/03-technical-design.md`, `docs/04-agent-design.md`, `docs/reviews/03-technical-design-feasibility-review.md`, `docs/reviews/03-technical-design-review-decisions.md`, `docs/reviews/04-agent-design-claude-spike-results.md`, `docs/12-agent-run-api.md`, `docs/13-approval-workflow.md`, `docs/08-cicd-deployment.md`, `docs/14-web-ui.md` |
-| Revision note | v1.11 adds Challenge 10 from the shared-provider-package milestone (PR 6B1, `docs/12-agent-run-api.md` §7.1): two interop defects that type-checked cleanly and passed the affected package's own unit tests, and were caught only by artefacts that exercise the *built* output and the *real* event sequence — a CommonJS/ESM default-import inversion that appears when a package consumed by an ESM app is itself compiled to CommonJS, and a client-disconnect design built on `request.on("close")` that would have aborted every healthy live run before its first provider call. Both are now enforced by executable rules rather than convention. v1.10 adds Challenge 8 from the approval-workflow UX milestone (PR 5C, `docs/14-web-ui.md` §8): a completed agent run and a completed human approval decision were visually indistinguishable, because the sole decision control sat below the entire report in a 50/50-width column — a run-detail layout problem, not a persistence or API problem, distinguished here from Challenge 1's data-consistency scope precisely because nothing about the backend contract changed to fix it. v1.9 adds Challenges 5–7 from the production deployment milestone (PR 5B, `docs/08-cicd-deployment.md`): Challenge 5 documents the single-origin SPA-fallback design and a repository-verified correction to the design plan's stated claim about how far NestJS's catch-all route actually reaches under this exact NestJS 11 / Express 5 / path-to-regexp v8 combination; Challenge 6 documents two implementation-time bugs found only by running the real built container — a JavaScript default-parameter closure trap in web-dist path resolution, and a Prisma 7.9 CLI validation quirk around an unconditionally-declared `shadowDatabaseUrl` — neither caught by the existing source-level tests, both discovered by running the built image; Challenge 7 documents why the migration startup retry belongs in `docker/entrypoint.sh` rather than `PrismaLifecycleService`, and why an earlier draft's placement there would have been unreachable dead code. v1.8 adds a pointer, at the end of Challenge 1's "Idempotent State Changes" subsection, to `docs/13-approval-workflow.md` (Milestone 6C) — the actual, much simpler approval-workflow design now on record. It is **not** an implementation of Challenge 1's aspirational `pending_actions`/`PendingAction`/`APPROVAL_CREATED` concept (which remains exactly as described below: planned, unimplemented design tied to the future `AgentJob`-as-queue/`AgentStep` architecture); it is a standalone, deliberately smaller mechanism built directly on the actually-shipped `agent_jobs`/`agent_runs`/`agent_trace_events` schema (`docs/11-agent-run-persistence.md`), following the same "deliberately smaller precursor, not a partial implementation" relationship `docs/11` §9 already draws between that shipped persistence slice and this same aspirational future design — see `docs/13-approval-workflow.md` §2 for the exact reasoning. v1.2 aligns Challenge 1 with `docs/03-technical-design.md` v1.3: `AgentJob` now includes `CANCELLED`; the maintenance sweep sets `AgentRun.completedAt`; the corrected write-safety design is presented as two distinct repository transaction patterns (`withExecutionOwnership`, `withLockedRunState`) sharing one global lock order (`AgentJob` → `AgentRun` → child rows), not a single "ownership-fenced" pattern; and language implying the design has already been implemented or shipped has been replaced with language accurate to the project's current (pre-implementation) stage. v1.1's PostgreSQL-as-system-of-record-and-queue decision (D1, D2) and the corrected write-safety mechanism (D12) remain unchanged in substance. This entry is further updated within v1.2 to document concurrency-safe `AgentStep` sequence allocation (`AgentRun.nextStepSequence`, the shared `appendAgentStep(...)` helper, and why `SELECT MAX(sequence) + 1` is unsafe) and the `completeAgentRunWithReport` invariant that every `PendingAction` created during finalization has exactly one matching `APPROVAL_CREATED` trace event, created in the same transaction — still describing planned design, not implemented behavior. v1.3 adds Challenge 2, documenting the minimal RAG vertical slice's evidence-grounding and retriever-isolation design — unlike Challenge 1, this describes code that has actually been implemented and unit-tested in this revision, though the manual live spike against a real embedding provider and live Claude has not yet been run. v1.4 corrects that last clause: the manual live spike has now been run. Both the baseline-RAG scenario and the isolated injection-probe scenario passed against a real Voyage embedding provider and a real Claude model, with repeated rate limiting observed (and worked around via a scenario selector) but no RAG-correctness or evidence-grounding failure in any attempt — see `docs/05-rag-design.md` and `docs/reviews/05-rag-design-spike-results.md` for the full design record and measured results. This does not change any of Challenge 2's design, validation, or testing content below, which described planned/already-implemented behavior accurately; it only updates the one clause that described the live spike as not yet run. v1.5 adds Challenge 3, documenting the implemented Agent Run / Trace Persistence milestone (`packages/database`) — a deliberately smaller, already-built precursor to Challenge 1's full queue-claiming design, described in full in `docs/11-agent-run-persistence.md`. v1.6 adds Challenge 4, documenting a real implementation-time discovery in the Agent Run API milestone (`apps/api`, `docs/12-agent-run-api.md`): `nest build`/`nest start --watch` are architecturally incompatible with this monorepo's pinned `typescript@^7.0.2` (a native rewrite whose public npm export no longer exposes the classic TypeScript Compiler API `@nestjs/cli` depends on internally), resolved by bypassing the Nest CLI's build wrapper in favor of the same plain-`tsc` pattern already used successfully by every other package in this monorepo, rather than downgrading TypeScript. v1.7 revises Challenge 4's Decision/Tradeoffs/Implementation Notes at a focused pre-commit review pass: `@nestjs/cli`/`@nestjs/schematics` and `apps/api/nest-cli.json`, originally kept as an unused "possible future use" placeholder, are now removed entirely as dead configuration/dependencies with no actual justification to keep; `apps/api`'s `build` script now cleans stale `dist/` output before every build, and `start:dev` is now a reliable `pnpm run build && pnpm run start` (no automatic reload — deferred, not silently dropped) rather than the previously untested concurrent `tsc --watch`/`node --watch` pair. |
+| Revision note | v1.12 adds Challenge 13 from the investigation stage/event contract milestone (issue #36, `docs/16-investigation-event-contract.md`): a shared progress reducer that refuses to repair. An independent review of the first implementation found it would accept `RUN_CREATED → RUN_COMPLETED` as a successful run by silently closing and omitting the stages nobody had reported — the entry documents why "derive progress from events" quietly becomes "invent progress from gaps" unless completion is defined by explicit required facts, why the failure path must be immediate and exactly consistent between a stage fact and the run-level fact, and why a free-form `failureMessage` was removed from a browser-readable event rather than merely length-capped. v1.11 adds Challenge 10 from the shared-provider-package milestone (PR 6B1, `docs/12-agent-run-api.md` §7.1): two interop defects that type-checked cleanly and passed the affected package's own unit tests, and were caught only by artefacts that exercise the *built* output and the *real* event sequence — a CommonJS/ESM default-import inversion that appears when a package consumed by an ESM app is itself compiled to CommonJS, and a client-disconnect design built on `request.on("close")` that would have aborted every healthy live run before its first provider call. Both are now enforced by executable rules rather than convention. v1.10 adds Challenge 8 from the approval-workflow UX milestone (PR 5C, `docs/14-web-ui.md` §8): a completed agent run and a completed human approval decision were visually indistinguishable, because the sole decision control sat below the entire report in a 50/50-width column — a run-detail layout problem, not a persistence or API problem, distinguished here from Challenge 1's data-consistency scope precisely because nothing about the backend contract changed to fix it. v1.9 adds Challenges 5–7 from the production deployment milestone (PR 5B, `docs/08-cicd-deployment.md`): Challenge 5 documents the single-origin SPA-fallback design and a repository-verified correction to the design plan's stated claim about how far NestJS's catch-all route actually reaches under this exact NestJS 11 / Express 5 / path-to-regexp v8 combination; Challenge 6 documents two implementation-time bugs found only by running the real built container — a JavaScript default-parameter closure trap in web-dist path resolution, and a Prisma 7.9 CLI validation quirk around an unconditionally-declared `shadowDatabaseUrl` — neither caught by the existing source-level tests, both discovered by running the built image; Challenge 7 documents why the migration startup retry belongs in `docker/entrypoint.sh` rather than `PrismaLifecycleService`, and why an earlier draft's placement there would have been unreachable dead code. v1.8 adds a pointer, at the end of Challenge 1's "Idempotent State Changes" subsection, to `docs/13-approval-workflow.md` (Milestone 6C) — the actual, much simpler approval-workflow design now on record. It is **not** an implementation of Challenge 1's aspirational `pending_actions`/`PendingAction`/`APPROVAL_CREATED` concept (which remains exactly as described below: planned, unimplemented design tied to the future `AgentJob`-as-queue/`AgentStep` architecture); it is a standalone, deliberately smaller mechanism built directly on the actually-shipped `agent_jobs`/`agent_runs`/`agent_trace_events` schema (`docs/11-agent-run-persistence.md`), following the same "deliberately smaller precursor, not a partial implementation" relationship `docs/11` §9 already draws between that shipped persistence slice and this same aspirational future design — see `docs/13-approval-workflow.md` §2 for the exact reasoning. v1.2 aligns Challenge 1 with `docs/03-technical-design.md` v1.3: `AgentJob` now includes `CANCELLED`; the maintenance sweep sets `AgentRun.completedAt`; the corrected write-safety design is presented as two distinct repository transaction patterns (`withExecutionOwnership`, `withLockedRunState`) sharing one global lock order (`AgentJob` → `AgentRun` → child rows), not a single "ownership-fenced" pattern; and language implying the design has already been implemented or shipped has been replaced with language accurate to the project's current (pre-implementation) stage. v1.1's PostgreSQL-as-system-of-record-and-queue decision (D1, D2) and the corrected write-safety mechanism (D12) remain unchanged in substance. This entry is further updated within v1.2 to document concurrency-safe `AgentStep` sequence allocation (`AgentRun.nextStepSequence`, the shared `appendAgentStep(...)` helper, and why `SELECT MAX(sequence) + 1` is unsafe) and the `completeAgentRunWithReport` invariant that every `PendingAction` created during finalization has exactly one matching `APPROVAL_CREATED` trace event, created in the same transaction — still describing planned design, not implemented behavior. v1.3 adds Challenge 2, documenting the minimal RAG vertical slice's evidence-grounding and retriever-isolation design — unlike Challenge 1, this describes code that has actually been implemented and unit-tested in this revision, though the manual live spike against a real embedding provider and live Claude has not yet been run. v1.4 corrects that last clause: the manual live spike has now been run. Both the baseline-RAG scenario and the isolated injection-probe scenario passed against a real Voyage embedding provider and a real Claude model, with repeated rate limiting observed (and worked around via a scenario selector) but no RAG-correctness or evidence-grounding failure in any attempt — see `docs/05-rag-design.md` and `docs/reviews/05-rag-design-spike-results.md` for the full design record and measured results. This does not change any of Challenge 2's design, validation, or testing content below, which described planned/already-implemented behavior accurately; it only updates the one clause that described the live spike as not yet run. v1.5 adds Challenge 3, documenting the implemented Agent Run / Trace Persistence milestone (`packages/database`) — a deliberately smaller, already-built precursor to Challenge 1's full queue-claiming design, described in full in `docs/11-agent-run-persistence.md`. v1.6 adds Challenge 4, documenting a real implementation-time discovery in the Agent Run API milestone (`apps/api`, `docs/12-agent-run-api.md`): `nest build`/`nest start --watch` are architecturally incompatible with this monorepo's pinned `typescript@^7.0.2` (a native rewrite whose public npm export no longer exposes the classic TypeScript Compiler API `@nestjs/cli` depends on internally), resolved by bypassing the Nest CLI's build wrapper in favor of the same plain-`tsc` pattern already used successfully by every other package in this monorepo, rather than downgrading TypeScript. v1.7 revises Challenge 4's Decision/Tradeoffs/Implementation Notes at a focused pre-commit review pass: `@nestjs/cli`/`@nestjs/schematics` and `apps/api/nest-cli.json`, originally kept as an unused "possible future use" placeholder, are now removed entirely as dead configuration/dependencies with no actual justification to keep; `apps/api`'s `build` script now cleans stale `dist/` output before every build, and `start:dev` is now a reliable `pnpm run build && pnpm run start` (no automatic reload — deferred, not silently dropped) rather than the previously untested concurrent `tsc --watch`/`node --watch` pair. |
 
 ---
 
@@ -2218,3 +2218,237 @@ This problem demonstrates:
 - Refusing a one-character fix that would have permanently destroyed a distinction the domain needs
 - Recognising that a progress UI which labels a stage by what it was *about* to do becomes a liar the
   moment that stage can no longer happen
+
+---
+
+## 15. Challenge 13 — A Progress Reducer That Refuses to Repair
+
+### Context
+
+Issue #36 (`docs/16-investigation-event-contract.md`) defines the shared execution-stage/event contract
+a future live Timeline needs, without yet persisting anything incrementally (#37) or polling anything
+(#38). Its centrepiece is `deriveExecutionStageProgress`, a pure function turning an ordered event
+stream into four stage rows a user will read during an incident.
+
+An independent review of the first implementation returned `MATERIAL FINDINGS — FIX BEFORE COMMIT`.
+The findings were not edge cases; they were the difference between a contract that reports history and
+one that invents it.
+
+### Problem
+
+The first implementation was written to be *tolerant* of incomplete streams, because a `RUNNING` run is
+legitimately incomplete — you must be able to render a run that is only halfway through. That tolerance
+was implemented as generic leniency, and it leaked into the terminal path:
+
+- `RUN_CREATED → RUN_COMPLETED`, with no analysis, no report, and no validation, produced a
+  fully "successful" four-stage Timeline. `RUN_COMPLETED` sanity-closed whatever stage was active and
+  omitted whatever was still pending, so a stream asserting almost nothing rendered as a clean success.
+- `TOOL_FAILED` recorded no stage failure of its own; it only closed the tool call. The stage was
+  failed later, by `RUN_FAILED`. So `TOOL_FAILED → RUN_COMPLETED` was accepted, and a `RUN_FAILED`
+  naming a *different* code than the tool failure that preceded it was accepted too.
+- Tool calls were tracked in a `Set` of open ids, which cannot detect a duplicate request id, a
+  request/outcome tool-name mismatch, or a second outcome for the same call.
+- `RUN_FAILED` carried a free-form `failureMessage: string`, capped at 500 characters, in an event
+  intended to be readable by a browser.
+- The reducer trusted its TypeScript types at runtime and validated neither its inputs nor its own
+  output, so a bad `now` produced `NaN` elapsed times, and `ExecutionStageProgressSchema`'s ~50 lines
+  of invariants were never executed by anything.
+- One declared error code, `MULTIPLE_TERMINAL_EVENTS`, was never thrown.
+
+### Why It Is Difficult
+
+Every one of these behaviours is individually defensible as "being forgiving with imperfect data," and
+the tests all passed, because the tests asserted the forgiving behaviour. The failure is only visible
+if you ask a different question: *when this row says the investigation completed successfully, what
+exactly is that claim resting on?* For the first implementation the honest answer was "on the absence
+of contradicting events," which is not the same thing as evidence — and is indistinguishable, to the
+person reading the Timeline during an outage, from a claim resting on real facts.
+
+The genuinely hard part is that the tolerance is not wrong everywhere. A partial `RUNNING` stream must
+still reduce. So the fix cannot be "reject anything incomplete"; it has to separate *incomplete because
+it is still happening* from *incomplete because the history is corrupt*.
+
+### Failure Modes
+
+- A corrupt or truncated terminal history renders as a successful investigation.
+- A run that failed in a diagnostic tool displays a report-stage failure code, or completes.
+- Two different tool calls sharing an id are silently treated as one.
+- A provider error string, an authorization header, or a stack trace reaches a browser inside
+  `failureMessage`.
+- A schema whose invariants nothing runs gives false confidence that outputs satisfy them.
+
+### Decision
+
+Completion is defined by **required positive facts**, never by the absence of contradictions.
+`RUN_COMPLETED` is rejected unless `AGENT_STARTED`, `REPORT_SUBMITTED`, and `REPORT_VALIDATED` were all
+seen, no failure fact exists, no tool call is open, and every stage was already resolved by its own
+events. `RUN_COMPLETED` now mutates nothing — there is no sanity-close and no omit-to-repair.
+
+Failure facts became immediate and consistent. `TOOL_FAILED` fails `DIAGNOSTIC_EXECUTION` at once with
+the exact tool code; `REPORT_VALIDATION_FAILED` fails `REPORT_GENERATION` at once with the exact report
+code; a subsequent `RUN_FAILED` may only *confirm* that fact, and must repeat its stage and code
+exactly or be rejected as `FAILURE_FACT_MISMATCH`.
+
+Tool calls are tracked as `Map<toolCallId, { toolName, state }>`, which makes duplicate ids, name
+mismatches, duplicate outcomes, and open-call-at-terminal all detectable — and keeps the contract
+correct if more than one tool call per run is ever allowed.
+
+`failureMessage` was **removed**, not shortened. `.strict()` governs which keys exist; it cannot govern
+what a caller puts inside a string. The event now carries only `failureCode` and `failedStage`, and
+user-facing wording is derived from the code at the API/UI boundary.
+
+The reducer validates `now`, every record, sequence contiguity, and single-`runId` before reducing, and
+validates its own output against the stage-progress schema before returning — with typed codes
+(`INVALID_NOW`, `INVALID_EVENT_RECORD`, `MIXED_RUN_IDS`, `INVALID_PROGRESS_OUTPUT`) instead of `NaN` or
+a raw `RangeError`. All 27 error codes are now thrown somewhere; a code that cannot occur is a false
+claim about what the contract enforces.
+
+Partial `RUNNING` streams still reduce normally. Incompleteness is an error only when the stream claims
+to be terminal.
+
+### Alternatives Considered
+
+#### Alternative A — Keep terminal leniency, document it
+
+Rejected: the documentation would have had to say "a completed Timeline may describe stages no event
+reported," which is precisely the claim the Timeline exists to make trustworthy.
+
+#### Alternative B — Length-cap and sanitise `failureMessage`
+
+Rejected: sanitising free text is an arms race against every future caller. Removing the field ends it,
+and nothing is lost, because a closed code set plus a boundary mapping produces better user-facing copy
+than an ad-hoc string anyway.
+
+#### Alternative C — Validate in the marker helper as well as the reducer
+
+Rejected: two copies of a state machine drift. The helper was renamed
+`hasCanonicalInvestigationLifecycleMarker` and documented as *only* a canonical-vs-legacy marker, with
+a test that deliberately shows a marker-passing stream the reducer rejects.
+
+### Tradeoffs
+
+Emitters must now be exact: #37 cannot write a terminal success without the full lifecycle, and cannot
+write a `RUN_FAILED` that disagrees with a preceding stage failure. That is more constraint on
+unwritten code, accepted deliberately — a contract that is easy to satisfy incorrectly is not a
+contract. Runtime validation costs a Zod parse per event; at the bounded event counts this contract
+targets, that is not a real cost.
+
+### Implementation Notes
+
+The legacy projection was also rewritten from a `Set` membership test plus two `as` casts into an
+exhaustive `switch` with an `assertNever` default, so adding a future event type fails compilation
+until its projection is chosen rather than silently defaulting to `null`.
+
+A second review round found four residual defects of the same family — each a place where the contract
+still accepted a history it could not have observed:
+
+1. **A terminal failure could name any future pending stage.** `RUN_FAILED` accepted a `failedStage`
+   that was merely `pending`, so `RUN_CREATED → RUN_FAILED(REPORT_GENERATION)` claimed a run failed in a
+   phase it never reached. `failedStage` must now equal the single currently active stage, with one
+   narrow exception for a failure between run creation and analysis (stream exactly
+   `RUN_CREATED → RUN_FAILED`, naming `AGENT_ANALYSIS`).
+2. **Phases could move backward.** Nothing rejected `AGENT_STARTED` after tool execution, retrieval
+   during diagnostics, or a tool request before analysis began — so two stages could be active at once,
+   or an earlier stage could reactivate. Phase order is now forward-only, with at most one active stage,
+   enforced by `PHASE_ORDER_VIOLATION`.
+3. **A tool path could skip `REPORT_GENERATION_STARTED`.** The documented emitter contract says a tool
+   run reaches its report through a distinct finalization call; the reducer treated that fact as
+   optional, so the very event that makes report generation visible during a long provider call could be
+   dropped without consequence. It is now required on tool paths and still optional on the direct
+   no-tool path, where nothing could have announced it in advance.
+4. **The list schema did not enforce its advertised shape.** `ExecutionStageProgressListSchema` was a
+   plain array, so it would have accepted an empty, partial, duplicated, or reordered list while its
+   documentation promised exactly four ordered entries. The shape is now encoded in the schema.
+
+A third round found six more of the same kind, and one of them inverted an earlier assumption:
+
+1. **The canonical-origin marker rejected corrupt canonical rows as "legacy."** It consulted `runStatus`
+   and terminal shape, so a canonical stream missing its terminal event was reported as legacy-format —
+   routing genuinely broken data into the frontend's legacy inference, which would render a plausible
+   Timeline for a history that should have raised an error. The marker is now origin-only
+   (`RUN_CREATED` at sequence 1, no `runStatus` parameter): corruption is a reducer failure, never a
+   reclassification.
+2. **`REPORT_GENERATION_STARTED` was accepted on no-tool runs**, which the orchestrator cannot produce —
+   the finalization turn is only reached after a tool call.
+3. **Tool-path *failures* could omit it**, so a provider timeout during finalization was attributed to
+   `DIAGNOSTIC_EXECUTION` — a stage that had already finished successfully.
+4. **Overlapping tool requests were accepted** despite the contract documenting sequential calls. (A
+   later round narrowed this further — see the v1 scoping below — from "sequential" to "at most one.")
+5. **`runStatus` was never runtime-validated**, so a bogus value silently skipped every terminal check.
+6. **Failure codes and stages were not checked for causal compatibility** — `TOOL_EXECUTION_FAILED` could
+   be attributed to `AGENT_ANALYSIS`, and a terminal event could invent a tool failure no event
+   witnessed. The compatibility rules were then derived by reading every `failed(...)` site in the
+   orchestrator rather than by guessing, which is also how the pre-agent exception was narrowed to the
+   single code (`RETRIEVAL_PARAMS_INVALID`) that can actually occur before anything is traced.
+
+One reviewed hypothesis was **not** a defect and was documented rather than "fixed": `RETRIEVAL_COMPLETED`
+is optional because the orchestrator's retriever is optional and the current API module configures none.
+Making it mandatory would have rejected the shape production actually emits.
+
+A fourth, release-gate round produced the sharpest correction, and it was a **scoping** decision rather
+than a bug fix. The contract had been generalising: it accepted multiple sequential tool calls, and it
+accepted a provider failure after `REPORT_SUBMITTED`. Neither is producible by the runtime it models —
+`MAX_PROVIDER_TURNS = 2` allows one investigation turn and one finalization turn, so at most one tool
+call; and once a report has been submitted the provider has already returned its payload, so only
+validation can end the run. Both were "supporting a more general system than we have," which sounds like
+prudence and is actually the same failure as before: accepting histories the system cannot generate means
+the contract is not validating anything in those regions.
+
+v1 was therefore narrowed to exactly the two paths the runtime executes (direct no-tool report, and
+one-tool finalization), with `TOOL_LIMIT_EXCEEDED` for any second tool request. Narrowing also made
+`DUPLICATE_TOOL_CALL_ID` unreachable — a second request now fails on the limit first — so it was deleted
+rather than left as an error that can never be thrown.
+
+The same round replaced four independent `Set<AgentOrchestratorErrorCode>` classifications with one
+`satisfies Record<AgentOrchestratorErrorCode, FailurePolicy>` record, so a future error code fails
+compilation until its policy is written; made the origin marker total (it returns `false` instead of
+throwing on malformed JavaScript input, because a classifier that throws denies its caller the ability to
+route at all); and removed provider-controlled `toolCallId`/`toolName` values from exception messages,
+which are log-facing and can carry newlines, ANSI escapes, and credential-looking text.
+
+The pattern across all four rounds is the same: each defect was a rule that existed in prose — in a
+comment, a doc table, or a type name — but not in executable form. The third round adds a corollary: a
+classifier that answers "what format is this?" must not also answer "is this valid?", because callers
+act on the first answer by routing away from the code that would have produced the second. The fourth
+adds another: a contract should model the system that exists, not the system someone might build, because
+generality it cannot test is indistinguishable from a gap.
+
+### Testing Strategy
+
+222 tests across the package. Every rejection test asserts the exact
+`InvestigationEventContractError.code` through a helper rather than a broad `.toThrow()`, because
+"threw something" would have passed against several of the defects above. Every reducer output in a
+representative fixture set is validated against the stage-progress schema, closing the gap where those
+invariants were never executed. Clocks are fixed offsets from a constant; there are no sleeps, provider
+calls, or database access.
+
+### Observability
+
+None yet — a contract-only milestone with no running code to observe. #37 inherits the obligation to
+carry `InvestigationEventContractError.code` into whatever logging it adds around incremental
+persistence.
+
+### Interview Explanation
+
+> We had a function that turned an event stream into a progress Timeline, and it passed its tests. A
+> review pointed out that a stream containing nothing but "run created" and "run completed" rendered as
+> a fully successful investigation — because the reducer closed whatever was open and omitted whatever
+> was missing. That's the whole bug in one sentence: it was deriving progress from the *absence* of
+> contradicting events instead of the presence of facts. The fix was to define completion by required
+> positive facts and delete every repair path, while still allowing a half-finished run to render,
+> because a running investigation is legitimately incomplete. The distinction that made it tractable
+> was "incomplete because it's still happening" versus "incomplete because the history is corrupt" —
+> the first is normal, the second is an error, and only the terminal events can tell you which one
+> you're looking at.
+
+### Resume Relevance
+
+This problem demonstrates:
+
+- Recognising that tolerance of missing data silently becomes fabrication of data at exactly the point
+  where a user reads the output as ground truth
+- Defining a terminal state by required evidence rather than by absence of contradiction
+- Removing an unbounded text field from a public record instead of trying to sanitise it
+- Treating an unexecuted schema and an unthrowable error code as defects, not as harmless surplus
+- Keeping a single source of validation truth when a cheap marker check and a full state machine both
+  appear to answer the same question
