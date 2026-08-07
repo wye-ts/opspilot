@@ -1,4 +1,5 @@
 import {
+  appendInvestigationEvent as dbAppendInvestigationEvent,
   createJob as dbCreateJob,
   finalizeCompleted as dbFinalizeCompleted,
   finalizeFailed as dbFinalizeFailed,
@@ -14,13 +15,19 @@ import {
   type LiveRunBudgetReservationInput,
   type PersistedAgentJob,
   type PersistedAgentRun,
+  type PersistenceErrorCode,
   type PrismaClient,
   type ProviderMode,
   type RunProviderUsageWrite,
   type StartedAgentRun,
 } from "@opspilot/database";
 
-import type { ReportValidationIssue } from "@opspilot/contracts";
+import {
+  InvestigationEventContractError,
+  type InvestigationEventContractErrorCode,
+  type InvestigationEventPayload,
+  type ReportValidationIssue,
+} from "@opspilot/contracts";
 
 import {
   runAgentOrchestrator,
@@ -29,7 +36,11 @@ import {
 } from "../agent/agent-orchestrator";
 import type { AgentConversationMessage, LlmProvider } from "../providers/llm-provider";
 import { resolveAbortProvenance, type RunAbortContext } from "../providers/run-abort-context";
-import { AgentRunConfigurationError, AgentRunServiceError } from "./agent-run-service-error";
+import {
+  AgentRunConfigurationError,
+  AgentRunServiceError,
+  InvestigationEventEmissionError,
+} from "./agent-run-service-error";
 import type { AgentRunRepositoryInterface } from "./agent-run-repository-interface";
 import type {
   AgentRunUsageCollector,
@@ -56,13 +67,119 @@ export function createPrismaAgentRunRepository(prisma: PrismaClient): AgentRunRe
       dbStartRun(prisma, jobId, providerMode, modelIdentifier),
     startLiveRunWithAttemptLimit: (params) => dbStartLiveRunWithAttemptLimit(prisma, params),
     replayLiveRun: (params) => dbReplayLiveRun(prisma, params),
-    finalizeCompleted: (runId, trace, report, usage) =>
-      dbFinalizeCompleted(prisma, runId, trace, report, usage),
-    finalizeFailed: (runId, trace, code, usage) => dbFinalizeFailed(prisma, runId, trace, code, usage),
+    appendInvestigationEvent: (runId, payload) => dbAppendInvestigationEvent(prisma, runId, payload),
+    finalizeCompleted: (runId, report, usage) => dbFinalizeCompleted(prisma, runId, report, usage),
+    finalizeFailed: (runId, code, failedStage, usage) =>
+      dbFinalizeFailed(prisma, runId, code, failedStage, usage),
     reconcileLiveRunBudget: (reservation, usage) =>
       dbReconcileLiveRunBudget(prisma, reservation, usage),
     getAgentRun: (runId) => dbGetAgentRun(prisma, runId),
     getAgentJob: (jobId) => dbGetAgentJob(prisma, jobId),
+  };
+}
+
+/**
+ * The `cause` of an `InvestigationEventEmissionError` is whatever
+ * `appendInvestigationEvent` threw. Every failure path in that function
+ * already normalizes through `normalizeDatabaseError`, so a `PersistenceError`
+ * is what actually arrives — but the type is `unknown`, and silently casting
+ * would let a future non-normalized throw reach the API's error mapper as
+ * something it cannot classify. Anything unexpected becomes a fixed
+ * PERSISTENCE_UNAVAILABLE rather than being passed through raw.
+ */
+function toPersistenceError(cause: unknown): PersistenceError {
+  if (cause instanceof PersistenceError) return cause;
+  return new PersistenceError(
+    "PERSISTENCE_UNAVAILABLE",
+    "Canonical investigation event persistence failed.",
+    { cause },
+  );
+}
+
+/**
+ * The sanitized facts a caller may log about a canonical-ledger write failure.
+ *
+ * Every field is a UUID, a closed enum member, or absent. Deliberately
+ * absent: prompt text, report content, tool input/output, provider responses,
+ * API keys, the database URL, and any visitor token — the underlying `cause`
+ * is never stringified here, only inspected for its closed `code`.
+ *
+ * This package does no logging of its own (see `onReportSchemaInvalid` for the
+ * identical precedent): it hands the caller a safe, already-narrowed
+ * diagnostic and lets `apps/api` decide how to emit it.
+ */
+export interface InvestigationEventEmissionDiagnostic {
+  readonly runId: string;
+  readonly attemptedEventType: InvestigationEventPayload["type"];
+  readonly persistenceErrorCode: PersistenceErrorCode;
+  /**
+   * The reducer's own closed contract-error code, present ONLY when the
+   * cause chain contains a genuine `InvestigationEventContractError` (see
+   * `buildEmissionDiagnostic` below) — never an arbitrary string that merely
+   * happens to occupy a `.code` property.
+   */
+  readonly contractErrorCode?: InvestigationEventContractErrorCode;
+}
+
+/**
+ * Walks a standard `Error.cause` chain looking for a genuine
+ * `InvestigationEventContractError`, proven by `instanceof` — never by shape.
+ *
+ * The real production chain is exactly one level deep
+ * (`appendInvestigationEvent`'s `PersistenceError.cause` is the reducer's own
+ * throw), but the walk is not hard-coded to that depth: an intermediate
+ * wrapper anywhere in the chain must not hide a genuine contract error, and
+ * conversely nothing that is merely `instanceof Error` — a raw driver
+ * failure, a hand-built object with a matching-looking `.code` string — is
+ * ever mistaken for one. Bounded defensively against a pathological or
+ * cyclic chain; no genuine error in this codebase nests anywhere near this
+ * deep.
+ */
+// InstanceType<typeof X>, not the bare name, because @opspilot/contracts
+// re-exports InvestigationEventContractError as a plain `const` (the
+// package's TS2323-avoidance pattern for every error class it exports — see
+// PersistenceError's identical treatment in @opspilot/database), which
+// occupies only the value namespace and is not usable as a type by name.
+function findGenuineContractError(
+  value: unknown,
+): InstanceType<typeof InvestigationEventContractError> | undefined {
+  let current: unknown = value;
+  for (let depth = 0; depth < 10 && current !== null && current !== undefined; depth += 1) {
+    if (current instanceof InvestigationEventContractError) return current;
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return undefined;
+}
+
+function buildEmissionDiagnostic(
+  error: InvestigationEventEmissionError,
+): InvestigationEventEmissionDiagnostic {
+  const cause = error.cause;
+  const persistenceErrorCode: PersistenceErrorCode =
+    cause instanceof PersistenceError ? cause.code : "PERSISTENCE_UNAVAILABLE";
+
+  // `contractErrorCode` is populated ONLY when (a) the repository's own code
+  // for a reducer refusal is present, AND (b) the cause chain beneath it
+  // genuinely contains an `InvestigationEventContractError` (Codex Phase B
+  // review, finding M2). Without both, an arbitrary driver/adapter error
+  // whose thrown value happens to carry a string-shaped `.code` (a raw
+  // PostgreSQL/Prisma code such as "23505", or unbounded text from a future
+  // custom adapter) could be logged as though it were this closed,
+  // safe-to-log value — the exact trust-boundary failure this field exists
+  // to prevent. `instanceof` is reliable here: this package and
+  // @opspilot/database both resolve the same single workspace copy of
+  // @opspilot/contracts, exactly like the existing
+  // `cause instanceof PersistenceError` check above.
+  const contractErrorCode =
+    persistenceErrorCode === "PERSISTENCE_EVENT_STREAM_INVALID" && cause instanceof PersistenceError
+      ? findGenuineContractError(cause.cause)?.code
+      : undefined;
+
+  return {
+    runId: error.runId,
+    attemptedEventType: error.attemptedEventType,
+    persistenceErrorCode,
+    ...(contractErrorCode === undefined ? {} : { contractErrorCode }),
   };
 }
 
@@ -170,6 +287,15 @@ export interface ExecuteAndPersistParams<
     readonly modelIdentifier: string | null;
     readonly issues: readonly ReportValidationIssue[];
   }) => void;
+  /**
+   * Fires exactly once, only when a canonical lifecycle event could not be
+   * persisted, before `executeAndPersist` returns its `event-emission` result.
+   * Same contract as `onReportSchemaInvalid` above: this package does no
+   * logging itself, the diagnostic is already narrowed to safe closed values
+   * (see InvestigationEventEmissionDiagnostic), and a throwing hook cannot
+   * change the returned result.
+   */
+  readonly onEventEmissionFailure?: (diagnostic: InvestigationEventEmissionDiagnostic) => void;
 }
 
 /**
@@ -217,6 +343,28 @@ export type ExecuteAndPersistResult =
       readonly stage: "finalization";
       readonly runId: string;
       readonly agentResult: AgentOrchestratorResult;
+      readonly error: PersistenceError;
+      readonly usageSummary: RunProviderUsageSummary | null;
+      readonly reservation: LiveRunBudgetReservation | null;
+    }
+  // Persisting one canonical lifecycle event failed MID-RUN (issue #37).
+  //
+  // The run aborts and stays RUNNING: no terminal event, no terminal status,
+  // and nothing the provider or a tool already did is re-executed. There is
+  // deliberately NO retry path — unlike finalization there is no durable
+  // in-memory result to replay, and forcing a terminal write would require a
+  // failure code that is not an AgentOrchestratorErrorCode plus a failedStage
+  // the ledger never recorded as active. The row lands in the documented
+  // orphaned-RUNNING gap (docs/11-agent-run-persistence.md §10).
+  //
+  // Usage and reservation ride along exactly as they do for the finalization
+  // variant, so a run that spent real tokens is still reconciled by the
+  // caller's cleanup block.
+  | {
+      readonly persistence: "unavailable";
+      readonly stage: "event-emission";
+      readonly runId: string;
+      readonly attemptedEventType: InvestigationEventPayload["type"];
       readonly error: PersistenceError;
       readonly usageSummary: RunProviderUsageSummary | null;
       readonly reservation: LiveRunBudgetReservation | null;
@@ -453,7 +601,7 @@ async function finalize(
 
   try {
     if (agentResult.status === "completed") {
-      await repository.finalizeCompleted(runId, agentResult.trace, agentResult.report, usage);
+      await repository.finalizeCompleted(runId, agentResult.report, usage);
     } else {
       // agentResult.code is already the resolved terminal code — see
       // resolveAgentResultAbortProvenance, called once by executeAndPersist
@@ -461,7 +609,9 @@ async function finalize(
       // nothing: doing so here would mean re-deriving provenance on every
       // retry, using whatever context that retry call happens to supply
       // (retryFinalization supplies none at all).
-      await repository.finalizeFailed(runId, agentResult.trace, agentResult.code, usage);
+      // failedStage travels with the result, so a retry names the same stage
+      // the first attempt would have — persistence never re-derives it.
+      await repository.finalizeFailed(runId, agentResult.code, agentResult.failedStage, usage);
     }
     return {
       persistence: "persisted",
@@ -613,6 +763,22 @@ export function createAgentRunService(repository: AgentRunRepositoryInterface): 
       // from an orchestrator crash: both leave the run RUNNING and both
       // surface only as AgentRunServiceError("AGENT_EXECUTION_CRASHED",
       // started.run.id), never a raw error.
+      // The CANONICAL emission channel, bound to the runId the orchestrator
+      // never learns. Wrapping the PersistenceError here — where payload.type
+      // is in scope — is what lets the service report WHICH event failed
+      // without the orchestrator ever importing a persistence type.
+      const emitLifecycleEvent = async (payload: InvestigationEventPayload): Promise<void> => {
+        try {
+          await repository.appendInvestigationEvent(started.run.id, payload);
+        } catch (cause) {
+          throw new InvestigationEventEmissionError({
+            runId: started.run.id,
+            attemptedEventType: payload.type,
+            cause,
+          });
+        }
+      };
+
       let agentResult: AgentOrchestratorResult;
       try {
         const provider = params.createProvider(started.job, collector);
@@ -620,6 +786,7 @@ export function createAgentRunService(repository: AgentRunRepositoryInterface): 
           provider,
           toolRegistry: params.toolRegistry,
           initialConversation: [ticketContextMessage],
+          emitLifecycleEvent,
           // Conditional spreads — exactOptionalPropertyTypes:true means an
           // optional property must be either fully absent or a real value,
           // never an explicit `undefined`; AgentOrchestratorParams's
@@ -635,6 +802,34 @@ export function createAgentRunService(repository: AgentRunRepositoryInterface): 
           ...(effectiveSignal !== undefined ? { signal: effectiveSignal } : {}),
         });
       } catch (rawError) {
+        // A canonical-ledger failure is NOT a crash: persistence is exactly
+        // what went wrong, and there is something structured to hand back.
+        // Abort, leave the run RUNNING, and carry the usage the collector has
+        // already accumulated so the caller's cleanup still reconciles a run
+        // that spent real tokens. `collector.snapshot()` is the same mechanism
+        // the crash path below uses — the accumulator is mutable and live, and
+        // the adapter records into it as each provider turn completes, so every
+        // call billed before the failed append is already counted.
+        if (rawError instanceof InvestigationEventEmissionError) {
+          // Best-effort observability only, exactly like onReportSchemaInvalid:
+          // a caller-supplied hook throwing must never change what this method
+          // returns, or a logging bug would become an execution bug.
+          try {
+            params.onEventEmissionFailure?.(buildEmissionDiagnostic(rawError));
+          } catch {
+            // Swallowed deliberately — the hook's failure is not this run's.
+          }
+          return {
+            persistence: "unavailable",
+            stage: "event-emission",
+            runId: started.run.id,
+            attemptedEventType: rawError.attemptedEventType,
+            error: toPersistenceError(rawError.cause),
+            usageSummary: collector?.snapshot() ?? null,
+            reservation,
+          };
+        }
+
         // Not a PersistenceError (persistence worked correctly up to this
         // point). Not an AgentOrchestratorErrorCode (this is not an
         // agent-domain decision). Not returned inside ExecuteAndPersistResult

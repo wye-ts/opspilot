@@ -2,7 +2,16 @@ export type PersistenceErrorCode =
   | "PERSISTENCE_UNAVAILABLE"
   | "PERSISTENCE_CONFLICT"
   | "PERSISTENCE_VALIDATION_FAILED"
-  | "PERSISTENCE_NOT_FOUND";
+  | "PERSISTENCE_NOT_FOUND"
+  // A candidate canonical event stream failed reducer validation
+  // (InvestigationEventContractError) inside its own write transaction, or a
+  // stored canonical stream was found corrupt on read (e.g. a terminal
+  // status with no matching terminal event, or vice versa). This is an
+  // emitter/repository contract defect or stored-data corruption — never an
+  // AgentOrchestratorErrorCode, never a client-input error, and never a
+  // public API code (that mapping is Phase B's job). See
+  // docs/reviews/21-issue-37-incremental-event-persistence-plan.md §4.
+  | "PERSISTENCE_EVENT_STREAM_INVALID";
 
 export class PersistenceError extends Error {
   readonly code: PersistenceErrorCode;

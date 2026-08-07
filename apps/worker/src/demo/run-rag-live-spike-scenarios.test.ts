@@ -62,7 +62,9 @@ function failedOrchestratorResult(
   code: AgentOrchestratorErrorCode,
   trace: readonly TraceEvent[] = [],
 ): AgentOrchestratorResult {
-  return { status: "failed", code, message: "failure", trace };
+  // These fixtures only exercise scenario/report evaluation, which never reads
+  // failedStage — AGENT_ANALYSIS is the stage every code here is legal in.
+  return { status: "failed", code, message: "failure", trace, failedStage: "AGENT_ANALYSIS" };
 }
 
 const validTrace = [

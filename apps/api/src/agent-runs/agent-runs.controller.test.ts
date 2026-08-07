@@ -252,6 +252,85 @@ describe("AgentRunsController.createAgentRun", () => {
     });
   });
 
+  // Issue #37 Phase B — a canonical lifecycle event could not be persisted
+  // mid-run. The run is left RUNNING; the caller gets the ordinary
+  // persistence-unavailable behavior for its underlying cause.
+  it("maps an event-emission persistence-unavailable result to 503 PERSISTENCE_UNAVAILABLE", async () => {
+    const executeAndPersist = vi.fn().mockResolvedValue({
+      persistence: "unavailable",
+      stage: "event-emission",
+      runId: "run-1",
+      attemptedEventType: "TOOL_REQUESTED",
+      error: new PersistenceError("PERSISTENCE_UNAVAILABLE", "ledger down"),
+      usageSummary: null,
+      reservation: null,
+    });
+    const controller = buildController(buildConfig(), { service: buildFakeService({ executeAndPersist }) });
+
+    await expect(controller.createAgentRun("job-1", {}, buildFakeRequest(), buildFakeResponse())).rejects.toMatchObject({
+      code: "PERSISTENCE_UNAVAILABLE",
+      status: 503,
+    });
+  });
+
+  it("maps an event-emission stream-invalid result to 500 INTERNAL_DATA_INVALID", async () => {
+    const executeAndPersist = vi.fn().mockResolvedValue({
+      persistence: "unavailable",
+      stage: "event-emission",
+      runId: "run-1",
+      attemptedEventType: "REPORT_SUBMITTED",
+      error: new PersistenceError("PERSISTENCE_EVENT_STREAM_INVALID", "stream invalid"),
+      usageSummary: null,
+      reservation: null,
+    });
+    const controller = buildController(buildConfig(), { service: buildFakeService({ executeAndPersist }) });
+
+    await expect(controller.createAgentRun("job-1", {}, buildFakeRequest(), buildFakeResponse())).rejects.toMatchObject({
+      code: "INTERNAL_DATA_INVALID",
+      status: 500,
+    });
+  });
+
+  it("maps an event-emission NOT_FOUND to 500 INTERNAL_DATA_INVALID, never a 404", async () => {
+    const executeAndPersist = vi.fn().mockResolvedValue({
+      persistence: "unavailable",
+      stage: "event-emission",
+      runId: "run-1",
+      attemptedEventType: "AGENT_STARTED",
+      error: new PersistenceError("PERSISTENCE_NOT_FOUND", "run vanished"),
+      usageSummary: null,
+      reservation: null,
+    });
+    const controller = buildController(buildConfig(), { service: buildFakeService({ executeAndPersist }) });
+
+    await expect(controller.createAgentRun("job-1", {}, buildFakeRequest(), buildFakeResponse())).rejects.toMatchObject({
+      code: "INTERNAL_DATA_INVALID",
+      status: 500,
+    });
+  });
+
+  // Codex Phase B review, finding M3 — exercised through the actual
+  // ExecuteAndPersistResult path (not just the mapper in isolation), so a
+  // future controller-level regression that stops passing "event-emission" as
+  // the mapDomainError context would be caught here.
+  it("maps an event-emission conflict to 500 INTERNAL_DATA_INVALID, never the client-facing 409", async () => {
+    const executeAndPersist = vi.fn().mockResolvedValue({
+      persistence: "unavailable",
+      stage: "event-emission",
+      runId: "run-1",
+      attemptedEventType: "TOOL_REQUESTED",
+      error: new PersistenceError("PERSISTENCE_CONFLICT", "conflicting canonical event"),
+      usageSummary: null,
+      reservation: null,
+    });
+    const controller = buildController(buildConfig(), { service: buildFakeService({ executeAndPersist }) });
+
+    await expect(controller.createAgentRun("job-1", {}, buildFakeRequest(), buildFakeResponse())).rejects.toMatchObject({
+      code: "INTERNAL_DATA_INVALID",
+      status: 500,
+    });
+  });
+
   it("maps a run-creation persistence-unavailable result to PERSISTENCE_UNAVAILABLE for a connection failure", async () => {
     const executeAndPersist = vi.fn().mockResolvedValue({
       persistence: "unavailable",
@@ -900,6 +979,35 @@ describe("AgentRunsController.createAgentRun — LIVE admission", () => {
       await requestLive(controller);
 
       expect(reconcileLiveRunBudget).toHaveBeenCalledWith(RESERVATION, USAGE);
+    });
+
+    // Issue #37 Phase B — an event-emission failure leaves the run RUNNING,
+    // but the tokens were still spent and the reservation is still
+    // outstanding. Skipping reconciliation here would latch the whole UTC day
+    // closed (runs_reserved > runs_completed).
+    it("reconciles usage and reservation for an event-emission failure, and releases the lease", async () => {
+      const reconcileLiveRunBudget = vi.fn().mockResolvedValue(undefined);
+      const executeAndPersist = vi.fn().mockResolvedValue({
+        persistence: "unavailable",
+        stage: "event-emission",
+        runId: "run-1",
+        attemptedEventType: "TOOL_COMPLETED",
+        error: new PersistenceError("PERSISTENCE_UNAVAILABLE", "ledger down"),
+        usageSummary: USAGE,
+        reservation: RESERVATION,
+      });
+      const controller = buildController(servableConfig(), {
+        service: buildFakeService({ executeAndPersist, reconcileLiveRunBudget }),
+      });
+
+      await expect(requestLive(controller)).rejects.toMatchObject({ status: 503 });
+
+      expect(reconcileLiveRunBudget).toHaveBeenCalledWith(RESERVATION, USAGE);
+      // The lease was released too — otherwise this second request would be
+      // refused with LIVE_RUN_CONCURRENCY_LIMIT rather than reaching the
+      // service again.
+      await expect(requestLive(controller)).rejects.toMatchObject({ status: 503 });
+      expect(executeAndPersist).toHaveBeenCalledTimes(2);
     });
 
     it("preserves the response when reconciliation throws", async () => {

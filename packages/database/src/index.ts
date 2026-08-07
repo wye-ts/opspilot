@@ -17,12 +17,14 @@ import { PersistenceError as _PersistenceError, normalizeDatabaseError as _norma
 import { FAILURE_DISPLAY_MESSAGES as _FAILURE_DISPLAY_MESSAGES } from "./failure-messages";
 import { TicketContextSchema as _TicketContextSchema, validateOrThrow as _validateOrThrow } from "./validation";
 import {
+  appendInvestigationEvent as _appendInvestigationEvent,
   createJob as _createJob,
   currentBudgetDate as _currentBudgetDate,
   finalizeCompleted as _finalizeCompleted,
   finalizeFailed as _finalizeFailed,
   getAgentJob as _getAgentJob,
   getAgentRun as _getAgentRun,
+  getInvestigationEventRecords as _getInvestigationEventRecords,
   isLiveRunBudgetOpen as _isLiveRunBudgetOpen,
   reconcileLiveRunBudget as _reconcileLiveRunBudget,
   replayLiveRun as _replayLiveRun,
@@ -47,6 +49,10 @@ export const finalizeCompleted = _finalizeCompleted;
 export const finalizeFailed = _finalizeFailed;
 export const getAgentJob = _getAgentJob;
 export const getAgentRun = _getAgentRun;
+// Phase A — inert (docs/reviews/21-issue-37-incremental-event-persistence-plan.md):
+// not called by the production start/orchestrator/finalize path yet.
+export const appendInvestigationEvent = _appendInvestigationEvent;
+export const getInvestigationEventRecords = _getInvestigationEventRecords;
 export const startRun = _startRun;
 export const startLiveRunWithAttemptLimit = _startLiveRunWithAttemptLimit;
 export const replayLiveRun = _replayLiveRun;

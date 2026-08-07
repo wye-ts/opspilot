@@ -44,6 +44,7 @@ describe("formatDemoOutput", () => {
       code: "TOOL_NOT_FOUND",
       message: 'Unknown diagnostic tool "get_service_status".',
       trace: [],
+      failedStage: "DIAGNOSTIC_EXECUTION",
     };
 
     const output = formatDemoOutput(DEMO_TICKET, failedResult);

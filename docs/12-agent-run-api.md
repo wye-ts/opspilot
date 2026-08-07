@@ -115,6 +115,44 @@ Returns the job snapshot plus its run summaries, ordered by `attemptNumber` asce
 
 Returns the full persisted run projection: `job`, `run`, `trace` (in stored order — never re-sorted at the API layer), and `outcome` (`RUNNING` / `COMPLETED` with `report` / `FAILED` with `code` + `message`). Approval state is **not** embedded here — see the two endpoints below.
 
+#### Trace content after issue #37 (incremental persistence)
+
+The response **shape** is unchanged: the same `{ job, run, trace, outcome }`
+envelope, the same four-variant `AgentTraceEvent` union in `trace`, no
+canonical `events[]` field, and no `clientRequestId`. Canonical progress and
+polling belong to #38.
+
+Two content changes are worth knowing about:
+
+1. **A `RUNNING` run can now return a partial `trace`.** Events are persisted
+   as they happen rather than in one batch at the end, so a mid-flight run has
+   rows to project. Before #37 a `RUNNING` run always returned `trace: []`.
+   This is the point of the issue.
+
+2. **`TOOL_NOT_FOUND` and `TOOL_INPUT_INVALID` now include a
+   `TOOL_REQUESTED` event.** The canonical ledger records the tool request
+   *before* registry lookup and input validation — truthfully, since the
+   provider genuinely did request the tool — and the API's `trace` is projected
+   from that ledger. Before #37 this response carried no tool event at all for
+   those two codes, because it was derived from the orchestrator's in-memory
+   array, whose own `TOOL_REQUESTED` push sits after validation (and still
+   does, for direct orchestrator callers).
+
+   This is a **content change within the existing union, not a response-shape
+   change**: `TOOL_REQUESTED` is one of the four variants every existing
+   consumer already renders. `TOOL_FAILED` remains hidden by the projection,
+   and the run's failure is still communicated by `outcome.code` /
+   `outcome.message` exactly as before. Consumers that pair a `TOOL_REQUESTED`
+   with a later `TOOL_COMPLETED` should note that on these two failure paths
+   there is no completion event — the request stands alone.
+
+Lifecycle-only canonical events (`RUN_CREATED`, `AGENT_STARTED`,
+`REPORT_GENERATION_STARTED`, `REPORT_SUBMITTED`, `REPORT_VALIDATION_FAILED`,
+`RUN_COMPLETED`, `RUN_FAILED`) are never exposed here; `REPORT_VALIDATED`
+surfaces under its long-standing legacy name `REPORT_GENERATED`. Runs created
+before #37 keep reading back byte-for-byte unchanged through the legacy branch
+of the mapper.
+
 ### `POST /v1/agent-runs/:runId/approval`
 
 Records a human approve/reject decision against a `COMPLETED` run's `suggestedActions`. Records a decision only — never executes, simulates executing, or schedules execution of the approved action. Full design in `docs/13-approval-workflow.md`.

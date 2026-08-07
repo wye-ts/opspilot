@@ -1,3 +1,4 @@
+import type { InvestigationEventPayload } from "@opspilot/contracts";
 import type { LiveRunBudgetReservation } from "@opspilot/database";
 
 import type { RunProviderUsageSummary } from "./run-provider-usage";
@@ -49,6 +50,48 @@ export class AgentRunConfigurationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "AgentRunConfigurationError";
+  }
+}
+
+const EVENT_EMISSION_FAILED_MESSAGE =
+  "A canonical investigation lifecycle event could not be persisted.";
+
+/**
+ * Persisting one canonical lifecycle event failed mid-run.
+ *
+ * INTERNAL, and deliberately its own type rather than an
+ * `AgentOrchestratorErrorCode`: execution failure and ledger-infrastructure
+ * failure are separate domains. The agent did not fail — the ledger did — so
+ * collapsing this into the orchestrator's closed failure enum would force
+ * persistence to lie about what happened, and would require a `failedStage`
+ * the ledger never actually recorded as active.
+ *
+ * Thrown by the emitter closure `executeAndPersist` supplies, and allowed to
+ * escape `runAgentOrchestrator` unchanged (its only catch re-throws anything
+ * that is not an `LlmProviderError`). The run aborts immediately: no further
+ * provider turn, no further tool call, no legacy trace push for the event
+ * whose canonical write failed, and no terminal finalization — the row stays
+ * RUNNING.
+ *
+ * Carries only safe metadata. `attemptedEventType` is a closed enum member.
+ * There is deliberately NO `sequence`: allocation happens inside the
+ * transaction that failed, so the caller cannot know whether one was ever
+ * assigned, and inventing one would be a lie. The underlying
+ * `PersistenceError` is retained solely as `cause`.
+ */
+export class InvestigationEventEmissionError extends Error {
+  readonly runId: string;
+  readonly attemptedEventType: InvestigationEventPayload["type"];
+
+  constructor(params: {
+    readonly runId: string;
+    readonly attemptedEventType: InvestigationEventPayload["type"];
+    readonly cause?: unknown;
+  }) {
+    super(EVENT_EMISSION_FAILED_MESSAGE, { cause: params.cause });
+    this.name = "InvestigationEventEmissionError";
+    this.runId = params.runId;
+    this.attemptedEventType = params.attemptedEventType;
   }
 }
 

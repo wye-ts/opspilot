@@ -1,6 +1,7 @@
 import type { NestExpressApplication } from "@nestjs/platform-express";
 import { Test } from "@nestjs/testing";
 import {
+  appendInvestigationEvent,
   createJob,
   createPrismaClient,
   finalizeCompleted,
@@ -102,18 +103,30 @@ const APPROVAL_ELIGIBLE_REPORT = {
   ],
 };
 const APPROVAL_EMPTY_ACTIONS_REPORT = { ...APPROVAL_ELIGIBLE_REPORT, suggestedActions: [] };
-const APPROVAL_SAMPLE_TRACE = [{ type: "REPORT_GENERATED" as const }];
+/**
+ * The canonical lifecycle prefix a direct (no-tool) run must already carry
+ * before terminal finalization will accept it (issue #37 Phase B): terminal
+ * finalization reducer-validates the whole stored stream before updating the
+ * run's status. `RUN_CREATED` is written by `startRun` itself.
+ */
+async function appendDirectSuccessPrefix(prisma: PrismaClient, runId: string) {
+  await appendInvestigationEvent(prisma, runId, { type: "AGENT_STARTED" });
+  await appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED" });
+  await appendInvestigationEvent(prisma, runId, { type: "REPORT_VALIDATED" });
+}
 
 async function createEligibleApprovalRun(prisma: PrismaClient, ticketId: string) {
   const job = await createJob(prisma, { ticketId, summary: "Approval fixture run" });
   const started = await startRun(prisma, job.id, "FAKE", null);
-  return finalizeCompleted(prisma, started.run.id, APPROVAL_SAMPLE_TRACE, APPROVAL_ELIGIBLE_REPORT);
+  await appendDirectSuccessPrefix(prisma, started.run.id);
+  return finalizeCompleted(prisma, started.run.id, APPROVAL_ELIGIBLE_REPORT);
 }
 
 async function createIneligibleEmptyActionsRun(prisma: PrismaClient, ticketId: string) {
   const job = await createJob(prisma, { ticketId, summary: "Approval fixture run" });
   const started = await startRun(prisma, job.id, "FAKE", null);
-  return finalizeCompleted(prisma, started.run.id, APPROVAL_SAMPLE_TRACE, APPROVAL_EMPTY_ACTIONS_REPORT);
+  await appendDirectSuccessPrefix(prisma, started.run.id);
+  return finalizeCompleted(prisma, started.run.id, APPROVAL_EMPTY_ACTIONS_REPORT);
 }
 
 async function createRunningApprovalRun(prisma: PrismaClient, ticketId: string) {
@@ -125,7 +138,21 @@ async function createRunningApprovalRun(prisma: PrismaClient, ticketId: string) 
 async function createFailedApprovalRun(prisma: PrismaClient, ticketId: string) {
   const job = await createJob(prisma, { ticketId, summary: "Approval fixture run" });
   const started = await startRun(prisma, job.id, "FAKE", null);
-  return finalizeFailed(prisma, started.run.id, APPROVAL_SAMPLE_TRACE, "TOOL_NOT_FOUND");
+  // The prefix a TOOL_NOT_FOUND run really produces: the provider requested
+  // the tool, the registry lookup failed, the run ended in DIAGNOSTIC_EXECUTION.
+  await appendInvestigationEvent(prisma, started.run.id, { type: "AGENT_STARTED" });
+  await appendInvestigationEvent(prisma, started.run.id, {
+    type: "TOOL_REQUESTED",
+    toolCallId: "call-1",
+    toolName: "get_service_status",
+  });
+  await appendInvestigationEvent(prisma, started.run.id, {
+    type: "TOOL_FAILED",
+    toolCallId: "call-1",
+    toolName: "get_service_status",
+    failureCode: "TOOL_NOT_FOUND",
+  });
+  return finalizeFailed(prisma, started.run.id, "TOOL_NOT_FOUND", "DIAGNOSTIC_EXECUTION");
 }
 
 let controlHandle: PrismaClientHandle;
@@ -530,5 +557,91 @@ describe("approval", () => {
 
     expect(res.status).toBe(500);
     expect(res.body.error.code).toBe("INTERNAL_DATA_INVALID");
+  });
+});
+
+/**
+ * Issue #37 Phase B — the read surface after the switchover.
+ *
+ * The response SHAPE is unchanged: same `{ job, run, trace, outcome }` DTO,
+ * no canonical `events[]`, no `clientRequestId`. What changes is that a
+ * RUNNING run now has rows to project, and that the two early tool failures
+ * project a `TOOL_REQUESTED` the pre-#37 response never carried.
+ */
+describe("GET /v1/agent-runs/:runId — canonical projection", () => {
+  let testApp: TestApp;
+
+  beforeAll(async () => {
+    testApp = await createTestApiApp();
+  });
+
+  afterAll(async () => {
+    await testApp.app.close();
+  });
+
+  it("returns a PARTIAL projected legacy trace for a RUNNING run, through the existing shape", async () => {
+    const prisma = testApp.handle.prisma;
+    const job = await createJob(prisma, {
+      ticketId: "TICKET-API-RUNNING-1",
+      summary: "A mid-flight investigation run for partial trace projection",
+    });
+    const started = await startRun(prisma, job.id, "FAKE", null);
+
+    // Mid-execution: the agent started and requested a tool, nothing more.
+    await appendInvestigationEvent(prisma, started.run.id, { type: "AGENT_STARTED" });
+    await appendInvestigationEvent(prisma, started.run.id, {
+      type: "TOOL_REQUESTED",
+      toolCallId: "call-1",
+      toolName: "get_service_status",
+    });
+
+    const res = await request(testApp.app.getHttpServer()).get(`/v1/agent-runs/${started.run.id}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.outcome).toEqual({ type: "RUNNING" });
+    // Lifecycle-only events (RUN_CREATED, AGENT_STARTED) stay hidden.
+    expect(res.body.data.trace).toEqual([
+      { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" },
+    ]);
+
+    // The response shape is unchanged: no canonical events[] anywhere, and the
+    // internal idempotency key is never exposed.
+    expect(Object.keys(res.body.data).sort()).toEqual(["job", "outcome", "run", "trace"]);
+    expect(res.body.data).not.toHaveProperty("events");
+    expect(JSON.stringify(res.body)).not.toContain("clientRequestId");
+  });
+
+  it("projects TOOL_REQUESTED but never TOOL_FAILED for an early tool failure", async () => {
+    const run = await createFailedApprovalRun(testApp.handle.prisma, "TICKET-API-EARLY-TOOL-FAIL");
+
+    const res = await request(testApp.app.getHttpServer()).get(`/v1/agent-runs/${run.id}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.outcome).toMatchObject({ type: "FAILED", code: "TOOL_NOT_FOUND" });
+    // The documented, intentional content change: canonical persistence records
+    // TOOL_REQUESTED before registry lookup, so it now surfaces here. TOOL_FAILED
+    // remains hidden — TraceTimeline has no case for it.
+    expect(res.body.data.trace).toEqual([
+      { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" },
+    ]);
+    expect(JSON.stringify(res.body.data.trace)).not.toContain("TOOL_FAILED");
+  });
+
+  it("keeps a completed FAKE run's trace in the legacy union, with REPORT_GENERATED", async () => {
+    const createRes = await request(testApp.app.getHttpServer())
+      .post("/v1/agent-jobs")
+      .send({ ticketId: "TICKET-API-COMPLETED-1", summary: "A full synchronous FAKE investigation run" });
+    const jobId = createRes.body.data.id;
+
+    const runRes = await request(testApp.app.getHttpServer()).post(`/v1/agent-jobs/${jobId}/runs`).send({});
+    expect(runRes.status).toBe(201);
+
+    const traceTypes = runRes.body.data.trace.map((event: { type: string }) => event.type);
+    // Only the four legacy variants ever reach an existing consumer.
+    for (const type of traceTypes) {
+      expect(["RETRIEVAL_COMPLETED", "TOOL_REQUESTED", "TOOL_COMPLETED", "REPORT_GENERATED"]).toContain(type);
+    }
+    expect(traceTypes).toContain("REPORT_GENERATED");
+    expect(runRes.body.data).not.toHaveProperty("events");
   });
 });

@@ -31,7 +31,9 @@ function completed(report: ResolutionReport = VALID_REPORT): AgentOrchestratorRe
 }
 
 function failed(code: AgentOrchestratorErrorCode): AgentOrchestratorResult {
-  return { status: "failed", code, message: "fixed message", trace: [] };
+  // The evaluator does not read failedStage; AGENT_ANALYSIS is a truthful
+  // default for the codes these fixtures use.
+  return { status: "failed", code, message: "fixed message", trace: [], failedStage: "AGENT_ANALYSIS" };
 }
 
 function check(result: ReturnType<typeof evaluateRetrieval>, name: string) {

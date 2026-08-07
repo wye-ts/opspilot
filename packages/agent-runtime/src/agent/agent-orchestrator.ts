@@ -5,6 +5,8 @@ import {
   type AgentTraceEvent,
   type AgentTurnResult,
   type EvidenceReference,
+  type InvestigationEventPayload,
+  type InvestigationExecutionStage,
   type ReportValidationIssue,
   type ResolutionReport,
   type RetrievalSummaryEntry,
@@ -64,6 +66,21 @@ export interface AgentOrchestratorParams {
   // retrieval, and persistence are NOT cancelled by it, so it is not a strict
   // deadline for the whole run. Retries remain the provider transport's concern.
   readonly signal?: AbortSignal;
+  /**
+   * The CANONICAL persistence channel (issue #37).
+   *
+   * Optional, and absent for every direct caller — evals, demos, the
+   * orchestrator's own unit tests — which is why the legacy in-memory
+   * `trace` channel below is kept entirely independent of it rather than
+   * derived from it. When omitted this is a no-op and the returned
+   * `AgentTraceEvent[]` is byte-for-byte what it has always been.
+   *
+   * AWAITED, because the ordering claim has to be real: if TOOL_REQUESTED is
+   * not durable before the registry lookup runs, the ledger is not
+   * describing what actually happened. A rejection aborts the run
+   * immediately — see the two-channel note on `trace` below.
+   */
+  readonly emitLifecycleEvent?: (payload: InvestigationEventPayload) => Promise<void>;
 }
 
 export type AgentOrchestratorResult =
@@ -78,6 +95,14 @@ export type AgentOrchestratorResult =
       readonly message: string;
       readonly trace: readonly AgentTraceEvent[];
       /**
+       * The execution stage that was actually running when this failure
+       * occurred, stated by the site that produced it rather than inferred
+       * downstream. Persistence must never guess: RUN_FAILED.failedStage is
+       * required to name the stage the reducer sees as active, and a wrong
+       * guess is rejected (FAILED_STAGE_NOT_TRUTHFUL).
+       */
+      readonly failedStage: InvestigationExecutionStage;
+      /**
        * Populated only for REPORT_SCHEMA_INVALID, from
        * summarizeReportValidationIssues — safe to log (paths, codes,
        * expected/received type names, our own schema's static bounds), never
@@ -90,6 +115,7 @@ function failed(
   code: AgentOrchestratorErrorCode,
   message: string,
   trace: readonly AgentTraceEvent[],
+  failedStage: InvestigationExecutionStage,
   reportValidationIssues?: readonly ReportValidationIssue[],
 ): AgentOrchestratorResult {
   return {
@@ -97,6 +123,7 @@ function failed(
     code,
     message,
     trace,
+    failedStage,
     ...(reportValidationIssues !== undefined ? { reportValidationIssues } : {}),
   };
 }
@@ -173,10 +200,38 @@ export async function runAgentOrchestrator(
 ): Promise<AgentOrchestratorResult> {
   const paramsError = validateOrchestratorParams(params);
   if (paramsError) {
-    return failed("RETRIEVAL_PARAMS_INVALID", paramsError, []);
+    // The ONE failure reachable before anything is traced or emitted, and
+    // the reason AGENT_STARTED is emitted just below rather than at function
+    // entry: the contract's single pre-agent exception requires the stream to
+    // be exactly RUN_CREATED -> RUN_FAILED. Emitting AGENT_STARTED first would
+    // not fail loudly — it would quietly make that hand-written exception
+    // unreachable. See docs/16-investigation-event-contract.md §5.
+    return failed("RETRIEVAL_PARAMS_INVALID", paramsError, [], "AGENT_ANALYSIS");
   }
 
   const { provider, toolRegistry, maxOutputTokens = DEFAULT_MAX_OUTPUT_TOKENS } = params;
+
+  // TWO INDEPENDENT OUTPUT CHANNELS, deliberately not derived from one
+  // another (issue #37, docs/reviews/21-...md §5):
+  //
+  //   canonical persistence -> await params.emitLifecycleEvent?.(payload)
+  //   legacy in-memory      -> trace.push(legacyAgentTraceEvent)
+  //
+  // Their timing is NOT identical for every path: canonical TOOL_REQUESTED is
+  // emitted before registry lookup/input validation, while the legacy push
+  // stays at its old post-validation point. Keeping them separate is what
+  // lets direct callers (evals, demos, unit tests) see exactly the trace they
+  // always have, while the ledger truthfully records that the provider did
+  // request a tool even when that tool turned out not to exist.
+  //
+  // ORDERING RULE for any event with both channels: canonical first, legacy
+  // second. If canonical persistence fails, the await throws before the push
+  // runs, so the in-memory trace never claims a transition whose durable
+  // record does not exist.
+  const emit = async (payload: InvestigationEventPayload): Promise<void> => {
+    await params.emitLifecycleEvent?.(payload);
+  };
+
   const trace: AgentTraceEvent[] = [];
   let conversation = [...params.initialConversation];
 
@@ -187,12 +242,14 @@ export async function runAgentOrchestrator(
   // params.allowedRagChunkIds is never read in that branch — no merge.
   let allowedRagChunkIds: ReadonlySet<string> = params.allowedRagChunkIds ?? new Set<string>();
 
+  await emit({ type: "AGENT_STARTED" });
+
   if (params.retriever) {
     const retrievalInput = params.retrievalInput as RetrievalInput;
 
     const inputError = validateRetrievalInput(retrievalInput);
     if (inputError) {
-      return failed("RETRIEVAL_PARAMS_INVALID", inputError, trace);
+      return failed("RETRIEVAL_PARAMS_INVALID", inputError, trace, "AGENT_ANALYSIS");
     }
 
     let chunks: readonly RetrievedRunbookChunk[];
@@ -200,12 +257,12 @@ export async function runAgentOrchestrator(
       chunks = await params.retriever.retrieve(retrievalInput);
     } catch (error) {
       const category = error instanceof RetrieverError ? error.category : "UNKNOWN";
-      return failed("RETRIEVAL_FAILED", `Runbook retrieval failed (${category}).`, trace);
+      return failed("RETRIEVAL_FAILED", `Runbook retrieval failed (${category}).`, trace, "AGENT_ANALYSIS");
     }
 
     const outputError = validateRetrievedChunks(chunks, retrievalInput.topK);
     if (outputError) {
-      return failed("RETRIEVAL_RESPONSE_INVALID", outputError, trace);
+      return failed("RETRIEVAL_RESPONSE_INVALID", outputError, trace, "AGENT_ANALYSIS");
     }
 
     // Only now — after both validations pass — build the Set, trace event,
@@ -214,14 +271,16 @@ export async function runAgentOrchestrator(
     // context order, and the trace order all agree by construction.
     allowedRagChunkIds = new Set(chunks.map((chunk) => chunk.chunkId));
 
-    trace.push({
-      type: "RETRIEVAL_COMPLETED",
-      chunks: chunks.map((chunk) => ({
-        chunkId: chunk.chunkId,
-        rank: chunk.rank,
-        score: chunk.score,
-      })),
-    });
+    const retrievalSummary = chunks.map((chunk) => ({
+      chunkId: chunk.chunkId,
+      rank: chunk.rank,
+      score: chunk.score,
+    }));
+
+    // Canonical first, legacy second — a failed canonical append must not
+    // leave the in-memory trace claiming retrieval completed.
+    await emit({ type: "RETRIEVAL_COMPLETED", chunks: retrievalSummary });
+    trace.push({ type: "RETRIEVAL_COMPLETED", chunks: retrievalSummary });
 
     if (chunks.length > 0) {
       conversation = [
@@ -236,6 +295,24 @@ export async function runAgentOrchestrator(
   for (let turnIndex = 0; turnIndex < MAX_PROVIDER_TURNS; turnIndex++) {
     const phase: AgentTurnPhase =
       turnIndex === MAX_PROVIDER_TURNS - 1 ? "FINALIZATION" : "INVESTIGATION";
+
+    // The stage a provider/protocol failure on THIS turn belongs to. On the
+    // finalization turn REPORT_GENERATION_STARTED has just been emitted, so
+    // REPORT_GENERATION is the active stage; on the investigation turn it is
+    // still AGENT_ANALYSIS.
+    const activeStage: InvestigationExecutionStage =
+      phase === "FINALIZATION" ? "REPORT_GENERATION" : "AGENT_ANALYSIS";
+
+    // Announced immediately before the finalization provider call, and only
+    // there. Under the current execution model that turn is reachable only
+    // after a diagnostic tool call completed, which is exactly why the
+    // contract requires a preceding tool phase for this event. Emitted
+    // OUTSIDE the try below so an emission failure is never mistaken for a
+    // provider error.
+    if (phase === "FINALIZATION") {
+      await emit({ type: "REPORT_GENERATION_STARTED" });
+    }
+
     let result: AgentTurnResult;
     try {
       result = await provider.runAgentTurn({
@@ -262,16 +339,24 @@ export async function runAgentOrchestrator(
       // Anything else is a genuine defect and still propagates unchanged: the
       // crash path exists precisely to make those loud.
       if (error instanceof LlmProviderError) {
-        return failed(providerFailureCode(error.category), error.message, trace);
+        return failed(providerFailureCode(error.category), error.message, trace, activeStage);
       }
+      // Anything else — including InvestigationEventEmissionError raised by
+      // the canonical channel — propagates unchanged. The crash path exists
+      // precisely to make those loud.
       throw error;
     }
 
     if (result.type === "protocol_error") {
-      return failed(result.code, result.message, trace);
+      return failed(result.code, result.message, trace, activeStage);
     }
 
     if (result.type === "report_submission") {
+      // The provider has genuinely returned a report payload — recorded
+      // before validation runs, so the ledger distinguishes "submitted then
+      // rejected" from "never submitted".
+      await emit({ type: "REPORT_SUBMITTED" });
+
       // reportInput: true is required for summarizeReportValidationIssues to
       // derive a real receivedType (zod v4 omits `.input` from issues by
       // default). The raw value was already fully in memory as
@@ -283,10 +368,12 @@ export async function runAgentOrchestrator(
       });
 
       if (!parsedReport.success) {
+        await emit({ type: "REPORT_VALIDATION_FAILED", failureCode: "REPORT_SCHEMA_INVALID" });
         return failed(
           "REPORT_SCHEMA_INVALID",
           "The submitted resolution report failed schema validation.",
           trace,
+          "REPORT_GENERATION",
           summarizeReportValidationIssues(parsedReport.error),
         );
       }
@@ -298,68 +385,102 @@ export async function runAgentOrchestrator(
           successfulToolExecutionIds,
         )
       ) {
+        await emit({ type: "REPORT_VALIDATION_FAILED", failureCode: "REPORT_EVIDENCE_INVALID" });
         return failed(
           "REPORT_EVIDENCE_INVALID",
           "The submitted report referenced evidence that was not available in the current agent execution.",
           trace,
+          "REPORT_GENERATION",
         );
       }
 
+      // Canonical REPORT_VALIDATED, then the legacy REPORT_GENERATED push.
+      // The legacy type name is unchanged: REPORT_GENERATED has always meant
+      // "validated and accepted", which is exactly what REPORT_VALIDATED
+      // records — two names for one fact, neither derived from the other.
+      await emit({ type: "REPORT_VALIDATED" });
       trace.push({ type: "REPORT_GENERATED" });
       return { status: "completed", report: parsedReport.data, trace };
     }
 
     // result.type === "diagnostic_tool_request"
     if (turnIndex === MAX_PROVIDER_TURNS - 1) {
+      // Deliberately BEFORE the canonical TOOL_REQUESTED emission below: a
+      // second tool request on the finalization turn must not produce a
+      // second TOOL_REQUESTED in the ledger (TOOL_LIMIT_EXCEEDED). By this
+      // point REPORT_GENERATION_STARTED has been emitted, so REPORT_GENERATION
+      // is the truthful active stage.
       return failed(
         "PROVIDER_PROTOCOL_INVALID",
         "A report submission was required on the final provider turn, but another diagnostic tool request was received.",
         trace,
+        "REPORT_GENERATION",
       );
     }
 
     const { toolCallId, toolName, input } = result.request;
 
+    // CANONICAL TOOL_REQUESTED, emitted here — before registry lookup and
+    // before input validation — because the provider genuinely did request
+    // the tool, and TOOL_NOT_FOUND / TOOL_INPUT_INVALID must be able to
+    // record TOOL_REQUESTED -> TOOL_FAILED. The LEGACY push stays at its
+    // original post-validation position further below, unmoved, so a direct
+    // caller's in-memory trace is unchanged for those two failures.
+    await emit({ type: "TOOL_REQUESTED", toolCallId, toolName });
+
     const tool = toolRegistry.find(toolName);
     if (!tool) {
+      await emit({ type: "TOOL_FAILED", toolCallId, toolName, failureCode: "TOOL_NOT_FOUND" });
       return failed(
         "TOOL_NOT_FOUND",
         `Unknown diagnostic tool "${toolName}".`,
         trace,
+        "DIAGNOSTIC_EXECUTION",
       );
     }
 
     const parsedInput = tool.inputSchema.safeParse(input);
     if (!parsedInput.success) {
+      await emit({ type: "TOOL_FAILED", toolCallId, toolName, failureCode: "TOOL_INPUT_INVALID" });
       return failed(
         "TOOL_INPUT_INVALID",
         `Invalid input for diagnostic tool "${toolName}".`,
         trace,
+        "DIAGNOSTIC_EXECUTION",
       );
     }
 
+    // The LEGACY TOOL_REQUESTED push, unmoved from its original position:
+    // reached only after lookup AND input validation both succeed. This is
+    // why the two early tool failures above still produce no legacy
+    // TOOL_REQUESTED, exactly as before #37.
     trace.push({ type: "TOOL_REQUESTED", toolCallId, toolName });
 
     let rawOutput: unknown;
     try {
       rawOutput = await tool.execute(parsedInput.data);
     } catch {
+      await emit({ type: "TOOL_FAILED", toolCallId, toolName, failureCode: "TOOL_EXECUTION_FAILED" });
       return failed(
         "TOOL_EXECUTION_FAILED",
         `Diagnostic tool "${toolName}" failed during execution.`,
         trace,
+        "DIAGNOSTIC_EXECUTION",
       );
     }
 
     const parsedOutput = tool.outputSchema.safeParse(rawOutput);
     if (!parsedOutput.success) {
+      await emit({ type: "TOOL_FAILED", toolCallId, toolName, failureCode: "TOOL_OUTPUT_INVALID" });
       return failed(
         "TOOL_OUTPUT_INVALID",
         `Diagnostic tool "${toolName}" returned an invalid result.`,
         trace,
+        "DIAGNOSTIC_EXECUTION",
       );
     }
 
+    await emit({ type: "TOOL_COMPLETED", toolCallId, toolName });
     trace.push({ type: "TOOL_COMPLETED", toolCallId, toolName });
     successfulToolExecutionIds.add(toolCallId);
 
@@ -386,5 +507,6 @@ export async function runAgentOrchestrator(
     "PROVIDER_PROTOCOL_INVALID",
     "Bounded provider-turn loop exhausted without a report submission.",
     trace,
+    "REPORT_GENERATION",
   );
 }
