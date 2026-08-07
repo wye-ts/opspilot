@@ -84,8 +84,21 @@ function liveCapabilitiesResponse(): Response {
   return jsonResponse(200, { data: { liveAgentRuns: "AVAILABLE", liveAccess: "TOKEN_REQUIRED" } });
 }
 
+/**
+ * Investigation polling (#38) starts concurrently with every submit this
+ * file exercises and issues its own GET the tests below never queue a
+ * response for. A default (not `mockResolvedValueOnce`) fallback answers any
+ * such call with 404 — polling stops immediately (`not-found`), which is
+ * invisible to every assertion in this file (none inspect polling state).
+ */
+function pollFallbackResponse(): Response {
+  return jsonResponse(503, errorEnvelope("PERSISTENCE_UNAVAILABLE", "not tracked by this test"));
+}
+
 function apiCalls() {
-  return vi.mocked(fetch).mock.calls.filter((call) => String(call[0]) !== "/v1/capabilities");
+  return vi
+    .mocked(fetch)
+    .mock.calls.filter((call) => String(call[0]) !== "/v1/capabilities" && !String(call[0]).endsWith("/investigation"));
 }
 
 async function submit(user: ReturnType<typeof userEvent.setup>, summary = "Elevated error rate") {
@@ -131,7 +144,7 @@ afterEach(() => {
 describe("Investigation progress timeline (#34/#35)", () => {
   // Requirement 1: no empty result/progress panels before submission.
   it("renders no Progress, Agent activity, Report, or Approval panel before submission", async () => {
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch).mockResolvedValueOnce(fakeCapabilitiesResponse());
 
     render(<App />);
@@ -148,7 +161,7 @@ describe("Investigation progress timeline (#34/#35)", () => {
   // disabled (duplicate submission remains prevented).
   it("shows the submitted summary and Progress Timeline immediately, with the button disabled, while job creation is unresolved", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     const deferredJob = deferredResponse();
     vi.mocked(fetch).mockResolvedValueOnce(fakeCapabilitiesResponse()).mockImplementationOnce(() => deferredJob.promise);
 
@@ -174,7 +187,7 @@ describe("Investigation progress timeline (#34/#35)", () => {
   // Requirement 4: job stage Active -> Completed.
   it("moves the job stage from Active to Completed once job creation resolves", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     const deferredJob = deferredResponse();
     vi.mocked(fetch).mockResolvedValueOnce(fakeCapabilitiesResponse()).mockImplementationOnce(() => deferredJob.promise);
 
@@ -184,6 +197,7 @@ describe("Investigation progress timeline (#34/#35)", () => {
 
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
     deferredJob.resolve(jsonResponse(201, { data: jobResponse() }));
 
@@ -193,7 +207,7 @@ describe("Investigation progress timeline (#34/#35)", () => {
   // Requirement 5: run stage remains Active while startAgentRun is unresolved.
   it("keeps the run stage Active while the agent run request is unresolved", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     const deferredRun = deferredResponse();
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
@@ -219,7 +233,7 @@ describe("Investigation progress timeline (#34/#35)", () => {
   // returns to idle, and every later stage remains Pending.
   it("keeps the failed stage visible and later stages Pending after a job-creation failure", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(400, errorEnvelope("REQUEST_BODY_INVALID", "The request body failed validation.")));
@@ -245,12 +259,13 @@ describe("Investigation progress timeline (#34/#35)", () => {
   // loading -> loaded transition, and the dedicated test below covers failed.
   it("distinguishes the approval stage's loading and loaded states", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     const deferredApproval = deferredResponse();
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockImplementationOnce(() => deferredApproval.promise);
 
     render(<App />);
@@ -266,11 +281,12 @@ describe("Investigation progress timeline (#34/#35)", () => {
 
   it("shows the approval stage as Failed, distinct from Pending, when the fetch genuinely fails", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(503, errorEnvelope("PERSISTENCE_UNAVAILABLE", "The database is temporarily unavailable.")));
 
     render(<App />);
@@ -289,11 +305,12 @@ describe("Investigation progress timeline (#34/#35)", () => {
   // and in the required DOM order.
   it("reveals Agent activity, Generated report, and Suggested actions only once run data exists, in order", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
@@ -322,7 +339,7 @@ describe("Investigation progress timeline (#34/#35)", () => {
   // settles.
   it("does not render the Approval decision form until the approval fetch settles as PENDING", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     const deferredApproval = deferredResponse();
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
@@ -345,6 +362,7 @@ describe("Investigation progress timeline (#34/#35)", () => {
           },
         }),
       }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockImplementationOnce(() => deferredApproval.promise);
 
     render(<App />);
@@ -365,11 +383,12 @@ describe("Investigation progress timeline (#34/#35)", () => {
   // and present in LIVE mode.
   it("omits the availability stage in FAKE mode and includes it in LIVE mode", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
@@ -380,7 +399,7 @@ describe("Investigation progress timeline (#34/#35)", () => {
 
   it("includes the availability stage first, in LIVE mode", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(liveCapabilitiesResponse())
       .mockResolvedValueOnce(liveCapabilitiesResponse())
@@ -388,6 +407,7 @@ describe("Investigation progress timeline (#34/#35)", () => {
       .mockResolvedValueOnce(
         jsonResponse(201, { data: runDetail({ run: { ...runDetail().run, providerMode: "LIVE" } }) }),
       )
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }))
       .mockResolvedValueOnce(liveCapabilitiesResponse());
 
@@ -404,7 +424,7 @@ describe("Investigation progress timeline (#34/#35)", () => {
   // Requirement 16: exactly one aria-live region remains.
   it("still has exactly one aria-live region once the Progress Timeline is mounted", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     const deferredJob = deferredResponse();
     vi.mocked(fetch).mockResolvedValueOnce(fakeCapabilitiesResponse()).mockImplementationOnce(() => deferredJob.promise);
 
@@ -418,7 +438,7 @@ describe("Investigation progress timeline (#34/#35)", () => {
   // Requirement 17: no percentage is ever rendered.
   it("never renders a percentage while a submission is in progress", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     const deferredJob = deferredResponse();
     vi.mocked(fetch).mockResolvedValueOnce(fakeCapabilitiesResponse()).mockImplementationOnce(() => deferredJob.promise);
 
@@ -433,7 +453,7 @@ describe("Investigation progress timeline (#34/#35)", () => {
   // failed stage) rather than accumulating the earlier failed attempt's.
   it("resets the failed stage when Retry Run is used after a run-creation failure", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
@@ -461,7 +481,7 @@ describe("Investigation progress timeline (#34/#35)", () => {
   // Progress Timeline and submitted-summary snapshot entirely.
   it("unmounts the Progress Timeline and submitted summary when starting a new investigation from LIVE recovery mode", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(liveCapabilitiesResponse())
       .mockResolvedValueOnce(liveCapabilitiesResponse())
@@ -486,11 +506,12 @@ describe("Investigation progress timeline (#34/#35)", () => {
   it("stops the elapsed timer once the workflow reaches terminal success", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
@@ -506,7 +527,7 @@ describe("Investigation progress timeline (#34/#35)", () => {
   it("stops the elapsed timer once the workflow reaches terminal failure", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(400, errorEnvelope("REQUEST_BODY_INVALID", "The request body failed validation.")));
@@ -526,7 +547,7 @@ describe("Investigation progress timeline (#34/#35)", () => {
   it("cleans up the elapsed-timer interval on unmount", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     const deferredJob = deferredResponse();
     vi.mocked(fetch).mockResolvedValueOnce(fakeCapabilitiesResponse()).mockImplementationOnce(() => deferredJob.promise);
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -547,11 +568,12 @@ describe("Investigation progress timeline (#34/#35)", () => {
   describe("manual approval actions do not rewrite investigation progress", () => {
     it("a manual Refresh never moves the completed approval stage to Active or Failed", async () => {
       const user = userEvent.setup();
-      vi.stubGlobal("fetch", vi.fn());
+      vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
       vi.mocked(fetch)
         .mockResolvedValueOnce(fakeCapabilitiesResponse())
         .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
         .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+        .mockResolvedValueOnce(pollFallbackResponse())
         .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
       render(<App />);
@@ -576,7 +598,7 @@ describe("Investigation progress timeline (#34/#35)", () => {
 
     it("the 409-conflict approval convergence reload never moves the completed approval stage to Active or Failed", async () => {
       const user = userEvent.setup();
-      vi.stubGlobal("fetch", vi.fn());
+      vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
       vi.mocked(fetch)
         .mockResolvedValueOnce(fakeCapabilitiesResponse())
         .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
@@ -598,6 +620,7 @@ describe("Investigation progress timeline (#34/#35)", () => {
             },
           }),
         }))
+        .mockResolvedValueOnce(pollFallbackResponse())
         .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
       render(<App />);

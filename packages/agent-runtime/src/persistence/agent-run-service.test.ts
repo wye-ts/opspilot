@@ -189,6 +189,7 @@ function createFakeRepository(options: FakeRepositoryOptions = {}) {
     reconcileLiveRunBudget: 0,
     getAgentRun: 0,
     getAgentJob: 0,
+    getInvestigationState: 0,
   };
   // Every canonical lifecycle payload the service emitted, in order — the
   // fake's stand-in for the durable ledger, so tests can reduce the recorded
@@ -400,6 +401,10 @@ function createFakeRepository(options: FakeRepositoryOptions = {}) {
     getAgentJob: async (jobId): Promise<PersistedAgentJob> => {
       calls.getAgentJob += 1;
       return { job: { ...jobSnapshot, id: jobId }, runs: [] };
+    },
+    getInvestigationState: async (jobId) => {
+      calls.getInvestigationState += 1;
+      return { job: { ...jobSnapshot, id: jobId }, run: null, trace: [], outcome: null, events: [] };
     },
   };
 

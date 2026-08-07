@@ -4,6 +4,7 @@ import type {
   AgentRunDetail,
   ApprovalView,
   CapabilitiesView,
+  InvestigationStateResponse,
   RecordApprovalDecisionInput,
 } from "./types";
 
@@ -110,4 +111,9 @@ export function getApproval(runId: string, signal?: AbortSignal) {
 
 export function recordApproval(runId: string, input: RecordApprovalDecisionInput, signal?: AbortSignal) {
   return request<ApprovalView>(`/v1/agent-runs/${runId}/approval`, { method: "POST", body: input, signal });
+}
+
+/** Anonymous read — same as every other read on this demo. No new authorization concept. */
+export function getInvestigationState(jobId: string, signal?: AbortSignal) {
+  return request<InvestigationStateResponse>(`/v1/agent-jobs/${jobId}/investigation`, { signal });
 }

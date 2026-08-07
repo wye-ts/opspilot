@@ -43,6 +43,7 @@ const fakeAgentRunService: AgentRunService = {
   reconcileLiveRunBudget: vi.fn(),
   getAgentRun: vi.fn(),
   getAgentJob: vi.fn(),
+  getInvestigationState: vi.fn(),
 };
 const fakeToolRegistry = { find: vi.fn() } as unknown as ToolRegistry;
 const fakeProviderFactory: AgentProviderFactory = { createProvider: vi.fn() };
@@ -126,6 +127,20 @@ const PERSISTED_RUN = {
   },
 };
 
+const INVESTIGATION_STATE = {
+  job: JOB,
+  run: RUN,
+  trace: PERSISTED_RUN.trace,
+  outcome: PERSISTED_RUN.outcome,
+  events: [
+    { runId: RUN.id, sequence: 1, recordedAt: "2026-01-01T00:01:00.000Z", payload: { type: "RUN_CREATED" as const } },
+    { runId: RUN.id, sequence: 2, recordedAt: "2026-01-01T00:01:01.000Z", payload: { type: "AGENT_STARTED" as const } },
+    { runId: RUN.id, sequence: 3, recordedAt: "2026-01-01T00:01:02.000Z", payload: { type: "REPORT_SUBMITTED" as const } },
+    { runId: RUN.id, sequence: 4, recordedAt: "2026-01-01T00:01:03.000Z", payload: { type: "REPORT_VALIDATED" as const } },
+    { runId: RUN.id, sequence: 5, recordedAt: "2026-01-01T00:02:00.000Z", payload: { type: "RUN_COMPLETED" as const } },
+  ],
+};
+
 const APPROVAL_VIEW = {
   runId: RUN.id,
   status: "APPROVED" as const,
@@ -198,6 +213,168 @@ describe("route successes", () => {
     expect(res.headers["x-request-id"]).toBeTruthy();
   });
 
+  it("GET /v1/agent-jobs/:jobId/investigation -> 200 with the investigation state", async () => {
+    (fakeAgentRunService.getInvestigationState as ReturnType<typeof vi.fn>).mockResolvedValue(
+      INVESTIGATION_STATE,
+    );
+
+    const res = await request(app.getHttpServer()).get(`/v1/agent-jobs/${JOB.id}/investigation`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.job.id).toBe(JOB.id);
+    expect(res.body.data.run.id).toBe(RUN.id);
+    expect(res.body.data.trace).toEqual(INVESTIGATION_STATE.trace);
+    expect(res.body.data.outcome).toEqual(INVESTIGATION_STATE.outcome);
+    expect(res.body.data.events).toHaveLength(5);
+    expect(res.body.data.events[0].payload.type).toBe("RUN_CREATED");
+    expect(res.body.data.events[4].payload.type).toBe("RUN_COMPLETED");
+    expect(res.headers["x-request-id"]).toBeTruthy();
+  });
+
+  it("GET /v1/agent-jobs/:jobId/investigation -> exact response key-set and no forbidden fields (Verification gap 2)", async () => {
+    (fakeAgentRunService.getInvestigationState as ReturnType<typeof vi.fn>).mockResolvedValue(
+      INVESTIGATION_STATE,
+    );
+
+    const res = await request(app.getHttpServer()).get(`/v1/agent-jobs/${JOB.id}/investigation`);
+
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body).sort()).toEqual(["data"]);
+    expect(Object.keys(res.body.data).sort()).toEqual(["events", "job", "outcome", "run", "trace"]);
+    expect(Object.keys(res.body.data.job).sort()).toEqual(["createdAt", "id", "summary", "ticketId"]);
+    expect(Object.keys(res.body.data.run).sort()).toEqual(
+      ["attemptNumber", "createdAt", "estimatedCostUsd", "finishedAt", "id", "jobId", "modelIdentifier", "providerMode", "startedAt", "status"].sort(),
+    );
+    // COMPLETED-variant outcome — union-appropriate exact key set.
+    expect(Object.keys(res.body.data.outcome).sort()).toEqual(["report", "type"]);
+    expect(Object.keys(res.body.data.outcome.report).sort()).toEqual(
+      ["category", "confidence", "customerImpact", "evidence", "recommendedResolution", "rootCause", "suggestedActions", "summary"].sort(),
+    );
+    expect(Object.keys(res.body.data.outcome.report.evidence[0]).sort()).toEqual(["evidenceId", "finding", "sourceType"]);
+
+    expect(res.body.data.events).toHaveLength(5);
+    for (const event of res.body.data.events) {
+      expect(Object.keys(event).sort()).toEqual(["payload", "recordedAt", "runId", "sequence"]);
+    }
+    // Each payload's own exact key set, union-appropriate per event type —
+    // every event in this fixture carries a bare `{ type }` marker fact.
+    for (const event of res.body.data.events) {
+      expect(Object.keys(event.payload)).toEqual(["type"]);
+    }
+
+    // Privacy: the FULL serialized response contains none of the forbidden
+    // fields — clientRequestId, provider prompt/response, raw tool
+    // input/output, database/internal persistence error text.
+    const serialized = JSON.stringify(res.body);
+    expect(serialized).not.toContain("clientRequestId");
+    expect(serialized.toLowerCase()).not.toContain("prompt");
+    expect(serialized.toLowerCase()).not.toContain("tool_input");
+    expect(serialized.toLowerCase()).not.toContain("tool_output");
+    expect(serialized.toLowerCase()).not.toMatch(/prisma|\bsql\b|stack trace|postgres/);
+  });
+
+  it("GET /v1/agent-jobs/:jobId/investigation -> field-bearing union members serialize with their exact allowed payload keys, and the full response excludes every forbidden field (Verification gap I)", async () => {
+    // A realistic FAILED lifecycle exercising every field-bearing canonical
+    // event type the plan calls out — TOOL_REQUESTED, TOOL_COMPLETED,
+    // TOOL_FAILED, REPORT_VALIDATION_FAILED, RUN_FAILED — each using the
+    // exact valid contract shape from packages/contracts/src/investigation-event.ts
+    // (never an invented/invalid fixture).
+    const FIELD_BEARING_EVENTS = [
+      { runId: RUN.id, sequence: 1, recordedAt: "2026-01-01T00:01:00.000Z", payload: { type: "RUN_CREATED" as const } },
+      { runId: RUN.id, sequence: 2, recordedAt: "2026-01-01T00:01:01.000Z", payload: { type: "AGENT_STARTED" as const } },
+      {
+        runId: RUN.id,
+        sequence: 3,
+        recordedAt: "2026-01-01T00:01:02.000Z",
+        payload: { type: "TOOL_REQUESTED" as const, toolCallId: "call-1", toolName: "get_service_status" },
+      },
+      {
+        runId: RUN.id,
+        sequence: 4,
+        recordedAt: "2026-01-01T00:01:03.000Z",
+        payload: { type: "TOOL_COMPLETED" as const, toolCallId: "call-1", toolName: "get_service_status" },
+      },
+      { runId: RUN.id, sequence: 5, recordedAt: "2026-01-01T00:01:04.000Z", payload: { type: "REPORT_SUBMITTED" as const } },
+      {
+        runId: RUN.id,
+        sequence: 6,
+        recordedAt: "2026-01-01T00:01:05.000Z",
+        payload: { type: "REPORT_VALIDATION_FAILED" as const, failureCode: "REPORT_EVIDENCE_INVALID" as const },
+      },
+      {
+        runId: RUN.id,
+        sequence: 7,
+        recordedAt: "2026-01-01T00:01:06.000Z",
+        payload: { type: "TOOL_REQUESTED" as const, toolCallId: "call-2", toolName: "get_logs" },
+      },
+      {
+        runId: RUN.id,
+        sequence: 8,
+        recordedAt: "2026-01-01T00:01:07.000Z",
+        payload: { type: "TOOL_FAILED" as const, toolCallId: "call-2", toolName: "get_logs", failureCode: "TOOL_EXECUTION_FAILED" as const },
+      },
+      {
+        runId: RUN.id,
+        sequence: 9,
+        recordedAt: "2026-01-01T00:01:08.000Z",
+        payload: { type: "RUN_FAILED" as const, failureCode: "TOOL_EXECUTION_FAILED" as const, failedStage: "DIAGNOSTIC_EXECUTION" as const },
+      },
+    ];
+    const failedInvestigationState = {
+      job: JOB,
+      run: { ...RUN, status: "FAILED", finishedAt: "2026-01-01T00:02:00.000Z" },
+      trace: [],
+      outcome: { type: "FAILED" as const, code: "TOOL_EXECUTION_FAILED", message: "A diagnostic tool failed while executing." },
+      events: FIELD_BEARING_EVENTS,
+    };
+    (fakeAgentRunService.getInvestigationState as ReturnType<typeof vi.fn>).mockResolvedValue(
+      failedInvestigationState,
+    );
+
+    const res = await request(app.getHttpServer()).get(`/v1/agent-jobs/${JOB.id}/investigation`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.events).toHaveLength(9);
+    // FAILED-variant outcome — union-appropriate exact key set.
+    expect(Object.keys(res.body.data.outcome).sort()).toEqual(["code", "message", "type"]);
+
+    const byType = new Map<string, Record<string, unknown>>(
+      (res.body.data.events as { payload: { type: string } }[]).map((event) => [event.payload.type, event.payload as Record<string, unknown>]),
+    );
+    expect(Object.keys(byType.get("TOOL_REQUESTED")!).sort()).toEqual(["toolCallId", "toolName", "type"]);
+    expect(Object.keys(byType.get("TOOL_COMPLETED")!).sort()).toEqual(["toolCallId", "toolName", "type"]);
+    expect(Object.keys(byType.get("TOOL_FAILED")!).sort()).toEqual(["failureCode", "toolCallId", "toolName", "type"]);
+    expect(Object.keys(byType.get("REPORT_VALIDATION_FAILED")!).sort()).toEqual(["failureCode", "type"]);
+    expect(Object.keys(byType.get("RUN_FAILED")!).sort()).toEqual(["failedStage", "failureCode", "type"]);
+
+    // Privacy: the FULL serialized response excludes every forbidden field
+    // named in the fix prompt, checked as an exact (case-insensitive)
+    // literal match rather than a loose substring — so a camelCase
+    // `toolInput`/`stackTrace` cannot slip past a snake_case-only check.
+    const serialized = JSON.stringify(res.body).toLowerCase();
+    const forbidden = [
+      "clientRequestId",
+      "providerPrompt",
+      "providerResponse",
+      "prompt",
+      "responseText",
+      "rawInput",
+      "rawOutput",
+      "toolInput",
+      "toolOutput",
+      "tool_input",
+      "tool_output",
+      "prisma",
+      "sql",
+      "stack",
+      "stackTrace",
+      "postgres",
+    ];
+    for (const field of forbidden) {
+      expect(serialized).not.toContain(field.toLowerCase());
+    }
+  });
+
   it("POST /v1/agent-jobs/:jobId/runs -> 201 with Location header and no body pre-read of the job", async () => {
     (fakeAgentRunService.executeAndPersist as ReturnType<typeof vi.fn>).mockResolvedValue({
       persistence: "persisted",
@@ -229,6 +406,9 @@ describe("malformed route parameters", () => {
     ["GET", "/v1/agent-jobs/not-a-uuid"],
     ["POST", "/v1/agent-jobs/not-a-uuid/runs"],
     ["GET", "/v1/agent-runs/not-a-uuid"],
+    // Verification gap 2 (independent review, Codex review): the malformed-route
+    // table did not previously include the investigation endpoint.
+    ["GET", "/v1/agent-jobs/not-a-uuid/investigation"],
   ] as const)("%s %s -> 400 ROUTE_PARAMETER_INVALID", async (method, path) => {
     const res = method === "GET" ? await request(app.getHttpServer()).get(path) : await request(app.getHttpServer()).post(path);
 
@@ -319,6 +499,28 @@ describe("domain error branches", () => {
 
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe("AGENT_JOB_NOT_FOUND");
+  });
+
+  it("404 AGENT_JOB_NOT_FOUND when investigation state job does not exist", async () => {
+    (fakeAgentRunService.getInvestigationState as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new PersistenceError("PERSISTENCE_NOT_FOUND", "no job"),
+    );
+
+    const res = await request(app.getHttpServer()).get(`/v1/agent-jobs/${JOB.id}/investigation`);
+
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("AGENT_JOB_NOT_FOUND");
+  });
+
+  it("500 INTERNAL_DATA_INVALID for a corrupt canonical stream", async () => {
+    (fakeAgentRunService.getInvestigationState as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new PersistenceError("PERSISTENCE_VALIDATION_FAILED", "corrupt"),
+    );
+
+    const res = await request(app.getHttpServer()).get(`/v1/agent-jobs/${JOB.id}/investigation`);
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe("INTERNAL_DATA_INVALID");
   });
 
   it("404 AGENT_RUN_NOT_FOUND when the run does not exist", async () => {

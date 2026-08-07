@@ -2,6 +2,7 @@ import type {
   AgentOrchestratorErrorCode,
   AgentTraceEvent,
   ApprovalDecision,
+  InvestigationEventRecord,
   RecordApprovalDecisionInput,
   ResolutionReport,
   TicketContext,
@@ -80,6 +81,28 @@ export interface PersistedAgentRun {
 export interface PersistedAgentJob {
   readonly job: AgentJobRecord;
   readonly runs: readonly AgentRunRecord[];
+}
+
+/**
+ * One RepeatableRead snapshot of a job plus its latest run (by MAX(attemptNumber)),
+ * the legacy trace projection, the run outcome, and the raw canonical event
+ * records — all from a single consistent database read.
+ *
+ * `run` / `outcome` are `null` and `trace` / `events` are `[]` when the job
+ * has no run yet (the window between createAgentJob resolving and the
+ * run-creation transaction committing).
+ *
+ * `events` carries the raw {@link InvestigationEventRecord}s (sequence ASC)
+ * for canonical runs, and `[]` for legacy/pre-#37 runs — the caller can
+ * distinguish by calling `hasCanonicalInvestigationLifecycleMarker(events)`
+ * itself rather than receiving a server-side verdict.
+ */
+export interface PersistedInvestigationState {
+  readonly job: AgentJobRecord;
+  readonly run: AgentRunRecord | null;
+  readonly trace: readonly AgentTraceEvent[];
+  readonly outcome: AgentRunOutcome | null;
+  readonly events: readonly InvestigationEventRecord[];
 }
 
 // Returned by startRun: the AgentJob snapshot loaded from PostgreSQL under

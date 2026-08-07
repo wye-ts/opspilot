@@ -5,6 +5,7 @@ import {
   finalizeFailed as dbFinalizeFailed,
   getAgentJob as dbGetAgentJob,
   getAgentRun as dbGetAgentRun,
+  getInvestigationState as dbGetInvestigationState,
   PersistenceError,
   reconcileLiveRunBudget as dbReconcileLiveRunBudget,
   replayLiveRun as dbReplayLiveRun,
@@ -15,6 +16,7 @@ import {
   type LiveRunBudgetReservationInput,
   type PersistedAgentJob,
   type PersistedAgentRun,
+  type PersistedInvestigationState,
   type PersistenceErrorCode,
   type PrismaClient,
   type ProviderMode,
@@ -75,6 +77,7 @@ export function createPrismaAgentRunRepository(prisma: PrismaClient): AgentRunRe
       dbReconcileLiveRunBudget(prisma, reservation, usage),
     getAgentRun: (runId) => dbGetAgentRun(prisma, runId),
     getAgentJob: (jobId) => dbGetAgentJob(prisma, jobId),
+    getInvestigationState: (jobId) => dbGetInvestigationState(prisma, jobId),
   };
 }
 
@@ -557,6 +560,7 @@ export interface AgentRunService {
   ): Promise<void>;
   getAgentRun(runId: string): Promise<PersistedAgentRun>;
   getAgentJob(jobId: string): Promise<PersistedAgentJob>;
+  getInvestigationState(jobId: string): Promise<PersistedInvestigationState>;
 }
 
 /**
@@ -939,5 +943,6 @@ export function createAgentRunService(repository: AgentRunRepositoryInterface): 
 
     getAgentRun: (runId) => repository.getAgentRun(runId),
     getAgentJob: (jobId) => repository.getAgentJob(jobId),
+    getInvestigationState: (jobId) => repository.getInvestigationState(jobId),
   };
 }

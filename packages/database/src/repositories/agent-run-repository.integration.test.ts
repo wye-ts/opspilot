@@ -9,6 +9,7 @@ import {
   finalizeFailed,
   getAgentJob,
   getAgentRun,
+  getInvestigationState,
   startRun,
 } from "../repositories/agent-run-repository";
 import {
@@ -840,6 +841,169 @@ describe("getAgentJob", () => {
     await expect(getAgentJob(prisma, insertedRow.id)).rejects.toMatchObject({
       code: "PERSISTENCE_VALIDATION_FAILED",
     });
+  });
+});
+
+describe("getInvestigationState", () => {
+  it("returns job with null run/outcome and empty trace/events when the job has no run yet", async () => {
+    const job = await createJob(prisma, { ticketId: "TKT-no-run", summary: "No run started yet for this job" });
+    const state = await getInvestigationState(prisma, job.id);
+    expect(state.job).toEqual(job);
+    expect(state.run).toBeNull();
+    expect(state.outcome).toBeNull();
+    expect(state.trace).toEqual([]);
+    expect(state.events).toEqual([]);
+  });
+
+  it("returns a mid-flight RUNNING run with partial ordered events and RUNNING outcome", async () => {
+    const { job, run } = await createRunningRun();
+    // Emit a partial prefix — the run is still RUNNING
+    await appendInvestigationEvent(prisma, run.id, { type: "AGENT_STARTED" });
+    await appendInvestigationEvent(prisma, run.id, {
+      type: "TOOL_REQUESTED",
+      toolCallId: "call-1",
+      toolName: "get_service_status",
+    });
+
+    const state = await getInvestigationState(prisma, job.id);
+    expect(state.job.id).toBe(job.id);
+    expect(state.run).not.toBeNull();
+    expect(state.run!.id).toBe(run.id);
+    expect(state.run!.status).toBe("RUNNING");
+    expect(state.outcome).toEqual({ type: "RUNNING" });
+    // trace: projected legacy view (lifecycle-only types hidden)
+    expect(state.trace).toEqual([
+      { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" },
+    ]);
+    // events: raw canonical records, sequence ASC
+    expect(state.events).toHaveLength(3);
+    expect(state.events.map((e) => e.payload.type)).toEqual([
+      "RUN_CREATED",
+      "AGENT_STARTED",
+      "TOOL_REQUESTED",
+    ]);
+    expect(state.events[0]!.sequence).toBe(1);
+    expect(state.events[1]!.sequence).toBe(2);
+    expect(state.events[2]!.sequence).toBe(3);
+  });
+
+  it("returns a COMPLETED run with the terminal event last and report surfaced via outcome", async () => {
+    const { job, run } = await createRunningRun();
+    await appendDirectSuccessPrefix(prisma, run.id);
+    await finalizeCompleted(prisma, run.id, VALID_REPORT);
+
+    const state = await getInvestigationState(prisma, job.id);
+    expect(state.run!.status).toBe("COMPLETED");
+    expect(state.outcome).toEqual({ type: "COMPLETED", report: VALID_REPORT });
+    expect(state.events.map((e) => e.payload.type)).toEqual([
+      "RUN_CREATED",
+      "AGENT_STARTED",
+      "REPORT_SUBMITTED",
+      "REPORT_VALIDATED",
+      "RUN_COMPLETED",
+    ]);
+    const terminalEvent = state.events[state.events.length - 1]!;
+    expect(terminalEvent.payload.type).toBe("RUN_COMPLETED");
+  });
+
+  it("returns a FAILED run with the terminal event last and failure surfaced via outcome", async () => {
+    const { job, run } = await createRunningRun();
+    const failedStage = await appendFailurePrefix(prisma, run.id, "TOOL_NOT_FOUND");
+    await finalizeFailed(prisma, run.id, "TOOL_NOT_FOUND", failedStage);
+
+    const state = await getInvestigationState(prisma, job.id);
+    expect(state.run!.status).toBe("FAILED");
+    expect(state.outcome).toEqual({
+      type: "FAILED",
+      code: "TOOL_NOT_FOUND",
+      message: "The requested diagnostic tool is not registered.",
+    });
+    expect(state.events.map((e) => e.payload.type)).toEqual([
+      "RUN_CREATED",
+      "AGENT_STARTED",
+      "TOOL_REQUESTED",
+      "TOOL_FAILED",
+      "RUN_FAILED",
+    ]);
+  });
+
+  it("returns the latest attempt when multiple attempts exist for the same job", async () => {
+    const job = await createJob(prisma, { ticketId: "TKT-multi", summary: "Multiple attempts" });
+    const first = await startRun(prisma, job.id, "FAKE", null);
+    const second = await startRun(prisma, job.id, "FAKE", null);
+
+    const state = await getInvestigationState(prisma, job.id);
+    expect(state.run!.id).toBe(second.run.id);
+    expect(state.run!.attemptNumber).toBe(2);
+    // first attempt's run should not be the one returned
+    expect(state.run!.id).not.toBe(first.run.id);
+  });
+
+  it("returns events strictly sequence ASC and contiguous", async () => {
+    const { job, run } = await createRunningRun();
+    await appendOneToolSuccessPrefix(prisma, run.id);
+    await finalizeCompleted(prisma, run.id, VALID_REPORT);
+
+    const state = await getInvestigationState(prisma, job.id);
+    expect(state.events.length).toBeGreaterThanOrEqual(2);
+    state.events.forEach((event, index) => {
+      expect(event.sequence).toBe(index + 1);
+    });
+  });
+
+  it("returns raw legacy event records (marker false) alongside the legacy trace for a pre-#37 stream", async () => {
+    // Simulate a pre-#37 run: delete the canonical RUN_CREATED event startRun
+    // committed, insert legacy-format trace rows, and set the run terminal —
+    // all through raw SQL so no canonical event is ever written.
+    const { job, run } = await createRunningRun();
+    await prisma.$executeRaw`DELETE FROM agent_trace_events WHERE run_id = ${run.id}::uuid`;
+    await prisma.$executeRaw`INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
+      VALUES (${run.id}::uuid, 1, 'TOOL_REQUESTED', '{"type":"TOOL_REQUESTED","toolCallId":"call-1","toolName":"get_service_status"}'::jsonb)`;
+    await prisma.$executeRaw`INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
+      VALUES (${run.id}::uuid, 2, 'TOOL_COMPLETED', '{"type":"TOOL_COMPLETED","toolCallId":"call-1","toolName":"get_service_status"}'::jsonb)`;
+    await prisma.$executeRaw`INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
+      VALUES (${run.id}::uuid, 3, 'REPORT_GENERATED', '{"type":"REPORT_GENERATED"}'::jsonb)`;
+    await prisma.$executeRaw`UPDATE agent_runs SET status = 'COMPLETED', finished_at = now(),
+      report = ${JSON.stringify(VALID_REPORT)}::jsonb WHERE id = ${run.id}::uuid`;
+
+    const state = await getInvestigationState(prisma, job.id);
+    // No RUN_CREATED at sequence 1 → marker false → legacy. `events` still
+    // carries the raw, fully-validated records for these rows — the
+    // canonical/legacy VERDICT is a client-side decision
+    // (hasCanonicalInvestigationLifecycleMarker), not a server-side gate.
+    expect(state.events).toHaveLength(3);
+    expect(state.events.map((e) => e.payload.type)).toEqual([
+      "TOOL_REQUESTED",
+      "TOOL_COMPLETED",
+      "REPORT_GENERATED",
+    ]);
+    expect(state.events[0]!.sequence).toBe(1);
+    expect(state.events[2]!.sequence).toBe(3);
+    expect(state.trace).toEqual(SAMPLE_TRACE);
+    expect(state.run!.status).toBe("COMPLETED");
+    expect(state.outcome).toEqual({ type: "COMPLETED", report: VALID_REPORT });
+  });
+
+  it("rejects a corrupt canonical stream (sequence gap) with PERSISTENCE_VALIDATION_FAILED", async () => {
+    const { job, run } = await createRunningRun();
+    // Delete sequence 1, insert 1 and 3 (gap at 2), then update to terminal
+    await prisma.$executeRaw`DELETE FROM agent_trace_events WHERE run_id = ${run.id}::uuid`;
+    await prisma.$executeRaw`INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
+      VALUES (${run.id}::uuid, 1, 'RUN_CREATED', '{"type":"RUN_CREATED"}'::jsonb)`;
+    await prisma.$executeRaw`INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
+      VALUES (${run.id}::uuid, 3, 'AGENT_STARTED', '{"type":"AGENT_STARTED"}'::jsonb)`;
+    await prisma.$executeRaw`UPDATE agent_runs SET status = 'COMPLETED', finished_at = now(),
+      report = ${JSON.stringify(VALID_REPORT)}::jsonb WHERE id = ${run.id}::uuid`;
+
+    await expect(getInvestigationState(prisma, job.id)).rejects.toMatchObject({
+      code: "PERSISTENCE_VALIDATION_FAILED",
+    });
+  });
+
+  it("returns PERSISTENCE_NOT_FOUND for a nonexistent job", async () => {
+    await expect(
+      getInvestigationState(prisma, "00000000-0000-0000-0000-000000000000"),
+    ).rejects.toMatchObject({ code: "PERSISTENCE_NOT_FOUND" });
   });
 });
 

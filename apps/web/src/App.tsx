@@ -5,6 +5,7 @@ import {
   getAgentRun,
   getApproval,
   getCapabilities,
+  getInvestigationState,
   recordApproval,
   startAgentRun,
 } from "./api/endpoints";
@@ -12,14 +13,34 @@ import { ApiRequestError } from "./api/http-client";
 import type {
   AgentJobResponse,
   AgentRunDetail,
+  AgentRunOutcomeView,
+  AgentRunRecordView,
+  AgentTraceEvent,
   ApprovalView,
   CapabilitiesView,
+  InvestigationStateResponse,
   RecordApprovalDecisionInput,
 } from "./api/types";
+import type { InvestigationEventRecord, InvestigationRunStatus } from "@opspilot/contracts";
 import { ActionRequiredBanner } from "./components/ActionRequiredBanner";
 import { ErrorBanner, type DisplayableError } from "./components/ErrorBanner";
 import { InvestigationForm, type InvestigationFormSubmission } from "./components/InvestigationForm";
 import { InvestigationProgressTimeline } from "./components/InvestigationProgressTimeline";
+import { useInvestigationPoll, type PollCallbacks, type PollStopReason } from "./hooks/useInvestigationPoll";
+import {
+  applyAcceptedSnapshotDerivation,
+  type ExecutionStageDerivation,
+  type ExecutionStageDerivationState,
+} from "./investigation-progress/execution-stage-derivation";
+import { isNewerInvestigationSnapshot } from "./investigation-progress/investigation-snapshot";
+import {
+  isFinalizationAuthorized,
+  markFinalizationSettled,
+  resolveTerminalObservation,
+  type TerminalSettlementClaim,
+  type TerminalSettlementIdentity,
+} from "./investigation-progress/terminal-settlement";
+import { isUuid, readJobParam, withJobParam, withoutJobParam } from "./url/investigation-url";
 import { InvestigationSummary } from "./components/InvestigationSummary";
 import { ReportPanel } from "./components/ReportPanel";
 import { RunContextPanel } from "./components/RunContextPanel";
@@ -43,7 +64,8 @@ type Phase =
   | "running-agent"
   | "loading-approval"
   | "refreshing-run"
-  | "submitting-approval";
+  | "submitting-approval"
+  | "resuming";
 
 /**
  * The four request-lifecycle phases below read their text from
@@ -71,7 +93,29 @@ const PHASE_LABELS: Record<Phase, string> = {
   "loading-approval": STAGE_LABELS.approval.active,
   "refreshing-run": "Refreshing…",
   "submitting-approval": "Recording decision…",
+  resuming: "Restoring investigation…",
 };
+
+/**
+ * The poll pause reasons that offer a "Check again" affordance — a fresh
+ * bounded polling session for the SAME job, resetting every budget/counter.
+ * `terminal` / `not-found` / `permanent-invalid` / `aborted` are genuinely
+ * over: no resume is offered for them.
+ */
+const CHECK_AGAIN_REASONS = new Set<PollStopReason>(["transient-ceiling", "time-ceiling", "data-corrupt"]);
+
+// Fixed, safe wording for a contradictory terminal observation — never
+// interpolates either observation's code, message, or report. Worded like
+// every other stage-failure announcement (stageFailureAnnouncement).
+const TERMINAL_INCONSISTENCY_NOTICE =
+  "This investigation reported inconsistent results and could not be settled. Refresh or start a new investigation.";
+
+// Finding 4 (independent review): fixed, safe wording for the two
+// PERMANENT poll-failure classifications — never the raw server/persistence
+// text, and never a reason to auto-retry.
+const INVESTIGATION_NOT_FOUND_NOTICE = "This investigation is no longer available.";
+const PERMANENT_POLL_ERROR_NOTICE =
+  "This investigation's live progress could not be tracked. The result already shown remains accurate.";
 
 const CONFLICT_APPROVAL_ERROR_CODES = new Set(["AGENT_RUN_APPROVAL_ALREADY_DECIDED", "AGENT_RUN_NOT_APPROVAL_ELIGIBLE"]);
 
@@ -220,12 +264,127 @@ export function App() {
   // refreshRun and the approval-decision 409-convergence path.
   const [approvalLoadStatus, setApprovalLoadStatus] = useState<ApprovalLoadStatus>("idle");
 
+  // ── Investigation polling state (#38) ───────────────────────────────
+  const [events, setEvents] = useState<readonly InvestigationEventRecord[]>([]);
+  const [executionStageDerivation, setExecutionStageDerivation] = useState<ExecutionStageDerivation>({ kind: "legacy" });
+  const [minAttemptNumber, setMinAttemptNumber] = useState(0);
+  const terminalSettlementClaimRef = useRef<TerminalSettlementClaim | null>(null);
+  /**
+   * The reason polling is currently PAUSED, or `null` when it is not paused
+   * (idle, actively polling, or genuinely stopped). Drives the "Check again"
+   * affordance — shown ONLY for the three pausable reasons, never for
+   * terminal/not-found/permanent-invalid/aborted.
+   */
+  const [pausedReason, setPausedReason] = useState<PollStopReason | null>(null);
+  /**
+   * True only for a resumed job that has no run yet. `hasRetainedPartialWorkflow`
+   * would otherwise treat this exactly like a fresh submission's mid-creation
+   * window or a genuine LIVE run refusal — offering "Retry Run"/"Recover Live
+   * Run" for a provider mode we cannot safely infer from a job-only resume
+   * (there is no persisted record of the ORIGINAL provider selection once no
+   * run exists). Reset on every new submission and on leaving the resumed state.
+   */
+  const [resumedJobOnly, setResumedJobOnly] = useState(false);
+
+  // Refs that mirror the state above, kept current by the "Synced" setter
+  // wrappers below — never by a separate useEffect, so there is no window in
+  // which a ref could read a value one render stale. `applyObservedRunOutcome`
+  // and the poll-callback factory close over these refs (never the bare state
+  // variables), because those closures are created once per submission/retry/
+  // resume and MUST see the latest values on every later tick, not the values
+  // that existed at closure-creation time.
+  const jobRef = useRef<AgentJobResponse | null>(null);
+  const runRef = useRef<AgentRunDetail | null>(null);
+  const eventsRef = useRef<readonly InvestigationEventRecord[]>([]);
+  // Holds the derivation TOGETHER WITH the run identity it was computed for
+  // (independent review Findings 5/6 — Codex review) — never the bare
+  // `ExecutionStageDerivation` alone, so `applyDerivationForCandidate` can
+  // tell "the same run got a corrupt snapshot" apart from "a different
+  // run/attempt/job's first snapshot happens to be corrupt" before ever
+  // reusing `lastGoodStages`.
+  const executionStageStateRef = useRef<ExecutionStageDerivationState | null>(null);
+  const minAttemptNumberRef = useRef(0);
+  // The pollGeneration of the last ACCEPTED poll-sourced snapshot — distinct
+  // from the poll hook's own internal generation, which is never read outside
+  // the hook. Used only by isNewerInvestigationSnapshot's poll-stale check.
+  const lastAcceptedPollGenerationRef = useRef(-1);
+
+  function setJobSynced(value: AgentJobResponse | null) {
+    jobRef.current = value;
+    setJob(value);
+  }
+  function setRunSynced(value: AgentRunDetail | null) {
+    runRef.current = value;
+    setRun(value);
+  }
+  function setEventsSynced(value: readonly InvestigationEventRecord[]) {
+    eventsRef.current = value;
+    setEvents(value);
+  }
+  /** Resets execution-stage derivation to the fresh, identity-less baseline. */
+  function resetExecutionStageDerivation() {
+    executionStageStateRef.current = null;
+    setExecutionStageDerivation({ kind: "legacy" });
+  }
+  /**
+   * The ONE place every ingestion path (poll, POST/Refresh authoritative
+   * final snapshot, mount/popstate resume, retry/recovery) computes and
+   * stores execution-stage derivation — independent review Findings 5/6
+   * (Codex review). Delegates to the pure, identity-scoped
+   * `applyAcceptedSnapshotDerivation` so `lastGoodStages` is never reused
+   * across a job/run/attempt change, and so a canonical-invalid result can
+   * never be silently dropped by a call site that forgot to check it.
+   */
+  function applyDerivationForCandidate(
+    candidateJob: AgentJobResponse,
+    candidateRun: AgentRunRecordView,
+    candidateEvents: readonly InvestigationEventRecord[],
+  ): ExecutionStageDerivation {
+    const identity = { jobId: candidateJob.id, runId: candidateRun.id, attemptNumber: candidateRun.attemptNumber };
+    const nextState = applyAcceptedSnapshotDerivation(
+      identity,
+      candidateEvents,
+      candidateRun.status as InvestigationRunStatus,
+      new Date().toISOString(),
+      executionStageStateRef.current,
+    );
+    executionStageStateRef.current = nextState;
+    setExecutionStageDerivation(nextState.derivation);
+    return nextState.derivation;
+  }
+  function setMinAttemptNumberSynced(value: number) {
+    minAttemptNumberRef.current = value;
+    setMinAttemptNumber(value);
+  }
+  /**
+   * Finding 5 (final Codex re-review): the ONE place a persisted run's
+   * provider mode is applied once a run exists — never `setActiveProviderMode`
+   * alone. A job-only resume has no persisted mode yet, so `submittedSummary`
+   * is provisionally seeded with a guess; once a run-bearing snapshot
+   * arrives (from any ingestion path), its ACTUAL persisted mode must
+   * replace that guess everywhere it is read from, not only
+   * `activeProviderMode` — `submittedSummary.providerMode` drives both the
+   * "Submitted issue" section and the Progress Timeline's stage composition
+   * (`deriveInvestigationProgressStages` takes `providerMode` from
+   * `submittedSummary`, not from `activeProviderMode`). `RunContextPanel`
+   * already reads the mode directly off the persisted `run`, so it needs no
+   * separate synchronization here.
+   */
+  function applyPersistedProviderMode(providerMode: "FAKE" | "LIVE") {
+    setActiveProviderMode(providerMode);
+    setSubmittedSummary((prev) => (prev !== null ? { ...prev, providerMode } : prev));
+  }
+
   const controllerRef = useRef<AbortController | null>(null);
   const generationRef = useRef(0);
   // A SECOND, independent pair for capability reads — see refreshCapabilities.
   // Sharing the investigation's would let a background focus refresh abort a run.
   const capabilityControllerRef = useRef<AbortController | null>(null);
   const capabilityGenerationRef = useRef(0);
+
+  // Polling gets its own generation, strictly separate from the main App
+  // workflow generation — see useInvestigationPoll.
+  const poll = useInvestigationPoll();
 
   useEffect(() => {
     return () => {
@@ -319,6 +478,54 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Mount-time resume: if the URL carries a valid ?job=<uuid>, restore that
+  // investigation. Runs once on mount, before any popstate handler is
+  // attached.
+  useEffect(() => {
+    const jobParam = readJobParam(window.location.search);
+    if (jobParam === null) {
+      // No job param on initial load — nothing to resume, ordinary fresh form.
+    } else if (!isUuid(jobParam)) {
+      setNotice("That investigation link isn't valid.");
+      window.history.replaceState(null, "", `?${withoutJobParam(window.location.search)}`);
+    } else {
+      void resumeInvestigationFromJobParam(jobParam);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // popstate: Back/Forward restores the correct job via the SAME resume
+  // function as mount-time restore, or resets to the fresh form when ?job=
+  // is absent — without touching history, since a popstate transition must
+  // never itself write a new/replaced history entry for the "no job" case.
+  useEffect(() => {
+    const onPopState = () => {
+      const jobParam = readJobParam(window.location.search);
+      if (jobParam === null) {
+        invalidateInFlightWorkflows();
+        resetToFreshFormState();
+        // Finding 6's same root cause: invalidateInFlightWorkflows() just
+        // aborted any in-flight capability read with no replacement — see
+        // startNewInvestigation's identical call for the same reason.
+        void refreshCapabilities();
+      } else if (isUuid(jobParam)) {
+        void resumeInvestigationFromJobParam(jobParam);
+      } else {
+        // Malformed job param reached via popstate (e.g. a manually edited
+        // URL navigated to via Back/Forward) — no request, safe notice,
+        // strip the malformed param with replaceState, fresh form.
+        invalidateInFlightWorkflows();
+        resetToFreshFormState();
+        setNotice("That investigation link isn't valid.");
+        window.history.replaceState(null, "", `?${withoutJobParam(window.location.search)}`);
+        void refreshCapabilities();
+      }
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function beginWorkflow(): { signal: AbortSignal; generation: number } {
     controllerRef.current?.abort();
     const controller = new AbortController();
@@ -329,6 +536,24 @@ export function App() {
 
   function isStale(generation: number): boolean {
     return generation !== generationRef.current;
+  }
+
+  /**
+   * Bumps the main workflow generation (aborting the in-flight POST,
+   * createAgentJob, getAgentRun, loadApproval, or recordApproval), aborts
+   * and invalidates capabilities, stops and invalidates polling, and clears
+   * the terminal settlement claim — all BEFORE hydrating or resetting any
+   * target state. Called by popstate, mount-time resume, and
+   * startNewInvestigation.
+   */
+  function invalidateInFlightWorkflows(): { signal: AbortSignal; generation: number } {
+    const next = beginWorkflow(); // bumps main generation, aborts main controller,
+                                  // and clears terminalSettlementClaimRef
+    terminalSettlementClaimRef.current = null;
+    capabilityControllerRef.current?.abort();
+    capabilityGenerationRef.current += 1;
+    poll.stop("aborted");
+    return next;
   }
 
   // Never throws — a failed approval fetch must not unwind the run that was
@@ -378,6 +603,48 @@ export function App() {
     }
   }
 
+  type ApprovalFetchResult =
+    | { readonly kind: "success"; readonly approval: ApprovalView }
+    | { readonly kind: "error"; readonly error: unknown };
+
+  /**
+   * Finding 2 (final Codex re-review): NETWORK IO ONLY — no React state
+   * writes — so terminal finalization's authorization can be rechecked
+   * BEFORE any write reaches the screen. Distinct from `loadApproval`
+   * above, which commits unconditionally and is used by call sites that are
+   * not terminal-settlement races (`refreshRun`, the 409-convergence
+   * reload) and so have nothing to recheck.
+   */
+  async function fetchApprovalResult(runId: string, signal: AbortSignal): Promise<ApprovalFetchResult> {
+    try {
+      const result = await getApproval(runId, signal);
+      return { kind: "success", approval: result.data };
+    } catch (thrown) {
+      return { kind: "error", error: thrown };
+    }
+  }
+
+  /**
+   * Commits a terminal-finalization approval fetch result. Called ONLY
+   * immediately after `isFinalizationAuthorized` has just been rechecked, so
+   * every write here is conditioned on the caller still being the
+   * authorized owner — never called for an unauthorized/contradicted
+   * continuation, which returns before this is reached and therefore writes
+   * nothing at all (no `approval`, no `approvalLoadStatus`, no error
+   * banner).
+   */
+  function commitApprovalResultAtomically(result: ApprovalFetchResult): ApprovalView | null {
+    if (result.kind === "success") {
+      setApproval(result.approval);
+      setApprovalLoadStatus("loaded");
+      return result.approval;
+    }
+    setError(toDisplayableError(result.error));
+    setApproval(null);
+    setApprovalLoadStatus("failed");
+    return null;
+  }
+
   /**
    * Clears EVERY piece of state that belongs to the PREVIOUS investigation —
    * visible result, error/progress/elapsed display, and ownership of the
@@ -397,8 +664,8 @@ export function App() {
    */
   function beginNewSubmissionDisplay(submission: { readonly summary: string; readonly providerMode: "FAKE" | "LIVE" }) {
     setTicketId(null);
-    setJob(null);
-    setRun(null);
+    setJobSynced(null);
+    setRunSynced(null);
     setApproval(null);
     setError(null);
     setNotice(null);
@@ -410,51 +677,626 @@ export function App() {
     setSubmittedFinishedAt(null);
     setFailedStage(null);
     setApprovalLoadStatus("idle");
+    setEventsSynced([]);
+    resetExecutionStageDerivation();
+    setMinAttemptNumberSynced(0);
+    setPausedReason(null);
+    setResumedJobOnly(false);
   }
 
   /**
-   * Settles the Progress Timeline and elapsed timer according to a run's
-   * ACTUAL outcome, never assuming success from the run merely existing.
+   * Every terminal-ownership decision this App makes funnels through here —
+   * the blocking POST's resolution AND every poll snapshot alike (§2 of the
+   * implementation prompt). `source` distinguishes the two ONLY for the
+   * poll-regressive guard below; the terminal-ownership decision itself
+   * (owner/duplicate/inconsistent-terminal-status) applies identically
+   * regardless of source.
    *
-   * Shared by every place a run can first be observed to have settled: the
-   * initial submission, a FAKE retry, a LIVE recovery, and — when a
-   * previously-RUNNING run is refreshed — the existing Refresh action. Phase A
-   * has no polling (#38 is out of scope), so a `RUNNING` outcome is a legitimate,
-   * possibly long-lived state: the run stage stays Active, the elapsed clock
-   * keeps ticking, and neither approval loading nor a terminal announcement
-   * starts. Only the caller decides what phase/notice to show for a
-   * non-COMPLETED outcome — this function owns only the progress/timer/
-   * approval-loading side effects that must not be duplicated per call site.
+   * Reads exclusively from the *Ref mirrors (never the bare state variables)
+   * because this is called from closures created once per submission/retry/
+   * resume/poll-session — closures that must observe the LATEST state on
+   * every later invocation, not the state that existed when they were
+   * created.
    */
-  async function settleRunOutcome(
-    settledRun: AgentRunDetail,
-    signal: AbortSignal,
-    generation: number,
-  ): Promise<
-    | { readonly outcome: "COMPLETED"; readonly loadedApproval: ApprovalView | null }
-    | { readonly outcome: "FAILED" | "RUNNING" | "STALE" }
+  async function applyObservedRunOutcome(params: {
+    readonly job: AgentJobResponse;
+    readonly run: AgentRunRecordView;
+    readonly trace: readonly AgentTraceEvent[];
+    readonly outcome: AgentRunOutcomeView;
+    readonly events: readonly InvestigationEventRecord[];
+    readonly signal: AbortSignal;
+    readonly generation: number;
+    readonly source: "post" | "poll";
+    readonly pollGeneration: number | null;
+    /**
+     * True ONLY for the resume path, whose `events` already came from a
+     * `getInvestigationState` read in the SAME function call — fetching a
+     * second one for Finding 1's authoritative-refresh step below would be a
+     * redundant, wasted request. Every other "post" caller (submit/retry/
+     * retryLiveRunWithToken) leaves this `false`: their run POST response
+     * never carries canonical `events[]` at all.
+     */
+    readonly skipAuthoritativeFinalRead: boolean;
+    /**
+     * P1 (final independent review): set ONLY by the resumed-FAILED hydration
+     * call site, to the persisted `run.finishedAt` it already read. Preserves
+     * the frozen resume elapsed-time clock through the shared owner write
+     * below instead of letting it be rewritten with `Date.now()` merely
+     * because FAILED resume now funnels through this coordinator. Every
+     * other caller (submit/retry/poll/ordinary Refresh) leaves this
+     * `undefined`, so their own terminal settlement still stamps the finish
+     * clock at the moment THEY observe it, unchanged from before.
+     */
+    readonly resumeObservedFinishedAt?: number;
+  }): Promise<
+    | { readonly kind: "stale" }
+    | { readonly kind: "discarded" }
+    | { readonly kind: "running" }
+    | { readonly kind: "inconsistent" }
+    | { readonly kind: "duplicate" }
+    | { readonly kind: "owner"; readonly outcome: "COMPLETED"; readonly loadedApproval: ApprovalView | null }
+    | { readonly kind: "owner"; readonly outcome: "FAILED" }
   > {
-    if (settledRun.outcome.type === "RUNNING") {
-      return { outcome: "RUNNING" };
+    const {
+      job: candidateJob,
+      run: candidateRun,
+      trace: candidateTrace,
+      outcome: candidateOutcome,
+      events: candidateEvents,
+      signal,
+      generation,
+      source,
+      pollGeneration,
+      skipAuthoritativeFinalRead,
+      resumeObservedFinishedAt,
+    } = params;
+
+    // Stale/regressive guard FIRST — before any state write, for both
+    // non-terminal and terminal candidates alike.
+    if (isStale(generation)) return { kind: "stale" };
+
+    // Finding 4 (independent review, Codex review): monotonic attempt
+    // guards apply to EVERY observation source — poll, POST, resume, manual
+    // Refresh, and an authoritative final-read continuation alike — not
+    // only poll (isNewerInvestigationSnapshot's own attempt-monotonicity
+    // rule below still runs for source === "poll" only, for its OTHER
+    // rules: stale poll generation, null-run regression, fewer events,
+    // RUNNING-after-terminal). A candidate for an attempt strictly below
+    // whatever is currently held can never be applied by ANY source.
+    if (runRef.current !== null && candidateRun.attemptNumber < runRef.current.run.attemptNumber) {
+      return { kind: "discarded" };
     }
-    if (settledRun.outcome.type === "FAILED") {
-      // The run REQUEST succeeded — this is the agent's own outcome, not a
-      // transport failure, so it is announced here (not via ErrorBanner) and
-      // never marked via `failedStage`, which is reserved for HTTP-level
-      // failures. `deriveInvestigationProgressStages` reads this directly
-      // from `runOutcomeType`.
-      setNotice(stageFailureAnnouncement("run"));
+
+    if (source === "poll") {
+      const currentSnapshot: InvestigationStateResponse = {
+        job: jobRef.current ?? candidateJob,
+        run: runRef.current?.run ?? null,
+        trace: runRef.current?.trace ?? [],
+        outcome: runRef.current?.outcome ?? null,
+        events: eventsRef.current,
+      };
+      const incomingSnapshot: InvestigationStateResponse = {
+        job: candidateJob,
+        run: candidateRun,
+        trace: candidateTrace,
+        outcome: candidateOutcome,
+        events: candidateEvents,
+      };
+      const accepted = isNewerInvestigationSnapshot(
+        currentSnapshot,
+        jobRef.current?.id ?? candidateJob.id,
+        lastAcceptedPollGenerationRef.current,
+        minAttemptNumberRef.current,
+        incomingSnapshot,
+        pollGeneration ?? 0,
+      );
+      if (!accepted) return { kind: "discarded" };
+      if (pollGeneration !== null) lastAcceptedPollGenerationRef.current = pollGeneration;
+    }
+
+    if (candidateOutcome.type === "RUNNING") {
+      setJobSynced(candidateJob);
+      setRunSynced({ job: candidateJob, run: candidateRun, trace: candidateTrace, outcome: candidateOutcome });
+      setEventsSynced(candidateEvents);
+      // Finding 1 (independent review, Codex review): job-only resume polls
+      // until a run appears — once it does, the persisted run's OWN
+      // provider mode must replace whatever provisional mode the resume's
+      // job-only hydration guessed. Harmless for every other source: their
+      // own submission already set `activeProviderMode` correctly, and the
+      // persisted run's mode always matches it.
+      //
+      // Finding 5 (final Codex re-review): synchronized via
+      // `applyPersistedProviderMode`, not `setActiveProviderMode` alone — the
+      // Submitted-issue display and the Timeline's stage composition both
+      // read `submittedSummary.providerMode`, which must move together with
+      // `activeProviderMode` or the page shows contradictory persisted facts.
+      applyPersistedProviderMode(candidateRun.providerMode === "LIVE" ? "LIVE" : "FAKE");
+      setResumedJobOnly(false);
+      const derivation = applyDerivationForCandidate(candidateJob, candidateRun, candidateEvents);
+      if (derivation.kind === "canonical-invalid") {
+        // Fail closed: pause polling rather than silently falling back to
+        // legacy inference for a run that IS canonical but whose stream is
+        // currently unreadable.
+        poll.stop("data-corrupt");
+      } else {
+        // Finding 3 (final Codex re-review): a VALID snapshot clears any
+        // data-corrupt pause a prior invalid snapshot (or a resumed
+        // first-snapshot corruption via `enterPaused`) left behind — this
+        // is the "Check again returns valid canonical data -> clear the
+        // pause" half of the recovery contract for a still-RUNNING run.
+        setPausedReason(null);
+      }
+      return { kind: "running" };
+    }
+
+    // Terminal candidate (COMPLETED or FAILED) — decide ownership BEFORE any
+    // terminal state write.
+    const identity: TerminalSettlementIdentity = {
+      jobId: candidateJob.id,
+      runId: candidateRun.id,
+      attemptNumber: candidateRun.attemptNumber,
+      generation,
+    };
+    const { decision, nextClaim } = resolveTerminalObservation(terminalSettlementClaimRef.current, identity, candidateOutcome.type);
+    terminalSettlementClaimRef.current = nextClaim;
+
+    if (decision.kind === "inconsistent-terminal-status" || decision.kind === "already-inconsistent") {
+      // The first accepted terminal state is preserved untouched — nothing
+      // about run/outcome/events is written from this contradictory (or
+      // already-known-contradictory) observation.
+      poll.stop("terminal");
+      setNotice(TERMINAL_INCONSISTENCY_NOTICE);
+      setPhase("idle");
+      return { kind: "inconsistent" };
+    }
+
+    // Finding 1: the blocking POST's own response never carries canonical
+    // `events[]` — only a poll snapshot (source === "poll") or the resume
+    // read (skipAuthoritativeFinalRead === true) already has authoritative
+    // detail. If the POST is the one becoming OWNER of this terminal
+    // outcome, `candidateEvents` may be stale/empty (whatever `eventsRef`
+    // happened to hold when the POST won the race). Before permanently
+    // freezing the canonical Timeline, fetch ONE authoritative
+    // `getInvestigationState` read under the SAME generation and use its
+    // events/trace/outcome instead. A "duplicate" observation never needs
+    // this: the FIRST observer already applied authoritative detail, and
+    // this second one only re-applies the same state harmlessly.
+    let finalJob = candidateJob;
+    let finalRun = candidateRun;
+    let finalTrace = candidateTrace;
+    let finalOutcome: AgentRunOutcomeView = candidateOutcome;
+    let finalEvents = candidateEvents;
+
+    if (source === "post" && decision.kind === "owner" && !skipAuthoritativeFinalRead) {
+      try {
+        const authoritative = (await getInvestigationState(candidateJob.id, signal)).data;
+        if (isStale(generation)) return { kind: "stale" };
+
+        // Finding 1 (final Codex re-review): the authoritative read itself
+        // may discover a NEWER attempt than the one this POST is trying to
+        // settle (another client started attempt 2 while this attempt's
+        // final read was in flight). The OLD attempt must never settle,
+        // stop polling, or run terminal side effects over a newer one —
+        // route the newer snapshot through the ordinary accepted-
+        // observation path instead, under the SAME generation/signal, so
+        // ownership/monotonicity/canonical-invalid handling all apply
+        // exactly as they would for a poll-observed snapshot.
+        // `skipAuthoritativeFinalRead: true` — this response already IS an
+        // authoritative read, so no second one is fetched for it. If the
+        // newer attempt is itself still RUNNING, this recursion lands in
+        // the RUNNING branch above, which never stops polling — leaving
+        // attempt 2's polling live, exactly as required.
+        if (authoritative.run !== null && authoritative.run.attemptNumber > candidateRun.attemptNumber) {
+          return await applyObservedRunOutcome({
+            job: authoritative.job,
+            run: authoritative.run,
+            trace: authoritative.trace,
+            outcome: authoritative.outcome ?? { type: "RUNNING" },
+            events: authoritative.events,
+            signal,
+            generation,
+            source: "post",
+            pollGeneration: null,
+            skipAuthoritativeFinalRead: true,
+          });
+        }
+
+        const matchesExpectedIdentity =
+          authoritative.job.id === candidateJob.id &&
+          authoritative.run !== null &&
+          authoritative.run.id === candidateRun.id &&
+          authoritative.run.attemptNumber === candidateRun.attemptNumber &&
+          authoritative.outcome !== null;
+
+        if (matchesExpectedIdentity && authoritative.outcome!.type === candidateOutcome.type) {
+          finalJob = authoritative.job;
+          finalRun = authoritative.run!;
+          finalTrace = authoritative.trace;
+          finalOutcome = authoritative.outcome!;
+          finalEvents = authoritative.events;
+        } else if (
+          matchesExpectedIdentity &&
+          (authoritative.outcome!.type === "COMPLETED" || authoritative.outcome!.type === "FAILED")
+        ) {
+          // Finding 1: same job/run/attempt, but the authoritative read
+          // reports the OPPOSITE terminal status from the POST's own
+          // candidate — an impossible internal-consistency failure. Marked
+          // inconsistent and failed closed; never falls back to the POST's
+          // own (now-suspect) candidate.
+          const contradiction = resolveTerminalObservation(terminalSettlementClaimRef.current, identity, authoritative.outcome!.type);
+          terminalSettlementClaimRef.current = contradiction.nextClaim;
+          poll.stop("terminal");
+          setNotice(TERMINAL_INCONSISTENCY_NOTICE);
+          setPhase("idle");
+          return { kind: "inconsistent" };
+        }
+        // Any other mismatch (unexpected) falls back to the POST's own
+        // candidate below — never applied, and never treated as a second
+        // inconsistency; the coordinator already decided ownership.
+      } catch (thrown) {
+        if (isStale(generation)) return { kind: "stale" };
+        // A transient final-read failure must NOT undo the already-known
+        // terminal run/report outcome, and must NOT duplicate side effects
+        // — proceed with the POST's own candidate data (last-good canonical
+        // detail; applyDerivationForCandidate below never fabricates
+        // completion it cannot support).
+      }
+    }
+
+    // Finding 4 (independent review, Codex review): re-evaluate monotonicity
+    // against the CURRENT held run, not the value observed before the
+    // (possibly long) authoritative-read await above — polling may have
+    // accepted a strictly newer attempt while this read was in flight. Never
+    // fall back to an older candidate over a newer one; leave the newer,
+    // already-current snapshot untouched instead, and do not stop its
+    // polling (falling through to `poll.stop("terminal")` below would).
+    if (runRef.current !== null && finalRun.attemptNumber < runRef.current.run.attemptNumber) {
+      return { kind: "discarded" };
+    }
+
+    // Finding 3 (independent review, Codex review): `resolveTerminalObservation`
+    // decided ownership BEFORE the authoritative-read await above — it
+    // cannot see a contradictory observation that arrived DURING that
+    // await. Revalidate now, using the ref's LATEST value, before this
+    // owner performs its first terminal write.
+    if (decision.kind === "owner" && !isFinalizationAuthorized(terminalSettlementClaimRef.current, identity)) {
+      return { kind: "inconsistent" };
+    }
+
+    setJobSynced(finalJob);
+    setRunSynced({ job: finalJob, run: finalRun, trace: finalTrace, outcome: finalOutcome });
+    setEventsSynced(finalEvents);
+    applyPersistedProviderMode(finalRun.providerMode === "LIVE" ? "LIVE" : "FAKE");
+    setResumedJobOnly(false);
+    const derivation = applyDerivationForCandidate(finalJob, finalRun, finalEvents);
+    poll.stop("terminal");
+    // Finding 3 (final Codex re-review): a canonical-invalid derivation
+    // must enter the SAME fail-closed data-corrupt pause regardless of
+    // ingestion path (terminal poll, terminal POST/Refresh authoritative
+    // final read, or a resumed COMPLETED run funnelled through here) — the
+    // known terminal report/outcome above remains visible, but canonical
+    // detail stays explicitly untrusted. `enterPaused` establishes a
+    // resumable job-keyed session with ZERO automatic request; "Check
+    // again" performs the one fresh bounded GET. A later duplicate
+    // observation re-running this same branch with valid data clears the
+    // pause below via the ordinary `poll.stop("terminal")` ->
+    // `onStop("terminal")` path (not a pausable reason), without repeating
+    // any terminal side effect.
+    if (derivation.kind === "canonical-invalid") {
+      poll.enterPaused(finalJob.id, createPollCallbacks(generation, signal));
+      setPausedReason("data-corrupt");
+    }
+
+    if (decision.kind === "duplicate") {
+      // Harmlessly re-applies the SAME authoritative terminal state — no
+      // approval load, no terminal notice, no clock freeze a second time.
+      setPhase("idle");
+      return { kind: "duplicate" };
+    }
+
+    // owner — the once-only terminal side effects.
+    if (finalOutcome.type === "COMPLETED") {
+      setPhase("loading-approval");
+      setApprovalLoadStatus("loading");
+      // Finding 2 (final Codex re-review): network IO is separated from the
+      // React writes it produces. Every write below is conditioned on
+      // `isFinalizationAuthorized` being rechecked AFTER this await, so a
+      // contradictory observation that arrives while this fetch is in
+      // flight leaves ZERO trace from this continuation: no `approval`, no
+      // `approvalLoadStatus`, no error banner, no notice, no clock/phase
+      // rewrite — the inconsistency notice the contradictory observation
+      // already installed stands untouched.
+      const fetchResult = await fetchApprovalResult(finalRun.id, signal);
+      if (isStale(generation)) return { kind: "stale" };
+      if (!isFinalizationAuthorized(terminalSettlementClaimRef.current, identity)) {
+        return { kind: "inconsistent" };
+      }
+      const loadedApproval = commitApprovalResultAtomically(fetchResult);
       setSubmittedFinishedAt(Date.now());
-      return { outcome: "FAILED" };
+      setNotice(investigationCompleteAnnouncement(loadedApproval?.status === "PENDING"));
+      setPhase("idle");
+      terminalSettlementClaimRef.current = markFinalizationSettled(terminalSettlementClaimRef.current, identity);
+      return { kind: "owner", outcome: "COMPLETED", loadedApproval };
     }
-    setPhase("loading-approval");
-    const loadedApproval = await loadApproval(settledRun.run.id, signal, generation, {
-      reportError: true,
-      trackInvestigationProgress: true,
+    // Finding 3: no await occurred between the check above and here, but
+    // revalidate anyway, immediately before this write, per the same rule.
+    if (!isFinalizationAuthorized(terminalSettlementClaimRef.current, identity)) {
+      return { kind: "inconsistent" };
+    }
+    setNotice(stageFailureAnnouncement("run"));
+    setSubmittedFinishedAt(resumeObservedFinishedAt ?? Date.now());
+    setPhase("idle");
+    terminalSettlementClaimRef.current = markFinalizationSettled(terminalSettlementClaimRef.current, identity);
+    return { kind: "owner", outcome: "FAILED" };
+  }
+
+  /**
+   * Builds a fresh `PollCallbacks` closing over ONE workflow's own
+   * generation/signal — never the poll hook's internal generation, and never
+   * shared across two different workflows (submit, retry, resume each call
+   * this once, at their own `poll.start(...)` call site).
+   */
+  function createPollCallbacks(generation: number, signal: AbortSignal): PollCallbacks {
+    return {
+      onSnapshot: ({ snapshot, pollGeneration }) => {
+        if (snapshot.run === null || snapshot.outcome === null) return; // no run yet — keep polling
+        void applyObservedRunOutcome({
+          job: snapshot.job,
+          run: snapshot.run,
+          trace: snapshot.trace,
+          outcome: snapshot.outcome,
+          events: snapshot.events,
+          signal,
+          generation,
+          source: "poll",
+          pollGeneration,
+          skipAuthoritativeFinalRead: false, // ignored for source==="poll" — a poll snapshot's events ARE already authoritative
+        });
+      },
+      onError: () => {
+        // Transient backoff is silent by design — the last good snapshot
+        // stays on screen. `onStop` is what surfaces a pause to the UI.
+      },
+      onStop: (reason) => {
+        setPausedReason(CHECK_AGAIN_REASONS.has(reason) ? reason : null);
+        // Finding 4 (independent review): the hook already classifies
+        // `not-found`/`permanent-invalid` correctly, but previously nothing
+        // in App surfaced them — the stale investigation, and `?job=`,
+        // simply stayed on screen forever with no explanation. A stale
+        // callback from a workflow this App has already moved on from (a
+        // later submission, retry, resume, or navigation already bumped the
+        // generation) is ignored — it must never touch the CURRENT job/URL.
+        if (isStale(generation)) return;
+        if (reason === "not-found") {
+          // The job itself no longer exists server-side — tear the whole
+          // workflow down, not just polling, so nothing pending (e.g. a
+          // slow startAgentRun for this same job) can still write state.
+          invalidateInFlightWorkflows();
+          resetToFreshFormState();
+          setNotice(INVESTIGATION_NOT_FOUND_NOTICE);
+          window.history.replaceState(null, "", `?${withoutJobParam(window.location.search)}`);
+        } else if (reason === "permanent-invalid") {
+          // The investigation itself is untouched — only live progress
+          // tracking stopped. Never raw server/persistence/provider text,
+          // and never auto-retried (see CHECK_AGAIN_REASONS above, which
+          // deliberately excludes this reason).
+          setNotice(PERMANENT_POLL_ERROR_NOTICE);
+        }
+      },
+    };
+  }
+
+  /**
+   * Resets every piece of display/session state to the ordinary fresh-form
+   * baseline, WITHOUT touching history and WITHOUT invalidating in-flight
+   * workflows itself — callers that need either of those call them
+   * separately, in the required order (invalidate BEFORE reset). Shared by
+   * `startNewInvestigation` (which also strips `?job=`) and the popstate
+   * "no job"/malformed-job branches (which must not call a helper that
+   * performs `replaceState` mid-transition for the plain "no job" case).
+   */
+  function resetToFreshFormState() {
+    setTicketId(null);
+    setJobSynced(null);
+    setRunSynced(null);
+    setApproval(null);
+    setError(null);
+    setNotice(null);
+    setLiveRetryPending(false);
+    setLiveRequestKey(null);
+    setEventsSynced([]);
+    resetExecutionStageDerivation();
+    setMinAttemptNumberSynced(0);
+    setFormResetKey((key) => key + 1);
+    setSubmittedSummary(null);
+    setSubmittedAt(null);
+    setSubmittedFinishedAt(null);
+    setFailedStage(null);
+    setApprovalLoadStatus("idle");
+    setPausedReason(null);
+    setResumedJobOnly(false);
+    setPhase("idle");
+  }
+
+  /**
+   * The ONE resume code path for both mount-time `?job=` restoration and
+   * `popstate` navigation to a different job — never duplicated (§6 of the
+   * implementation prompt).
+   *
+   * Invalidates every in-flight workflow FIRST (main generation, capability
+   * request, polling, terminal claim), then reads one consistent snapshot
+   * via `getInvestigationState`, then hydrates display/session state from
+   * it. A COMPLETED run is settled through the SAME `applyObservedRunOutcome`
+   * coordinator the submit/poll paths use, so a resumed COMPLETED run can
+   * never double-fetch approval if a stray poll tick also observes it.
+   */
+  async function resumeInvestigationFromJobParam(jobId: string) {
+    const { signal, generation } = invalidateInFlightWorkflows();
+    /**
+     * Finding 6 (independent review): `invalidateInFlightWorkflows()` just
+     * aborted whatever capability read was in flight (including the very
+     * first one, fired by the mount-time capabilities effect) without ever
+     * starting a replacement — capabilities stayed `null` (LIVE reads as
+     * unavailable) until an unrelated focus/visibility event. Firing a
+     * fresh, generation-safe read here — concurrently with the investigation
+     * snapshot fetch below, not sequenced after it — covers every exit path
+     * of this function (job-only/RUNNING/FAILED/COMPLETED hydration AND the
+     * 404/error branches) with one call, reusing the existing
+     * `refreshCapabilities()` helper rather than a second network path.
+     */
+    void refreshCapabilities();
+    setPhase("resuming");
+
+    let state: InvestigationStateResponse;
+    try {
+      const result = await getInvestigationState(jobId, signal);
+      if (isStale(generation)) return;
+      state = result.data;
+    } catch (thrown) {
+      if (isAbortError(thrown) || isStale(generation)) return;
+      if (thrown instanceof ApiRequestError && thrown.code === "AGENT_JOB_NOT_FOUND") {
+        resetToFreshFormState();
+        setNotice(INVESTIGATION_NOT_FOUND_NOTICE);
+        window.history.replaceState(null, "", `?${withoutJobParam(window.location.search)}`);
+        return;
+      }
+      // INTERNAL_DATA_INVALID, a network failure, or PERSISTENCE_UNAVAILABLE:
+      // fail closed and preserve the URL/job identity so the user can retry
+      // — a transient or corrupt-data failure must never silently strip a
+      // link the server might still be able to serve a moment later.
+      setError(toDisplayableError(thrown));
+      setNotice(null);
+      setPhase("idle");
+      return;
+    }
+
+    // Hydrate display/session state from the snapshot.
+    const resumedProviderMode: "FAKE" | "LIVE" = state.run?.providerMode === "LIVE" ? "LIVE" : "FAKE";
+    setJobSynced(state.job);
+    setTicketId(state.job.ticketId);
+    setActiveProviderMode(resumedProviderMode);
+    setSubmittedSummary({ summary: state.job.summary, providerMode: resumedProviderMode });
+    setSubmittedAt(state.run !== null ? new Date(state.run.startedAt).getTime() : new Date(state.job.createdAt).getTime());
+    setLiveRetryPending(false);
+    setLiveRequestKey(null);
+    setError(null);
+    setFailedStage(null);
+    setPausedReason(null);
+    // Finding 4 (final Codex re-review): approval is scoped to a RUN
+    // identity, not the tab. A previous job's approval (reviewer/note/
+    // status, and the action-required banner/decision controls it drives)
+    // must never remain visible or actionable under a DIFFERENT resumed
+    // job/run — cleared here, before any snapshot branch below applies, so
+    // every exit path (job-only, RUNNING, FAILED, COMPLETED) starts clean.
+    // Only a COMPLETED current run re-loads its OWN approval, below.
+    setApproval(null);
+    setApprovalLoadStatus("idle");
+
+    if (state.run === null) {
+      // Job-only state — no run exists yet for this job. A resumed LIVE job
+      // with no run cannot safely mint a fresh liveRequestKey (would risk a
+      // second paid execution), so `resumedJobOnly` suppresses the
+      // Retry-Run/Recover-Live-Run affordances entirely; the ordinary fresh
+      // form remains the way forward ("start a new investigation").
+      setRunSynced(null);
+      setEventsSynced([]);
+      resetExecutionStageDerivation();
+      setSubmittedFinishedAt(null);
+      setApprovalLoadStatus("idle");
+      setResumedJobOnly(true);
+      setNotice(null);
+      setPhase("idle");
+      /**
+       * Finding 1 (independent review, Codex review): the API/plan model
+       * "job exists, run not committed yet" as a real, expected window —
+       * the ORIGINAL server request (from before this reload) may still be
+       * executing and can commit/complete the run at any moment. A fresh
+       * submission keeps polling through this exact window; resume must
+       * not do less. No `startAgentRun`/LIVE recovery is issued from here —
+       * only the bounded job-keyed `GET .../investigation` poll, under
+       * THIS resume's own generation/signal. `createPollCallbacks`'s
+       * `onSnapshot` already ignores a run-less snapshot ("keep polling")
+       * and routes the FIRST run-bearing one through
+       * `applyObservedRunOutcome`, which hydrates the run/events and —
+       * critically for this path — replaces the provisional job-only
+       * `activeProviderMode` guess with the persisted run's actual mode.
+       */
+      poll.start(state.job.id, createPollCallbacks(generation, signal));
+      return;
+    }
+
+    setResumedJobOnly(false);
+    const resumedRun: AgentRunDetail = { job: state.job, run: state.run, trace: state.trace, outcome: state.outcome! };
+    setRunSynced(resumedRun);
+    setEventsSynced(state.events);
+    const derivation = applyDerivationForCandidate(state.job, state.run, state.events);
+
+    if (state.run.status === "RUNNING") {
+      setSubmittedFinishedAt(null);
+      setApprovalLoadStatus("idle");
+      setNotice(null);
+      setPhase("idle");
+      // Finding 3 (final Codex re-review): a first-snapshot canonical-invalid
+      // RUNNING resume fails closed exactly like a mid-flight poll tick that
+      // observes corruption — zero automatic requests, but a resumable
+      // job-keyed session IS established (via `enterPaused`, not
+      // `poll.start`) so the required "Check again" affordance can perform
+      // one fresh bounded GET on demand.
+      if (derivation.kind === "canonical-invalid") {
+        poll.enterPaused(state.job.id, createPollCallbacks(generation, signal));
+        setPausedReason("data-corrupt");
+      } else {
+        poll.start(state.job.id, createPollCallbacks(generation, signal));
+      }
+      return;
+    }
+
+    if (state.run.status === "FAILED") {
+      // P1 (final independent review): FAILED is terminal, so the initial
+      // resumed observation must establish the SAME durable terminal
+      // settlement claim as every other accepted terminal path — funnelled
+      // through the shared coordinator rather than a second ad hoc
+      // terminal-decision implementation. `skipAuthoritativeFinalRead: true`
+      // — `state.events` above ALREADY came from a `getInvestigationState`
+      // read in this same function call. `resumeObservedFinishedAt`
+      // preserves the persisted `run.finishedAt` so this owner write does
+      // not stamp the finish clock with `Date.now()`. The coordinator's own
+      // terminal branch applies the same canonical-invalid data-corrupt
+      // pause policy uniformly (the known failure outcome above remains
+      // visible, but canonical detail stays untrusted with a functional
+      // "Check again") — see `applyObservedRunOutcome`.
+      await applyObservedRunOutcome({
+        job: state.job,
+        run: state.run,
+        trace: state.trace,
+        outcome: state.outcome!,
+        events: state.events,
+        signal,
+        generation,
+        source: "post",
+        pollGeneration: null,
+        skipAuthoritativeFinalRead: true,
+        resumeObservedFinishedAt: state.run.finishedAt !== null ? new Date(state.run.finishedAt).getTime() : Date.now(),
+      });
+      return;
+    }
+
+    // COMPLETED — settle exactly once through the shared coordinator.
+    // `skipAuthoritativeFinalRead: true` — `state.events` above ALREADY came
+    // from a getInvestigationState read in this same function call; Finding
+    // 1's authoritative-refresh step would be a redundant second fetch here.
+    await applyObservedRunOutcome({
+      job: state.job,
+      run: state.run,
+      trace: state.trace,
+      outcome: state.outcome!,
+      events: state.events,
+      signal,
+      generation,
+      source: "post",
+      pollGeneration: null,
+      skipAuthoritativeFinalRead: true,
     });
-    if (isStale(generation)) return { outcome: "STALE" };
-    setSubmittedFinishedAt(Date.now());
-    return { outcome: "COMPLETED", loadedApproval };
   }
 
   async function runInvestigation(submission: InvestigationFormSubmission) {
@@ -490,6 +1332,29 @@ export function App() {
     }
 
     /**
+     * Finding 2 (independent review): invalidate the PREVIOUS workflow
+     * before any display reset and before the LIVE preflight — never after.
+     *
+     * The token guard above can still return early WITHOUT reaching this
+     * line, which is deliberate: an empty-token submission never became a
+     * real attempt, so it must not tear down whatever investigation was
+     * already on screen. Every submission that DOES reach this line is
+     * genuinely starting a new workflow, so the previous one's main
+     * generation, capability request, poll session, and terminal claim are
+     * all invalidated here, BEFORE `beginNewSubmissionDisplay` resets
+     * display and BEFORE the (possibly slow) LIVE preflight even starts.
+     *
+     * Without this ordering, a still-active previous poll session's
+     * callbacks close over the OLD generation, which stays "current" until
+     * `beginWorkflow()` runs — previously that happened only AFTER the
+     * preflight resolved. A late poll response for the OLD job, arriving
+     * during that window, could repopulate the freshly-reset display; and if
+     * the preflight then refused LIVE access, that OLD poll session would
+     * never be stopped at all, left polling indefinitely.
+     */
+    const { signal, generation } = invalidateInFlightWorkflows();
+
+    /**
      * DISPLAY RESET, after the token guard but BEFORE the LIVE preflight.
      *
      * Placed here specifically so that even an availability REFUSAL is
@@ -506,11 +1371,16 @@ export function App() {
       // Phase FIRST, then the await — see PHASE_LABELS["checking-availability"].
       setPhase("checking-availability");
       const fresh = await refreshCapabilities();
+      // Defensive: a NEWER workflow (another submission, a resume, a
+      // navigation) could have started while this preflight was in flight.
+      if (isStale(generation)) return;
       if (fresh?.liveAgentRuns !== "AVAILABLE" || fresh.liveAccess !== "TOKEN_REQUIRED") {
         // Nothing is generated and nothing is sent: no ticket id, no
         // createAgentJob, no startAgentRun — and emphatically no silent
         // downgrade to FAKE. The form has already been switched to the
-        // fail-closed state by refreshCapabilities.
+        // fail-closed state by refreshCapabilities. The previous
+        // investigation's poll session, invalidated above, stays stopped —
+        // there is nothing left for it to repopulate.
         setNotice("Live Claude is temporarily unavailable. No investigation job was created.");
         setFailedStage("availability");
         setSubmittedFinishedAt(Date.now());
@@ -521,7 +1391,6 @@ export function App() {
       }
     }
 
-    const { signal, generation } = beginWorkflow();
     // A LIVE run never uses the approval-demo ticket: the form clears
     // approvalDemo on switching to LIVE and again at submit, so this can only
     // take the ordinary branch for a live run.
@@ -564,7 +1433,20 @@ export function App() {
       const result = await createAgentJob({ ticketId: nextTicketId, summary: submission.summary }, signal);
       if (isStale(generation)) return;
       createdJob = result.data;
-      setJob(createdJob);
+      setJobSynced(createdJob);
+      // Write the URL identity so a refresh during execution can resume.
+      // replaceState when the URL has no job param (the same view gaining
+      // an identity), pushState when replacing a different job.
+      const currentJob = readJobParam(window.location.search);
+      if (currentJob !== null && currentJob !== createdJob.id && isUuid(currentJob)) {
+        window.history.pushState(null, "", `?${withJobParam(createdJob.id, window.location.search)}`);
+      } else {
+        window.history.replaceState(null, "", `?${withJobParam(createdJob.id, window.location.search)}`);
+      }
+      // Polling runs CONCURRENTLY with the blocking run POST below — either
+      // may observe the terminal outcome first; applyObservedRunOutcome is
+      // the one place that decides ownership regardless of which does.
+      poll.start(createdJob.id, createPollCallbacks(generation, signal));
     } catch (thrown) {
       if (isAbortError(thrown) || isStale(generation)) return;
       setError(toDisplayableError(thrown));
@@ -583,7 +1465,6 @@ export function App() {
       const result = await startAgentRun({ ...runRequest, jobId: createdJob.id }, signal);
       if (isStale(generation)) return;
       createdRun = result.data;
-      setRun(createdRun);
       // The run body is in hand, so the key has nothing left to protect: there
       // is no ambiguity to resolve and no recovery to make idempotent.
       setLiveRequestKey(null);
@@ -614,19 +1495,27 @@ export function App() {
       return;
     }
 
-    // Outcome-aware: a RUNNING agent outcome stays Active indefinitely (no
-    // polling in Phase A — #38 is out of scope) and a FAILED one is reported
-    // without ever starting approval loading. Only COMPLETED proceeds to the
-    // approval fetch and a terminal-success announcement.
-    const settled = await settleRunOutcome(createdRun, signal, generation);
-    if (settled.outcome === "STALE") return;
-    if (settled.outcome === "COMPLETED") {
-      setNotice(investigationCompleteAnnouncement(settled.loadedApproval?.status === "PENDING"));
-    }
-    // RUNNING/FAILED unlock the form the same as COMPLETED, so the existing
-    // Refresh action (RUNNING) or a new submission remain reachable —
-    // settleRunOutcome already set the RUNNING/FAILED-specific notice (or
-    // none, for RUNNING) and froze elapsed time where appropriate.
+    // Both the blocking POST's own resolution AND any concurrent poll tick
+    // funnel through the SAME terminal-ownership decision point — whichever
+    // observes the terminal outcome first becomes "owner"; the other is a
+    // harmless "duplicate", or, if they disagree, "inconsistent" (the first
+    // accepted state stands, untouched).
+    const result = await applyObservedRunOutcome({
+      job: createdJob,
+      run: createdRun.run,
+      trace: createdRun.trace,
+      outcome: createdRun.outcome,
+      events: eventsRef.current,
+      signal,
+      generation,
+      source: "post",
+      pollGeneration: null,
+      skipAuthoritativeFinalRead: false,
+    });
+    if (result.kind === "stale") return;
+    // RUNNING/duplicate/inconsistent/owner all unlock the form the same as a
+    // direct COMPLETED/FAILED settlement — applyObservedRunOutcome already
+    // set whatever notice/clock-freeze applies for its own decision.
     setPhase("idle");
 
     // A LIVE run just consumed a reservation, so the day's answer has almost
@@ -651,6 +1540,12 @@ export function App() {
     setSubmittedFinishedAt(null);
     setFailedStage(null);
     setApprovalLoadStatus("idle");
+    // docs/16 §8's "prefer a strictly greater attempt": the floor rejects any
+    // snapshot for an attempt at or below whatever this job's highest KNOWN
+    // attempt was before this retry (0 when none has ever been observed —
+    // the reachable case here, since "Retry Run" only appears when no run
+    // object has ever been returned for this job).
+    setMinAttemptNumberSynced((runRef.current?.run.attemptNumber ?? 0) + 1);
 
     const { signal, generation } = beginWorkflow();
     setError(null);
@@ -658,6 +1553,10 @@ export function App() {
     // attempt's failure now so it cannot reappear when phase returns to idle.
     setNotice(null);
     setPhase("running-agent");
+    // Restart polling for the SAME job under the new workflow generation —
+    // a retry is a fresh attempt, and the poll callbacks must close over
+    // THIS call's generation/signal, never a stale one.
+    poll.start(job.id, createPollCallbacks(generation, signal));
     let startedRun: AgentRunDetail;
     try {
       // Repeats the SAME provider mode the original submission chose. A retry
@@ -666,7 +1565,6 @@ export function App() {
       const result = await startAgentRun({ providerMode: activeProviderMode, jobId: job.id }, signal);
       if (isStale(generation)) return;
       startedRun = result.data;
-      setRun(startedRun);
     } catch (thrown) {
       if (isAbortError(thrown) || isStale(generation)) return;
       setError(toDisplayableError(thrown));
@@ -680,11 +1578,19 @@ export function App() {
       return;
     }
 
-    const settled = await settleRunOutcome(startedRun, signal, generation);
-    if (settled.outcome === "STALE") return;
-    if (settled.outcome === "COMPLETED") {
-      setNotice(investigationCompleteAnnouncement(settled.loadedApproval?.status === "PENDING"));
-    }
+    const result = await applyObservedRunOutcome({
+      job,
+      run: startedRun.run,
+      trace: startedRun.trace,
+      outcome: startedRun.outcome,
+      events: eventsRef.current,
+      signal,
+      generation,
+      source: "post",
+      pollGeneration: null,
+      skipAuthoritativeFinalRead: false,
+    });
+    if (result.kind === "stale") return;
     setPhase("idle");
   }
 
@@ -789,6 +1695,11 @@ export function App() {
     setSubmittedFinishedAt(null);
     setFailedStage(null);
     setApprovalLoadStatus("idle");
+    // docs/16 §8's "prefer a strictly greater attempt" — see retryRun's
+    // identical reasoning: 0 (floor 1) is the reachable case here, since
+    // `liveRetryPending` only becomes true when no run object was ever
+    // returned to this client for this job.
+    setMinAttemptNumberSynced((runRef.current?.run.attemptNumber ?? 0) + 1);
 
     // The same abort/generation machinery every other workflow uses, so a retry
     // racing a new investigation is discarded on the same rule.
@@ -796,6 +1707,8 @@ export function App() {
     setError(null);
     setNotice(null);
     setPhase("running-agent");
+    // Restart polling for the SAME job under the new workflow generation.
+    poll.start(job.id, createPollCallbacks(generation, signal));
 
     let startedRun: AgentRunDetail;
     /**
@@ -821,7 +1734,6 @@ export function App() {
       );
       if (isStale(generation)) return;
       startedRun = result.data;
-      setRun(startedRun);
       // Recovered. The run exists, so there is nothing left to recover and the
       // key has nothing left to protect.
       setLiveRetryPending(false);
@@ -864,9 +1776,9 @@ export function App() {
      * ACTUAL outcome known — never assuming success from the run merely
      * existing (outcome-aware, like every other settlement point).
      *
-     * `settleRunOutcome` returns `loadedApproval: null` for a failed fetch as
-     * well as for a non-pending one, and reports the failure through the
-     * error banner on its own. That collapse is deliberate here: the replay
+     * `applyObservedRunOutcome` returns `loadedApproval: null` for a failed
+     * fetch as well as for a non-pending one, and reports the failure through
+     * the error banner on its own. That collapse is deliberate here: the replay
      * confirmation must survive an approval-load failure, because "no second
      * paid attempt was consumed" is a fact about the run that a failed GET
      * cannot unmake. Failing to fetch an approval is not a reason to stop
@@ -885,26 +1797,41 @@ export function App() {
      * confirmation, just without any claim about completion.
      */
     const RECOVERED = "Recovered the original live run — no new run was started.";
-    const settled = await settleRunOutcome(startedRun, signal, generation);
-    if (settled.outcome === "STALE") return;
+    const result = await applyObservedRunOutcome({
+      job,
+      run: startedRun.run,
+      trace: startedRun.trace,
+      outcome: startedRun.outcome,
+      events: eventsRef.current,
+      signal,
+      generation,
+      source: "post",
+      pollGeneration: null,
+      skipAuthoritativeFinalRead: false,
+    });
+    if (result.kind === "stale") return;
     if (replayed) {
-      if (settled.outcome === "COMPLETED") {
+      // Both facts matter: no second paid attempt was made, AND whatever the
+      // ACTUAL outcome is. Overrides applyObservedRunOutcome's own generic
+      // notice with the composed, replay-aware version — never re-fetching
+      // approval or re-freezing the clock a second time; only the ANNOUNCED
+      // wording changes.
+      if (result.kind === "owner" && result.outcome === "COMPLETED") {
         setNotice(
-          settled.loadedApproval?.status === "PENDING" ? `${RECOVERED} ${APPROVAL_REQUIRED_ANNOUNCEMENT}` : RECOVERED,
+          result.loadedApproval?.status === "PENDING" ? `${RECOVERED} ${APPROVAL_REQUIRED_ANNOUNCEMENT}` : RECOVERED,
         );
-      } else if (settled.outcome === "FAILED") {
-        // Both facts matter: no second paid attempt was made, AND it did not
-        // succeed. Overrides settleRunOutcome's generic run-failure notice
-        // with the composed, replay-aware version.
+      } else if (result.kind === "owner" && result.outcome === "FAILED") {
         setNotice(`${RECOVERED} ${stageFailureAnnouncement("run")}`);
-      } else {
+      } else if (result.kind === "duplicate" || result.kind === "running") {
         setNotice(RECOVERED);
       }
-    } else if (settled.outcome === "COMPLETED") {
-      setNotice(investigationCompleteAnnouncement(settled.loadedApproval?.status === "PENDING"));
+      // "inconsistent": the fixed safety notice already set by the
+      // coordinator stands — a replay confirmation is not worth asserting
+      // over a result that could not actually be settled.
     }
-    // FAILED && !replayed keeps settleRunOutcome's own notice; RUNNING &&
-    // !replayed keeps none, matching every other settlement point.
+    // !replayed: the coordinator's own generic notice already applies for
+    // owner/duplicate/inconsistent; RUNNING keeps none, matching every other
+    // settlement point.
     setPhase("idle");
     void refreshCapabilities();
   }
@@ -922,35 +1849,10 @@ export function App() {
    * repopulate the state this just cleared.
    */
   function startNewInvestigation() {
-    beginWorkflow();
-    setTicketId(null);
-    setJob(null);
-    setRun(null);
-    setApproval(null);
-    setError(null);
-    setNotice(null);
-    setLiveRetryPending(false);
-    // Abandoning the retained job abandons its key with it. Deliberate: the key
-    // is scoped to ONE job, and carrying it into a different investigation would
-    // let a future request claim to be a repeat of a run on a job it has nothing
-    // to do with. (The server scopes uniqueness per job, so it could not
-    // actually collide — but sending a key that means nothing is not something
-    // the client should do on the strength of the server catching it.)
-    setLiveRequestKey(null);
-    // Discards the abandoned summary, provider choice, approval-demo checkbox,
-    // and token the form still holds. Without this the user asks for a NEW
-    // investigation and gets the old one's inputs staring back at them.
-    setFormResetKey((key) => key + 1);
-    // Unmounts the submitted-summary snapshot and the Progress Timeline —
-    // an abandoned attempt's progress is not the next investigation's.
-    setSubmittedSummary(null);
-    setSubmittedAt(null);
-    setSubmittedFinishedAt(null);
-    setFailedStage(null);
-    setApprovalLoadStatus("idle");
-    setPhase("idle");
-    // Back at the start, so the form should reflect what the server can serve
-    // NOW rather than what it could when the abandoned attempt began.
+    invalidateInFlightWorkflows();
+    resetToFreshFormState();
+    // Strip the ?job= param — this is a fresh investigation.
+    window.history.replaceState(null, "", `?${withoutJobParam(window.location.search)}`);
     void refreshCapabilities();
   }
 
@@ -961,6 +1863,16 @@ export function App() {
     // FAILED is terminal and permanently approval-ineligible.
     const previousOutcome = run.outcome.type;
     const { signal, generation } = beginWorkflow();
+    /**
+     * Finding 5 (independent review): `beginWorkflow()` bumps the main
+     * generation, but a still-active poll session's callbacks were captured
+     * closing over the OLD generation — without this, they never get told
+     * to stop, so they keep issuing GETs that `isStale` now rejects forever
+     * (a silently disconnected poll loop). Stopping it explicitly here,
+     * rather than leaving it to spin, is the fix; if the refreshed run is
+     * still RUNNING, polling is restarted below under the NEW generation.
+     */
+    poll.stop("aborted");
     setError(null);
     setPhase("refreshing-run");
     let refreshedRun: AgentRunDetail;
@@ -968,7 +1880,7 @@ export function App() {
       const result = await getAgentRun(run.run.id, signal);
       if (isStale(generation)) return;
       refreshedRun = result.data;
-      setRun(refreshedRun);
+      setRunSynced(refreshedRun);
     } catch (thrown) {
       if (isAbortError(thrown) || isStale(generation)) return;
       setError(toDisplayableError(thrown));
@@ -977,17 +1889,44 @@ export function App() {
     }
 
     if (previousOutcome === "RUNNING") {
-      const settled = await settleRunOutcome(refreshedRun, signal, generation);
-      if (settled.outcome === "STALE") return;
-      if (settled.outcome === "COMPLETED") {
-        setNotice(investigationCompleteAnnouncement(settled.loadedApproval?.status === "PENDING"));
-      } else if (settled.outcome === "RUNNING") {
-        // Refreshed, but still running — confirm the click had an effect
-        // without restarting or duplicating the elapsed timer, and without
-        // starting approval loading.
+      if (refreshedRun.outcome.type === "RUNNING") {
+        // Finding 5: still running — restart polling under the NEW
+        // generation so live canonical progress keeps updating after a
+        // manual Refresh, rather than staying silently disconnected.
+        poll.start(refreshedRun.job.id, createPollCallbacks(generation, signal));
         setNotice("Run refreshed.");
+        setPhase("idle");
+        return;
       }
-      // FAILED already carries settleRunOutcome's own stage-specific notice.
+      /**
+       * Finding 2 (independent review, Codex review): Refresh's own read
+       * above is the LEGACY `getAgentRun` endpoint, which never carries
+       * canonical `events[]`. Observing a terminal outcome here for the
+       * FIRST time (this run was RUNNING a moment ago) must not settle
+       * through `settleRunOutcome` — that would freeze the Timeline's
+       * child rows on whatever partial canonical prefix polling last
+       * accepted, with no later read able to correct them. Route it
+       * through the SAME `applyObservedRunOutcome` coordinator the POST and
+       * poll paths use instead: it performs its own authoritative
+       * `getInvestigationState` read before permanently freezing canonical
+       * detail (Finding 1's mechanism, reused here), applies the SAME
+       * cross-attempt monotonicity guards (Finding 4), and preserves the
+       * existing approval semantics (COMPLETED loads once, FAILED never)
+       * and no-restart-after-terminal rule automatically.
+       */
+      const result = await applyObservedRunOutcome({
+        job: refreshedRun.job,
+        run: refreshedRun.run,
+        trace: refreshedRun.trace,
+        outcome: refreshedRun.outcome,
+        events: eventsRef.current,
+        signal,
+        generation,
+        source: "post",
+        pollGeneration: null,
+        skipAuthoritativeFinalRead: false,
+      });
+      if (result.kind === "stale" || result.kind === "discarded") return;
       setPhase("idle");
       return;
     }
@@ -1048,8 +1987,12 @@ export function App() {
   const isBusy = phase !== "idle";
   // A job exists but no run does. NOT sufficient on its own to mean "the run
   // failed" — it is equally true while the first run request is in flight, which
-  // is why `liveRetryPending` exists.
-  const hasRetainedPartialWorkflow = job !== null && run === null;
+  // is why `liveRetryPending` exists. `!resumedJobOnly` excludes a job resumed
+  // from `?job=` with no run: there is no persisted record of that job's
+  // ORIGINAL provider selection, so offering Retry Run/Recover Live Run could
+  // silently retry a LIVE job as FAKE (or vice versa) — the approved direction
+  // for that state is the ordinary fresh-submission form, not a retry button.
+  const hasRetainedPartialWorkflow = job !== null && run === null && !resumedJobOnly;
   const canRetryRun = hasRetainedPartialWorkflow && phase === "idle";
   // Offered only for FAKE. A LIVE retry needs the access token this component
   // deliberately no longer keeps, so the honest affordance is the form's retry
@@ -1088,7 +2031,7 @@ export function App() {
   // path, neither of which is part of THIS investigation's tracked progress.
   const activeProgressStageKey: "availability" | "job" | "run" | null =
     phase === "checking-availability" ? "availability" : phase === "creating-job" ? "job" : phase === "running-agent" ? "run" : null;
-  const progressStages =
+  const progressStagesResult =
     submittedSummary !== null
       ? deriveInvestigationProgressStages({
           providerMode: submittedSummary.providerMode,
@@ -1099,10 +2042,22 @@ export function App() {
           // never of `run !== null` alone — see investigation-progress-stages.ts.
           runOutcomeType: run?.outcome.type ?? null,
           approvalLoadStatus,
+          executionStageDerivation,
         })
-      : [];
+      : null;
+  const progressStages = progressStagesResult?.stages ?? [];
+  const executionDetailNote = progressStagesResult?.executionDetailNote ?? null;
+  // A cheap derived value — no memoization needed for a string template.
+  // Resets the Timeline's collapse state on a genuine run/attempt/job change
+  // without requiring a second piece of React state.
+  const runExpansionKey =
+    job !== null && run !== null ? `${job.id}:${run.run.id}:${run.run.attemptNumber}` : null;
   const elapsedMs = useElapsedTime(submittedAt, submittedFinishedAt);
   const elapsedLabel = formatElapsed(elapsedMs);
+  // "Check again" is offered ONLY for the three pausable poll reasons —
+  // never for terminal/not-found/permanent-invalid/aborted, none of which
+  // ever set `pausedReason` (see createPollCallbacks's onStop).
+  const showCheckAgain = pausedReason !== null;
 
   return (
     <div className="app-shell">
@@ -1141,7 +2096,16 @@ export function App() {
       ) : null}
 
       {submittedSummary !== null ? (
-        <InvestigationProgressTimeline stages={progressStages} elapsedLabel={elapsedLabel} />
+        <InvestigationProgressTimeline stages={progressStages} elapsedLabel={elapsedLabel} runExpansionKey={runExpansionKey} executionDetailNote={executionDetailNote} />
+      ) : null}
+
+      {showCheckAgain ? (
+        <p className="investigation-poll-paused">
+          Live progress updates are paused.{" "}
+          <button type="button" onClick={() => poll.resume()}>
+            Check again
+          </button>
+        </p>
       ) : null}
 
       {job !== null ? (

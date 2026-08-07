@@ -29,6 +29,7 @@ import type {
   LiveRunStartResult,
   PersistedAgentJob,
   PersistedAgentRun,
+  PersistedInvestigationState,
   ProviderMode,
   ReplayedLiveRun,
   RunProviderUsageWrite,
@@ -767,6 +768,92 @@ export async function getInvestigationEventRecords(
     return fromInvestigationEventRows(runId, rows);
   } catch (error) {
     throw normalizeDatabaseError(error, "getInvestigationEventRecords");
+  }
+}
+
+/**
+ * One RepeatableRead snapshot of a job plus its latest run (by
+ * MAX(attemptNumber)), the legacy trace projection, the run outcome, and the
+ * raw canonical event records — all from a single consistent database read.
+ *
+ * A two-call read (getAgentJob then getAgentRun/getInvestigationEventRecords
+ * in separate transactions) can pair `runStatus: "RUNNING"` with a stream
+ * that already contains `RUN_COMPLETED`; the shared reducer rejects that pair
+ * with `RUN_STATUS_MISMATCH`. This single-snapshot read prevents that.
+ *
+ * `run` / `outcome` are `null` and `trace` / `events` are `[]` when the job
+ * has no run yet — the window between `createAgentJob` resolving and the
+ * run-creation transaction committing is real and expected.
+ *
+ * `events` carries the raw, fully-validated record for EVERY row this run
+ * has — canonical or legacy — via `fromInvestigationEventRows`, which is
+ * safe for both: `InvestigationEventRecordSchema`'s payload union is a
+ * strict superset of the 4 legacy `AgentTraceEventSchema` types (the same
+ * shared schema objects, plus `REPORT_GENERATED` as the one permanently
+ * accepted legacy read-compat type — see investigation-event.ts). The
+ * canonical-vs-legacy VERDICT is deliberately not decided here: the client
+ * calls the exported `hasCanonicalInvestigationLifecycleMarker(events)`
+ * itself, exactly the same defensive probe `fromTraceEventRows` uses for
+ * `trace` — one public/client boundary decides the distinction, not a
+ * server-side gate that could disagree with it.
+ */
+export async function getInvestigationState(
+  prisma: PrismaClient,
+  jobId: string,
+): Promise<PersistedInvestigationState> {
+  try {
+    const result = await prisma.$transaction(
+      async (tx) => {
+        const jobRow = await tx.agentJob.findUnique({ where: { id: jobId } });
+        if (!jobRow) {
+          throw new PersistenceError("PERSISTENCE_NOT_FOUND", `AgentJob ${jobId} not found`);
+        }
+
+        // Latest attempt only — there is no at-most-one-RUNNING-run invariant
+        // (docs/16 §8), so the caller additionally applies a minAttemptNumber
+        // floor during a retry.
+        const runRow = await tx.agentRun.findFirst({
+          where: { jobId },
+          orderBy: { attemptNumber: "desc" },
+        });
+
+        if (!runRow) {
+          return { jobRow, runRow: null, traceRows: [] };
+        }
+
+        const traceRows = await tx.agentTraceEvent.findMany({
+          where: { runId: runRow.id },
+          orderBy: { sequenceNumber: "asc" },
+          select: { sequenceNumber: true, payload: true, createdAt: true },
+        });
+
+        return { jobRow, runRow, traceRows };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+
+    const job = fromAgentJobRow(result.jobRow);
+
+    if (!result.runRow) {
+      return { job, run: null, trace: [], outcome: null, events: [] };
+    }
+
+    const run = fromAgentRunRow(result.runRow);
+    const trace = fromTraceEventRows(run.id, result.traceRows);
+    const outcome = buildOutcome(result.runRow);
+
+    // Every row this run has, canonical or legacy, fully validated. See the
+    // doc comment above: the record payload union is a strict superset of
+    // the legacy trace-event union, so this never throws on a genuinely
+    // legacy stream — only on rows that fail EITHER schema (already rejected
+    // above by `fromTraceEventRows`) or a contiguity violation. An empty row
+    // set (job with no run) already returned above, so result.traceRows is
+    // non-empty here.
+    const events = fromInvestigationEventRows(run.id, result.traceRows);
+
+    return { job, run, trace, outcome, events };
+  } catch (error) {
+    throw normalizeDatabaseError(error, "getInvestigationState");
   }
 }
 

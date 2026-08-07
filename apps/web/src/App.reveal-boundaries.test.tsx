@@ -80,6 +80,17 @@ function capabilitiesResponse(): Response {
   return jsonResponse(200, { data: { liveAgentRuns: "UNAVAILABLE", liveAccess: "NOT_APPLICABLE" } });
 }
 
+/**
+ * Investigation polling (#38) starts concurrently with every submit this
+ * file exercises and issues its own GET the tests below never queue a
+ * response for. A default (not `mockResolvedValueOnce`) fallback answers any
+ * such call with 404 — polling stops immediately (`not-found`), which is
+ * invisible to every reveal-boundary assertion here.
+ */
+function pollFallbackResponse(): Response {
+  return jsonResponse(503, { error: { code: "PERSISTENCE_UNAVAILABLE", message: "not tracked by this test", requestId: "req-1" } });
+}
+
 function deferredResponse(): { promise: Promise<Response>; resolve: (value: Response) => void } {
   let resolve!: (value: Response) => void;
   const promise = new Promise<Response>((r) => {
@@ -107,7 +118,7 @@ describe("Data-driven reveal boundaries", () => {
   // Scenario 1: unresolved job/run.
   it("shows only Progress while job/run are unresolved — Agent activity, Report, Actions, and Approval are absent", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     const deferredJob = deferredResponse();
     vi.mocked(fetch).mockResolvedValueOnce(capabilitiesResponse()).mockImplementationOnce(() => deferredJob.promise);
 
@@ -127,10 +138,14 @@ describe("Data-driven reveal boundaries", () => {
   // Scenario 2: RUNNING run data.
   it("RUNNING outcome: Agent activity shows with real trace data; Report, Actions, and Approval stay absent", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
+      // A RUNNING outcome never triggers the approval fetch — no fourth
+      // mock queued (see App.run-workflow.test.tsx's identical note); an
+      // unused extra mock here would otherwise be wrongly consumed by
+      // investigation polling (#38), which starts concurrently.
       .mockResolvedValueOnce(
         jsonResponse(201, {
           data: runDetail({
@@ -138,8 +153,7 @@ describe("Data-driven reveal boundaries", () => {
             outcome: { type: "RUNNING" },
           }),
         }),
-      )
-      .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
+      );
 
     render(<App />);
     await submit(user);
@@ -154,11 +168,12 @@ describe("Data-driven reveal boundaries", () => {
   // Scenario 3: terminal run with a report but empty actions.
   it("terminal run with report but empty actions: Agent activity then Generated report; no Suggested actions; no approval unless applicable", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "NOT_ELIGIBLE" }) }));
 
     render(<App />);
@@ -176,7 +191,7 @@ describe("Data-driven reveal boundaries", () => {
   // Scenario 4: terminal run with non-empty actions.
   it("terminal run with non-empty actions: Agent activity -> Generated report -> Suggested actions, in DOM order", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
@@ -216,7 +231,7 @@ describe("Data-driven reveal boundaries", () => {
   // Scenario 5: applicable approval after its initial load settles.
   it("an applicable approval surface appears only after its load settles, positioned after Suggested actions", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     const deferredApproval = deferredResponse();
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
@@ -241,6 +256,7 @@ describe("Data-driven reveal boundaries", () => {
           }),
         }),
       )
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockImplementationOnce(() => deferredApproval.promise);
 
     render(<App />);
@@ -267,7 +283,7 @@ describe("Data-driven reveal boundaries", () => {
   // Scenario 6: full final order with a non-empty-action approval fixture.
   it("verifies the full final order end to end: summary -> progress -> activity -> report -> actions -> approval", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
@@ -291,6 +307,7 @@ describe("Data-driven reveal boundaries", () => {
           }),
         }),
       )
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);

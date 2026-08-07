@@ -48,6 +48,7 @@ const fakeAgentRunService: AgentRunService = {
   reconcileLiveRunBudget: vi.fn(),
   getAgentRun: vi.fn(),
   getAgentJob: vi.fn(),
+  getInvestigationState: vi.fn(),
 };
 const fakeToolRegistry = { find: vi.fn() } as unknown as ToolRegistry;
 const fakeProviderFactory: AgentProviderFactory = { createProvider: vi.fn() };

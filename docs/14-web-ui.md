@@ -340,6 +340,51 @@ The run stage's status — and everything gated on it — is a function of `run.
 
 Proven by `App.outcome-aware-progress.test.tsx` (initial RUNNING/FAILED/COMPLETED outcomes; all three Refresh transitions out of RUNNING; FAKE-retry and LIVE-recovery outcome-awareness) and the pre-existing `App.live-idempotency.test.tsx` (a RUNNING replay still announces the recovery confirmation).
 
+### 6.5 Live investigation timeline with canonical execution stages (#38)
+
+As of #38, the investigation progress Timeline reflects persisted server facts rather than frontend request boundaries alone. The existing run row expands with four child rows derived from the canonical event ledger:
+
+```text
+Agent investigation / Investigation run     Running | Completed | Failed
+  ├─ Investigation created
+  ├─ Agent analysis
+  ├─ Diagnostic execution
+  └─ Report generation
+```
+
+**Data flow.** The shared `deriveExecutionStageProgress` reducer in `@opspilot/contracts` is the single place stage transitions are decided — React never re-derives them. The frontend wraps its output in an explicit `ExecutionStageDerivation` tri-state:
+
+| Derivation | Run row | Child rows |
+| --- | --- | --- |
+| `legacy` | Today's rendering, unchanged | None |
+| `canonical` | Today's status logic (unchanged) | Four reducer stages, 1:1 |
+| `canonical-invalid`, `lastGoodStages` present | Same | Frozen last-good stages |
+| `canonical-invalid`, `lastGoodStages` null | Same | None + "detail unavailable" note |
+
+No branch infers stage status from a timer or percentage. Corrupt canonical data can never fall through to legacy rendering because `canonical-invalid` is structurally distinct from `legacy`.
+
+**Run-expansion identity.** The Timeline component receives a `runExpansionKey` prop (`${jobId}:${runId}:${attemptNumber}`). A local `collapsed` boolean resets only when this identity changes — never on a poll tick or re-render for the same run. While the run is RUNNING (`status === "active"`), the disclosure control is omitted entirely and child rows always render. Once terminal, a collapse toggle appears (default expanded). This guarantees a live run cannot be collapsed and a collapsed terminal run's choice never leaks onto the next run, attempt, or job.
+
+**Polling.** A single `setTimeout` chain (never `setInterval`) polls `GET /v1/agent-jobs/:jobId/investigation` concurrently with the blocking run POST. Overlap is structurally impossible — the next tick is scheduled only after the previous response settles. The cadence is bounded (1s/2s/5s), transient failures use a fixed backoff (2s→4s→8s→15s→15s), and polling stops at the first terminal observation, after 6 consecutive transient failures, or after 5 minutes of continuous polling. A "Check again" button starts a fresh bounded session with all counters reset. Error classification is centralized in `poll-error-classification.ts`: `INTERNAL_DATA_INVALID` pauses immediately with zero automatic retries; `AGENT_JOB_NOT_FOUND` stops and strips `?job=`; transient 5xx/network errors retry with backoff.
+
+**Terminal settlement coordinator.** The blocking POST and the poller are two independent observers of the same run — either may observe the terminal outcome first. `resolveTerminalObservation` (pure, in `terminal-settlement.ts`) decides whether THIS observation is the first (`"owner"`), a harmless duplicate (same identity + same terminal status), or an impossible internal-consistency failure (`"inconsistent-terminal-status"` — same identity + opposite terminal status). The consistency decision happens BEFORE any state is applied, so a contradictory second observation never overwrites the first accepted terminal outcome, never repeats side effects, and surfaces one fixed safe notice.
+
+**URL identity and resume.** After `createAgentJob` resolves, `?job=<uuid>` is written via `replaceState` (same view gaining an identity) or `pushState` (replacing a different job). A reload mid-run picks the same job back up via mount-time resume. Navigation to a different job or to the fresh form calls `invalidateInFlightWorkflows`, which bumps the main workflow generation (aborting the in-flight POST/capability/approval fetch), clears the terminal settlement claim, and stops/invalidates polling — all BEFORE hydrating or resetting any target state. An old POST, capability response, or poll response arriving after navigation is discarded by the generation guard.
+
+**LIVE-recovery limitation.** `liveRequestKey` lives only in memory, so a LIVE job resumed after a reload cannot offer idempotent recovery — minting a fresh key would risk a second paid run. A resumed LIVE job with no run shows "start a new investigation" instead of "Recover Live Run". Within a session, existing recovery is unaffected.
+
+**Authoritative final read on POST-observed termination.** When the blocking run POST is the first observer to see a terminal outcome (`resolveTerminalObservation` returns `"owner"` for a `source: "post"` observation), that POST response never carries canonical `events[]`. Before permanently freezing the Timeline, `applyObservedRunOutcome` issues one additional `getInvestigationState` read and adopts its job/run/trace/outcome/events only if they match the expected job, run, attempt, and outcome type; a mismatch or a transient failure on that read falls back to the POST's own candidate data silently, so a blip never undoes the terminal outcome or repeats a side effect. Resume's own state read is already authoritative, so it skips this extra call.
+
+**Invalidation ordering on a new submission.** `runInvestigation` calls `invalidateInFlightWorkflows()` — bumping the main generation, aborting the capability controller, stopping polling, and clearing the terminal claim — immediately after validating the submission and before resetting the display or running the LIVE preflight. This closes a window where a slow preflight or a stale poll/POST response could repopulate the freshly-reset display with the previous investigation's data.
+
+**Current-attempt monotonicity.** `isNewerInvestigationSnapshot` rejects any incoming poll snapshot whose attempt number is below the attempt number *currently held on screen*, independent of the `minAttemptNumber` floor set at retry time. This closes a race where a late poll tick for an older attempt could still pass the floor check yet be older than what is already displayed.
+
+**Surfacing permanent poll failures.** A `not-found` classification resets to the fresh form (exact notice, `?job=` stripped, other query params preserved, no "Check again") and invalidates in-flight workflows first. A `permanent-invalid` classification shows a fixed safe notice with no raw error text and no automatic or manual retry. Both classifications are ignored if they arrive from an already-superseded workflow generation.
+
+**Refresh and polling coherence.** Manual Refresh stops any active poll session before re-fetching the run. If the refreshed run is still `RUNNING`, polling restarts under a new workflow generation instead of running `settleRunOutcome`; a `COMPLETED`/`FAILED` refresh result settles normally with no restart.
+
+**Capabilities after resume.** Mount-time and `popstate` resume both call `invalidateInFlightWorkflows()`, which aborts the in-flight capability request. Each resume path also calls `refreshCapabilities()` immediately afterward, so LIVE availability is re-established without waiting for an unrelated focus or visibility event.
+
 ---
 
 ## 7. Report and suggested-action rendering

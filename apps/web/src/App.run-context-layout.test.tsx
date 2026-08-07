@@ -114,8 +114,21 @@ function capabilitiesResponse(): Response {
   return jsonResponse(200, { data: { liveAgentRuns: "UNAVAILABLE", liveAccess: "NOT_APPLICABLE" } });
 }
 
+/**
+ * Investigation polling (#38) starts concurrently with every submit this
+ * file exercises and issues its own GET the tests below never queue a
+ * response for. A default (not `mockResolvedValueOnce`) fallback answers any
+ * such call with 404 — polling stops immediately (`not-found`), which is
+ * invisible to every assertion in this file (none inspect polling state).
+ */
+function pollFallbackResponse(): Response {
+  return jsonResponse(503, errorEnvelope("PERSISTENCE_UNAVAILABLE", "not tracked by this test"));
+}
+
 function apiCalls() {
-  return vi.mocked(fetch).mock.calls.filter((call) => String(call[0]) !== "/v1/capabilities");
+  return vi
+    .mocked(fetch)
+    .mock.calls.filter((call) => String(call[0]) !== "/v1/capabilities" && !String(call[0]).endsWith("/investigation"));
 }
 
 afterEach(() => {
@@ -127,11 +140,12 @@ afterEach(() => {
 describe("Run Context Panel layout", () => {
   it("PENDING renders the Action required banner, linking to #approval-heading", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
@@ -146,11 +160,12 @@ describe("Run Context Panel layout", () => {
   // Generated report, and Suggested actions in DOM order.
   it("the banner follows the named Run detail region in DOM order", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
@@ -164,12 +179,13 @@ describe("Run Context Panel layout", () => {
 
   it("NOT_ELIGIBLE does not render the Action required banner", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "NOT_ELIGIBLE" }) }));
 
     render(<App />);
@@ -181,11 +197,12 @@ describe("Run Context Panel layout", () => {
 
   it("APPROVED does not render the Action required banner", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(
         jsonResponse(200, {
           data: approvalView({ status: "APPROVED", reviewerName: "Jacky", decidedAt: "2026-07-23T10:15:00.000Z" }),
@@ -201,11 +218,12 @@ describe("Run Context Panel layout", () => {
 
   it("REJECTED does not render the Action required banner", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(
         jsonResponse(200, {
           data: approvalView({ status: "REJECTED", reviewerName: "Jacky", decidedAt: "2026-07-23T10:15:00.000Z" }),
@@ -221,11 +239,12 @@ describe("Run Context Panel layout", () => {
 
   it("exactly one Approve button and one Reject button exist while PENDING", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
@@ -238,12 +257,13 @@ describe("Run Context Panel layout", () => {
 
   it("approval === null renders run facts with no eligibility claim", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(
         jsonResponse(503, errorEnvelope("PERSISTENCE_UNAVAILABLE", "The database is temporarily unavailable.")),
       );
@@ -259,12 +279,13 @@ describe("Run Context Panel layout", () => {
 
   it("NOT_ELIGIBLE renders run facts plus the reused eligibility copy/hint", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "NOT_ELIGIBLE" }) }));
 
     render(<App />);
@@ -283,11 +304,12 @@ describe("Run Context Panel layout", () => {
 
   it("PENDING renders ApprovalPanel, not RunOverviewPanel", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
@@ -300,11 +322,12 @@ describe("Run Context Panel layout", () => {
 
   it("APPROVED renders a read-only decision record with zero buttons", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(
         jsonResponse(200, {
           data: approvalView({ status: "APPROVED", reviewerName: "Jacky", decidedAt: "2026-07-23T10:15:00.000Z" }),
@@ -321,11 +344,12 @@ describe("Run Context Panel layout", () => {
 
   it("REJECTED renders a read-only decision record with zero buttons", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(
         jsonResponse(200, {
           data: approvalView({ status: "REJECTED", reviewerName: "Jacky", decidedAt: "2026-07-23T10:15:00.000Z" }),
@@ -342,11 +366,12 @@ describe("Run Context Panel layout", () => {
 
   it("PENDING -> APPROVED removes the banner and shows the terminal record", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
@@ -368,11 +393,12 @@ describe("Run Context Panel layout", () => {
 
   it("PENDING -> REJECTED removes the banner and shows the terminal record", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
@@ -394,11 +420,12 @@ describe("Run Context Panel layout", () => {
 
   it("a fresh investigation resolving to PENDING announces the completion notice", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
@@ -412,7 +439,7 @@ describe("Run Context Panel layout", () => {
 
   it("a retried run resolving to PENDING announces the completion notice", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
@@ -427,6 +454,7 @@ describe("Run Context Panel layout", () => {
 
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
     await user.click(retryButton);
 
@@ -437,11 +465,12 @@ describe("Run Context Panel layout", () => {
 
   it("an explicit refresh resolving to PENDING announces the refresh-flavored notice, not fresh completion", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
@@ -460,12 +489,13 @@ describe("Run Context Panel layout", () => {
 
   it("an explicit refresh resolving to a non-pending status announces plain 'Run refreshed.'", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "NOT_ELIGIBLE" }) }));
 
     render(<App />);
@@ -483,11 +513,12 @@ describe("Run Context Panel layout", () => {
 
   it("timeline, report, and approval heading targets are focusable via tabindex=-1", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
@@ -501,11 +532,12 @@ describe("Run Context Panel layout", () => {
 
   it("a long reviewer note remains present as plain wrapped text, not moved into a duplicated control", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);

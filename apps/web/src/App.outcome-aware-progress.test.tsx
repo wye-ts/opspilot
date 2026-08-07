@@ -68,6 +68,19 @@ const COMPLETED: AgentRunOutcomeView = {
   },
 };
 
+/**
+ * Finding 2 (independent review, Codex review): a manual Refresh that
+ * observes a terminal outcome for the first time now performs one
+ * authoritative `getInvestigationState` read (the same mechanism Finding 1
+ * added for the POST path) before permanently freezing canonical detail —
+ * an extra fetch call every "Refresh out of RUNNING into a terminal
+ * outcome" test must account for in its mock sequence.
+ */
+function investigationStateResponse(outcome: AgentRunOutcomeView): Response {
+  const detail = runDetail(outcome);
+  return jsonResponse(200, { data: { job: detail.job, run: detail.run, trace: detail.trace, outcome: detail.outcome, events: [] } });
+}
+
 function approvalView(overrides: Partial<ApprovalView> = {}): ApprovalView {
   return { runId: "run-1", status: "NOT_ELIGIBLE", reviewerName: null, note: null, decidedAt: null, ...overrides };
 }
@@ -82,6 +95,17 @@ function fakeCapabilitiesResponse(): Response {
 
 function liveCapabilitiesResponse(): Response {
   return jsonResponse(200, { data: { liveAgentRuns: "AVAILABLE", liveAccess: "TOKEN_REQUIRED" } });
+}
+
+/**
+ * Investigation polling (#38) starts concurrently with every submit/retry
+ * this file exercises and issues its own GET the tests below never queue a
+ * response for. A default (not `mockResolvedValueOnce`) fallback answers any
+ * such call with 404 — polling stops immediately (`not-found`), which is
+ * invisible to every assertion in this file (none inspect polling state).
+ */
+function pollFallbackResponse(): Response {
+  return jsonResponse(503, errorEnvelope("PERSISTENCE_UNAVAILABLE", "not tracked by this test"));
 }
 
 async function submit(user: ReturnType<typeof userEvent.setup>, summary = "Elevated error rate") {
@@ -137,7 +161,7 @@ describe("Initial submission — outcome-aware progress", () => {
   it("RUNNING: run stage Active, elapsed keeps ticking, approval never starts, no terminal announcement, no report/jump-link", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
@@ -163,7 +187,7 @@ describe("Initial submission — outcome-aware progress", () => {
   it("FAILED: run stage Failed, approval never starts, elapsed freezes, live region announces the failure, Report shows failure details, jump link present", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
@@ -195,11 +219,12 @@ describe("Initial submission — outcome-aware progress", () => {
 
   it("COMPLETED: the existing successful flow remains correct", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail(COMPLETED) }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
@@ -228,7 +253,7 @@ describe("Refresh transitions out of RUNNING", () => {
   it("RUNNING -> RUNNING: stays Active, elapsed keeps ticking without restarting, no approval load, no dangling links", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     await submitRunning(user);
 
     const elapsedBeforeRefresh = document.querySelector(".investigation-progress-elapsed")?.textContent;
@@ -253,11 +278,14 @@ describe("Refresh transitions out of RUNNING", () => {
   it("RUNNING -> COMPLETED: run stage completes, approval loads (tracked), elapsed freezes, success is announced", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     await submitRunning(user);
 
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(200, { data: runDetail(COMPLETED) }))
+      // Finding 2's authoritative getInvestigationState read, between the
+      // legacy Refresh read above and the approval load below.
+      .mockResolvedValueOnce(investigationStateResponse(COMPLETED))
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
     await user.click(screen.getByRole("button", { name: "Refresh" }));
 
@@ -282,7 +310,7 @@ describe("Refresh transitions out of RUNNING", () => {
   it("RUNNING -> FAILED: run stage fails, approval never starts, elapsed freezes, failure is announced", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     await submitRunning(user);
 
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(200, { data: runDetail(FAILED) }));
@@ -307,7 +335,7 @@ describe("FAKE retry — outcome-aware, not converted to success", () => {
   it("Retry Run returning RUNNING reaches stable Active state without restoring the previous terminal notice", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
@@ -348,7 +376,7 @@ describe("FAKE retry — outcome-aware, not converted to success", () => {
 
   it("Retry Run returning FAILED marks the run stage Failed, not Completed", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
@@ -370,7 +398,7 @@ describe("FAKE retry — outcome-aware, not converted to success", () => {
 describe("Refresh of an already-FAILED run", () => {
   it("FAILED -> FAILED refreshes only the run projection and never begins approval settlement", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
@@ -417,11 +445,12 @@ describe("LIVE recovery — outcome-aware, not converted to success", () => {
 
   it("a genuinely-started (201) recovery returning FAILED is not announced as success", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     await submitLiveAmbiguousFailure(user);
 
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail(FAILED, { run: { ...runDetail(FAILED).run, providerMode: "LIVE" } }) }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(liveCapabilitiesResponse());
     await user.type(screen.getByLabelText("Live demo access token"), TOKEN);
     await user.click(screen.getByRole("button", { name: "Recover Live Run" }));
@@ -441,12 +470,19 @@ describe("LIVE recovery — outcome-aware, not converted to success", () => {
   });
 
   it("a genuinely-started (201) recovery returning RUNNING stays Active, not Completed", async () => {
-    const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    // Fake timers, not real ones: RUNNING never stops polling, so with real
+    // timers a poll tick can fire after this test's assertions (and even
+    // after RTL's afterEach unmount, under load) and consume a mock slot
+    // meant for something else — this used to crash intermittently with an
+    // unhandled rejection once the suite ran under load.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     await submitLiveAmbiguousFailure(user);
 
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail(RUNNING, { run: { ...runDetail(RUNNING).run, providerMode: "LIVE" } }) }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(liveCapabilitiesResponse());
     await user.type(screen.getByLabelText("Live demo access token"), TOKEN);
     await user.click(screen.getByRole("button", { name: "Recover Live Run" }));
