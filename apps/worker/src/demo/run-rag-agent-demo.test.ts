@@ -82,6 +82,7 @@ describe("formatDemoOutput", () => {
       code: "RETRIEVAL_FAILED",
       message: "Runbook retrieval failed (TIMEOUT).",
       trace: [],
+      failedStage: "AGENT_ANALYSIS",
     };
     const failedResult: RagDemoScenarioResult = {
       agentResult: failedAgentResult,

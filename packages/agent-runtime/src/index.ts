@@ -69,6 +69,7 @@ export type {
   AgentRunService,
   ExecuteAndPersistParams,
   ExecuteAndPersistResult,
+  InvestigationEventEmissionDiagnostic,
   ReplayLiveRunResult,
   RetryFinalizationParams,
 } from "./persistence/agent-run-service";

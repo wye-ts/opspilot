@@ -1,4 +1,4 @@
-import type { AgentTraceEvent } from "@opspilot/contracts";
+import type { InvestigationEventPayload, InvestigationEventRecord } from "@opspilot/contracts";
 import type {
   AgentJobRecord,
   AgentRunRecord,
@@ -71,19 +71,41 @@ export interface AgentRunRepositoryInterface {
     readonly jobId: string;
     readonly clientRequestId: string;
   }): Promise<ReplayedLiveRun | null>;
+  /**
+   * Appends one canonical lifecycle event to a RUNNING run's ledger, in its
+   * own short transaction, committed immediately — that immediacy is the
+   * live visibility issue #37 exists to provide.
+   *
+   * Handles the ten NON-terminal canonical types. `RUN_COMPLETED` and
+   * `RUN_FAILED` are refused: they are owned by the terminal transaction,
+   * which writes them atomically with the run's status update.
+   *
+   * Idempotent on an exact replay of the same event (same type, JSONB-equal
+   * payload): returns the original record, inserts nothing, and consumes no
+   * sequence number. A same-type event with a DIFFERENT payload conflicts.
+   */
+  appendInvestigationEvent(
+    runId: string,
+    payload: InvestigationEventPayload,
+  ): Promise<InvestigationEventRecord>;
   // `usage` is omitted for FAKE, which is what leaves the six usage columns
   // NULL for a deterministic run. It is written in the same statement that sets
   // the terminal status — never a second update afterwards.
+  //
+  // No `trace` parameter as of #37 Phase B: every preceding event was already
+  // persisted incrementally during execution, so the terminal call carries
+  // only the terminal fact itself.
   finalizeCompleted(
     runId: string,
-    trace: readonly AgentTraceEvent[],
     report: unknown,
     usage?: RunProviderUsageWrite,
   ): Promise<AgentRunRecord>;
+  // `failedStage` comes from the orchestrator result — persistence never
+  // infers which stage a run died in.
   finalizeFailed(
     runId: string,
-    trace: readonly AgentTraceEvent[],
     code: unknown,
+    failedStage: unknown,
     usage?: RunProviderUsageWrite,
   ): Promise<AgentRunRecord>;
   /**

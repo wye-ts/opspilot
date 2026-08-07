@@ -6,6 +6,7 @@
 | Status | Implemented |
 | Project | OpsPilot |
 | Purpose | Document the actual, implemented PostgreSQL persistence slice for `AgentJob`/`AgentRun`/`AgentTraceEvent` — schema, invariants, transactions, validation, test lifecycle, and current limitations |
+| Revision (issue #37) | **Persist-after has been replaced by incremental canonical persistence.** Sections 1, 4, 5 and 10 are amended in place below; the persist-after design they used to describe is retained only where it explains why the current design is shaped as it is. See `docs/16-investigation-event-contract.md` and `docs/reviews/21-issue-37-incremental-event-persistence-plan.md`. |
 | Related documents | `docs/03-technical-design.md` §16, `docs/04-agent-design.md` §16, `docs/10-engineering-challenges.md` Challenge 3, `.plans/agent-run-persistence-plan.md` (the approved design this implements), `docs/12-agent-run-api.md` (the HTTP API layer built on top of this persistence slice) |
 
 ---
@@ -16,12 +17,17 @@ This milestone adds the smallest production-shaped persistence slice for:
 
 ```text
 create AgentJob
-→ atomically start AgentRun as RUNNING
-→ execute the existing in-memory orchestrator (unchanged)
-→ transactionally persist the full ordered trace
-→ persist exactly one terminal outcome
+→ atomically start AgentRun as RUNNING, with its RUN_CREATED event
+→ execute the orchestrator, persisting each canonical lifecycle event as it happens
+→ persist exactly one terminal event atomically with the terminal outcome
 → read the job, run, trace, and outcome back
 ```
+
+**Amended by issue #37.** The original slice persisted the whole trace in one
+batch *after* the orchestrator returned. It now persists each canonical
+lifecycle event incrementally, as it happens, so a RUNNING run is queryable
+mid-flight. What did NOT change: there is still no queue, still exactly one
+synchronous writer per run, and still exactly one terminal outcome.
 
 It does **not** add a queue, a claim-worker, execution-token fencing, cancellation, a maintenance sweep, live progress streaming, an API layer, or a UI. `docs/03-technical-design.md` §16 and `docs/04-agent-design.md` §16 describe a larger *future* production design with all of that; this document describes what is actually built today, and is explicitly a simpler precursor to that design — not an implementation of it. See §9 for exactly how they relate.
 
@@ -139,11 +145,28 @@ No `status` column, no `latest_run_id` pointer — there is no queue/claim mecha
 | `id` | `UUID` PK | |
 | `run_id` | `UUID NOT NULL` FK -> `agent_runs.id` | `ON DELETE CASCADE` |
 | `sequence_number` | `INTEGER NOT NULL` | `UNIQUE(run_id, sequence_number)`, 1-based, contiguous |
-| `event_type` | `TEXT NOT NULL` | One of the 4 real `AgentTraceEvent` variants |
-| `payload` | `JSONB NOT NULL` | The verbatim `AgentTraceEvent` object |
-| `created_at` | `TIMESTAMPTZ NOT NULL DEFAULT now()` | |
+| `event_type` | `TEXT NOT NULL` | One of the **13** canonical record types (12 write-eligible + legacy read-only `REPORT_GENERATED`) — widened from the original 4 by issue #37 |
+| `payload` | `JSONB NOT NULL` | The verbatim event payload |
+| `created_at` | `TIMESTAMPTZ NOT NULL DEFAULT now()` | The canonical contract's `recordedAt`. Incremental writes make this a genuinely per-event time; the old batch gave every row of a run one coarse value. |
 
-Sequence numbers are the 1-based index of each event in the orchestrator's returned `trace` array — safe because there is exactly one synchronous writer per run (the whole array is inserted in one transaction, once, after the orchestrator completes). This is why no `nextStepSequence`-style atomic counter is needed here, unlike the future `AgentStep` design (§9), which must serialize multiple concurrent writers.
+**Sequence allocation (amended by issue #37).** Sequence numbers are no longer
+array indexes. Each append allocates `COALESCE(MAX(sequence_number), 0) + 1`
+while holding the `agent_runs` row lock its transaction already took to check
+terminal status — the same lock-then-MAX pattern `startRun` uses for
+`attempt_number`. That lock is what makes the allocation race-free;
+`UNIQUE(run_id, sequence_number)` remains as defense in depth. No
+`nextStepSequence`-style counter column is needed, because the lock already
+serializes every appender for a run.
+
+`RUN_CREATED` is always sequence 1 and is written inside the run-creation
+transaction itself. The terminal event is always the highest sequence and is
+written inside the terminal transaction.
+
+An additional partial unique index, `agent_trace_events_run_id_canonical_event_type_key`,
+covers all 12 canonical write types (excluding legacy `REPORT_GENERATED`) on
+`(run_id, event_type)`. Under current-runtime V1 every one of them is
+at-most-once per run, so this states a real invariant and gives the
+application-level exact-replay policy a durable backstop.
 
 ### Named CHECK constraints (all 12, exact names — hand-authored, not Prisma-generated)
 
@@ -197,9 +220,16 @@ BEGIN
   -- a malformed stored snapshot throws here, rolling back the transaction with no AgentRun created
   SELECT COALESCE(MAX(attempt_number), 0) FROM agent_runs WHERE job_id = $jobId  -- safe: serialized by the lock above
   INSERT agent_runs (job_id, attempt_number, status='RUNNING', started_at=now(), provider_mode, model_identifier)
+  INSERT agent_trace_events (run_id, sequence_number=1, event_type='RUN_CREATED', payload)
   -- returns { job: <validated AgentJobRecord from the locked row>, run: <new AgentRunRecord> }
 COMMIT
 ```
+
+**`RUN_CREATED` commits with the run (issue #37).** The canonical first event
+is inserted in this same transaction, at sequence 1. If either insert fails,
+both roll back: there is never a run row without its first event, nor an event
+without its run. `startLiveRunWithAttemptLimit` does the same — and its
+`replayed` branch writes no event, correctly, because it creates no run.
 `startRun` selects the **complete** `agent_jobs` row (`id`, `ticket_context`, `external_ticket_id`, `created_at`) under the same `FOR UPDATE` lock used to allocate `attempt_number` — not just a bare existence check — and returns it alongside the new `AgentRun` as `StartedAgentRun { job: AgentJobRecord; run: AgentRunRecord }`. This is deliberate: `AgentJobRecord` is a public structural TypeScript interface, and accepting one from a caller (as an earlier revision of this service did) would let a caller combine one job's `id` with a different job's `ticketContext` — storing the resulting `AgentRun` under job A while investigating job B's ticket. Because the job snapshot and the `AgentRun.jobId` foreign key now both originate from this single locked read, that combination is structurally impossible: `AgentRunService.executeAndPersist` (§7) accepts only `jobId: string` and derives everything else from what `startRun` actually read out of PostgreSQL.
 
 Concurrent `startRun` calls for the same job serialize on the `AgentJob` lock and always allocate unique, increasing `attempt_number`s (integration-tested with two real concurrent Prisma clients). `createRun`+`markRunRunning` from an earlier draft of this design were collapsed into this single transaction — a separately-committed `PENDING` row would only have added a crash window with nothing in this milestone to observe or act on it.
@@ -366,37 +396,109 @@ requests can both find nothing here and both reach admission; only the locked
 creating transaction can decide which of them inserts the run. This lookup is an
 early exit; that one is the guarantee.
 
-### `finalizeCompleted` / `finalizeFailed` — exact-replay-safe
+### `finalizeCompleted` / `finalizeFailed` — canonical terminal persistence
+
+**Rewritten by issue #37.** The `trace` parameter is gone. Every event
+preceding the terminal one was already persisted incrementally during
+execution, so finalization carries only the terminal fact itself:
+
+```ts
+finalizeCompleted(prisma, runId, report, usage?)
+finalizeFailed(prisma, runId, failureCode, failedStage, usage?)
+```
+
+`failedStage` comes from the orchestrator result. Persistence never infers it —
+`RUN_FAILED.failedStage` must name the stage the reducer sees as active, and a
+guess would be rejected as `FAILED_STAGE_NOT_TRUTHFUL`.
 
 ```text
-1. Runtime-validate the trace and terminal outcome BEFORE opening a transaction (§6) — an
-   invalid write never touches the database.
+1. Validate report / failureCode / the canonical terminal payload BEFORE opening
+   a transaction — an invalid outcome never touches the database. Validating the
+   payload here also validates failedStage against the contract's closed enum.
 2. BEGIN
 3. SELECT status FROM agent_runs WHERE id = $runId FOR UPDATE
    -- not found -> PERSISTENCE_NOT_FOUND
 4. IF status = 'RUNNING':
-     INSERT the full trace batch (sequence_number = 1..N)
-     UPDATE agent_runs SET status = 'COMPLETED'|'FAILED', report|failure_code, finished_at = now()
-     COMMIT  -- happy path, one atomic write
+     a. A terminal event already present is CORRUPTION, not a replay:
+        PERSISTENCE_EVENT_STREAM_INVALID. The status is not promoted and no
+        second terminal event is inserted, whatever the payload says.
+     b. allocate MAX(sequence_number) + 1; INSERT the RUN_COMPLETED / RUN_FAILED row
+     c. re-read the COMPLETE canonical stream in sequence order
+     d. deriveExecutionStageProgress(stream, target terminal status)
+        -- rejection -> ROLLBACK (event AND status), PERSISTENCE_EVENT_STREAM_INVALID
+     e. UPDATE agent_runs SET status, report|failure_code, finished_at, <usage columns>
+     COMMIT
 5. ELSE (already terminal):
-     Compare the stored trace to the incoming trace as ordered {sequenceNumber, payload}
-     pairs — jsonb_agg(jsonb_build_object('sequenceNumber', sequence_number, 'payload',
-     payload) ORDER BY sequence_number) — via PostgreSQL JSONB equality, not JS string
-     comparison. Comparing payload alone would incorrectly accept a stored [1, 3] as a
-     replay of an incoming [1, 2] whenever the payloads happen to be in the same order;
-     including sequenceNumber in the compared value closes that gap. Array element order
-     is preserved by JSONB equality (it matters); object key order is normalized away
-     (it doesn't).
-     Compare stored report/failure_code to the incoming outcome via IS NOT DISTINCT FROM.
-     IF status matches AND trace matches AND outcome matches:
-       return the existing row, unchanged — idempotent success, zero new rows inserted
-     ELSE:
-       PERSISTENCE_CONFLICT
+     - no terminal event stored          -> PERSISTENCE_EVENT_STREAM_INVALID
+     - BOTH terminal events stored       -> PERSISTENCE_EVENT_STREAM_INVALID
+     - status disagrees with the request -> PERSISTENCE_CONFLICT
+     - resolveCanonicalEventReplay(terminal payload) — the SAME all-12 replay
+       helper the incremental append uses, not a second terminal-only policy:
+         different payload (e.g. a different failedStage) -> PERSISTENCE_CONFLICT
+         absent (the other terminal type is stored)       -> PERSISTENCE_CONFLICT
+     - re-read and reducer-validate the stored stream
+     - compare stored report / failure_code via IS NOT DISTINCT FROM
+     -> idempotent success (zero rows written, usage NOT rewritten), or
+        PERSISTENCE_CONFLICT
 COMMIT
 ```
-A completed-vs-failed race (two concurrent finalize calls) always resolves to exactly one winner: the losing transaction's `FOR UPDATE` blocks until the first commits, then observes non-`RUNNING` status and falls into the replay-or-conflict branch, where a different terminal type never satisfies the idempotent-match condition.
 
-**Real transactional rollback, not just pre-transaction validation.** Two distinct integration tests exist and must not be conflated: "rejects an invalid report before any transaction begins, leaving the run and trace untouched" proves that runtime validation (step 1 above) rejects a bad write before any transaction opens — there is nothing to roll back. A separate test, "a real PostgreSQL failure after the trace insert rolls back the entire transaction, leaving the run RUNNING with zero trace rows", proves genuine mid-transaction atomicity: a test-only trigger (created and dropped entirely within that one test, never a production hook) makes the terminal `UPDATE` fail *after* the trace `createMany` has already executed inside the same transaction, and asserts both writes are rolled back together.
+**The status is updated only after the reducer accepts the completed stream.**
+That ordering is what makes the production invariant true rather than merely
+tested: *a terminal database row can never commit with a reducer-invalid
+canonical stream.*
+
+**Why `RUNNING` + a terminal event is corruption.** The terminal event and the
+terminal status commit together, so that combination is unreachable through
+this code. Observing it means something wrote outside the repository — and the
+honest response is to refuse, exactly as `getAgentRun` already refuses a
+non-contiguous stored trace rather than returning a plausible partial one.
+Promoting the status would vouch for a history nobody can vouch for.
+
+**Replay strength is preserved, not weakened.** The old check compared the
+whole incoming trace because the trace *was* the payload being written. Now the
+trace is already durable before finalization, and `appendInvestigationEvent`
+refuses to write to a non-`RUNNING` run — so no replay can alter it. What a
+retry genuinely re-supplies is the terminal fact, and `RUN_FAILED`'s payload
+carries both `failureCode` and `failedStage`, so a retry that disagrees about
+*where* the run failed still conflicts.
+
+**Real transactional rollback, not just pre-transaction validation.** Two
+distinct integration tests exist and must not be conflated: "rejects an invalid
+report before any transaction begins" proves runtime validation rejects a bad
+write before any transaction opens — there is nothing to roll back. A separate
+test uses a test-only trigger (created and dropped entirely within that one
+test, never a production hook) to fail the terminal `UPDATE` *after* the
+terminal event insert has already executed in the same transaction, and asserts
+both are rolled back together — the run stays `RUNNING` with no terminal row.
+
+### `appendInvestigationEvent` — the incremental writer
+
+Handles the **ten non-terminal** canonical types. `RUN_COMPLETED`/`RUN_FAILED`
+are refused outright, before the transaction opens: a terminal event written
+without its status update is precisely the corruption above.
+
+```text
+BEGIN
+  1. SELECT status FROM agent_runs WHERE id = $runId FOR UPDATE
+       missing            -> PERSISTENCE_NOT_FOUND
+       status <> RUNNING  -> PERSISTENCE_CONFLICT
+  2. resolveCanonicalEventReplay — the all-12 exact-replay policy
+       exact match (same type, JSONB-equal payload)
+         -> return the ORIGINAL sequence and recordedAt; insert nothing,
+            consume no sequence number
+       same type, different payload -> PERSISTENCE_CONFLICT
+  3. allocate MAX(sequence_number) + 1
+  4. INSERT; created_at becomes recordedAt
+  5. re-read the full stream; deriveExecutionStageProgress(stream, "RUNNING")
+       rejection -> ROLLBACK, PERSISTENCE_EVENT_STREAM_INVALID
+COMMIT
+```
+
+The replay check runs **before** allocation, so an ambiguous-success retry —
+a transaction that committed but whose response was lost — short-circuits and
+never reaches the reducer. It can therefore never surface as
+`PERSISTENCE_EVENT_STREAM_INVALID`.
 
 ### `getAgentRun`
 
@@ -421,7 +523,15 @@ A validation failure maps to `PersistenceError("PERSISTENCE_VALIDATION_FAILED", 
 
 ## 7. Error Taxonomy
 
-`PersistenceErrorCode`: `PERSISTENCE_UNAVAILABLE | PERSISTENCE_CONFLICT | PERSISTENCE_VALIDATION_FAILED | PERSISTENCE_NOT_FOUND`. `normalizeDatabaseError` (`packages/database/src/errors.ts`) maps Prisma/driver error codes (`P2002`/`23505` -> conflict, `23514` -> conflict, `P2025` -> not found, `P1001`/`ECONNREFUSED`/etc. -> unavailable, everything else -> unavailable) to one of these, with a fixed message — never the raw Prisma message, connection string, or SQL text.
+`PersistenceErrorCode`: `PERSISTENCE_UNAVAILABLE | PERSISTENCE_CONFLICT | PERSISTENCE_VALIDATION_FAILED | PERSISTENCE_NOT_FOUND | PERSISTENCE_EVENT_STREAM_INVALID`.
+
+`PERSISTENCE_EVENT_STREAM_INVALID` (issue #37) means a candidate canonical
+stream failed reducer validation inside its own write transaction, or a stored
+stream was found corrupt on read. It is an emitter/repository contract defect or
+stored-data corruption — never an `AgentOrchestratorErrorCode`, never a
+client-input error. The API maps it to 500 `INTERNAL_DATA_INVALID`, reusing an
+existing public code rather than growing the public catalogue for an internal
+defect class callers cannot act on. `normalizeDatabaseError` (`packages/database/src/errors.ts`) maps Prisma/driver error codes (`P2002`/`23505` -> conflict, `23514` -> conflict, `P2025` -> not found, `P1001`/`ECONNREFUSED`/etc. -> unavailable, everything else -> unavailable) to one of these, with a fixed message — never the raw Prisma message, connection string, or SQL text.
 
 `AgentRunServiceErrorCode` (`apps/worker/src/persistence/agent-run-service-error.ts`): `AGENT_EXECUTION_CRASHED` only — thrown, not returned, when `runAgentOrchestrator` itself throws an unexpected exception after `startRun` has already committed a `RUNNING` row. Fixed message ("The agent execution terminated unexpectedly."), the raw cause retained only via `Error.cause` for internal debugging, `runId` attached so the caller can log which row is now orphaned. Never converted to a `PersistenceError`, never converted to an `AgentOrchestratorErrorCode`, never written to the database as a `FAILED` outcome.
 
@@ -477,6 +587,7 @@ The table/type names are kept deliberately distinct (`agent_trace_events` vs. th
 ## 10. Current Limitations (accepted, explicitly out of scope this milestone)
 
 - **No reaper/recovery for orphaned `RUNNING` rows.** A crash between `startRun` committing and finalization (including an `AGENT_EXECUTION_CRASHED` throw) leaves the row `RUNNING` forever, until a future reaper/recovery milestone.
+- **Event-emission persistence failure deliberately leaves the run `RUNNING`** (issue #37). If persisting a canonical lifecycle event fails mid-run, execution aborts immediately: no terminal event, no terminal status, no re-execution of anything the provider or a tool already did, and no legacy trace push for the event whose canonical write failed. `executeAndPersist` returns `{ persistence: "unavailable", stage: "event-emission", runId, attemptedEventType, usageSummary, reservation }`. There is deliberately **no retry path** — unlike finalization there is no durable in-memory result to replay, and forcing a terminal write would require a failure code that is not an `AgentOrchestratorErrorCode` plus a `failedStage` the ledger never recorded as active. The run lands in the orphaned-`RUNNING` gap above. **This widens that gap's exposure**: there are now roughly eight write points per run instead of one. The rows are more useful than before (they carry real partial progress), but there is still no reaper. Usage and the budget reservation ride along on that result so the caller's cleanup still reconciles a run that spent real tokens — an unreconciled reservation latches the whole UTC day closed.
 - **`retryFinalization` is not process-restart-safe.** It is caller-controlled, in-memory-only retry, valid only while the calling process still holds the original `AgentOrchestratorResult`. It handles a failed finalization call and an uncertain post-commit connection failure (via the exact-replay contract, §5) — it does **not** handle process restart, loss of the in-memory result, or durable resumption of any kind.
 - No queue, no scheduling, no automatic retries, no cancellation, no execution-token fencing, no multiple concurrent workers, no live progress streaming, no API layer, no UI, no deployment, no CI wiring, no pgvector/embeddings/runbook persistence, no `idempotency_key` on `AgentJob`/`AgentRun` (no HTTP layer exists yet to need one).
 

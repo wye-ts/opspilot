@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { mapDomainError } from "./map-domain-error";
 
 describe("mapDomainError", () => {
-  it("maps PERSISTENCE_CONFLICT to 409 PERSISTENCE_CONFLICT regardless of context", () => {
+  it("maps PERSISTENCE_CONFLICT to 409 PERSISTENCE_CONFLICT in a client-resolvable context", () => {
     const error = new PersistenceError("PERSISTENCE_CONFLICT", "conflict");
     const apiError = mapDomainError(error, "createAgentJob");
     expect(apiError.code).toBe("PERSISTENCE_CONFLICT");
@@ -139,4 +139,75 @@ describe("mapDomainError", () => {
       expect(apiError.status).toBe(409);
     },
   );
+
+  // Issue #37 Phase B — canonical lifecycle persistence failures.
+  it("maps PERSISTENCE_UNAVAILABLE during event emission to 503, the existing public behavior", () => {
+    const error = new PersistenceError("PERSISTENCE_UNAVAILABLE", "ledger down");
+    const apiError = mapDomainError(error, "event-emission");
+    expect(apiError.code).toBe("PERSISTENCE_UNAVAILABLE");
+    expect(apiError.status).toBe(503);
+  });
+
+  it.each(["event-emission", "finalization", "getAgentRun"] as const)(
+    "maps PERSISTENCE_EVENT_STREAM_INVALID to 500 INTERNAL_DATA_INVALID in context %s",
+    (context) => {
+      // An emitter/repository contract defect or stored corruption — never a
+      // client mistake and never transient, so it is a 500 in every context.
+      // Deliberately reuses an existing public code: no new public error code
+      // is added merely for lifecycle persistence.
+      const error = new PersistenceError("PERSISTENCE_EVENT_STREAM_INVALID", "stream invalid");
+      const apiError = mapDomainError(error, context);
+      expect(apiError.code).toBe("INTERNAL_DATA_INVALID");
+      expect(apiError.status).toBe(500);
+    },
+  );
+
+  it("maps PERSISTENCE_NOT_FOUND during event emission to 500 INTERNAL_DATA_INVALID, not a 404", () => {
+    // The run demonstrably existed — it was created and was executing — so a
+    // missing row here is stored-data corruption, not a client naming
+    // something that never existed.
+    const error = new PersistenceError("PERSISTENCE_NOT_FOUND", "run vanished");
+    const apiError = mapDomainError(error, "event-emission");
+    expect(apiError.code).toBe("INTERNAL_DATA_INVALID");
+    expect(apiError.status).toBe(500);
+  });
+
+  // Codex Phase B review, finding M3: a canonical append conflict discovered
+  // during event emission is an internal ledger/emitter inconsistency the
+  // client cannot resolve — it must map to 500 INTERNAL_DATA_INVALID, never
+  // the general client-facing 409.
+  describe("PERSISTENCE_CONFLICT context override (finding M3)", () => {
+    it("maps PERSISTENCE_CONFLICT in event-emission context to 500 INTERNAL_DATA_INVALID", () => {
+      const error = new PersistenceError("PERSISTENCE_CONFLICT", "conflict");
+      const apiError = mapDomainError(error, "event-emission");
+      expect(apiError.code).toBe("INTERNAL_DATA_INVALID");
+      expect(apiError.status).toBe(500);
+    });
+
+    it.each(["createAgentJob", "finalization", "recordApprovalDecision", "getApprovalDecision"] as const)(
+      "leaves PERSISTENCE_CONFLICT at 409 in the genuinely client-resolvable context %s (regression)",
+      (context) => {
+        const error = new PersistenceError("PERSISTENCE_CONFLICT", "conflict");
+        const apiError = mapDomainError(error, context);
+        expect(apiError.code).toBe("PERSISTENCE_CONFLICT");
+        expect(apiError.status).toBe(409);
+      },
+    );
+
+    it("does not leak the underlying PersistenceError message into the public response", () => {
+      const error = new PersistenceError(
+        "PERSISTENCE_CONFLICT",
+        "AgentRun 8f14e45f-... already carries a different TOOL_REQUESTED payload",
+      );
+      const apiError = mapDomainError(error, "event-emission");
+
+      // The response is the fixed public message for INTERNAL_DATA_INVALID —
+      // internal event/ledger detail (run ids, event types, payload content)
+      // is retained only as `.cause` for internal logging, never surfaced to
+      // the client.
+      expect(apiError.message).not.toContain("TOOL_REQUESTED");
+      expect(apiError.message).not.toContain("8f14e45f");
+      expect(JSON.stringify(apiError)).not.toContain("TOOL_REQUESTED");
+    });
+  });
 });

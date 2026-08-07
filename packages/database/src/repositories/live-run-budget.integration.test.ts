@@ -15,6 +15,7 @@ import {
   startLiveRunWithAttemptLimit as startLiveRunKeyed,
   startRun,
 } from "./agent-run-repository";
+import { appendDirectSuccessPrefix, appendFailurePrefix } from "../test/canonical-stream";
 import { createTestPrismaClient, truncateAllTables } from "../test/test-db";
 import type {
   LiveRunBudgetReservationInput,
@@ -53,7 +54,6 @@ async function startLiveRunWithAttemptLimit(
 const BUDGET_DATE = "2026-07-29";
 const CEILING = 1_000_000_000n; // $1.00
 
-const SAMPLE_TRACE = [{ type: "REPORT_GENERATED" as const }];
 
 const VALID_REPORT = {
   category: "SERVICE_DEGRADATION",
@@ -362,13 +362,15 @@ describe("startLiveRunWithAttemptLimit — daily budget gate", () => {
     };
 
     const started = await startLiveRunWithAttemptLimit(prisma, params);
-    await finalizeCompleted(prisma, started.run.id, SAMPLE_TRACE, VALID_REPORT, usage());
+    await appendDirectSuccessPrefix(prisma, started.run.id);
+    await finalizeCompleted(prisma, started.run.id, VALID_REPORT, usage());
     await reconcileLiveRunBudget(prisma, started.reservation, usage());
 
     // 17,956,000 nanoUSD is under the 20,000,000 ceiling, so the next run is
     // still allowed...
     const second = await startLiveRunWithAttemptLimit(prisma, params);
-    await finalizeCompleted(prisma, second.run.id, SAMPLE_TRACE, VALID_REPORT, usage());
+    await appendDirectSuccessPrefix(prisma, second.run.id);
+    await finalizeCompleted(prisma, second.run.id, VALID_REPORT, usage());
     await reconcileLiveRunBudget(prisma, second.reservation, usage());
 
     // ...but 35,912,000 is over it, so the third is refused. This is exactly the
@@ -385,7 +387,8 @@ describe("startLiveRunWithAttemptLimit — daily budget gate", () => {
 
     const started = await startLiveRunWithAttemptLimit(prisma, params);
     const unknown = usage({ estimatedCostNanoUsd: null, pricingStatus: "UNKNOWN_MODEL" });
-    await finalizeFailed(prisma, started.run.id, SAMPLE_TRACE, "PROVIDER_UNAVAILABLE", unknown);
+    const stage_2706 = await appendFailurePrefix(prisma, started.run.id, "PROVIDER_UNAVAILABLE");
+    await finalizeFailed(prisma, started.run.id, "PROVIDER_UNAVAILABLE", stage_2706, unknown);
     await reconcileLiveRunBudget(prisma, started.reservation, unknown);
 
     expect((await budgetRow())?.pricingUnknownRuns).toBe(1);
@@ -400,7 +403,8 @@ describe("startLiveRunWithAttemptLimit — daily budget gate", () => {
 
     const started = await startLiveRunWithAttemptLimit(prisma, params);
     const unobserved = usage({ possibleUnobservedCost: true });
-    await finalizeFailed(prisma, started.run.id, SAMPLE_TRACE, "PROVIDER_TIMEOUT", unobserved);
+    const stage_2398 = await appendFailurePrefix(prisma, started.run.id, "PROVIDER_TIMEOUT");
+    await finalizeFailed(prisma, started.run.id, "PROVIDER_TIMEOUT", stage_2398, unobserved);
     await reconcileLiveRunBudget(prisma, started.reservation, unobserved);
 
     const row = await budgetRow();
@@ -863,7 +867,8 @@ describe("per-run usage persistence", () => {
       budget: budget(),
     });
 
-    await finalizeCompleted(prisma, started.run.id, SAMPLE_TRACE, VALID_REPORT, usage());
+    await appendDirectSuccessPrefix(prisma, started.run.id);
+    await finalizeCompleted(prisma, started.run.id, VALID_REPORT, usage());
 
     const row = await prisma.agentRun.findUniqueOrThrow({ where: { id: started.run.id } });
     expect(row).toMatchObject({
@@ -885,11 +890,12 @@ describe("per-run usage persistence", () => {
       budget: budget(),
     });
 
+    const failedStage = await appendFailurePrefix(prisma, started.run.id, "PROVIDER_TIMEOUT");
     await finalizeFailed(
       prisma,
       started.run.id,
-      SAMPLE_TRACE,
       "PROVIDER_TIMEOUT",
+      failedStage,
       usage({ providerCallsObserved: 1, possibleUnobservedCost: true }),
     );
 
@@ -909,7 +915,8 @@ describe("per-run usage persistence", () => {
     const job = await newJob("TKT-usage-fake");
     const started = await startRun(prisma, job.id, "FAKE", null);
 
-    await finalizeCompleted(prisma, started.run.id, SAMPLE_TRACE, VALID_REPORT);
+    await appendDirectSuccessPrefix(prisma, started.run.id);
+    await finalizeCompleted(prisma, started.run.id, VALID_REPORT);
 
     const row = await prisma.agentRun.findUniqueOrThrow({ where: { id: started.run.id } });
     expect(row).toMatchObject({
@@ -931,10 +938,10 @@ describe("per-run usage persistence", () => {
       budget: budget(),
     });
 
+    await appendDirectSuccessPrefix(prisma, started.run.id);
     await finalizeCompleted(
       prisma,
       started.run.id,
-      SAMPLE_TRACE,
       VALID_REPORT,
       usage({ estimatedCostNanoUsd: null }),
     );
@@ -955,10 +962,10 @@ describe("per-run usage persistence", () => {
       budget: budget(),
     });
 
+    await appendDirectSuccessPrefix(prisma, started.run.id);
     await finalizeCompleted(
       prisma,
       started.run.id,
-      SAMPLE_TRACE,
       VALID_REPORT,
       usage({ estimatedCostNanoUsd: null, possibleUnobservedCost: true }),
     );
@@ -1006,10 +1013,10 @@ describe("per-run usage persistence", () => {
     });
     const huge = 9_007_199_254_740_993n; // 2^53 + 1
 
+    await appendDirectSuccessPrefix(prisma, started.run.id);
     await finalizeCompleted(
       prisma,
       started.run.id,
-      SAMPLE_TRACE,
       VALID_REPORT,
       usage({ estimatedCostNanoUsd: huge }),
     );
@@ -1029,11 +1036,11 @@ describe("per-run usage persistence", () => {
       budget: budget(),
     });
 
-    await finalizeCompleted(prisma, started.run.id, SAMPLE_TRACE, VALID_REPORT, usage());
+    await appendDirectSuccessPrefix(prisma, started.run.id);
+    await finalizeCompleted(prisma, started.run.id, VALID_REPORT, usage());
     await finalizeCompleted(
       prisma,
       started.run.id,
-      SAMPLE_TRACE,
       VALID_REPORT,
       usage({ estimatedCostNanoUsd: 999_999_999n, inputTokens: 1 }),
     );

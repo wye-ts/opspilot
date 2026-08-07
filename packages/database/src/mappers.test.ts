@@ -8,15 +8,19 @@ import {
   fromAgentRunApprovalRow,
   fromAgentRunRow,
   fromFailureCodeRead,
+  fromInvestigationEventRows,
   fromReportRead,
   fromTicketContextRead,
   fromTraceEventRows,
   toFailureCodeWrite,
+  toInvestigationEventCreateInput,
   toRecordApprovalDecisionWrite,
   toReportWrite,
   toTicketContextWrite,
-  toTraceEventCreateInputs,
 } from "./mappers";
+
+const RUN_ID = "8f14e45f-1234-4abc-8def-000000000099";
+const RECORDED_AT = new Date("2026-01-01T00:00:00.000Z");
 
 const VALID_REPORT = {
   category: "SERVICE_DEGRADATION",
@@ -183,29 +187,239 @@ describe("fromAgentRunRow", () => {
   });
 });
 
-describe("toTraceEventCreateInputs / fromTraceEventRows", () => {
+describe("fromTraceEventRows — legacy read path", () => {
   const trace = [
     { type: "TOOL_REQUESTED" as const, toolCallId: "call-1", toolName: "get_service_status" },
     { type: "TOOL_COMPLETED" as const, toolCallId: "call-1", toolName: "get_service_status" },
     { type: "REPORT_GENERATED" as const },
   ];
 
-  it("assigns contiguous 1-based sequence numbers matching array index", () => {
-    const inputs = toTraceEventCreateInputs(trace, "run-1");
-    expect(inputs.map((i) => i.sequenceNumber)).toEqual([1, 2, 3]);
-    expect(inputs.every((i) => i.runId === "run-1")).toBe(true);
-    expect(inputs.map((i) => i.eventType)).toEqual(["TOOL_REQUESTED", "TOOL_COMPLETED", "REPORT_GENERATED"]);
+  it("revalidates and preserves order when reading rows back", () => {
+    const rows = trace.map((payload, i) => ({ sequenceNumber: i + 1, payload, createdAt: RECORDED_AT }));
+    expect(fromTraceEventRows(RUN_ID, rows)).toEqual(trace);
+  });
+});
+
+describe("toInvestigationEventCreateInput", () => {
+  it("accepts a canonical write-eligible payload and derives eventType from it", () => {
+    const input = toInvestigationEventCreateInput(RUN_ID, 1, { type: "RUN_CREATED" });
+    expect(input).toEqual({
+      runId: RUN_ID,
+      sequenceNumber: 1,
+      eventType: "RUN_CREATED",
+      payload: { type: "RUN_CREATED" },
+    });
   });
 
-  it("throws PERSISTENCE_VALIDATION_FAILED for a malformed event", () => {
-    expect(() => toTraceEventCreateInputs([{ type: "TOOL_REQUESTED" } as never], "run-1")).toThrow(
+  it("accepts every one of the 12 canonical write-eligible types", () => {
+    const payloads: unknown[] = [
+      { type: "RUN_CREATED" },
+      { type: "AGENT_STARTED" },
+      { type: "RETRIEVAL_COMPLETED", chunks: [] },
+      { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" },
+      { type: "TOOL_COMPLETED", toolCallId: "call-1", toolName: "get_service_status" },
+      { type: "TOOL_FAILED", toolCallId: "call-1", toolName: "get_service_status", failureCode: "TOOL_NOT_FOUND" },
+      { type: "REPORT_GENERATION_STARTED" },
+      { type: "REPORT_SUBMITTED" },
+      { type: "REPORT_VALIDATED" },
+      { type: "REPORT_VALIDATION_FAILED", failureCode: "REPORT_SCHEMA_INVALID" },
+      { type: "RUN_COMPLETED" },
+      { type: "RUN_FAILED", failureCode: "TOOL_NOT_FOUND", failedStage: "DIAGNOSTIC_EXECUTION" },
+    ];
+    for (const [index, payload] of payloads.entries()) {
+      expect(() => toInvestigationEventCreateInput(RUN_ID, index + 1, payload)).not.toThrow();
+    }
+  });
+
+  // The legacy read-only type must never be constructible as a fresh
+  // canonical write — InvestigationEventPayloadSchema structurally excludes
+  // it, and this is the boundary that enforces that exclusion for writers.
+  it("rejects the legacy REPORT_GENERATED type", () => {
+    expect(() => toInvestigationEventCreateInput(RUN_ID, 1, { type: "REPORT_GENERATED" })).toThrow(
       PersistenceError,
     );
   });
 
-  it("revalidates and preserves order when reading rows back", () => {
-    const rows = trace.map((payload, i) => ({ sequenceNumber: i + 1, payload }));
-    expect(fromTraceEventRows(rows)).toEqual(trace);
+  it("rejects unknown fields on an otherwise-valid payload", () => {
+    expect(() =>
+      toInvestigationEventCreateInput(RUN_ID, 1, { type: "RUN_CREATED", extra: "unexpected" }),
+    ).toThrow(PersistenceError);
+  });
+
+  it("rejects an unrecognized type", () => {
+    expect(() => toInvestigationEventCreateInput(RUN_ID, 1, { type: "NOT_A_REAL_EVENT" })).toThrow(
+      PersistenceError,
+    );
+  });
+
+  // No field on the create-input shape can carry an application-generated
+  // recordedAt or a clientRequestId — asserted structurally rather than by
+  // omission, so a future field addition would have to break this test.
+  it("produces a create input with exactly runId/sequenceNumber/eventType/payload keys", () => {
+    const input = toInvestigationEventCreateInput(RUN_ID, 1, { type: "AGENT_STARTED" });
+    expect(Object.keys(input).sort()).toEqual(["eventType", "payload", "runId", "sequenceNumber"]);
+  });
+});
+
+describe("fromInvestigationEventRows", () => {
+  it("sources recordedAt from the row's own createdAt, never a fresh clock read", () => {
+    const [record] = fromInvestigationEventRows(RUN_ID, [
+      { sequenceNumber: 1, payload: { type: "RUN_CREATED" }, createdAt: RECORDED_AT },
+    ]);
+    expect(record?.recordedAt).toBe(RECORDED_AT.toISOString());
+    expect(record?.runId).toBe(RUN_ID);
+    expect(record?.sequence).toBe(1);
+  });
+
+  it("preserves order across a multi-event canonical prefix", () => {
+    const rows = [
+      { sequenceNumber: 1, payload: { type: "RUN_CREATED" }, createdAt: RECORDED_AT },
+      { sequenceNumber: 2, payload: { type: "AGENT_STARTED" }, createdAt: RECORDED_AT },
+    ];
+    const records = fromInvestigationEventRows(RUN_ID, rows);
+    expect(records.map((r) => r.payload.type)).toEqual(["RUN_CREATED", "AGENT_STARTED"]);
+  });
+
+  it("rejects a sequence starting anywhere other than 1", () => {
+    expect(() =>
+      fromInvestigationEventRows(RUN_ID, [
+        { sequenceNumber: 2, payload: { type: "RUN_CREATED" }, createdAt: RECORDED_AT },
+      ]),
+    ).toThrow(PersistenceError);
+  });
+
+  it("rejects a gap in the sequence", () => {
+    expect(() =>
+      fromInvestigationEventRows(RUN_ID, [
+        { sequenceNumber: 1, payload: { type: "RUN_CREATED" }, createdAt: RECORDED_AT },
+        { sequenceNumber: 3, payload: { type: "AGENT_STARTED" }, createdAt: RECORDED_AT },
+      ]),
+    ).toThrow(PersistenceError);
+  });
+
+  it("rejects a duplicated sequence number", () => {
+    expect(() =>
+      fromInvestigationEventRows(RUN_ID, [
+        { sequenceNumber: 1, payload: { type: "RUN_CREATED" }, createdAt: RECORDED_AT },
+        { sequenceNumber: 1, payload: { type: "AGENT_STARTED" }, createdAt: RECORDED_AT },
+      ]),
+    ).toThrow(PersistenceError);
+  });
+
+  it("rejects an out-of-order (descending) sequence", () => {
+    expect(() =>
+      fromInvestigationEventRows(RUN_ID, [
+        { sequenceNumber: 2, payload: { type: "AGENT_STARTED" }, createdAt: RECORDED_AT },
+        { sequenceNumber: 1, payload: { type: "RUN_CREATED" }, createdAt: RECORDED_AT },
+      ]),
+    ).toThrow(PersistenceError);
+  });
+
+  it("rejects a malformed row whose payload fails schema validation", () => {
+    expect(() =>
+      fromInvestigationEventRows(RUN_ID, [
+        { sequenceNumber: 1, payload: { type: "TOOL_REQUESTED" }, createdAt: RECORDED_AT }, // missing toolCallId/toolName
+      ]),
+    ).toThrow(PersistenceError);
+  });
+});
+
+describe("fromTraceEventRows — dual read mode", () => {
+  const legacyRows = [
+    { sequenceNumber: 1, payload: { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" }, createdAt: RECORDED_AT },
+    { sequenceNumber: 2, payload: { type: "TOOL_COMPLETED", toolCallId: "call-1", toolName: "get_service_status" }, createdAt: RECORDED_AT },
+    { sequenceNumber: 3, payload: { type: "REPORT_GENERATED" }, createdAt: RECORDED_AT },
+  ];
+
+  it("historical legacy rows (no RUN_CREATED-at-1 marker) return unchanged", () => {
+    expect(fromTraceEventRows(RUN_ID, legacyRows)).toEqual([
+      { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" },
+      { type: "TOOL_COMPLETED", toolCallId: "call-1", toolName: "get_service_status" },
+      { type: "REPORT_GENERATED" },
+    ]);
+  });
+
+  it("an empty row set returns an empty trace", () => {
+    expect(fromTraceEventRows(RUN_ID, [])).toEqual([]);
+  });
+
+  it("a canonical direct no-tool success path projects REPORT_VALIDATED as REPORT_GENERATED", () => {
+    const rows = [
+      { sequenceNumber: 1, payload: { type: "RUN_CREATED" }, createdAt: RECORDED_AT },
+      { sequenceNumber: 2, payload: { type: "AGENT_STARTED" }, createdAt: RECORDED_AT },
+      { sequenceNumber: 3, payload: { type: "REPORT_SUBMITTED" }, createdAt: RECORDED_AT },
+      { sequenceNumber: 4, payload: { type: "REPORT_VALIDATED" }, createdAt: RECORDED_AT },
+      { sequenceNumber: 5, payload: { type: "RUN_COMPLETED" }, createdAt: RECORDED_AT },
+    ];
+    expect(fromTraceEventRows(RUN_ID, rows)).toEqual([{ type: "REPORT_GENERATED" }]);
+  });
+
+  it("a canonical one-tool success path projects the legacy-compatible subset, in sequence", () => {
+    const rows = [
+      { sequenceNumber: 1, payload: { type: "RUN_CREATED" }, createdAt: RECORDED_AT },
+      { sequenceNumber: 2, payload: { type: "AGENT_STARTED" }, createdAt: RECORDED_AT },
+      { sequenceNumber: 3, payload: { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" }, createdAt: RECORDED_AT },
+      { sequenceNumber: 4, payload: { type: "TOOL_COMPLETED", toolCallId: "call-1", toolName: "get_service_status" }, createdAt: RECORDED_AT },
+      { sequenceNumber: 5, payload: { type: "REPORT_GENERATION_STARTED" }, createdAt: RECORDED_AT },
+      { sequenceNumber: 6, payload: { type: "REPORT_SUBMITTED" }, createdAt: RECORDED_AT },
+      { sequenceNumber: 7, payload: { type: "REPORT_VALIDATED" }, createdAt: RECORDED_AT },
+      { sequenceNumber: 8, payload: { type: "RUN_COMPLETED" }, createdAt: RECORDED_AT },
+    ];
+    expect(fromTraceEventRows(RUN_ID, rows)).toEqual([
+      { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" },
+      { type: "TOOL_COMPLETED", toolCallId: "call-1", toolName: "get_service_status" },
+      { type: "REPORT_GENERATED" },
+    ]);
+  });
+
+  // The one deliberate content divergence from pre-#37 behavior
+  // (docs/reviews/21-...md §7): canonical persistence records TOOL_REQUESTED
+  // before registry lookup/input validation, so the projected legacy trace
+  // for these two failure codes now truthfully includes it — while
+  // TOOL_FAILED itself stays hidden (projects to null), matching
+  // TraceTimeline's existing exhaustive switch.
+  it.each(["TOOL_NOT_FOUND", "TOOL_INPUT_INVALID"] as const)(
+    "a canonical %s stream projects TOOL_REQUESTED but not TOOL_FAILED",
+    (failureCode) => {
+      const rows = [
+        { sequenceNumber: 1, payload: { type: "RUN_CREATED" }, createdAt: RECORDED_AT },
+        { sequenceNumber: 2, payload: { type: "AGENT_STARTED" }, createdAt: RECORDED_AT },
+        { sequenceNumber: 3, payload: { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "unknown_tool" }, createdAt: RECORDED_AT },
+        { sequenceNumber: 4, payload: { type: "TOOL_FAILED", toolCallId: "call-1", toolName: "unknown_tool", failureCode }, createdAt: RECORDED_AT },
+        { sequenceNumber: 5, payload: { type: "RUN_FAILED", failureCode, failedStage: "DIAGNOSTIC_EXECUTION" }, createdAt: RECORDED_AT },
+      ];
+      const projected = fromTraceEventRows(RUN_ID, rows);
+      expect(projected).toEqual([{ type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "unknown_tool" }]);
+      expect(projected.some((event) => (event as { type: string }).type === "TOOL_FAILED")).toBe(false);
+    },
+  );
+
+  it("every projected output remains a valid AgentTraceEvent[] (no lifecycle-only event leaks through)", () => {
+    const rows = [
+      { sequenceNumber: 1, payload: { type: "RUN_CREATED" }, createdAt: RECORDED_AT },
+      { sequenceNumber: 2, payload: { type: "AGENT_STARTED" }, createdAt: RECORDED_AT },
+      { sequenceNumber: 3, payload: { type: "REPORT_SUBMITTED" }, createdAt: RECORDED_AT },
+      { sequenceNumber: 4, payload: { type: "REPORT_VALIDATED" }, createdAt: RECORDED_AT },
+      { sequenceNumber: 5, payload: { type: "RUN_COMPLETED" }, createdAt: RECORDED_AT },
+    ];
+    const projected = fromTraceEventRows(RUN_ID, rows);
+    const allowedTypes = new Set(["RETRIEVAL_COMPLETED", "TOOL_REQUESTED", "TOOL_COMPLETED", "REPORT_GENERATED"]);
+    for (const event of projected) {
+      expect(allowedTypes.has(event.type)).toBe(true);
+    }
+  });
+
+  // Raw sequence contiguity is checked on the STORED rows before any
+  // projection runs, so a corrupt canonical stream cannot be masked by
+  // lifecycle-only events happening to be the ones missing.
+  it("checks raw canonical sequence contiguity before dropping any null-projected events", () => {
+    const rows = [
+      { sequenceNumber: 1, payload: { type: "RUN_CREATED" }, createdAt: RECORDED_AT },
+      // gap at 2 — AGENT_STARTED (a lifecycle-only event that projects to
+      // null anyway) is simply missing; contiguity must still be enforced.
+      { sequenceNumber: 3, payload: { type: "REPORT_SUBMITTED" }, createdAt: RECORDED_AT },
+    ];
+    expect(() => fromTraceEventRows(RUN_ID, rows)).toThrow(PersistenceError);
   });
 });
 
