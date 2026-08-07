@@ -2,7 +2,8 @@ import { AgentOrchestratorErrorCodeSchema } from "@opspilot/contracts";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import type { PrismaClient, PrismaClientHandle } from "./client";
-import { createJob, finalizeFailed, startRun } from "./repositories/agent-run-repository";
+import { createJob, finalizeFailed, getAgentRun, startRun } from "./repositories/agent-run-repository";
+import { appendFailurePrefix } from "./test/canonical-stream";
 import { createTestPrismaClient, truncateAllTables } from "./test/test-db";
 
 // The 13-member InvestigationEventRecordPayloadSchema vocabulary
@@ -87,12 +88,23 @@ const EXPECTED_CHECK_CONSTRAINT_NAMES = [
 let handle: PrismaClientHandle;
 let prisma: PrismaClient;
 
+/**
+ * A RUNNING run with an EMPTY event ledger.
+ *
+ * `startRun` now writes RUN_CREATED at sequence 1 (issue #37 Phase B), but
+ * these tests exercise raw database constraints rather than lifecycle
+ * behavior — they insert their own rows by hand, starting at sequence 1, and
+ * one of them deliberately inserts a RUN_CREATED of its own. Clearing the
+ * auto-written row keeps each test in full control of the ledger it is
+ * asserting about, instead of having to work around a fixture row.
+ */
 async function createRunningRunId(): Promise<string> {
   const job = await createJob(prisma, {
     ticketId: `TKT-canonical-${Math.random().toString(36).slice(2)}`,
     summary: "Canonical event-type CHECK constraint fixture run",
   });
   const started = await startRun(prisma, job.id, "FAKE", null);
+  await prisma.$executeRaw`DELETE FROM agent_trace_events WHERE run_id = ${started.run.id}::uuid`;
   return started.run.id;
 }
 
@@ -171,12 +183,11 @@ describe("CHECK constraint value lists match their TypeScript enums", () => {
       });
       const started = await startRun(prisma, job.id, "LIVE", "claude-sonnet-5");
 
-      const finalized = await finalizeFailed(
-        prisma,
-        started.run.id,
-        [{ type: "REPORT_GENERATED" }],
-        code,
-      );
+      // Each code needs the canonical prefix the runtime would really have
+      // produced before failing that way — terminal finalization now
+      // reducer-validates the whole stream before it will write the status.
+      const failedStage = await appendFailurePrefix(prisma, started.run.id, code);
+      const finalized = await finalizeFailed(prisma, started.run.id, code, failedStage);
       expect(finalized.status).toBe("FAILED");
 
       const row = await prisma.agentRun.findUniqueOrThrow({ where: { id: started.run.id } });
@@ -355,28 +366,31 @@ describe("agent_trace_events_run_id_canonical_event_type_key — all-12 partial 
   });
 });
 
-describe("historical legacy-compatible rows remain valid after the widening migration", () => {
-  it("finalizeFailed still writes and reads back an ordinary 4-type legacy trace", async () => {
-    const job = await createJob(prisma, { ticketId: "TKT-legacy-post-migration", summary: "Legacy write path" });
+describe("historical legacy rows remain readable after the switchover", () => {
+  // Pre-#37 runs were written by the old persist-after batch and carry NO
+  // RUN_CREATED marker. They must keep reading back verbatim through the
+  // legacy branch of fromTraceEventRows — the canonical projection must not
+  // touch them.
+  it("a raw historical 4-type legacy trace still reads back unchanged", async () => {
+    const job = await createJob(prisma, { ticketId: "TKT-legacy-historical", summary: "Legacy read path" });
     const started = await startRun(prisma, job.id, "FAKE", null);
 
-    const finalized = await finalizeFailed(
-      prisma,
-      started.run.id,
-      [
-        { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" },
-        { type: "TOOL_COMPLETED", toolCallId: "call-1", toolName: "get_service_status" },
-        { type: "REPORT_GENERATED" },
-      ],
-      "TOOL_EXECUTION_FAILED",
-    );
+    // Simulate a pre-#37 row set exactly: no RUN_CREATED, contiguous from 1.
+    await prisma.$executeRaw`DELETE FROM agent_trace_events WHERE run_id = ${started.run.id}::uuid`;
+    await prisma.$executeRaw`INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
+      VALUES (${started.run.id}::uuid, 1, 'TOOL_REQUESTED',
+              '{"type":"TOOL_REQUESTED","toolCallId":"call-1","toolName":"get_service_status"}'::jsonb)`;
+    await prisma.$executeRaw`INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
+      VALUES (${started.run.id}::uuid, 2, 'TOOL_COMPLETED',
+              '{"type":"TOOL_COMPLETED","toolCallId":"call-1","toolName":"get_service_status"}'::jsonb)`;
+    await prisma.$executeRaw`INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
+      VALUES (${started.run.id}::uuid, 3, 'REPORT_GENERATED', '{"type":"REPORT_GENERATED"}'::jsonb)`;
 
-    expect(finalized.status).toBe("FAILED");
-
-    const rows = await prisma.agentTraceEvent.findMany({
-      where: { runId: started.run.id },
-      orderBy: { sequenceNumber: "asc" },
-    });
-    expect(rows.map((r) => r.eventType)).toEqual(["TOOL_REQUESTED", "TOOL_COMPLETED", "REPORT_GENERATED"]);
+    const persisted = await getAgentRun(prisma, started.run.id);
+    expect(persisted.trace).toEqual([
+      { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" },
+      { type: "TOOL_COMPLETED", toolCallId: "call-1", toolName: "get_service_status" },
+      { type: "REPORT_GENERATED" },
+    ]);
   });
 });

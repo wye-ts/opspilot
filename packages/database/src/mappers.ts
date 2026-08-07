@@ -34,8 +34,6 @@ import {
   validateOrThrow,
 } from "./validation";
 
-const AgentTraceEventArraySchema = AgentTraceEventSchema.array();
-
 // The WRITE boundary: enforces the trimmed 15–2000 summary / ≤64 ticketId
 // bounds and returns the NORMALIZED value, which is what actually gets stored.
 export function toTicketContextWrite(value: unknown): {
@@ -104,26 +102,6 @@ export function fromAgentRunRow(row: {
     // the answer that cannot mislead.
     possibleUnobservedCost: row.possibleUnobservedCost ?? true,
   };
-}
-
-export interface TraceEventCreateInput {
-  runId: string;
-  sequenceNumber: number;
-  eventType: string;
-  payload: AgentTraceEvent;
-}
-
-export function toTraceEventCreateInputs(
-  trace: readonly AgentTraceEvent[],
-  runId: string,
-): TraceEventCreateInput[] {
-  const validated = validateOrThrow(AgentTraceEventArraySchema, trace, "Trace events");
-  return validated.map((event, index) => ({
-    runId,
-    sequenceNumber: index + 1,
-    eventType: event.type,
-    payload: event,
-  }));
 }
 
 /**

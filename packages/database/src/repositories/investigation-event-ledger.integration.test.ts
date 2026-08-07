@@ -7,9 +7,21 @@ import { createTestPrismaClient, truncateAllTables } from "../test/test-db";
 import {
   appendInvestigationEvent,
   createJob,
+  finalizeCompleted,
   getInvestigationEventRecords,
   startRun,
 } from "./agent-run-repository";
+
+const VALID_REPORT = {
+  category: "SERVICE_DEGRADATION",
+  summary: "Summary",
+  rootCause: "Root cause",
+  customerImpact: "Impact",
+  recommendedResolution: "Resolution",
+  confidence: 0.8,
+  evidence: [{ evidenceId: "chunk-1", sourceType: "RAG_CHUNK", finding: "Finding" }],
+  suggestedActions: [],
+};
 
 let handle: PrismaClientHandle;
 let prisma: PrismaClient;
@@ -28,11 +40,14 @@ afterEach(async () => {
 });
 
 /**
- * Phase A fixture: a fresh RUNNING run with a valid one-event RUN_CREATED
- * canonical prefix, established via appendInvestigationEvent itself (not
- * raw SQL) — RUN_CREATED is not a terminal type, so the generic append
- * handles it, and this is the only way to establish that prefix in Phase A
- * since startRun does not yet write it (that is Phase B).
+ * A fresh RUNNING run carrying its one-event RUN_CREATED canonical prefix.
+ *
+ * As of Phase B, `startRun` writes RUN_CREATED atomically with the run row,
+ * so the explicit append below is an EXACT REPLAY rather than a first write —
+ * it returns the original sequence 1 and inserts nothing. Keeping it is
+ * deliberate: it exercises the replay path on every fixture setup in this
+ * file, and it keeps the fixture's intent ("a run that has RUN_CREATED")
+ * stated rather than implied.
  */
 async function createRunningRunWithRunCreated(): Promise<string> {
   const job = await createJob(prisma, {
@@ -40,7 +55,10 @@ async function createRunningRunWithRunCreated(): Promise<string> {
     summary: "Investigation event ledger fixture run",
   });
   const started = await startRun(prisma, job.id, "FAKE", null);
-  await appendInvestigationEvent(prisma, started.run.id, { type: "RUN_CREATED" });
+  const replayed = await appendInvestigationEvent(prisma, started.run.id, { type: "RUN_CREATED" });
+  if (replayed.sequence !== 1) {
+    throw new Error(`expected RUN_CREATED at sequence 1, got ${replayed.sequence}`);
+  }
   return started.run.id;
 }
 
@@ -75,8 +93,9 @@ describe("appendInvestigationEvent — not found / terminal guards", () => {
 
   it("rejects an append to a run that is no longer RUNNING", async () => {
     const runId = await createRunningRunWithRunCreated();
-    // Legitimate test setup only — Phase A does not touch finalizeTerminal,
-    // so a terminal row is established directly for this guard test.
+    // Raw setup rather than finalizeCompleted: this guard is about appending
+    // to an ALREADY-terminal run, and going through the real finalizer would
+    // require building a full valid stream first, which is a different test.
     await prisma.$executeRaw`
       UPDATE agent_runs
       SET status = 'COMPLETED', finished_at = now(), report = '{}'::jsonb
@@ -423,6 +442,77 @@ describe("getInvestigationEventRecords", () => {
     expect(records.map((r) => r.sequence)).toEqual([1, 2, 3]);
     expect(records.every((r) => r.runId === runId)).toBe(true);
     expect(records.every((r) => typeof r.recordedAt === "string")).toBe(true);
+
+    const run = await prisma.agentRun.findUniqueOrThrow({ where: { id: runId } });
+    expect(run.status).toBe("RUNNING");
+  });
+});
+
+/**
+ * Issue #37 Phase B — the persist-after batch writer is gone.
+ *
+ * These assertions pin down the switchover itself: finalization no longer
+ * accepts or writes a trace batch, and every event that reaches the ledger
+ * arrives through the incremental path.
+ */
+describe("the old persist-after batch behavior is no longer used", () => {
+  it("finalizeCompleted writes exactly ONE new row (the terminal event), not a batch", async () => {
+    const runId = await createRunningRunWithRunCreated();
+    await appendInvestigationEvent(prisma, runId, { type: "AGENT_STARTED" });
+    await appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED" });
+    await appendInvestigationEvent(prisma, runId, { type: "REPORT_VALIDATED" });
+    const before = await traceEventCount(runId);
+
+    await finalizeCompleted(prisma, runId, VALID_REPORT);
+
+    expect(await traceEventCount(runId)).toBe(before + 1);
+    const terminal = await prisma.agentTraceEvent.findFirstOrThrow({
+      where: { runId, eventType: "RUN_COMPLETED" },
+    });
+    expect(terminal.sequenceNumber).toBe(before + 1);
+  });
+
+  it("every stored event is contiguous and singly-written across a full one-tool run", async () => {
+    const runId = await createRunningRunWithRunCreated();
+    await appendInvestigationEvent(prisma, runId, { type: "AGENT_STARTED" });
+    await appendInvestigationEvent(prisma, runId, {
+      type: "TOOL_REQUESTED",
+      toolCallId: "call-1",
+      toolName: "get_service_status",
+    });
+    await appendInvestigationEvent(prisma, runId, {
+      type: "TOOL_COMPLETED",
+      toolCallId: "call-1",
+      toolName: "get_service_status",
+    });
+    await appendInvestigationEvent(prisma, runId, { type: "REPORT_GENERATION_STARTED" });
+    await appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED" });
+    await appendInvestigationEvent(prisma, runId, { type: "REPORT_VALIDATED" });
+    await finalizeCompleted(prisma, runId, VALID_REPORT);
+
+    const records = await getInvestigationEventRecords(prisma, runId);
+    expect(records.map((r) => r.payload.type)).toEqual([
+      "RUN_CREATED",
+      "AGENT_STARTED",
+      "TOOL_REQUESTED",
+      "TOOL_COMPLETED",
+      "REPORT_GENERATION_STARTED",
+      "REPORT_SUBMITTED",
+      "REPORT_VALIDATED",
+      "RUN_COMPLETED",
+    ]);
+    expect(records.map((r) => r.sequence)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    // Distinct per-event recording times are the whole point of incremental
+    // persistence — the old batch gave every row one coarse value.
+    expect(new Set(records.map((r) => r.recordedAt)).size).toBeGreaterThan(1);
+  });
+
+  it("getInvestigationEventRecords still returns a mid-flight prefix after the switchover", async () => {
+    const runId = await createRunningRunWithRunCreated();
+    await appendInvestigationEvent(prisma, runId, { type: "AGENT_STARTED" });
+
+    const records = await getInvestigationEventRecords(prisma, runId);
+    expect(records.map((r) => r.payload.type)).toEqual(["RUN_CREATED", "AGENT_STARTED"]);
 
     const run = await prisma.agentRun.findUniqueOrThrow({ where: { id: runId } });
     expect(run.status).toBe("RUNNING");

@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createPrismaClient, type PrismaClient, type PrismaClientHandle } from "../client";
 import { LiveRunAdmissionError } from "../live-run-errors";
 import {
+  appendInvestigationEvent,
   createJob,
   finalizeCompleted,
   finalizeFailed,
@@ -13,6 +14,7 @@ import {
   startLiveRunWithAttemptLimit,
   startRun,
 } from "./agent-run-repository";
+import { appendDirectSuccessPrefix } from "../test/canonical-stream";
 import { createTestPrismaClient, truncateAllTables } from "../test/test-db";
 import type {
   LiveRunBudgetReservation,
@@ -245,7 +247,8 @@ describe("the ambiguous failures this exists for", () => {
     // outcome finalized, budget reconciled — and only the HTTP response was
     // lost. The client cannot tell this from a pre-execution refusal.
     const first = await startLiveRunWithAttemptLimit(prisma, params(job.id, key));
-    await finalizeCompleted(prisma, first.run.id, [{ type: "REPORT_GENERATED" }], VALID_REPORT, usage());
+    await appendDirectSuccessPrefix(prisma, first.run.id);
+    await finalizeCompleted(prisma, first.run.id, VALID_REPORT, usage());
     await reconcileLiveRunBudget(prisma, reservationOf(first), usage());
 
     const replay = await startLiveRunWithAttemptLimit(prisma, params(job.id, key));
@@ -514,9 +517,11 @@ describe("replayLiveRun — the read-only lookup", () => {
       const key = randomUUID();
       const created = await startLiveRunWithAttemptLimit(prisma, params(job.id, key));
       if (status === "COMPLETED") {
-        await finalizeCompleted(prisma, created.run.id, [{ type: "REPORT_GENERATED" }], VALID_REPORT);
+        await appendDirectSuccessPrefix(prisma, created.run.id);
+        await finalizeCompleted(prisma, created.run.id, VALID_REPORT);
       } else if (status === "FAILED") {
-        await finalizeFailed(prisma, created.run.id, [], "PROVIDER_TIMEOUT");
+        await appendInvestigationEvent(prisma, created.run.id, { type: "AGENT_STARTED" });
+        await finalizeFailed(prisma, created.run.id, "PROVIDER_TIMEOUT", "AGENT_ANALYSIS");
       }
 
       const found = await replayLiveRun(prisma, { jobId: job.id, clientRequestId: key });

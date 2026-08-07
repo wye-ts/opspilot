@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Document | Investigation Stage/Event Contract — Implementation Record |
-| Status | Contract layer implemented in `packages/contracts` only. Not consumed by any runtime, API, or frontend code. Not CI-verified, not merged, not deployed. |
+| Status | Contract layer implemented in `packages/contracts`. **Consumed in production as of issue #37**: the repository persists canonical events incrementally and reducer-validates every write, and the orchestrator emits them at the real transition points. Not consumed by frontend code (that is #38). |
 | Project | OpsPilot |
 | Purpose | Define the canonical, provider-neutral execution-stage and event contract a live Timeline needs, shared by a future incremental persistence layer (#37) and polling/resume layer (#38), so neither invents its own shape |
 | Related documents | `docs/04-agent-design.md` §16 (an aspirational, unimplemented queue/worker design this contract deliberately does not adopt — see §1), `docs/11-agent-run-persistence.md` (the implemented batch-at-completion persistence this contract's legacy layer stays compatible with), `docs/14-web-ui.md` (the frontend-simulated Timeline, which has **not** adopted this contract) |
@@ -230,9 +230,9 @@ declares `legalStages`, `requiresSpecificFact`, `allowedBeforeAgentStarted`, and
 explicit policy is written for it — a `Set`-based classification would have silently treated an unknown
 future code as unconstrained.
 
-**Mandatory #37 obligation — early tool failures.** The legacy runtime detects `TOOL_NOT_FOUND` and
-`TOOL_INPUT_INVALID` *before* its old `TOOL_REQUESTED` trace push. For the canonical stream, #37 must
-move the request emission earlier:
+**Mandatory #37 obligation — early tool failures (SATISFIED in #37).** The legacy runtime detects `TOOL_NOT_FOUND` and
+`TOOL_INPUT_INVALID` *before* its old `TOOL_REQUESTED` trace push. For the canonical stream, #37 moved
+the canonical request emission earlier (the legacy push stayed where it was — see §9):
 
 ```text
 provider returns a tool request
@@ -321,16 +321,57 @@ Minimum selection rule for #38 (no API implemented in #36): during one submissio
 
 ---
 
-## 9. #37 persistence handoff — future work, not implemented
+## 9. #37 persistence handoff — IMPLEMENTED
 
-- An incremental append repository method replacing the single end-of-run `createMany`, preserving terminal-event/run-status atomicity.
-- Orchestrator emission: `AGENT_STARTED` at orchestrator entry; `REPORT_GENERATION_STARTED` immediately before the finalization-phase provider call (`phase === "FINALIZATION"`, already computed before `provider.runAgentTurn(...)`); `RUN_CREATED`/`RUN_COMPLETED`/`RUN_FAILED` synthesized one layer up in `agent-run-service.ts`, which alone sees the creation and finalization transactions.
-- Sequence allocation and locking strategy for incremental writes.
-- The database-mapper projection described in §7.
+Every item below shipped in issue #37. See
+`docs/reviews/21-issue-37-incremental-event-persistence-plan.md` for the full
+design and `docs/11-agent-run-persistence.md` §4/§5/§7/§10 for the persistence
+record.
 
-**#37 must emit streams conforming to these rules.** In particular: `RUN_COMPLETED` requires the full successful lifecycle; a `RUN_FAILED` following a specific failure must repeat its stage and code exactly; a `RUN_FAILED` without one must name the stage that was actually active (or use the single pre-agent `AGENT_ANALYSIS` exception); phases must be emitted forward-only with at most one stage active; retrieval must be emitted at most once and only while analysis is active; and any tool path must emit `REPORT_GENERATION_STARTED` before `REPORT_SUBMITTED`. These are #36 contract rules only — no runtime, API, or frontend integration exists, and no CI run, merge, or deployment is claimed.
+- **DONE** — An incremental append repository method (`appendInvestigationEvent`)
+  replacing the single end-of-run `createMany`, preserving terminal-event/
+  run-status atomicity. `toTraceEventCreateInputs` and the `trace` parameter on
+  `finalizeCompleted`/`finalizeFailed` are gone.
+- **DONE** — Orchestrator emission: `AGENT_STARTED` immediately after
+  `validateOrchestratorParams` succeeds (not at function entry — see below);
+  `REPORT_GENERATION_STARTED` immediately before the finalization-phase provider
+  call; `RUN_CREATED` written by the run-creation transaction and
+  `RUN_COMPLETED`/`RUN_FAILED` by the terminal transaction, both in
+  `packages/database` rather than in `agent-run-service.ts`, because only the
+  transaction that owns the run row can write them atomically with it.
+- **DONE** — Sequence allocation and locking: `MAX(sequence_number) + 1` under
+  the `agent_runs` row lock the transaction already holds.
+- **DONE** — The database-mapper projection described in §7, wired into
+  `fromTraceEventRows`.
 
----
+### Two refinements this section's original wording did not anticipate
+
+**`AGENT_STARTED` is emitted after `validateOrchestratorParams`, not at
+orchestrator entry.** That check is the only failure the runtime can produce
+before anything is traced, and the pre-agent exception below requires the
+stream to be exactly `RUN_CREATED → RUN_FAILED`. Emitting `AGENT_STARTED` first
+would not fail loudly — it would quietly make that hand-written exception
+unreachable.
+
+**The orchestrator keeps TWO independent output channels**, not one. Canonical
+emission (`emitLifecycleEvent`) does not replace the legacy in-memory
+`trace.push(...)` calls: `runAgentOrchestrator` has non-persistence callers
+(evals, demos, unit tests) that read the returned `AgentTraceEvent[]` and never
+supply an emitter. Their timing genuinely differs — canonical `TOOL_REQUESTED`
+is emitted before registry lookup, while the legacy push stays at its old
+post-validation point — so the two are kept separate rather than derived from
+one another. For any event with both channels the canonical append happens
+first and the legacy push second, so a failed canonical write never leaves the
+in-memory trace claiming a transition whose durable record does not exist.
+
+The visible consequence is documented in `docs/12-agent-run-api.md`: for
+`TOOL_NOT_FOUND`/`TOOL_INPUT_INVALID` the API's projected trace now contains a
+`TOOL_REQUESTED` that the pre-#37 response never carried, while the direct
+orchestrator return value for those same paths is unchanged.
+
+**The mandatory early-tool-failure obligation from §5 is satisfied**: the
+canonical ledger records `TOOL_REQUESTED → TOOL_FAILED` for both early tool
+failure codes.
 
 ## 10. #38 polling/URL-resume handoff — future work, not implemented
 

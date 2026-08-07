@@ -3,12 +3,12 @@
 | Field | Value |
 |---|---|
 | Document | Engineering Challenges and Design Decisions |
-| Version | 1.12 |
+| Version | 1.13 |
 | Status | Living Document |
 | Project | OpsPilot |
 | Purpose | Capture difficult engineering problems, design decisions, tradeoffs, and interview-ready explanations |
 | Related Documents | `docs/03-technical-design.md`, `docs/04-agent-design.md`, `docs/reviews/03-technical-design-feasibility-review.md`, `docs/reviews/03-technical-design-review-decisions.md`, `docs/reviews/04-agent-design-claude-spike-results.md`, `docs/12-agent-run-api.md`, `docs/13-approval-workflow.md`, `docs/08-cicd-deployment.md`, `docs/14-web-ui.md` |
-| Revision note | v1.12 adds Challenge 13 from the investigation stage/event contract milestone (issue #36, `docs/16-investigation-event-contract.md`): a shared progress reducer that refuses to repair. An independent review of the first implementation found it would accept `RUN_CREATED → RUN_COMPLETED` as a successful run by silently closing and omitting the stages nobody had reported — the entry documents why "derive progress from events" quietly becomes "invent progress from gaps" unless completion is defined by explicit required facts, why the failure path must be immediate and exactly consistent between a stage fact and the run-level fact, and why a free-form `failureMessage` was removed from a browser-readable event rather than merely length-capped. v1.11 adds Challenge 10 from the shared-provider-package milestone (PR 6B1, `docs/12-agent-run-api.md` §7.1): two interop defects that type-checked cleanly and passed the affected package's own unit tests, and were caught only by artefacts that exercise the *built* output and the *real* event sequence — a CommonJS/ESM default-import inversion that appears when a package consumed by an ESM app is itself compiled to CommonJS, and a client-disconnect design built on `request.on("close")` that would have aborted every healthy live run before its first provider call. Both are now enforced by executable rules rather than convention. v1.10 adds Challenge 8 from the approval-workflow UX milestone (PR 5C, `docs/14-web-ui.md` §8): a completed agent run and a completed human approval decision were visually indistinguishable, because the sole decision control sat below the entire report in a 50/50-width column — a run-detail layout problem, not a persistence or API problem, distinguished here from Challenge 1's data-consistency scope precisely because nothing about the backend contract changed to fix it. v1.9 adds Challenges 5–7 from the production deployment milestone (PR 5B, `docs/08-cicd-deployment.md`): Challenge 5 documents the single-origin SPA-fallback design and a repository-verified correction to the design plan's stated claim about how far NestJS's catch-all route actually reaches under this exact NestJS 11 / Express 5 / path-to-regexp v8 combination; Challenge 6 documents two implementation-time bugs found only by running the real built container — a JavaScript default-parameter closure trap in web-dist path resolution, and a Prisma 7.9 CLI validation quirk around an unconditionally-declared `shadowDatabaseUrl` — neither caught by the existing source-level tests, both discovered by running the built image; Challenge 7 documents why the migration startup retry belongs in `docker/entrypoint.sh` rather than `PrismaLifecycleService`, and why an earlier draft's placement there would have been unreachable dead code. v1.8 adds a pointer, at the end of Challenge 1's "Idempotent State Changes" subsection, to `docs/13-approval-workflow.md` (Milestone 6C) — the actual, much simpler approval-workflow design now on record. It is **not** an implementation of Challenge 1's aspirational `pending_actions`/`PendingAction`/`APPROVAL_CREATED` concept (which remains exactly as described below: planned, unimplemented design tied to the future `AgentJob`-as-queue/`AgentStep` architecture); it is a standalone, deliberately smaller mechanism built directly on the actually-shipped `agent_jobs`/`agent_runs`/`agent_trace_events` schema (`docs/11-agent-run-persistence.md`), following the same "deliberately smaller precursor, not a partial implementation" relationship `docs/11` §9 already draws between that shipped persistence slice and this same aspirational future design — see `docs/13-approval-workflow.md` §2 for the exact reasoning. v1.2 aligns Challenge 1 with `docs/03-technical-design.md` v1.3: `AgentJob` now includes `CANCELLED`; the maintenance sweep sets `AgentRun.completedAt`; the corrected write-safety design is presented as two distinct repository transaction patterns (`withExecutionOwnership`, `withLockedRunState`) sharing one global lock order (`AgentJob` → `AgentRun` → child rows), not a single "ownership-fenced" pattern; and language implying the design has already been implemented or shipped has been replaced with language accurate to the project's current (pre-implementation) stage. v1.1's PostgreSQL-as-system-of-record-and-queue decision (D1, D2) and the corrected write-safety mechanism (D12) remain unchanged in substance. This entry is further updated within v1.2 to document concurrency-safe `AgentStep` sequence allocation (`AgentRun.nextStepSequence`, the shared `appendAgentStep(...)` helper, and why `SELECT MAX(sequence) + 1` is unsafe) and the `completeAgentRunWithReport` invariant that every `PendingAction` created during finalization has exactly one matching `APPROVAL_CREATED` trace event, created in the same transaction — still describing planned design, not implemented behavior. v1.3 adds Challenge 2, documenting the minimal RAG vertical slice's evidence-grounding and retriever-isolation design — unlike Challenge 1, this describes code that has actually been implemented and unit-tested in this revision, though the manual live spike against a real embedding provider and live Claude has not yet been run. v1.4 corrects that last clause: the manual live spike has now been run. Both the baseline-RAG scenario and the isolated injection-probe scenario passed against a real Voyage embedding provider and a real Claude model, with repeated rate limiting observed (and worked around via a scenario selector) but no RAG-correctness or evidence-grounding failure in any attempt — see `docs/05-rag-design.md` and `docs/reviews/05-rag-design-spike-results.md` for the full design record and measured results. This does not change any of Challenge 2's design, validation, or testing content below, which described planned/already-implemented behavior accurately; it only updates the one clause that described the live spike as not yet run. v1.5 adds Challenge 3, documenting the implemented Agent Run / Trace Persistence milestone (`packages/database`) — a deliberately smaller, already-built precursor to Challenge 1's full queue-claiming design, described in full in `docs/11-agent-run-persistence.md`. v1.6 adds Challenge 4, documenting a real implementation-time discovery in the Agent Run API milestone (`apps/api`, `docs/12-agent-run-api.md`): `nest build`/`nest start --watch` are architecturally incompatible with this monorepo's pinned `typescript@^7.0.2` (a native rewrite whose public npm export no longer exposes the classic TypeScript Compiler API `@nestjs/cli` depends on internally), resolved by bypassing the Nest CLI's build wrapper in favor of the same plain-`tsc` pattern already used successfully by every other package in this monorepo, rather than downgrading TypeScript. v1.7 revises Challenge 4's Decision/Tradeoffs/Implementation Notes at a focused pre-commit review pass: `@nestjs/cli`/`@nestjs/schematics` and `apps/api/nest-cli.json`, originally kept as an unused "possible future use" placeholder, are now removed entirely as dead configuration/dependencies with no actual justification to keep; `apps/api`'s `build` script now cleans stale `dist/` output before every build, and `start:dev` is now a reliable `pnpm run build && pnpm run start` (no automatic reload — deferred, not silently dropped) rather than the previously untested concurrent `tsc --watch`/`node --watch` pair. |
+| Revision note | v1.13 adds Challenge 14 from the incremental investigation event persistence milestone (issue #37, `docs/reviews/21-issue-37-incremental-event-persistence-plan.md`): switching a persist-after runtime to incremental canonical writes without ever shipping a half-converted production path, why the reducer had to run inside the write transaction rather than only in tests, and why the orchestrator keeps two independent output channels instead of letting canonical emission replace the legacy in-memory trace. v1.12 adds Challenge 13 from the investigation stage/event contract milestone (issue #36, `docs/16-investigation-event-contract.md`): a shared progress reducer that refuses to repair. An independent review of the first implementation found it would accept `RUN_CREATED → RUN_COMPLETED` as a successful run by silently closing and omitting the stages nobody had reported — the entry documents why "derive progress from events" quietly becomes "invent progress from gaps" unless completion is defined by explicit required facts, why the failure path must be immediate and exactly consistent between a stage fact and the run-level fact, and why a free-form `failureMessage` was removed from a browser-readable event rather than merely length-capped. v1.11 adds Challenge 10 from the shared-provider-package milestone (PR 6B1, `docs/12-agent-run-api.md` §7.1): two interop defects that type-checked cleanly and passed the affected package's own unit tests, and were caught only by artefacts that exercise the *built* output and the *real* event sequence — a CommonJS/ESM default-import inversion that appears when a package consumed by an ESM app is itself compiled to CommonJS, and a client-disconnect design built on `request.on("close")` that would have aborted every healthy live run before its first provider call. Both are now enforced by executable rules rather than convention. v1.10 adds Challenge 8 from the approval-workflow UX milestone (PR 5C, `docs/14-web-ui.md` §8): a completed agent run and a completed human approval decision were visually indistinguishable, because the sole decision control sat below the entire report in a 50/50-width column — a run-detail layout problem, not a persistence or API problem, distinguished here from Challenge 1's data-consistency scope precisely because nothing about the backend contract changed to fix it. v1.9 adds Challenges 5–7 from the production deployment milestone (PR 5B, `docs/08-cicd-deployment.md`): Challenge 5 documents the single-origin SPA-fallback design and a repository-verified correction to the design plan's stated claim about how far NestJS's catch-all route actually reaches under this exact NestJS 11 / Express 5 / path-to-regexp v8 combination; Challenge 6 documents two implementation-time bugs found only by running the real built container — a JavaScript default-parameter closure trap in web-dist path resolution, and a Prisma 7.9 CLI validation quirk around an unconditionally-declared `shadowDatabaseUrl` — neither caught by the existing source-level tests, both discovered by running the built image; Challenge 7 documents why the migration startup retry belongs in `docker/entrypoint.sh` rather than `PrismaLifecycleService`, and why an earlier draft's placement there would have been unreachable dead code. v1.8 adds a pointer, at the end of Challenge 1's "Idempotent State Changes" subsection, to `docs/13-approval-workflow.md` (Milestone 6C) — the actual, much simpler approval-workflow design now on record. It is **not** an implementation of Challenge 1's aspirational `pending_actions`/`PendingAction`/`APPROVAL_CREATED` concept (which remains exactly as described below: planned, unimplemented design tied to the future `AgentJob`-as-queue/`AgentStep` architecture); it is a standalone, deliberately smaller mechanism built directly on the actually-shipped `agent_jobs`/`agent_runs`/`agent_trace_events` schema (`docs/11-agent-run-persistence.md`), following the same "deliberately smaller precursor, not a partial implementation" relationship `docs/11` §9 already draws between that shipped persistence slice and this same aspirational future design — see `docs/13-approval-workflow.md` §2 for the exact reasoning. v1.2 aligns Challenge 1 with `docs/03-technical-design.md` v1.3: `AgentJob` now includes `CANCELLED`; the maintenance sweep sets `AgentRun.completedAt`; the corrected write-safety design is presented as two distinct repository transaction patterns (`withExecutionOwnership`, `withLockedRunState`) sharing one global lock order (`AgentJob` → `AgentRun` → child rows), not a single "ownership-fenced" pattern; and language implying the design has already been implemented or shipped has been replaced with language accurate to the project's current (pre-implementation) stage. v1.1's PostgreSQL-as-system-of-record-and-queue decision (D1, D2) and the corrected write-safety mechanism (D12) remain unchanged in substance. This entry is further updated within v1.2 to document concurrency-safe `AgentStep` sequence allocation (`AgentRun.nextStepSequence`, the shared `appendAgentStep(...)` helper, and why `SELECT MAX(sequence) + 1` is unsafe) and the `completeAgentRunWithReport` invariant that every `PendingAction` created during finalization has exactly one matching `APPROVAL_CREATED` trace event, created in the same transaction — still describing planned design, not implemented behavior. v1.3 adds Challenge 2, documenting the minimal RAG vertical slice's evidence-grounding and retriever-isolation design — unlike Challenge 1, this describes code that has actually been implemented and unit-tested in this revision, though the manual live spike against a real embedding provider and live Claude has not yet been run. v1.4 corrects that last clause: the manual live spike has now been run. Both the baseline-RAG scenario and the isolated injection-probe scenario passed against a real Voyage embedding provider and a real Claude model, with repeated rate limiting observed (and worked around via a scenario selector) but no RAG-correctness or evidence-grounding failure in any attempt — see `docs/05-rag-design.md` and `docs/reviews/05-rag-design-spike-results.md` for the full design record and measured results. This does not change any of Challenge 2's design, validation, or testing content below, which described planned/already-implemented behavior accurately; it only updates the one clause that described the live spike as not yet run. v1.5 adds Challenge 3, documenting the implemented Agent Run / Trace Persistence milestone (`packages/database`) — a deliberately smaller, already-built precursor to Challenge 1's full queue-claiming design, described in full in `docs/11-agent-run-persistence.md`. v1.6 adds Challenge 4, documenting a real implementation-time discovery in the Agent Run API milestone (`apps/api`, `docs/12-agent-run-api.md`): `nest build`/`nest start --watch` are architecturally incompatible with this monorepo's pinned `typescript@^7.0.2` (a native rewrite whose public npm export no longer exposes the classic TypeScript Compiler API `@nestjs/cli` depends on internally), resolved by bypassing the Nest CLI's build wrapper in favor of the same plain-`tsc` pattern already used successfully by every other package in this monorepo, rather than downgrading TypeScript. v1.7 revises Challenge 4's Decision/Tradeoffs/Implementation Notes at a focused pre-commit review pass: `@nestjs/cli`/`@nestjs/schematics` and `apps/api/nest-cli.json`, originally kept as an unused "possible future use" placeholder, are now removed entirely as dead configuration/dependencies with no actual justification to keep; `apps/api`'s `build` script now cleans stale `dist/` output before every build, and `start:dev` is now a reliable `pnpm run build && pnpm run start` (no automatic reload — deferred, not silently dropped) rather than the previously untested concurrent `tsc --watch`/`node --watch` pair. |
 
 ---
 
@@ -2452,3 +2452,161 @@ This problem demonstrates:
 - Treating an unexecuted schema and an unthrowable error code as defects, not as harmless surplus
 - Keeping a single source of validation truth when a cheap marker check and a full state machine both
   appear to answer the same question
+
+---
+
+## 16. Challenge 14 — Switching a Persist-After Runtime to Incremental Writes Without a Half-Converted Middle
+
+### Context
+
+Issue #37 replaces the persist-after design Challenge 3 documents. Under that
+design `runAgentOrchestrator` accumulated an `AgentTraceEvent[]` entirely in
+memory and `finalizeCompleted`/`finalizeFailed` inserted the whole array in the
+same transaction that flipped the run terminal. A `RUNNING` run therefore had
+zero trace rows: nothing about a live investigation was queryable, nothing
+survived a refresh, and #38 had nothing to poll.
+
+Challenge 3's "Alternative A — persist incrementally" was rejected at the time
+for a specific reason: it "would require adding an event-emitter/callback hook
+to `runAgentOrchestrator`, the one thing this milestone was explicitly told to
+avoid." #37 is that rejected alternative, now required.
+
+### Problem
+
+Three things had to change together, and the ordering between them turned out
+to be the whole difficulty.
+
+**The phases could not be shipped separately.** The plan's first draft
+sequenced them as three commits: convert the repository, then add the
+orchestrator emitter, then wire the service. After the first of those the
+repository would write `RUN_CREATED` and would no longer batch-write the trace,
+while nothing yet emitted the intermediate events — so a perfectly normal
+successful run would reach terminal validation with a stream of
+`RUN_CREATED → RUN_COMPLETED` and be **rejected**. The changed finalize
+signatures would also no longer match the unchanged service, so the workspace
+would not even typecheck. Three commits, each individually reasonable, with a
+broken production path in between.
+
+**A reducer that only runs in tests is not an invariant.** #36 shipped a strict
+reducer that refuses to repair, and the natural reading was to prove
+conformance with a test matrix. But a test matrix constrains the emitter that
+exists today; it does not constrain the next caller. Nothing would stop a
+future change from persisting a stream the reducer rejects and only discovering
+it at read time — in front of a user, during an incident.
+
+**Canonical emission and the legacy trace are not the same event stream.** The
+contract requires `TOOL_REQUESTED` to be persisted *before* registry lookup and
+input validation, so that `TOOL_NOT_FOUND`/`TOOL_INPUT_INVALID` can truthfully
+record `TOOL_REQUESTED → TOOL_FAILED`. The legacy in-memory push sits *after*
+validation. An early draft resolved this by saying canonical emission
+"replaces" the legacy push — while also promising that omitting the emitter
+left the returned trace unchanged. Both cannot be true: `runAgentOrchestrator`
+has callers (evals, demos, unit tests) that read the returned array and never
+supply an emitter, and for them "replaced" would mean no push at all.
+
+### Decision
+
+**One atomic vertical-integration commit for the switchover**, after the
+migration, the mappers, and the inert repository APIs have landed separately.
+Phases 1–3 contain everything that *can* be isolated — schema widening,
+canonical row mapping, and append/read APIs that nothing calls yet — so the
+switchover commit is wiring plus the finalize conversion, not new mechanism
+design. There is no point in the history where the production path is half
+converted.
+
+**Reducer validation inside the write transaction, not only in tests.** Both
+write paths re-read the complete stored stream and run `deriveExecutionStageProgress`
+before committing; a rejection rolls back the candidate event. The terminal
+transaction runs it against the *target* terminal status and updates the run
+row only afterwards. That makes the invariant structural: *a terminal database
+row can never commit with a reducer-invalid canonical stream.* `packages/database`
+already depended on `@opspilot/contracts`, so this needed no dependency
+inversion and no callback seam — the transaction-owning layer and the
+validating layer are the same function.
+
+**Two independent output channels in the orchestrator.** Canonical emission and
+the legacy `trace.push(...)` are kept side by side, deliberately not derived
+from one another, because their timing genuinely differs. For any event with
+both channels the canonical append runs first and the legacy push second, so a
+failed canonical write never leaves the in-memory trace claiming a transition
+whose durable record does not exist.
+
+**An event-emission failure aborts and leaves the run `RUNNING`.** It is not a
+crash (persistence is exactly what failed) and not an agent-domain failure (the
+agent did not fail). Forcing a terminal write would have required inventing a
+failure code outside `AgentOrchestratorErrorCode` and a `failedStage` the
+ledger never recorded as active. So the run stops, stays `RUNNING`, and carries
+its usage snapshot and budget reservation out to the caller's cleanup — because
+the tokens were still spent, and an unreconciled reservation latches the whole
+UTC day closed.
+
+### Tradeoffs
+
+- **The switchover commit is large by design.** That is the cost of never
+  shipping a half-converted runtime. The mitigation is that phases 1–3 already
+  landed the parts that could stand alone.
+- **Reducer-in-transaction turns an emitter-ordering bug into a run that cannot
+  finalize**, rather than a bad Timeline discovered later. That is the intended
+  trade, and it is what makes the orchestrator emission tests load-bearing
+  rather than merely thorough.
+- **The orphaned-`RUNNING` gap got wider**: roughly eight write points per run
+  instead of one. The rows are more useful than before — they carry real
+  partial progress — but there is still no reaper.
+- **Two channels are a permanent, if small, maintenance burden.** Every future
+  event type needs a conscious decision about whether it has a legacy
+  counterpart and, if so, where that push belongs. It does not fall out
+  automatically from adding a canonical emission.
+- **One deliberate content change on an existing API field**, rather than a new
+  one: `TOOL_NOT_FOUND`/`TOOL_INPUT_INVALID` now project a `TOOL_REQUESTED`
+  into `run.trace`. It is a member of the union consumers already render, and
+  the alternative — suppressing a fact the ledger correctly recorded, purely to
+  keep a response byte-identical — would have meant lying in the API to protect
+  a shape nobody had asserted on.
+
+### Implementation Notes
+
+- Sequence allocation is `MAX(sequence_number) + 1` under the `agent_runs` row
+  lock the transaction already holds for its terminal-status check — the same
+  lock-then-MAX pattern `startRun` uses for `attempt_number`. Challenge 1's
+  warning against `MAX + 1` is about doing it *without* a shared lock.
+- One exact-replay policy covers all 12 canonical write types, compared with
+  PostgreSQL `IS NOT DISTINCT FROM` on JSONB. It runs *before* allocation, so
+  an ambiguous-success retry consumes no sequence number and never reaches the
+  reducer — it cannot surface as `PERSISTENCE_EVENT_STREAM_INVALID`. The
+  terminal transaction reuses the same helper rather than defining a second,
+  subtly different terminal-only rule.
+- A `RUNNING` run that already carries a terminal event is treated as
+  corruption: refuse, do not promote the status, do not insert a second
+  terminal event. The two commit together, so that state is unreachable through
+  this code; observing it means something wrote outside the repository.
+- `failedStage` is carried on the failed `AgentOrchestratorResult` and stated
+  by each of the fourteen failure sites. Persistence never infers it — a guess
+  would be rejected as `FAILED_STAGE_NOT_TRUTHFUL`.
+- The event-emission log line carries `runId`, `attemptedEventType`, the
+  `PersistenceErrorCode`, and the reducer's `InvestigationEventContractError.code`
+  when applicable — all closed enums or UUIDs, never prompt text, report
+  content, tool payloads, provider responses, or connection data.
+
+### Testing Strategy
+
+- **Database integration (real PostgreSQL):** `RUN_CREATED` atomic with run
+  creation, proven in both directions with a test-only trigger that fails the
+  event insert and asserts the run row rolls back too; terminal event and
+  status update atomic, proven the same way; reducer-invalid terminal streams
+  rolling back with zero new rows; `RUNNING` + terminal event, terminal status
+  with no event, and both terminal events present each refused without repair;
+  exact terminal replay including `failedStage`, and a differing stage
+  conflicting.
+- **Orchestrator:** the exact canonical order for direct and one-tool success;
+  all four tool-failure streams and both report-validation streams; provider
+  failures attributed to `AGENT_ANALYSIS` on the investigation turn and
+  `REPORT_GENERATION` on the finalization turn; no second `TOOL_REQUESTED` on
+  the final turn; and — the regression that matters most — every existing
+  fixture returning its unchanged legacy trace when no emitter is supplied.
+- **Service:** the recorded stream reduced with the *real* #36 reducer rather
+  than compared to a hand-written expectation, so an emission-order regression
+  fails here rather than in production; and event-emission failure injected at
+  four different paid-work boundaries, asserting the run stays `RUNNING`, no
+  terminal finalizer is called, no additional provider or tool call occurs, the
+  usage snapshot reflects exactly the calls observed, and no sequence number is
+  fabricated.

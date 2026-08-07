@@ -5,7 +5,13 @@ import {
   type AgentRunRecord,
   type PersistedAgentJob,
 } from "@opspilot/database";
-import type { ResolutionReport } from "@opspilot/contracts";
+import {
+  deriveExecutionStageProgress,
+  InvestigationEventContractError,
+  type InvestigationEventPayload,
+  type InvestigationRunStatus,
+  type ResolutionReport,
+} from "@opspilot/contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import { FakeLlmProvider, type FakeAgentScenario } from "../providers/fake-llm-provider";
@@ -15,7 +21,11 @@ import { getServiceStatusTool, InMemoryToolRegistry } from "../tools";
 import type { AgentRunRepositoryInterface } from "./agent-run-repository-interface";
 import type { RunProviderUsageSummary } from "./run-provider-usage";
 import { createAgentRunService } from "./agent-run-service";
-import { AgentRunConfigurationError, AgentRunServiceError } from "./agent-run-service-error";
+import {
+  AgentRunConfigurationError,
+  AgentRunServiceError,
+  InvestigationEventEmissionError,
+} from "./agent-run-service-error";
 
 const TOOL_CALL_ID = "call-1";
 
@@ -113,6 +123,13 @@ function buildAbortContext(overrides: { deadlineAborted?: boolean; disconnectAbo
 interface FakeRepositoryOptions {
   startRunError?: unknown;
   finalizeError?: unknown;
+  /**
+   * Injects a canonical-append failure. Receives the payload being emitted
+   * and how many events have already been recorded, so a test can fail at an
+   * exact point in the lifecycle (e.g. "after the tool completed") rather
+   * than only at the first event.
+   */
+  appendEventError?: (payload: InvestigationEventPayload, alreadyEmitted: number) => unknown;
   startLiveRunError?: unknown;
   replayLiveRunError?: unknown;
   reconcileError?: unknown;
@@ -166,12 +183,19 @@ function createFakeRepository(options: FakeRepositoryOptions = {}) {
     startRun: 0,
     startLiveRunWithAttemptLimit: 0,
     replayLiveRun: 0,
+    appendInvestigationEvent: 0,
     finalizeCompleted: 0,
     finalizeFailed: 0,
     reconcileLiveRunBudget: 0,
     getAgentRun: 0,
     getAgentJob: 0,
   };
+  // Every canonical lifecycle payload the service emitted, in order — the
+  // fake's stand-in for the durable ledger, so tests can reduce the recorded
+  // stream with the real #36 reducer.
+  const emittedEvents: InvestigationEventPayload[] = [];
+  // The exact `failedStage` argument each finalizeFailed call received.
+  const finalizeFailedStages: unknown[] = [];
   // The exact `usage` argument each finalize call received, so tests can assert
   // on what was PERSISTED rather than only on the returned summary.
   const finalizeUsage: unknown[] = [];
@@ -298,11 +322,25 @@ function createFakeRepository(options: FakeRepositoryOptions = {}) {
       reconciledWith.push({ reservation, usage });
       if (options.reconcileError) throw options.reconcileError;
     },
-    finalizeCompleted: async (runId, trace, report, usage) => {
+    appendInvestigationEvent: async (runId, payload) => {
+      calls.appendInvestigationEvent += 1;
+      const failure = options.appendEventError?.(payload, emittedEvents.length);
+      if (failure) throw failure;
+      emittedEvents.push(payload);
+      return {
+        runId,
+        // 1 is RUN_CREATED, written by the run-creation transaction the real
+        // repository owns; emitted events start after it.
+        sequence: emittedEvents.length + 1,
+        recordedAt: "2026-01-01T00:00:00.000Z",
+        payload,
+      };
+    },
+    finalizeCompleted: async (runId, report, usage) => {
       calls.finalizeCompleted += 1;
       finalizeUsage.push(usage);
       if (options.finalizeError) throw options.finalizeError;
-      persistedRuns.set(runId, { status: "COMPLETED", trace, report });
+      persistedRuns.set(runId, { status: "COMPLETED", report });
       return {
         id: runId,
         jobId: JOB_ID,
@@ -317,9 +355,10 @@ function createFakeRepository(options: FakeRepositoryOptions = {}) {
         possibleUnobservedCost: false,
       };
     },
-    finalizeFailed: async (runId, _trace, code, usage) => {
+    finalizeFailed: async (runId, code, failedStage, usage) => {
       calls.finalizeFailed += 1;
       finalizeFailedCodes.push(code);
+      finalizeFailedStages.push(failedStage);
       finalizeUsage.push(usage);
       if (options.finalizeError) throw options.finalizeError;
       persistedRuns.set(runId, { status: "FAILED", code });
@@ -369,9 +408,11 @@ function createFakeRepository(options: FakeRepositoryOptions = {}) {
     calls,
     startedJobs,
     finalizeFailedCodes,
+    finalizeFailedStages,
     finalizeUsage,
     reconciledWith,
     clientRequestIds,
+    emittedEvents,
   };
 }
 
@@ -2148,5 +2189,502 @@ describe("replayLiveRun", () => {
         service.replayLiveRun({ jobId: JOB_ID, clientRequestId: CLIENT_REQUEST_ID }),
       ).rejects.toBeInstanceOf(TypeError);
     });
+  });
+});
+
+/**
+ * Issue #37 Phase B — the service's canonical wiring.
+ *
+ * These tests reduce the RECORDED canonical stream with the real #36 reducer
+ * rather than re-asserting an expected event list by hand: the contract is
+ * the acceptance criterion, so if the orchestrator ever emits a stream the
+ * reducer rejects, that is a Phase B defect and it must fail here.
+ */
+describe("executeAndPersist — canonical lifecycle stream validity", () => {
+  const RUN_ID_PREFIX = "run-";
+
+  /**
+   * Rebuilds what the LEDGER would contain — RUN_CREATED (written by the
+   * run-creation transaction) followed by every emitted event, then the
+   * terminal event the finalizer wrote — and reduces it exactly as
+   * `finalizeTerminal` does in production.
+   */
+  function assertReducerValid(
+    emitted: readonly InvestigationEventPayload[],
+    terminal: InvestigationEventPayload,
+    runStatus: InvestigationRunStatus,
+  ) {
+    const payloads: InvestigationEventPayload[] = [{ type: "RUN_CREATED" }, ...emitted, terminal];
+    const events = payloads.map((payload, index) => ({
+      runId: "8f14e45f-1234-4abc-8def-000000000001",
+      sequence: index + 1,
+      recordedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+      payload,
+    }));
+    const progress = deriveExecutionStageProgress({
+      events,
+      runStatus,
+      now: events[events.length - 1]!.recordedAt,
+    });
+    // A terminal result must leave nothing in progress and nothing waiting.
+    for (const stage of progress) {
+      expect(["completed", "failed", "omitted"]).toContain(stage.status);
+    }
+    return progress;
+  }
+
+  it("produces a reducer-valid COMPLETED stream for a direct no-tool success", async () => {
+    const { repository, emittedEvents } = createFakeRepository();
+    const service = createAgentRunService(repository);
+
+    const result = await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "FAKE",
+      createProvider: () => reportSubmittingProvider(),
+      toolRegistry: toolRegistryWithServiceStatus(),
+    });
+
+    expect(result.persistence).toBe("persisted");
+    assertReducerValid(emittedEvents, { type: "RUN_COMPLETED" }, "COMPLETED");
+  });
+
+  it("produces a reducer-valid COMPLETED stream for a one-tool success", async () => {
+    const { repository, emittedEvents } = createFakeRepository();
+    const service = createAgentRunService(repository);
+
+    const result = await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "FAKE",
+      createProvider: () => new FakeLlmProvider(toolThenReportScenario()),
+      toolRegistry: toolRegistryWithServiceStatus(),
+    });
+
+    expect(result.persistence).toBe("persisted");
+    assertReducerValid(emittedEvents, { type: "RUN_COMPLETED" }, "COMPLETED");
+  });
+
+  it("produces a reducer-valid FAILED stream whose failedStage the reducer accepts", async () => {
+    const { repository, emittedEvents, finalizeFailedCodes, finalizeFailedStages } =
+      createFakeRepository();
+    const service = createAgentRunService(repository);
+
+    await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "FAKE",
+      createProvider: () => providerThrowingCategory("RATE_LIMIT"),
+      toolRegistry: toolRegistryWithServiceStatus(),
+    });
+
+    expect(finalizeFailedCodes).toEqual(["PROVIDER_UNAVAILABLE"]);
+    expect(finalizeFailedStages).toEqual(["AGENT_ANALYSIS"]);
+
+    // The exact terminal payload finalizeFailed would have persisted.
+    assertReducerValid(
+      emittedEvents,
+      { type: "RUN_FAILED", failureCode: "PROVIDER_UNAVAILABLE", failedStage: "AGENT_ANALYSIS" },
+      "FAILED",
+    );
+  });
+
+  it("passes the orchestrator's failedStage straight through to finalizeFailed", async () => {
+    const { repository, finalizeFailedCodes, finalizeFailedStages } = createFakeRepository();
+    const service = createAgentRunService(repository);
+    const schemaInvalidScenario: FakeAgentScenario = {
+      id: "schema-invalid",
+      turns: [
+        {
+          kind: "report_submission",
+          usage: { inputTokens: 10, outputTokens: 5 },
+          rawInput: { category: "SERVICE_DEGRADATION" }, // missing required fields
+        },
+      ],
+    };
+
+    await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "FAKE",
+      createProvider: () => new FakeLlmProvider(schemaInvalidScenario),
+      toolRegistry: toolRegistryWithServiceStatus(),
+    });
+
+    expect(finalizeFailedCodes).toEqual(["REPORT_SCHEMA_INVALID"]);
+    // REPORT_GENERATION, not AGENT_ANALYSIS: the provider had already returned
+    // a report payload, so the failure belongs to report generation.
+    expect(finalizeFailedStages).toEqual(["REPORT_GENERATION"]);
+  });
+});
+
+describe("executeAndPersist — event-emission persistence failure", () => {
+  const LEDGER_DOWN = new PersistenceError("PERSISTENCE_UNAVAILABLE", "ledger is down");
+
+  /** Fails the append of the Nth emitted event (0-based). */
+  function failAtIndex(index: number) {
+    return (_payload: InvestigationEventPayload, alreadyEmitted: number) =>
+      alreadyEmitted === index ? LEDGER_DOWN : undefined;
+  }
+
+  it.each([
+    ["before any provider call (AGENT_STARTED)", 0, "AGENT_STARTED", 0],
+    ["after the investigation provider call (TOOL_REQUESTED)", 1, "TOOL_REQUESTED", 1],
+    ["after the tool completed (TOOL_COMPLETED)", 2, "TOOL_COMPLETED", 1],
+    ["after the finalization provider returned (REPORT_SUBMITTED)", 4, "REPORT_SUBMITTED", 2],
+  ])(
+    "aborts %s, leaving the run RUNNING with no terminal call",
+    async (_label, failIndex, attemptedEventType, expectedProviderCalls) => {
+      const { repository, calls, emittedEvents } = createFakeRepository({
+        appendEventError: failAtIndex(failIndex),
+      });
+      const service = createAgentRunService(repository);
+      const provider = new FakeLlmProvider(toolThenReportScenario());
+      const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+      const executeSpy = vi.spyOn(getServiceStatusTool, "execute");
+
+      const result = await service.executeAndPersist({
+        jobId: JOB_ID,
+        providerMode: "FAKE",
+        createProvider: () => provider,
+        toolRegistry: toolRegistryWithServiceStatus(),
+      });
+
+      if (result.persistence !== "unavailable") throw new Error("expected an unavailable result");
+      expect(result.stage).toBe("event-emission");
+      if (result.stage !== "event-emission") throw new Error("unreachable");
+
+      // The exact event that could not be persisted, and NO fabricated sequence.
+      expect(result.attemptedEventType).toBe(attemptedEventType);
+      expect(result).not.toHaveProperty("sequence");
+      expect(result.error).toBe(LEDGER_DOWN);
+      expect(result.runId).toBeTruthy();
+
+      // The run is left RUNNING: terminal finalization was never called.
+      expect(calls.finalizeCompleted).toBe(0);
+      expect(calls.finalizeFailed).toBe(0);
+
+      // Execution stopped at the failure point — no further provider turn.
+      expect(runAgentTurnSpy).toHaveBeenCalledTimes(expectedProviderCalls);
+      // The failing append is never recorded, so the ledger holds only what
+      // genuinely committed before it.
+      expect(emittedEvents).toHaveLength(failIndex);
+
+      // No tool re-execution: the tool ran at most once, and not at all if the
+      // abort happened before it.
+      expect(executeSpy.mock.calls.length).toBeLessThanOrEqual(1);
+      executeSpy.mockRestore();
+    },
+  );
+
+  /**
+   * A LIVE input set whose collector actually COUNTS, so "usage observed so
+   * far" is a measurement rather than a constant. The provider wrapper below
+   * records on each completed turn, mirroring how the real Claude adapter
+   * feeds the service-owned accumulator.
+   */
+  function countingLiveInputs() {
+    let observed = 0;
+    const collector = {
+      record: () => {
+        observed += 1;
+      },
+      snapshot: (): RunProviderUsageSummary => ({
+        providerCallsObserved: observed,
+        inputTokens: observed * 100,
+        outputTokens: observed * 50,
+        cacheReadInputTokens: 0,
+        cacheCreation5mInputTokens: 0,
+        cacheCreation1hInputTokens: 0,
+        estimatedCostNanoUsd: BigInt(observed) * 1_000_000n,
+        pricingStatus: "CURRENT" as const,
+        possibleUnobservedCost: false,
+      }),
+    };
+    return {
+      ...liveSafeguardInputs(),
+      usageHooks: { createCollector: () => collector },
+    };
+  }
+
+  function recordingProvider(inner: LlmProvider, collector?: { record: () => void }): LlmProvider {
+    return {
+      runAgentTurn: async (input) => {
+        const result = await inner.runAgentTurn(input);
+        collector?.record();
+        return result;
+      },
+    };
+  }
+
+  it("carries the usage observed so far and preserves the reservation for reconciliation", async () => {
+    const { repository } = createFakeRepository({
+      // Fail the LAST emitted event, so both provider turns have completed and
+      // the collector has observed everything they spent.
+      appendEventError: (payload) => (payload.type === "REPORT_VALIDATED" ? LEDGER_DOWN : undefined),
+    });
+    const service = createAgentRunService(repository);
+
+    const result = await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "LIVE",
+      createProvider: (_job, collector) =>
+        recordingProvider(new FakeLlmProvider(toolThenReportScenario()), collector),
+      toolRegistry: toolRegistryWithServiceStatus(),
+      ...countingLiveInputs(),
+    });
+
+    if (result.persistence !== "unavailable" || result.stage !== "event-emission") {
+      throw new Error("expected an event-emission result");
+    }
+    // The service-owned collector is the source — the orchestrator never holds
+    // usage and never returns it. Both turns completed before the failed
+    // append, so both are counted.
+    expect(result.usageSummary?.providerCallsObserved).toBe(2);
+    // The reservation survives so the controller's cleanup still reconciles a
+    // run that spent real tokens; an unreconciled reservation latches the day.
+    expect(result.reservation).not.toBeNull();
+  });
+
+  it("reports zero observed provider calls when the ledger fails before the first turn", async () => {
+    const { repository } = createFakeRepository({
+      appendEventError: (payload) => (payload.type === "AGENT_STARTED" ? LEDGER_DOWN : undefined),
+    });
+    const service = createAgentRunService(repository);
+
+    const result = await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "LIVE",
+      createProvider: (_job, collector) =>
+        recordingProvider(new FakeLlmProvider(toolThenReportScenario()), collector),
+      toolRegistry: toolRegistryWithServiceStatus(),
+      ...countingLiveInputs(),
+    });
+
+    if (result.persistence !== "unavailable" || result.stage !== "event-emission") {
+      throw new Error("expected an event-emission result");
+    }
+    expect(result.usageSummary?.providerCallsObserved).toBe(0);
+    // Still reconcilable: a reserved-but-unspent slot must be released, or the
+    // whole UTC day stays latched closed.
+    expect(result.reservation).not.toBeNull();
+  });
+
+  // Codex Phase B review, finding M2: contractErrorCode must be populated
+  // ONLY when the cause chain contains a GENUINE InvestigationEventContractError
+  // — never an arbitrary object or string that merely occupies a `.code`
+  // property. Each case below runs the same emission-failure path and
+  // inspects the resulting diagnostic.
+  describe("onEventEmissionFailure diagnostic narrowing (finding M2)", () => {
+    async function diagnosticFor(cause: unknown) {
+      const streamInvalid = new PersistenceError(
+        "PERSISTENCE_EVENT_STREAM_INVALID",
+        "would produce an invalid stream",
+        { cause },
+      );
+      const { repository } = createFakeRepository({
+        appendEventError: (payload) => (payload.type === "REPORT_SUBMITTED" ? streamInvalid : undefined),
+      });
+      const service = createAgentRunService(repository);
+      const onEventEmissionFailure = vi.fn();
+
+      await service.executeAndPersist({
+        jobId: JOB_ID,
+        providerMode: "FAKE",
+        createProvider: () => reportSubmittingProvider(),
+        toolRegistry: toolRegistryWithServiceStatus(),
+        onEventEmissionFailure,
+      });
+
+      expect(onEventEmissionFailure).toHaveBeenCalledTimes(1);
+      return onEventEmissionFailure.mock.calls[0]?.[0];
+    }
+
+    it("includes the closed code when the cause chain contains a genuine InvestigationEventContractError", async () => {
+      const realContractError = new InvestigationEventContractError(
+        "PHASE_ORDER_VIOLATION",
+        "TOOL_REQUESTED at sequence 3 requires AGENT_STARTED to be active.",
+      );
+      const diagnostic = await diagnosticFor(realContractError);
+
+      expect(diagnostic).toEqual({
+        runId: expect.any(String),
+        attemptedEventType: "REPORT_SUBMITTED",
+        persistenceErrorCode: "PERSISTENCE_EVENT_STREAM_INVALID",
+        contractErrorCode: "PHASE_ORDER_VIOLATION",
+      });
+      // No free-form message, no cause, no payload — nothing that could carry
+      // prompt text, report content, tool IO, or a secret.
+      expect(Object.keys(diagnostic).sort()).toEqual([
+        "attemptedEventType",
+        "contractErrorCode",
+        "persistenceErrorCode",
+        "runId",
+      ]);
+    });
+
+    it("includes the closed code through a deeper nesting, via the standard Error.cause chain", async () => {
+      const realContractError = new InvestigationEventContractError(
+        "TOOL_LIMIT_EXCEEDED",
+        "a second TOOL_REQUESTED is not permitted",
+      );
+      // A wrapping PersistenceError is exactly what packages/database actually
+      // produces (assertCanonicalStreamValid wraps the reducer's throw), so
+      // this is the realistic shape, not a contrived one.
+      const wrapped = new PersistenceError("PERSISTENCE_EVENT_STREAM_INVALID", "invalid stream", {
+        cause: realContractError,
+      });
+      const diagnostic = await diagnosticFor(wrapped);
+
+      expect(diagnostic.contractErrorCode).toBe("TOOL_LIMIT_EXCEEDED");
+    });
+
+    it("omits contractErrorCode for a plain object whose .code merely LOOKS like a contract code", async () => {
+      const diagnostic = await diagnosticFor({ code: "PHASE_ORDER_VIOLATION" });
+
+      expect(diagnostic).not.toHaveProperty("contractErrorCode");
+      expect(Object.keys(diagnostic).sort()).toEqual([
+        "attemptedEventType",
+        "persistenceErrorCode",
+        "runId",
+      ]);
+    });
+
+    it("omits contractErrorCode for an unrelated Error carrying an arbitrary .code", async () => {
+      const driverError = new Error("duplicate key value violates unique constraint") as Error & {
+        code: string;
+      };
+      driverError.code = "23505"; // a real raw PostgreSQL code, not a contract code
+      const diagnostic = await diagnosticFor(driverError);
+
+      expect(diagnostic).not.toHaveProperty("contractErrorCode");
+    });
+
+    it("omits contractErrorCode when the cause is a driver code that happens to match a real contract code string", async () => {
+      // The adversarial case: an unrelated failure whose .code string is
+      // BYTE-IDENTICAL to a real InvestigationEventContractErrorCode member,
+      // without being an actual InvestigationEventContractError instance.
+      const diagnostic = await diagnosticFor({ code: "TOOL_LIMIT_EXCEEDED", message: "unrelated" });
+
+      expect(diagnostic).not.toHaveProperty("contractErrorCode");
+    });
+
+    it("omits contractErrorCode entirely when persistenceErrorCode is not PERSISTENCE_EVENT_STREAM_INVALID", async () => {
+      const unavailable = new PersistenceError("PERSISTENCE_UNAVAILABLE", "db down", {
+        cause: new InvestigationEventContractError("PHASE_ORDER_VIOLATION", "would-be reducer failure"),
+      });
+      const { repository } = createFakeRepository({
+        appendEventError: (payload) => (payload.type === "REPORT_SUBMITTED" ? unavailable : undefined),
+      });
+      const service = createAgentRunService(repository);
+      const onEventEmissionFailure = vi.fn();
+
+      await service.executeAndPersist({
+        jobId: JOB_ID,
+        providerMode: "FAKE",
+        createProvider: () => reportSubmittingProvider(),
+        toolRegistry: toolRegistryWithServiceStatus(),
+        onEventEmissionFailure,
+      });
+
+      const diagnostic = onEventEmissionFailure.mock.calls[0]?.[0];
+      expect(diagnostic.persistenceErrorCode).toBe("PERSISTENCE_UNAVAILABLE");
+      expect(diagnostic).not.toHaveProperty("contractErrorCode");
+    });
+  });
+
+  it("a throwing onEventEmissionFailure hook cannot change the returned result", async () => {
+    const { repository } = createFakeRepository({ appendEventError: failAtIndex(0) });
+    const service = createAgentRunService(repository);
+
+    const result = await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "FAKE",
+      createProvider: () => reportSubmittingProvider(),
+      toolRegistry: toolRegistryWithServiceStatus(),
+      onEventEmissionFailure: () => {
+        throw new Error("logger exploded");
+      },
+    });
+
+    expect(result).toMatchObject({ persistence: "unavailable", stage: "event-emission" });
+  });
+
+  it("is NOT reported as AGENT_EXECUTION_CRASHED", async () => {
+    const { repository } = createFakeRepository({ appendEventError: failAtIndex(0) });
+    const service = createAgentRunService(repository);
+
+    // A ledger failure is a persistence result, not a crash — it must never be
+    // thrown as AgentRunServiceError.
+    await expect(
+      service.executeAndPersist({
+        jobId: JOB_ID,
+        providerMode: "FAKE",
+        createProvider: () => reportSubmittingProvider(),
+        toolRegistry: toolRegistryWithServiceStatus(),
+      }),
+    ).resolves.toMatchObject({ persistence: "unavailable", stage: "event-emission" });
+  });
+
+  it("emits nothing and executes nothing on an idempotent LIVE replay", async () => {
+    const live = liveSafeguardInputs();
+    const { repository, calls } = createFakeRepository();
+    const service = createAgentRunService(repository);
+
+    const first = await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "LIVE",
+      createProvider: () => reportSubmittingProvider(),
+      toolRegistry: toolRegistryWithServiceStatus(),
+      ...live,
+    });
+    expect(first.persistence).toBe("persisted");
+    const appendsAfterFirst = calls.appendInvestigationEvent;
+
+    const replay = await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "LIVE",
+      createProvider: () => {
+        throw new Error("a replay must never construct a provider");
+      },
+      toolRegistry: toolRegistryWithServiceStatus(),
+      ...live,
+    });
+
+    if (replay.persistence !== "persisted") throw new Error("expected a persisted replay");
+    expect(replay.execution).toBe("replayed");
+    // No new run means no new canonical events.
+    expect(calls.appendInvestigationEvent).toBe(appendsAfterFirst);
+  });
+
+  it("retryFinalization preserves the original failedStage and usage, and appends nothing", async () => {
+    const { repository, calls, finalizeFailedStages, finalizeUsage } = createFakeRepository();
+    const service = createAgentRunService(repository);
+    const appendsBefore = calls.appendInvestigationEvent;
+
+    const usageSummary: RunProviderUsageSummary = {
+      providerCallsObserved: 2,
+      inputTokens: 1_200,
+      outputTokens: 400,
+      cacheReadInputTokens: 0,
+      cacheCreation5mInputTokens: 0,
+      cacheCreation1hInputTokens: 0,
+      estimatedCostNanoUsd: 17_956_000n,
+      pricingStatus: "CURRENT",
+      possibleUnobservedCost: false,
+    };
+
+    await service.retryFinalization({
+      runId: "run-1",
+      agentResult: {
+        status: "failed",
+        code: "TOOL_NOT_FOUND",
+        message: "unknown tool",
+        trace: [],
+        failedStage: "DIAGNOSTIC_EXECUTION",
+      },
+      usageSummary,
+    });
+
+    expect(calls.startRun).toBe(0); // no new attempt
+    expect(calls.appendInvestigationEvent).toBe(appendsBefore); // no new events
+    expect(finalizeFailedStages).toEqual(["DIAGNOSTIC_EXECUTION"]);
+    expect(finalizeUsage[0]).toMatchObject({ providerCallsObserved: 2, estimatedCostNanoUsd: 17_956_000n });
   });
 });

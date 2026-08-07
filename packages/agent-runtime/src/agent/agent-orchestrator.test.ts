@@ -14,6 +14,8 @@ import {
   getServiceStatusTool,
   type DiagnosticToolDefinition,
 } from "../tools";
+import type { InvestigationEventPayload } from "@opspilot/contracts";
+
 import { runAgentOrchestrator } from "./agent-orchestrator";
 
 const sampleChunk: RetrievedRunbookChunk = {
@@ -1134,5 +1136,408 @@ describe("runAgentOrchestrator — expected provider failures", () => {
     const defect = new TypeError("cannot read properties of undefined");
 
     await expect(run(defect)).rejects.toThrow(defect);
+  });
+});
+
+/**
+ * Issue #37 Phase B — the canonical persistence channel, and the proof that
+ * it is genuinely independent of the legacy in-memory trace channel.
+ *
+ * Every test here supplies a RECORDING emitter (never a real repository), so
+ * what is asserted is exactly the ordered payload list the orchestrator would
+ * have handed to `appendInvestigationEvent`.
+ */
+describe("runAgentOrchestrator — canonical lifecycle emission", () => {
+  function recordingEmitter() {
+    const emitted: InvestigationEventPayload[] = [];
+    return {
+      emitted,
+      emitLifecycleEvent: async (payload: InvestigationEventPayload) => {
+        emitted.push(payload);
+      },
+    };
+  }
+
+  const types = (emitted: readonly InvestigationEventPayload[]) => emitted.map((e) => e.type);
+
+  it("emits the exact canonical order for a DIRECT (no-tool) success", async () => {
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    const provider = new FakeLlmProvider({
+      id: "direct-report",
+      turns: [{ kind: "report_submission", usage, rawInput: validReportWithRagEvidence }],
+    });
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("completed");
+    // No REPORT_GENERATION_STARTED: the direct path never reaches a
+    // finalization turn, so announcing one would be untrue.
+    expect(types(emitted)).toEqual([
+      "AGENT_STARTED",
+      "REPORT_SUBMITTED",
+      "REPORT_VALIDATED",
+    ]);
+    // The legacy channel is unaffected and still uses its own type name.
+    expect(result.trace).toEqual([{ type: "REPORT_GENERATED" }]);
+  });
+
+  it("emits the exact canonical order for a ONE-TOOL success", async () => {
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    const provider = new FakeLlmProvider(
+      buildToolRequestScenario("tool-then-report", "notification-service"),
+    );
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("completed");
+    expect(types(emitted)).toEqual([
+      "AGENT_STARTED",
+      "TOOL_REQUESTED",
+      "TOOL_COMPLETED",
+      "REPORT_GENERATION_STARTED",
+      "REPORT_SUBMITTED",
+      "REPORT_VALIDATED",
+    ]);
+    expect(result.trace).toEqual([
+      { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" },
+      { type: "TOOL_COMPLETED", toolCallId: "call-1", toolName: "get_service_status" },
+      { type: "REPORT_GENERATED" },
+    ]);
+  });
+
+  it("emits RETRIEVAL_COMPLETED before the legacy push, and only after both validations", async () => {
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    const provider = new FakeLlmProvider({
+      id: "retrieval-then-report",
+      turns: [{ kind: "report_submission", usage, rawInput: validReportWithRagEvidence }],
+    });
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      retriever: new FakeRunbookRetriever([{ ...sampleChunk, chunkId: "rag-chunk-1" }]),
+      retrievalInput: { query: "notification delays", topK: 1 },
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("completed");
+    expect(types(emitted)).toEqual([
+      "AGENT_STARTED",
+      "RETRIEVAL_COMPLETED",
+      "REPORT_SUBMITTED",
+      "REPORT_VALIDATED",
+    ]);
+    expect(result.trace[0]).toMatchObject({ type: "RETRIEVAL_COMPLETED" });
+  });
+
+  // THE MANDATORY #37 OBLIGATION: canonical TOOL_REQUESTED must precede
+  // registry lookup and input validation, so the two early tool failures can
+  // truthfully record that the provider did request the tool.
+  it.each([
+    ["TOOL_NOT_FOUND", buildToolRequestScenario("unknown-tool", "notification-service", "not_a_real_tool")],
+    [
+      "TOOL_INPUT_INVALID",
+      {
+        id: "bad-input",
+        turns: [
+          {
+            kind: "diagnostic_tool_requests" as const,
+            usage,
+            requests: [{ toolCallId: "call-1", toolName: "get_service_status", input: { wrong: 1 } }],
+          },
+        ],
+      } satisfies FakeAgentScenario,
+    ],
+  ])("emits TOOL_REQUESTED then TOOL_FAILED for %s, while the legacy trace stays empty", async (code, scenario) => {
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+
+    const result = await runAgentOrchestrator({
+      provider: new FakeLlmProvider(scenario),
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.code).toBe(code);
+    expect(result.failedStage).toBe("DIAGNOSTIC_EXECUTION");
+
+    expect(types(emitted)).toEqual(["AGENT_STARTED", "TOOL_REQUESTED", "TOOL_FAILED"]);
+    expect(emitted[2]).toMatchObject({ failureCode: code, toolCallId: "call-1" });
+
+    // The divergence that makes the two channels worth keeping separate: the
+    // legacy push sits after validation, so it never fired.
+    expect(result.trace).toEqual([]);
+  });
+
+  it("emits TOOL_REQUESTED then TOOL_FAILED for TOOL_EXECUTION_FAILED", async () => {
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    const throwingTool: DiagnosticToolDefinition = {
+      ...getServiceStatusTool,
+      execute: async () => {
+        throw new Error("tool blew up");
+      },
+    };
+
+    const result = await runAgentOrchestrator({
+      provider: new FakeLlmProvider(buildToolRequestScenario("exec-fail", "notification-service")),
+      toolRegistry: new InMemoryToolRegistry([throwingTool]),
+      initialConversation: [ticketContext],
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.code).toBe("TOOL_EXECUTION_FAILED");
+    expect(result.failedStage).toBe("DIAGNOSTIC_EXECUTION");
+    expect(types(emitted)).toEqual(["AGENT_STARTED", "TOOL_REQUESTED", "TOOL_FAILED"]);
+    // The legacy TOOL_REQUESTED DID fire here — validation succeeded, and only
+    // execution failed — which is exactly the pre-#37 behavior.
+    expect(result.trace).toEqual([
+      { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" },
+    ]);
+  });
+
+  it("emits TOOL_REQUESTED then TOOL_FAILED for TOOL_OUTPUT_INVALID", async () => {
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    const badOutputTool: DiagnosticToolDefinition = {
+      ...getServiceStatusTool,
+      outputSchema: z.object({ neverMatches: z.string() }),
+    };
+
+    const result = await runAgentOrchestrator({
+      provider: new FakeLlmProvider(buildToolRequestScenario("bad-output", "notification-service")),
+      toolRegistry: new InMemoryToolRegistry([badOutputTool]),
+      initialConversation: [ticketContext],
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.code).toBe("TOOL_OUTPUT_INVALID");
+    expect(result.failedStage).toBe("DIAGNOSTIC_EXECUTION");
+    expect(types(emitted)).toEqual(["AGENT_STARTED", "TOOL_REQUESTED", "TOOL_FAILED"]);
+  });
+
+  it.each([
+    ["REPORT_SCHEMA_INVALID", invalidReport],
+    ["REPORT_EVIDENCE_INVALID", validReport],
+  ])("emits REPORT_SUBMITTED then REPORT_VALIDATION_FAILED for %s", async (code, rawInput) => {
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+
+    const result = await runAgentOrchestrator({
+      provider: new FakeLlmProvider({
+        id: `report-${code}`,
+        turns: [{ kind: "report_submission", usage, rawInput }],
+      }),
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.code).toBe(code);
+    expect(result.failedStage).toBe("REPORT_GENERATION");
+    expect(types(emitted)).toEqual(["AGENT_STARTED", "REPORT_SUBMITTED", "REPORT_VALIDATION_FAILED"]);
+    expect(emitted[2]).toMatchObject({ failureCode: code });
+    // No legacy REPORT_GENERATED for a rejected report — unchanged from before.
+    expect(result.trace).toEqual([]);
+  });
+
+  it("attributes a provider failure on the INVESTIGATION turn to AGENT_ANALYSIS", async () => {
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    const provider: LlmProvider = {
+      runAgentTurn: async () => {
+        throw new LlmProviderError("RATE_LIMIT", "rate limited");
+      },
+    };
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.code).toBe("PROVIDER_UNAVAILABLE");
+    expect(result.failedStage).toBe("AGENT_ANALYSIS");
+    // No REPORT_GENERATION_STARTED — the finalization turn was never reached.
+    expect(types(emitted)).toEqual(["AGENT_STARTED"]);
+  });
+
+  it("attributes a provider failure on the FINALIZATION turn to REPORT_GENERATION", async () => {
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    let turn = 0;
+    const provider: LlmProvider = {
+      runAgentTurn: async () => {
+        if (turn++ === 0) {
+          return {
+            type: "diagnostic_tool_request",
+            providerRequestId: "p:0",
+            usage,
+            request: { toolCallId: "call-1", toolName: "get_service_status", input: { serviceSlug: "notification-service" } },
+          };
+        }
+        throw new LlmProviderError("SERVER_ERROR", "provider exploded");
+      },
+    };
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.code).toBe("PROVIDER_UNAVAILABLE");
+    expect(result.failedStage).toBe("REPORT_GENERATION");
+    expect(types(emitted)).toEqual([
+      "AGENT_STARTED",
+      "TOOL_REQUESTED",
+      "TOOL_COMPLETED",
+      "REPORT_GENERATION_STARTED",
+    ]);
+  });
+
+  // The final-turn guard runs BEFORE the canonical emission, so a second tool
+  // request never produces a second TOOL_REQUESTED (which the reducer would
+  // reject as TOOL_LIMIT_EXCEEDED).
+  it("emits no second TOOL_REQUESTED when a tool is requested on the final provider turn", async () => {
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    const twoToolRequests: FakeAgentScenario = {
+      id: "two-tools",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [{ toolCallId: "call-1", toolName: "get_service_status", input: { serviceSlug: "notification-service" } }],
+        },
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [{ toolCallId: "call-2", toolName: "get_service_status", input: { serviceSlug: "notification-service" } }],
+        },
+      ],
+    };
+
+    const result = await runAgentOrchestrator({
+      provider: new FakeLlmProvider(twoToolRequests),
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.code).toBe("PROVIDER_PROTOCOL_INVALID");
+    expect(result.failedStage).toBe("REPORT_GENERATION");
+    expect(types(emitted).filter((t) => t === "TOOL_REQUESTED")).toHaveLength(1);
+  });
+
+  it("does not emit AGENT_STARTED for the pre-agent RETRIEVAL_PARAMS_INVALID exception", async () => {
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+
+    const result = await runAgentOrchestrator({
+      provider: new FakeLlmProvider({ id: "unused", turns: [] }),
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      // retriever without retrievalInput — a caller-contract violation caught
+      // by validateOrchestratorParams before anything is traced or emitted.
+      retriever: new FakeRunbookRetriever([sampleChunk]),
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.code).toBe("RETRIEVAL_PARAMS_INVALID");
+    expect(result.failedStage).toBe("AGENT_ANALYSIS");
+    // Nothing emitted at all, so the canonical stream is exactly
+    // RUN_CREATED -> RUN_FAILED — the contract's single pre-agent exception.
+    expect(emitted).toEqual([]);
+  });
+
+  describe("emitter rejection aborts immediately", () => {
+    class BoomError extends Error {}
+
+    it("stops before the legacy push for the event whose canonical write failed", async () => {
+      const provider = new FakeLlmProvider({
+        id: "retrieval-then-report",
+        turns: [{ kind: "report_submission", usage, rawInput: validReportWithRagEvidence }],
+      });
+      const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+
+      await expect(
+        runAgentOrchestrator({
+          provider,
+          toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+          initialConversation: [ticketContext],
+          retriever: new FakeRunbookRetriever([{ ...sampleChunk, chunkId: "rag-chunk-1" }]),
+          retrievalInput: { query: "notification delays", topK: 1 },
+          emitLifecycleEvent: async (payload) => {
+            if (payload.type === "RETRIEVAL_COMPLETED") throw new BoomError("ledger down");
+          },
+        }),
+      ).rejects.toBeInstanceOf(BoomError);
+
+      // The provider was never called: retrieval precedes the first turn, and
+      // the failed append aborted before it.
+      expect(runAgentTurnSpy).not.toHaveBeenCalled();
+    });
+
+    it("performs no further tool call after a failed TOOL_REQUESTED append", async () => {
+      const executeSpy = vi.spyOn(getServiceStatusTool, "execute");
+
+      await expect(
+        runAgentOrchestrator({
+          provider: new FakeLlmProvider(buildToolRequestScenario("abort-tool", "notification-service")),
+          toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+          initialConversation: [ticketContext],
+          emitLifecycleEvent: async (payload) => {
+            if (payload.type === "TOOL_REQUESTED") throw new BoomError("ledger down");
+          },
+        }),
+      ).rejects.toBeInstanceOf(BoomError);
+
+      expect(executeSpy).not.toHaveBeenCalled();
+    });
+
+    it("performs no further provider turn after a failed TOOL_COMPLETED append", async () => {
+      const provider = new FakeLlmProvider(
+        buildToolRequestScenario("abort-after-tool", "notification-service"),
+      );
+      const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+
+      await expect(
+        runAgentOrchestrator({
+          provider,
+          toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+          initialConversation: [ticketContext],
+          emitLifecycleEvent: async (payload) => {
+            if (payload.type === "TOOL_COMPLETED") throw new BoomError("ledger down");
+          },
+        }),
+      ).rejects.toBeInstanceOf(BoomError);
+
+      // Only the investigation turn ran; the finalization turn never started.
+      expect(runAgentTurnSpy).toHaveBeenCalledTimes(1);
+    });
   });
 });

@@ -17,7 +17,6 @@ import {
   toRecordApprovalDecisionWrite,
   toReportWrite,
   toTicketContextWrite,
-  toTraceEventCreateInputs,
 } from "./mappers";
 
 const RUN_ID = "8f14e45f-1234-4abc-8def-000000000099";
@@ -188,25 +187,12 @@ describe("fromAgentRunRow", () => {
   });
 });
 
-describe("toTraceEventCreateInputs / fromTraceEventRows", () => {
+describe("fromTraceEventRows — legacy read path", () => {
   const trace = [
     { type: "TOOL_REQUESTED" as const, toolCallId: "call-1", toolName: "get_service_status" },
     { type: "TOOL_COMPLETED" as const, toolCallId: "call-1", toolName: "get_service_status" },
     { type: "REPORT_GENERATED" as const },
   ];
-
-  it("assigns contiguous 1-based sequence numbers matching array index", () => {
-    const inputs = toTraceEventCreateInputs(trace, "run-1");
-    expect(inputs.map((i) => i.sequenceNumber)).toEqual([1, 2, 3]);
-    expect(inputs.every((i) => i.runId === "run-1")).toBe(true);
-    expect(inputs.map((i) => i.eventType)).toEqual(["TOOL_REQUESTED", "TOOL_COMPLETED", "REPORT_GENERATED"]);
-  });
-
-  it("throws PERSISTENCE_VALIDATION_FAILED for a malformed event", () => {
-    expect(() => toTraceEventCreateInputs([{ type: "TOOL_REQUESTED" } as never], "run-1")).toThrow(
-      PersistenceError,
-    );
-  });
 
   it("revalidates and preserves order when reading rows back", () => {
     const rows = trace.map((payload, i) => ({ sequenceNumber: i + 1, payload, createdAt: RECORDED_AT }));

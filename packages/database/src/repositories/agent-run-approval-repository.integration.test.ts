@@ -4,6 +4,7 @@ import { createPrismaClient, type PrismaClient, type PrismaClientHandle } from "
 import { AgentRunApprovalError } from "../approval-errors";
 import type { RecordApprovalDecisionResult } from "../types";
 import { createTestPrismaClient, truncateAllTables } from "../test/test-db";
+import { appendDirectSuccessPrefix, appendFailurePrefix } from "../test/canonical-stream";
 import { createJob, finalizeCompleted, finalizeFailed, startRun } from "./agent-run-repository";
 import { getApprovalDecision, recordApprovalDecision } from "./agent-run-approval-repository";
 
@@ -22,7 +23,6 @@ const ELIGIBLE_REPORT = {
 
 const EMPTY_ACTIONS_REPORT = { ...ELIGIBLE_REPORT, suggestedActions: [] };
 
-const SAMPLE_TRACE = [{ type: "REPORT_GENERATED" as const }];
 
 let handle: PrismaClientHandle;
 let prisma: PrismaClient;
@@ -43,14 +43,16 @@ afterEach(async () => {
 async function createEligibleCompletedRun(client: PrismaClient = prisma) {
   const job = await createJob(client, { ticketId: "TKT-approval-eligible", summary: "Approval eligible run" });
   const started = await startRun(client, job.id, "FAKE", null);
-  const run = await finalizeCompleted(client, started.run.id, SAMPLE_TRACE, ELIGIBLE_REPORT);
+  await appendDirectSuccessPrefix(client, started.run.id);
+  const run = await finalizeCompleted(client, started.run.id, ELIGIBLE_REPORT);
   return { job, run };
 }
 
 async function createIneligibleEmptyActionsRun(client: PrismaClient = prisma) {
   const job = await createJob(client, { ticketId: "TKT-approval-empty", summary: "Approval empty actions run" });
   const started = await startRun(client, job.id, "FAKE", null);
-  const run = await finalizeCompleted(client, started.run.id, SAMPLE_TRACE, EMPTY_ACTIONS_REPORT);
+  await appendDirectSuccessPrefix(client, started.run.id);
+  const run = await finalizeCompleted(client, started.run.id, EMPTY_ACTIONS_REPORT);
   return { job, run };
 }
 
@@ -63,7 +65,8 @@ async function createRunningRun(client: PrismaClient = prisma) {
 async function createFailedRun(client: PrismaClient = prisma) {
   const job = await createJob(client, { ticketId: "TKT-approval-failed", summary: "Approval failed run" });
   const started = await startRun(client, job.id, "FAKE", null);
-  const run = await finalizeFailed(client, started.run.id, SAMPLE_TRACE, "TOOL_NOT_FOUND");
+  const failedStage = await appendFailurePrefix(client, started.run.id, "TOOL_NOT_FOUND");
+  const run = await finalizeFailed(client, started.run.id, "TOOL_NOT_FOUND", failedStage);
   return { job, run };
 }
 

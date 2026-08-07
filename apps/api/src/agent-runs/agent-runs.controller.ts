@@ -35,6 +35,7 @@ import type {
   LiveRunAdmissionController,
 } from "../execution/live-run-admission";
 import { logBudgetReconciliationFailure } from "../execution/live-run-budget-log";
+import { logEventEmissionFailure } from "../execution/event-emission-log";
 import { logReportValidationFailure } from "../execution/report-validation-log";
 import { createRunAbortHandles } from "../execution/run-abort-context";
 import type { RunExecutionConfig } from "../execution/run-execution-config";
@@ -85,7 +86,12 @@ function accountingOf(outcome: ExecuteAndPersistResult | AgentRunServiceError | 
     };
   }
 
-  if (outcome.stage === "finalization") {
+  // Both of these executed real provider work before failing to persist, so
+  // both carry the usage snapshot and the reservation the cleanup block must
+  // reconcile. `event-emission` is identical to `finalization` in this
+  // respect: the run is left RUNNING, but the tokens were still spent, and an
+  // unreconciled reservation latches the whole day closed.
+  if (outcome.stage === "finalization" || outcome.stage === "event-emission") {
     return {
       usageSummary: outcome.usageSummary,
       reservation: outcome.reservation,
@@ -178,6 +184,7 @@ export class AgentRunsController {
         createProvider: (job) => this.providerFactory.createProvider(job, "FAKE"),
         toolRegistry: this.toolRegistry,
         onReportSchemaInvalid: logReportValidationFailure,
+        onEventEmissionFailure: logEventEmissionFailure,
       });
     } catch (error) {
       if (error instanceof AgentRunServiceError) {
@@ -306,6 +313,7 @@ export class AgentRunsController {
         // abort provenance from another.
         abortContext: abort.context,
         onReportSchemaInvalid: logReportValidationFailure,
+        onEventEmissionFailure: logEventEmissionFailure,
       });
 
       // Settled from the AUTHORITATIVE result, before responding — not from
@@ -479,7 +487,10 @@ export class AgentRunsController {
       return;
     }
 
-    if (result.stage === "finalization") {
+    // Both admitted a real execution: the authoritative transaction ran, the
+    // run row exists, and a provider may well have been called. Only
+    // run-creation below represents an attempt that never got that far.
+    if (result.stage === "finalization" || result.stage === "event-emission") {
       authorized.recordAdmitted();
       return;
     }
@@ -512,7 +523,16 @@ export class AgentRunsController {
    */
   private respond(result: ExecuteAndPersistResult, res: Response) {
     if (result.persistence === "unavailable") {
-      const context = result.stage === "run-creation" ? "run-creation" : "finalization";
+      // Three distinct contexts now, because each maps PERSISTENCE_NOT_FOUND
+      // differently: run-creation means the JOB was not found (404), while
+      // finalization and event-emission both concern a run that demonstrably
+      // existed, so a NOT_FOUND there is stored-data corruption (500).
+      const context =
+        result.stage === "run-creation"
+          ? "run-creation"
+          : result.stage === "event-emission"
+            ? "event-emission"
+            : "finalization";
       throw mapDomainError(result.error, context);
     }
 
