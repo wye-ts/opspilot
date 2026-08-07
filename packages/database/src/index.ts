@@ -25,6 +25,7 @@ import {
   getAgentJob as _getAgentJob,
   getAgentRun as _getAgentRun,
   getInvestigationEventRecords as _getInvestigationEventRecords,
+  getInvestigationState as _getInvestigationState,
   isLiveRunBudgetOpen as _isLiveRunBudgetOpen,
   reconcileLiveRunBudget as _reconcileLiveRunBudget,
   replayLiveRun as _replayLiveRun,
@@ -53,6 +54,7 @@ export const getAgentRun = _getAgentRun;
 // not called by the production start/orchestrator/finalize path yet.
 export const appendInvestigationEvent = _appendInvestigationEvent;
 export const getInvestigationEventRecords = _getInvestigationEventRecords;
+export const getInvestigationState = _getInvestigationState;
 export const startRun = _startRun;
 export const startLiveRunWithAttemptLimit = _startLiveRunWithAttemptLimit;
 export const replayLiveRun = _replayLiveRun;
@@ -90,6 +92,7 @@ export type {
   ApprovalDecision,
   PersistedAgentJob,
   PersistedAgentRun,
+  PersistedInvestigationState,
   ProviderMode,
   LiveRunBudgetReservation,
   LiveRunBudgetReservationInput,

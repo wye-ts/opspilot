@@ -101,8 +101,27 @@ function capabilitiesResponse(): Response {
   return jsonResponse(200, { data: { liveAgentRuns: "UNAVAILABLE", liveAccess: "NOT_APPLICABLE" } });
 }
 
+/**
+ * Investigation polling (#38) starts concurrently with every submit/retry
+ * this file exercises and issues its own GET the tests below never queue a
+ * response for. A default (not `mockResolvedValueOnce`) fallback answers any
+ * such call with 404 — polling stops immediately (`not-found`), and
+ * `apiCalls()` above excludes it from every request-sequence assertion.
+ */
+function pollFallbackResponse(): Response {
+  return jsonResponse(503, errorEnvelope("PERSISTENCE_UNAVAILABLE", "not tracked by this test"));
+}
+
+// Investigation polling (#38) starts concurrently with every submit/retry
+// this file exercises and issues its own GET against a THIRD, distinct URL
+// pattern — excluded here for the same reason `/v1/capabilities` already is:
+// every assertion below is about the job/run/approval workflow request
+// sequence, not about polling, which this file never queues a response for
+// beyond the harmless 404 fallback below.
 function apiCalls() {
-  return vi.mocked(fetch).mock.calls.filter((call) => String(call[0]) !== "/v1/capabilities");
+  return vi
+    .mocked(fetch)
+    .mock.calls.filter((call) => String(call[0]) !== "/v1/capabilities" && !String(call[0]).endsWith("/investigation"));
 }
 
 afterEach(() => {
@@ -114,12 +133,13 @@ afterEach(() => {
 describe("App investigation workflow", () => {
   it("one click calls POST job then POST run, in that order", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
@@ -135,12 +155,13 @@ describe("App investigation workflow", () => {
 
   it("ordinary mode sends exactly DEMO-<stubbed UUID>", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
@@ -153,13 +174,14 @@ describe("App investigation workflow", () => {
 
   it("two ordinary submissions use two distinct deterministic UUIDs", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     const uuidSpy = vi.spyOn(globalThis.crypto, "randomUUID");
     uuidSpy.mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ id: "job-1", ticketId: `DEMO-${UUID_A}` }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail({ job: jobResponse({ id: "job-1" }) }) }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
@@ -171,6 +193,7 @@ describe("App investigation workflow", () => {
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ id: "job-2", ticketId: `DEMO-${UUID_B}` }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail({ job: jobResponse({ id: "job-2" }) }) }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     await user.clear(screen.getByLabelText("Issue Summary"));
@@ -185,11 +208,12 @@ describe("App investigation workflow", () => {
 
   it("approval-demo mode sends exactly TICKET-APPROVAL-DEMO", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail({ job: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }) }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
@@ -202,12 +226,13 @@ describe("App investigation workflow", () => {
 
   it("renders no editable Ticket ID field, and shows the ticket/job/run IDs as read-only metadata", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
@@ -222,12 +247,13 @@ describe("App investigation workflow", () => {
 
   it("preserves trace response order in the rendered timeline", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
@@ -242,12 +268,13 @@ describe("App investigation workflow", () => {
 
   it("an ordinary run's report renders no Suggested actions section at all", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
@@ -262,7 +289,7 @@ describe("App investigation workflow", () => {
 
   it("an approval-demo run's report has exactly one DRAFT_CUSTOMER_REPLY card", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     const demoRun = runDetail({
       outcome: {
         type: "COMPLETED",
@@ -294,7 +321,7 @@ describe("App investigation workflow", () => {
 
   it("a job-creation failure shows the error and makes no run request", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse()).mockResolvedValueOnce(jsonResponse(400, errorEnvelope("REQUEST_BODY_INVALID", "The request body failed validation.")));
@@ -310,7 +337,7 @@ describe("App investigation workflow", () => {
 
   it("a run-creation failure retains job metadata and exposes Retry Run, which retries only POST /runs", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
@@ -327,6 +354,7 @@ describe("App investigation workflow", () => {
 
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
     await user.click(retryButton);
     await screen.findByText("Agent activity");
@@ -340,13 +368,14 @@ describe("App investigation workflow", () => {
 
   it("a new investigation clears the prior job, run, and error state before the new one resolves", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     const uuidSpy = vi.spyOn(globalThis.crypto, "randomUUID");
     uuidSpy.mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ id: "job-1" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail({ job: jobResponse({ id: "job-1" }) }) }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
@@ -371,6 +400,7 @@ describe("App investigation workflow", () => {
     resolveSecondJob(jsonResponse(201, { data: jobResponse({ id: "job-2", ticketId: `DEMO-${UUID_B}` }) }));
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail({ job: jobResponse({ id: "job-2" }) }) }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     await screen.findByText("job-2");
@@ -378,7 +408,7 @@ describe("App investigation workflow", () => {
 
   it("a network failure renders an actionable, safe message", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse()).mockRejectedValueOnce(new TypeError("Failed to fetch"));
@@ -393,7 +423,7 @@ describe("App investigation workflow", () => {
 
   it("a malformed response body renders a safe UNEXPECTED_RESPONSE message", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse()).mockResolvedValueOnce(new Response("<html>not json</html>", { status: 500 }));
@@ -407,7 +437,7 @@ describe("App investigation workflow", () => {
 
   it("renders a FAILED outcome with its code and message, and no suggested-actions section", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
@@ -433,7 +463,7 @@ describe("App investigation workflow", () => {
   // second ReportPanel-owned one — is the only refresh affordance.
   it("renders a RUNNING outcome with no Generated report panel, and a working Refresh", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
@@ -461,12 +491,13 @@ describe("App investigation workflow", () => {
 
   it("a rapid double-click produces exactly one workflow submission", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);

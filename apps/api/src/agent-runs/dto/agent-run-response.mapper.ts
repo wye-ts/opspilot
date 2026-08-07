@@ -1,4 +1,4 @@
-import type { PersistedAgentRun } from "@opspilot/database";
+import type { AgentRunRecord, PersistedAgentRun } from "@opspilot/database";
 
 import { mapAgentJobResponse, type AgentJobResponseData } from "../../agent-jobs/dto/agent-job-response.mapper";
 import { formatNanoUsdAsUsdString } from "../../execution/nano-usd";
@@ -38,6 +38,27 @@ export interface AgentRunDetailResponseData {
   readonly outcome: PersistedAgentRun["outcome"];
 }
 
+// Maps just the run record (no job, trace, or outcome). Extracted so the
+// investigation-state mapper (§3) can reuse it without duplicating the cost
+// formatting logic.
+export function mapAgentRunRecordResponse(run: AgentRunRecord): AgentRunResponseData {
+  return {
+    id: run.id,
+    jobId: run.jobId,
+    attemptNumber: run.attemptNumber,
+    status: run.status,
+    providerMode: run.providerMode,
+    modelIdentifier: run.modelIdentifier,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    createdAt: run.createdAt,
+    estimatedCostUsd:
+      run.estimatedCostNanoUsd == null || run.possibleUnobservedCost
+        ? null
+        : formatNanoUsdAsUsdString(run.estimatedCostNanoUsd),
+  };
+}
+
 // Handles both completed and failed terminal outcomes (and the RUNNING
 // shape, defensively) by forwarding the outcome value as-is — it is already
 // a contract-shaped union with no internal database fields. Trace is
@@ -46,35 +67,7 @@ export interface AgentRunDetailResponseData {
 export function mapAgentRunResponse(persisted: PersistedAgentRun): AgentRunDetailResponseData {
   return {
     job: mapAgentJobResponse(persisted.job),
-    run: {
-      id: persisted.run.id,
-      jobId: persisted.run.jobId,
-      attemptNumber: persisted.run.attemptNumber,
-      status: persisted.run.status,
-      providerMode: persisted.run.providerMode,
-      modelIdentifier: persisted.run.modelIdentifier,
-      startedAt: persisted.run.startedAt,
-      finishedAt: persisted.run.finishedAt,
-      createdAt: persisted.run.createdAt,
-      // Two independent reasons to publish nothing.
-      //
-      // `== null` catches BOTH null and undefined on purpose. `null` is the
-      // real domain value meaning "not known", but a run record constructed
-      // before this column existed carries no property at all, and handing
-      // `undefined` to the formatter would throw a 500 out of a read path.
-      //
-      // `possibleUnobservedCost` is the subtler one: the stored figure is real
-      // but INCOMPLETE — a lower bound, not a total. A first-turn timeout stores
-      // 0 while tokens may genuinely have been billed; a failure on turn two
-      // stores only turn one's cost. Publishing either would state a precise
-      // number that is known to be too low, and "$0.00" would go further and
-      // assert the run was free. A missing row says "not known", which is exactly
-      // what is true. The bound stays in PostgreSQL for audit.
-      estimatedCostUsd:
-        persisted.run.estimatedCostNanoUsd == null || persisted.run.possibleUnobservedCost
-          ? null
-          : formatNanoUsdAsUsdString(persisted.run.estimatedCostNanoUsd),
-    },
+    run: mapAgentRunRecordResponse(persisted.run),
     trace: persisted.trace,
     outcome: persisted.outcome,
   };

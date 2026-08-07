@@ -111,6 +111,42 @@ nothing (§10.6).
 
 Returns the job snapshot plus its run summaries, ordered by `attemptNumber` ascending. No trace, report, failure payload, or pagination — this is a summary read model only.
 
+### `GET /v1/agent-jobs/:jobId/investigation` **(#38)**
+
+Returns one `RepeatableRead` snapshot of the job, its latest run (by `MAX(attemptNumber)`), the legacy trace projection, the run outcome, and the raw canonical event records — all from a single consistent database read. Anonymous, like every other read on this demo.
+
+**Response shape** (`200`):
+
+```jsonc
+{ "data": {
+  "job":     { "id", "ticketId", "summary", "createdAt" },
+  "run":     { "id", "jobId", "attemptNumber", "status", "providerMode",
+               "modelIdentifier", "startedAt", "finishedAt", "createdAt",
+               "estimatedCostUsd" } | null,
+  "trace":   [ /* legacy AgentTraceEvent, stored order */ ],
+  "outcome": { "type": "RUNNING" | "COMPLETED" + report | "FAILED" + code/message } | null,
+  "events":  [ { "runId", "sequence", "recordedAt", "payload" } ]   // sequence ASC
+} }
+```
+
+- `run` / `outcome` are `null` and `trace` / `events` are `[]` when the job has no run yet (the window between `createAgentJob` resolving and the run-creation transaction committing). That is a real, expected state, not an error.
+- **Latest attempt only**, selected by `MAX(attemptNumber)`. The client additionally applies a `minAttemptNumber` floor during a retry.
+- `trace` is produced by the **same** `fromTraceEventRows` projection used by `GET /v1/agent-runs/:runId` — canonical events project to their legacy equivalents, lifecycle-only types are hidden, and legacy streams pass through byte-identical.
+- `events` carries the raw, fully-validated `InvestigationEventRecord[]` for EVERY row the run has — canonical or legacy — via `fromInvestigationEventRows`, which is safe for both: the record payload schema is a strict superset of the four legacy trace-event types. The canonical-vs-legacy **verdict** is a client-side decision: the browser calls `hasCanonicalInvestigationLifecycleMarker(events)` itself — there is no server-side `eventsFormat` verdict field, and this is the one public/client boundary that decides the distinction.
+- **Approval is deliberately not embedded.** Approval only becomes meaningful at terminal `COMPLETED`, polling stops there, and the terminal-settlement path already owns the "run just settled → load approval, freeze the clock, announce" sequence.
+- **`clientRequestId` is absent** from the response and from every event payload, matching every other public endpoint in this document.
+
+**Errors:**
+
+| Case | Response |
+| --- | --- |
+| `jobId` not a UUID | `400 ROUTE_PARAMETER_INVALID` |
+| Job absent | `404 AGENT_JOB_NOT_FOUND` |
+| Stored stream fails validation/contiguity | `500 INTERNAL_DATA_INVALID` |
+| Database outage | `503 PERSISTENCE_UNAVAILABLE` |
+
+No new `ApiErrorCode` is added. **`GET /v1/agent-runs/:runId` is not touched** — its `{ job, run, trace, outcome }` shape, and every legacy consumer of it, stay exactly as they are.
+
 ### `GET /v1/agent-runs/:runId`
 
 Returns the full persisted run projection: `job`, `run`, `trace` (in stored order — never re-sorted at the API layer), and `outcome` (`RUNNING` / `COMPLETED` with `report` / `FAILED` with `code` + `message`). Approval state is **not** embedded here — see the two endpoints below.

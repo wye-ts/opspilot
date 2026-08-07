@@ -6,7 +6,7 @@ import { mapDomainError } from "../errors/map-domain-error";
 import { UuidParamSchema } from "../validation/uuid-param.schema";
 import { ZodParamValidationPipe, ZodValidationPipe } from "../validation/zod-validation.pipe";
 import { AGENT_RUN_SERVICE } from "../execution/execution.tokens";
-import { mapAgentJobDetailResponse, mapAgentJobResponse } from "./dto/agent-job-response.mapper";
+import { mapAgentJobDetailResponse, mapAgentJobResponse, mapInvestigationStateResponse } from "./dto/agent-job-response.mapper";
 
 @Controller("agent-jobs")
 export class AgentJobsController {
@@ -20,6 +20,16 @@ export class AgentJobsController {
       return { data: mapAgentJobResponse(job) };
     } catch (error) {
       throw mapDomainError(error, "createAgentJob");
+    }
+  }
+
+  @Get(":jobId/investigation")
+  async getInvestigationState(@Param("jobId", new ZodParamValidationPipe(UuidParamSchema)) jobId: string) {
+    try {
+      const state = await this.agentRunService.getInvestigationState(jobId);
+      return { data: mapInvestigationStateResponse(state) };
+    } catch (error) {
+      throw mapDomainError(error, "getInvestigationState");
     }
   }
 

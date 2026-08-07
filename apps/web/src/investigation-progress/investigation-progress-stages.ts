@@ -1,8 +1,10 @@
 import type { BadgeTone } from "../components/StatusBadge";
+import type { ExecutionStageDerivation } from "./execution-stage-derivation";
+import { buildExecutionStageRows, type ExecutionStageRowViewModel } from "./execution-stage-rows";
 
 export type InvestigationProgressStageKey = "availability" | "job" | "run" | "approval";
 
-export type InvestigationProgressStageStatus = "pending" | "active" | "completed" | "failed";
+export type InvestigationProgressStageStatus = "pending" | "active" | "completed" | "failed" | "omitted";
 
 /**
  * Distinguishes not-started, in-flight, completed (including "no approval
@@ -19,6 +21,13 @@ export interface InvestigationProgressStageViewModel {
   readonly key: InvestigationProgressStageKey;
   readonly status: InvestigationProgressStageStatus;
   readonly label: string;
+  /**
+   * Present ONLY on the `"run"` row, and ONLY when the execution-stage
+   * derivation is `"canonical"` or `"canonical-invalid"` with non-null
+   * `lastGoodStages`. Every other row, and every legacy run, carries no
+   * `children` at all.
+   */
+  readonly children?: readonly ExecutionStageRowViewModel[];
 }
 
 /**
@@ -95,6 +104,12 @@ export interface DeriveInvestigationProgressStagesInput {
    */
   readonly runOutcomeType: RunOutcomeKind | null;
   readonly approvalLoadStatus: ApprovalLoadStatus;
+  /**
+   * The canonical execution-stage derivation (§4). Defaults to legacy for
+   * callers that haven't wired polling yet — the existing call site passes
+   * `{ kind: "legacy" }` and behavior is byte-identical to today.
+   */
+  readonly executionStageDerivation: ExecutionStageDerivation;
 }
 
 function stageViewModel(key: InvestigationProgressStageKey, status: InvestigationProgressStageStatus): InvestigationProgressStageViewModel {
@@ -186,7 +201,7 @@ function isTerminallyFailedBeforeApproval(input: DeriveInvestigationProgressStag
  */
 export function deriveInvestigationProgressStages(
   input: DeriveInvestigationProgressStagesInput,
-): readonly InvestigationProgressStageViewModel[] {
+): { readonly stages: readonly InvestigationProgressStageViewModel[]; readonly executionDetailNote: string | null } {
   const workflowKeys: readonly InvestigationProgressStageKey[] =
     input.providerMode === "LIVE" ? ["availability", "job", "run"] : ["job", "run"];
   // Omitting the row is the truthful settlement for a stage that can no longer
@@ -197,8 +212,11 @@ export function deriveInvestigationProgressStages(
     ? workflowKeys
     : [...workflowKeys, "approval"];
 
+  // Canonical child rows — built once, attached only to the run row.
+  const { canonicalChildren, executionDetailNote } = deriveCanonicalChildren(input.executionStageDerivation);
+
   let blocked = false;
-  return keys.map((key) => {
+  const stages = keys.map((key) => {
     if (key === "approval") {
       return stageViewModel(key, approvalStageStatus(input.approvalLoadStatus));
     }
@@ -208,7 +226,11 @@ export function deriveInvestigationProgressStages(
     if (key === "run") {
       const status = runStageStatus(input);
       if (status !== "completed") blocked = true;
-      return stageViewModel(key, status);
+      const viewModel = stageViewModel(key, status);
+      if (canonicalChildren !== null) {
+        return { ...viewModel, children: canonicalChildren };
+      }
+      return viewModel;
     }
     if (input.failedStage === key) {
       blocked = true;
@@ -222,6 +244,33 @@ export function deriveInvestigationProgressStages(
     if (!completed) blocked = true;
     return stageViewModel(key, completed ? "completed" : "pending");
   });
+
+  return { stages, executionDetailNote };
+}
+
+/**
+ * Derives canonical child rows and the optional detail-unavailable note from
+ * the execution-stage derivation. Returns `null` for children when this run
+ * has no canonical detail to show (legacy or canonical-invalid with no
+ * last-good stages).
+ */
+function deriveCanonicalChildren(
+  derivation: ExecutionStageDerivation,
+): { canonicalChildren: readonly ExecutionStageRowViewModel[] | null; executionDetailNote: string | null } {
+  switch (derivation.kind) {
+    case "legacy":
+      return { canonicalChildren: null, executionDetailNote: null };
+    case "canonical":
+      return { canonicalChildren: buildExecutionStageRows(derivation.stages), executionDetailNote: null };
+    case "canonical-invalid":
+      if (derivation.lastGoodStages !== null) {
+        return { canonicalChildren: buildExecutionStageRows(derivation.lastGoodStages), executionDetailNote: null };
+      }
+      return {
+        canonicalChildren: null,
+        executionDetailNote: "Detailed step-by-step progress isn't available for this run right now.",
+      };
+  }
 }
 
 export interface InvestigationProgressStagePresentation {
@@ -242,5 +291,7 @@ export function presentInvestigationProgressStage(status: InvestigationProgressS
       return { tone: "success", glyph: "✓", badgeLabel: "Done" };
     case "failed":
       return { tone: "danger", glyph: "✕", badgeLabel: "Failed" };
+    case "omitted":
+      return { tone: "neutral", glyph: "—", badgeLabel: "Not applicable" };
   }
 }

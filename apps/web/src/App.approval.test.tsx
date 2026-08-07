@@ -114,8 +114,21 @@ function capabilitiesResponse(): Response {
   return jsonResponse(200, { data: { liveAgentRuns: "UNAVAILABLE", liveAccess: "NOT_APPLICABLE" } });
 }
 
+/**
+ * Investigation polling (#38) starts concurrently with every submit/retry
+ * this file exercises and issues its own GET the tests below never queue a
+ * response for. A default (not `mockResolvedValueOnce`) fallback answers any
+ * such call with 404 — polling stops immediately (`not-found`), which is
+ * invisible to every assertion in this file (none inspect polling state).
+ */
+function pollFallbackResponse(): Response {
+  return jsonResponse(503, errorEnvelope("PERSISTENCE_UNAVAILABLE", "not tracked by this test"));
+}
+
 function apiCalls() {
-  return vi.mocked(fetch).mock.calls.filter((call) => String(call[0]) !== "/v1/capabilities");
+  return vi
+    .mocked(fetch)
+    .mock.calls.filter((call) => String(call[0]) !== "/v1/capabilities" && !String(call[0]).endsWith("/investigation"));
 }
 
 afterEach(() => {
@@ -127,12 +140,13 @@ afterEach(() => {
 describe("App approval workflow", () => {
   it("an ordinary investigation renders NOT_ELIGIBLE with no controls", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "NOT_ELIGIBLE" }) }));
 
     render(<App />);
@@ -144,11 +158,16 @@ describe("App approval workflow", () => {
 
   it("an approval-demo investigation renders the PENDING decision form", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      // Finding 1 (independent review): the POST becoming terminal owner now
+      // performs one authoritative getInvestigationState read before the
+      // approval fetch below — a harmless 404 here falls back to the POST's
+      // own candidate data, exactly as before this fix.
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
@@ -160,12 +179,13 @@ describe("App approval workflow", () => {
 
   it("run/timeline/report render before, or independently of, approval state", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
@@ -176,11 +196,16 @@ describe("App approval workflow", () => {
 
   it("a 201 approve response shows the recorded notice and a terminal, form-free APPROVED panel", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      // Finding 1 (independent review): the POST becoming terminal owner now
+      // performs one authoritative getInvestigationState read before the
+      // approval fetch below — a harmless 404 here falls back to the POST's
+      // own candidate data, exactly as before this fix.
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
@@ -203,11 +228,16 @@ describe("App approval workflow", () => {
 
   it("a 201 reject response shows the terminal REJECTED panel", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      // Finding 1 (independent review): the POST becoming terminal owner now
+      // performs one authoritative getInvestigationState read before the
+      // approval fetch below — a harmless 404 here falls back to the POST's
+      // own candidate data, exactly as before this fix.
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
@@ -227,11 +257,16 @@ describe("App approval workflow", () => {
 
   it("a 200 idempotent replay is treated as success, shows the replay notice, and preserves decidedAt", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      // Finding 1 (independent review): the POST becoming terminal owner now
+      // performs one authoritative getInvestigationState read before the
+      // approval fetch below — a harmless 404 here falls back to the POST's
+      // own candidate data, exactly as before this fix.
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
@@ -254,11 +289,16 @@ describe("App approval workflow", () => {
 
   it("a 409 AGENT_RUN_APPROVAL_ALREADY_DECIDED shows a banner and auto-refetches to the terminal state", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      // Finding 1 (independent review): the POST becoming terminal owner now
+      // performs one authoritative getInvestigationState read before the
+      // approval fetch below — a harmless 404 here falls back to the POST's
+      // own candidate data, exactly as before this fix.
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
@@ -298,11 +338,16 @@ describe("App approval workflow", () => {
 
   it("409 convergence keeps Approve/Reject disabled while the automatic GET is unresolved, blocks a second POST, and renders the terminal state once it resolves", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      // Finding 1 (independent review): the POST becoming terminal owner now
+      // performs one authoritative getInvestigationState read before the
+      // approval fetch below — a harmless 404 here falls back to the POST's
+      // own candidate data, exactly as before this fix.
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
@@ -368,11 +413,16 @@ describe("App approval workflow", () => {
 
   it("clicking Refresh while PENDING keeps Approve/Reject disabled for the full run-GET-then-approval-GET workflow, re-enabling only once idle", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      // Finding 1 (independent review): the POST becoming terminal owner now
+      // performs one authoritative getInvestigationState read before the
+      // approval fetch below — a harmless 404 here falls back to the POST's
+      // own candidate data, exactly as before this fix.
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
@@ -412,11 +462,16 @@ describe("App approval workflow", () => {
 
   it("a 409 AGENT_RUN_NOT_APPROVAL_ELIGIBLE shows a banner and auto-refetches to NOT_ELIGIBLE", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      // Finding 1 (independent review): the POST becoming terminal owner now
+      // performs one authoritative getInvestigationState read before the
+      // approval fetch below — a harmless 404 here falls back to the POST's
+      // own candidate data, exactly as before this fix.
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
@@ -441,11 +496,16 @@ describe("App approval workflow", () => {
 
   it("a 400 validation error shows the banner and leaves the form populated and submittable", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      // Finding 1 (independent review): the POST becoming terminal owner now
+      // performs one authoritative getInvestigationState read before the
+      // approval fetch below — a harmless 404 here falls back to the POST's
+      // own candidate data, exactly as before this fix.
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
@@ -465,11 +525,16 @@ describe("App approval workflow", () => {
 
   it("a 503 persistence error shows a safe message and leaves the form available", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      // Finding 1 (independent review): the POST becoming terminal owner now
+      // performs one authoritative getInvestigationState read before the
+      // approval fetch below — a harmless 404 here falls back to the POST's
+      // own candidate data, exactly as before this fix.
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
@@ -488,12 +553,13 @@ describe("App approval workflow", () => {
 
   it("an approval-fetch failure still leaves the timeline and report rendered", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(503, errorEnvelope("PERSISTENCE_UNAVAILABLE", "The database is temporarily unavailable.")));
 
     render(<App />);
@@ -507,12 +573,13 @@ describe("App approval workflow", () => {
 
   it("Refresh Run also refreshes approval, issuing a run GET then an approval GET", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "NOT_ELIGIBLE" }) }));
 
     render(<App />);
@@ -534,11 +601,16 @@ describe("App approval workflow", () => {
 
   it("a rapid double-click on Approve issues exactly one POST /approval request", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      // Finding 1 (independent review): the POST becoming terminal owner now
+      // performs one authoritative getInvestigationState read before the
+      // approval fetch below — a harmless 404 here falls back to the POST's
+      // own candidate data, exactly as before this fix.
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
@@ -563,11 +635,16 @@ describe("App approval workflow", () => {
 
   it("blank note is omitted from the serialized request body", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRunDetail() }))
+      // Finding 1 (independent review): the POST becoming terminal owner now
+      // performs one authoritative getInvestigationState read before the
+      // approval fetch below — a harmless 404 here falls back to the POST's
+      // own candidate data, exactly as before this fix.
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);

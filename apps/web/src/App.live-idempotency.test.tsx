@@ -110,10 +110,21 @@ function errorEnvelope(code: string, message: string) {
 
 let capabilityFallback: () => Response = () => capabilitiesResponse();
 
+// Investigation polling (#38) starts concurrently with every submit/retry
+// this file exercises and issues its own GET against a URL these tests never
+// queue a response for. Like `/v1/capabilities`, it gets its own harmless
+// fallback (404 — polling stops immediately) rather than falling into the
+// shared queue, where it would either throw "unexpected request" or, worse,
+// silently consume a response meant for a job/run/approval call.
+function pollFallbackResponse(): Response {
+  return jsonResponse(503, errorEnvelope("PERSISTENCE_UNAVAILABLE", "not tracked by this test"));
+}
+
 function mockFetch(...responses: (Response | Promise<Response> | Error)[]) {
   const queue = [...responses];
   const fetchMock = vi.fn((input: unknown, _init?: unknown) => {
     if (String(input) === "/v1/capabilities") return Promise.resolve(capabilityFallback());
+    if (String(input).endsWith("/investigation")) return Promise.resolve(pollFallbackResponse());
     const next = queue.shift();
     if (next === undefined) throw new Error(`unexpected request: ${String(input)}`);
     // An Error models a TRANSPORT failure — the case with no response and no

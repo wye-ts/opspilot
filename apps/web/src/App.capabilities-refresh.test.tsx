@@ -93,6 +93,16 @@ function errorEnvelope(code: string, message: string) {
 let capabilityQueue: (Response | Promise<Response>)[] = [];
 let capabilityFallback: () => Response = AVAILABLE;
 
+// Investigation polling (#38) starts concurrently with every submit/retry
+// this file exercises and issues its own GET these tests never queue a
+// response for. Routed to its own harmless fallback (404 — polling stops
+// immediately), the same way capability traffic gets its own queue+fallback,
+// so it never consumes a response meant for a job/run/approval call and
+// never inflates an `investigationCalls` length assertion.
+function pollFallbackResponse(): Response {
+  return jsonResponse(503, errorEnvelope("PERSISTENCE_UNAVAILABLE", "not tracked by this test"));
+}
+
 function mockFetch(...responses: (Response | Promise<Response>)[]) {
   const queue = [...responses];
   // Two parameters, so `call[1]` (the RequestInit) stays typed at the call sites.
@@ -100,6 +110,7 @@ function mockFetch(...responses: (Response | Promise<Response>)[]) {
     if (String(input) === "/v1/capabilities") {
       return Promise.resolve(capabilityQueue.shift() ?? capabilityFallback());
     }
+    if (String(input).endsWith("/investigation")) return Promise.resolve(pollFallbackResponse());
     const next = queue.shift();
     if (next === undefined) throw new Error(`unexpected request: ${String(input)}`);
     return Promise.resolve(next);
@@ -113,7 +124,9 @@ function capabilityCalls(fetchMock: ReturnType<typeof vi.fn>) {
 }
 
 function investigationCalls(fetchMock: ReturnType<typeof vi.fn>) {
-  return fetchMock.mock.calls.filter((call) => String(call[0]) !== "/v1/capabilities");
+  return fetchMock.mock.calls.filter(
+    (call) => String(call[0]) !== "/v1/capabilities" && !String(call[0]).endsWith("/investigation"),
+  );
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {

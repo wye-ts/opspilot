@@ -6,6 +6,7 @@ import type {
   AgentTraceEvent,
   ApprovalDecision,
   EvidenceReference,
+  InvestigationEventRecord,
   RecordApprovalDecisionInput,
   ResolutionReport,
   SuggestedAction,
@@ -15,6 +16,7 @@ export type {
   AgentTraceEvent,
   ApprovalDecision,
   EvidenceReference,
+  InvestigationEventRecord,
   RecordApprovalDecisionInput,
   ResolutionReport,
   SuggestedAction,
@@ -98,6 +100,19 @@ export interface ApprovalView {
 export interface CapabilitiesView {
   readonly liveAgentRuns: "AVAILABLE" | "UNAVAILABLE";
   readonly liveAccess: "TOKEN_REQUIRED" | "NOT_APPLICABLE";
+}
+
+/**
+ * One snapshot of a job and its latest run — the response from
+ * GET /v1/agent-jobs/:jobId/investigation (§2). `run` / `outcome` are `null`
+ * and `trace` / `events` are `[]` when the job has no run yet.
+ */
+export interface InvestigationStateResponse {
+  readonly job: AgentJobResponse;
+  readonly run: AgentRunRecordView | null;
+  readonly trace: readonly AgentTraceEvent[];
+  readonly outcome: AgentRunOutcomeView | null;
+  readonly events: readonly InvestigationEventRecord[];
 }
 
 export interface ApiSuccessEnvelope<T> {

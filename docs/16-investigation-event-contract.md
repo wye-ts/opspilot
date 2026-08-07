@@ -373,9 +373,9 @@ orchestrator return value for those same paths is unchanged.
 canonical ledger records `TOOL_REQUESTED → TOOL_FAILED` for both early tool
 failure codes.
 
-## 10. #38 polling/URL-resume handoff — future work, not implemented
+## 10. #38 polling/URL-resume handoff — implemented
 
-Active-run discovery per §8; polling an events endpoint (not yet defined) with bounded cadence; the `?job=` refresh flow; and frontend event-driven stage rendering via `deriveExecutionStageProgress`, falling back to the existing simulated inference exactly when `hasCanonicalInvestigationLifecycleMarker` returns `false` — never merely because a run predates #37.
+Active-run discovery per §8 via `GET /v1/agent-jobs/:jobId/investigation` (`docs/12-agent-run-api.md` §3); polling with bounded cadence (1s/2s/5s) and transient backoff via `useInvestigationPoll`; the `?job=` refresh/resume flow via `investigation-url.ts` helpers and mount-time/popstate handlers in `App.tsx`; frontend event-driven stage rendering via `deriveExecutionStageProgress`, falling back to the existing simulated inference exactly when `hasCanonicalInvestigationLifecycleMarker` returns `false` — never merely because a run predates #37. See `docs/reviews/22-issue-38-timeline-polling-resume-plan.md` for the full design record.
 
 ---
 

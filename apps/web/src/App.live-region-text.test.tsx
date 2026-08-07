@@ -85,6 +85,17 @@ function liveCapabilitiesResponse(): Response {
   return jsonResponse(200, { data: { liveAgentRuns: "AVAILABLE", liveAccess: "TOKEN_REQUIRED" } });
 }
 
+/**
+ * Investigation polling (#38) starts concurrently with every submit/retry
+ * this file exercises and issues its own GET the tests below never queue a
+ * response for. A default (not `mockResolvedValueOnce`) fallback answers any
+ * such call with 404 — polling stops immediately (`not-found`), which is
+ * invisible to every assertion in this file (none inspect polling state).
+ */
+function pollFallbackResponse(): Response {
+  return jsonResponse(503, errorEnvelope("PERSISTENCE_UNAVAILABLE", "not tracked by this test"));
+}
+
 function deferredResponse(): { promise: Promise<Response>; resolve: (value: Response) => void } {
   let resolve!: (value: Response) => void;
   const promise = new Promise<Response>((r) => {
@@ -112,7 +123,7 @@ afterEach(() => {
 describe("Sole live-region text uses the canonical stage-label source", () => {
   it("LIVE availability: exact text while the preflight is in flight", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     const deferredPreflight = deferredResponse();
     vi.mocked(fetch).mockResolvedValueOnce(liveCapabilitiesResponse()).mockImplementationOnce(() => deferredPreflight.promise);
 
@@ -130,7 +141,7 @@ describe("Sole live-region text uses the canonical stage-label source", () => {
 
   it("job creation: exact text while POST /v1/agent-jobs is in flight", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     const deferredJob = deferredResponse();
     vi.mocked(fetch).mockResolvedValueOnce(fakeCapabilitiesResponse()).mockImplementationOnce(() => deferredJob.promise);
 
@@ -145,7 +156,7 @@ describe("Sole live-region text uses the canonical stage-label source", () => {
 
   it("run request: exact text while POST .../runs is in flight", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     const deferredRun = deferredResponse();
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
@@ -162,12 +173,13 @@ describe("Sole live-region text uses the canonical stage-label source", () => {
 
   it("initial approval load: exact text while GET .../approval is in flight", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     const deferredApproval = deferredResponse();
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockImplementationOnce(() => deferredApproval.promise);
 
     render(<App />);
@@ -180,11 +192,12 @@ describe("Sole live-region text uses the canonical stage-label source", () => {
 
   it("terminal success: exact text with and without an applicable approval", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "NOT_ELIGIBLE" }) }));
 
     render(<App />);
@@ -195,11 +208,12 @@ describe("Sole live-region text uses the canonical stage-label source", () => {
 
   it("terminal success with an applicable (PENDING) approval: exact composed text", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail({ job: jobResponse({ ticketId: "TICKET-APPROVAL-DEMO" }) }) }))
+      .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
     render(<App />);
@@ -212,7 +226,7 @@ describe("Sole live-region text uses the canonical stage-label source", () => {
 
   it("stage-specific failure: job creation", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(400, errorEnvelope("REQUEST_BODY_INVALID", "The request body failed validation.")));
@@ -228,7 +242,7 @@ describe("Sole live-region text uses the canonical stage-label source", () => {
 
   it("stage-specific failure: run request", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
@@ -242,7 +256,7 @@ describe("Sole live-region text uses the canonical stage-label source", () => {
 
   it("stage-specific failure: LIVE availability refusal", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch).mockResolvedValueOnce(liveCapabilitiesResponse()).mockResolvedValueOnce(fakeCapabilitiesResponse());
 
     render(<App />);
@@ -257,7 +271,7 @@ describe("Sole live-region text uses the canonical stage-label source", () => {
   it("elapsed-timer ticks never alter the live-region text", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     const deferredRun = deferredResponse();
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())

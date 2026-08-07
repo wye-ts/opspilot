@@ -1,4 +1,6 @@
-import type { AgentJobRecord, AgentRunRecord, PersistedAgentJob } from "@opspilot/database";
+import type { AgentJobRecord, AgentRunRecord, PersistedAgentJob, PersistedInvestigationState } from "@opspilot/database";
+
+import { mapAgentRunRecordResponse, type AgentRunResponseData } from "../../agent-runs/dto/agent-run-response.mapper";
 
 // Explicit response shapes — never a spread of the domain/database record.
 // Tests assert the exact key set to prevent a future field (e.g. an
@@ -55,5 +57,27 @@ export function mapAgentJobDetailResponse(persisted: PersistedAgentJob): AgentJo
   return {
     ...mapAgentJobResponse(persisted.job),
     runs: persisted.runs.map(mapAgentRunSummaryResponse),
+  };
+}
+
+export interface InvestigationStateResponseData {
+  readonly job: AgentJobResponseData;
+  readonly run: AgentRunResponseData | null;
+  readonly trace: PersistedInvestigationState["trace"];
+  readonly outcome: PersistedInvestigationState["outcome"];
+  readonly events: PersistedInvestigationState["events"];
+}
+
+// Explicit field-by-field mapping — never a spread of the domain record.
+// Tests assert the exact key set (§8 #10).
+export function mapInvestigationStateResponse(
+  state: PersistedInvestigationState,
+): InvestigationStateResponseData {
+  return {
+    job: mapAgentJobResponse(state.job),
+    run: state.run !== null ? mapAgentRunRecordResponse(state.run) : null,
+    trace: state.trace,
+    outcome: state.outcome,
+    events: state.events,
   };
 }

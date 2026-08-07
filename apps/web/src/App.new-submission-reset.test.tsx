@@ -21,6 +21,17 @@ function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
+/**
+ * Investigation polling (#38) starts concurrently with every submit this
+ * file exercises and issues its own GET the tests below never queue a
+ * response for. A default (not `mockResolvedValueOnce`) fallback answers any
+ * such call with 404 — polling stops immediately (`not-found`), which is
+ * invisible to every assertion in this file (none inspect polling state).
+ */
+function pollFallbackResponse(): Response {
+  return jsonResponse(503, { error: { code: "PERSISTENCE_UNAVAILABLE", message: "not tracked by this test", requestId: "req-1" } });
+}
+
 function jobResponse(overrides: Partial<AgentJobResponse> = {}): AgentJobResponse {
   return {
     id: "job-1",
@@ -100,13 +111,14 @@ afterEach(() => {
 
 it("clears the previous investigation's visible result immediately on a second LIVE submission, before and after a refused preflight", async () => {
   const user = userEvent.setup();
-  vi.stubGlobal("fetch", vi.fn());
+  vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
   vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(UUID_A);
 
   vi.mocked(fetch)
     .mockResolvedValueOnce(liveCapabilitiesResponse()) // mount
     .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() })) // first job
     .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() })) // first run
+    .mockResolvedValueOnce(pollFallbackResponse()) // Finding 1's authoritative final read
     .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() })); // first approval, PENDING
 
   render(<App />);
@@ -172,7 +184,7 @@ it("clears the previous investigation's visible result immediately on a second L
 describe("retained-job recovery is unaffected by beginNewSubmissionDisplay", () => {
   it("a run-creation failure still enters LIVE recovery mode with the job retained", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(liveCapabilitiesResponse())

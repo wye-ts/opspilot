@@ -7,6 +7,7 @@ import type {
   LiveRunStartResult,
   PersistedAgentJob,
   PersistedAgentRun,
+  PersistedInvestigationState,
   ProviderMode,
   ReplayedLiveRun,
   RunProviderUsageWrite,
@@ -121,4 +122,5 @@ export interface AgentRunRepositoryInterface {
   ): Promise<void>;
   getAgentRun(runId: string): Promise<PersistedAgentRun>;
   getAgentJob(jobId: string): Promise<PersistedAgentJob>;
+  getInvestigationState(jobId: string): Promise<PersistedInvestigationState>;
 }

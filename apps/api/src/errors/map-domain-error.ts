@@ -11,6 +11,7 @@ export type DomainErrorContext =
   | "createAgentJob"
   | "getAgentJob"
   | "getAgentRun"
+  | "getInvestigationState"
   | "run-creation"
   | "finalization"
   // Persisting a canonical investigation lifecycle event failed mid-run
@@ -76,7 +77,7 @@ export function mapDomainError(error: unknown, context: DomainErrorContext): Api
       case "PERSISTENCE_EVENT_STREAM_INVALID":
         return new ApiError("INTERNAL_DATA_INVALID", { cause: error });
       case "PERSISTENCE_NOT_FOUND":
-        if (context === "getAgentJob" || context === "run-creation") {
+        if (context === "getAgentJob" || context === "getInvestigationState" || context === "run-creation") {
           return new ApiError("AGENT_JOB_NOT_FOUND", { cause: error });
         }
         if (context === "getAgentRun" || context === "recordApprovalDecision" || context === "getApprovalDecision") {
