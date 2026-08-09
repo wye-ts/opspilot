@@ -77,3 +77,6 @@ Desktop.ini
 .claude/settings.local.json
 
 .plans
+
+# Harness Foundation local artifacts (see CONTEXT.md, scripts/agent/README.md)
+.agent/
