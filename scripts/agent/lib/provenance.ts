@@ -26,8 +26,10 @@ import type {
   MissingReason,
   NestedResult,
   ProvenanceBlock,
+  ReconstructionProof,
   ResolvedConfig,
   ResolvedValue,
+  ReviewBundleResult,
   ScopeCheckResult,
   VerifyMode,
   VerifyResult,
@@ -134,6 +136,16 @@ interface ParsedVerifyStep {
   status: "PASS" | "FAIL";
 }
 
+/**
+ * `runStep` (verify.ts) computes `status` from `exitCode` as exactly
+ * `exitCode === 0 ? "PASS" : "FAIL"` (`exitCode` itself is `result.status ??
+ * 1`, so an abnormal/signal-killed spawn with a null exit status is already
+ * normalized to `1` — a FAIL — before this ever reaches disk). That makes the
+ * PASS/FAIL <-> exitCode-zero relationship a exact bijection the producer
+ * guarantees, not merely a plausible correlation: a step claiming PASS with a
+ * nonzero exitCode (or FAIL with exitCode 0) is not a shape `runStep` could
+ * ever emit.
+ */
 function parseVerifyStep(value: unknown): ParsedVerifyStep | null {
   if (!isObject(value)) return null;
   if (!hasOnlyKeys(value, ["command", "status", "exitCode", "durationMs", "logPath", "outputTail"])) return null;
@@ -147,6 +159,8 @@ function parseVerifyStep(value: unknown): ParsedVerifyStep | null {
   ) {
     return null;
   }
+  if (value.status === "PASS" && value.exitCode !== 0) return null;
+  if (value.status === "FAIL" && value.exitCode === 0) return null;
   return { command: value.command, status: value.status };
 }
 
@@ -234,6 +248,13 @@ export function makeVerifyResultValidator(mode: VerifyMode): ResultValidator<Ver
     // the two means the artifact was assembled by something other than a real run.
     if (value.provenance.resolvedConfig.mode?.value !== mode) return false;
 
+    // verify.ts's own status-selection is `failureReasons.length === 0 ?
+    // "PASS" : "FAIL"` — an exact bijection, not merely a correlation. A PASS
+    // still carrying failure reasons (or a FAIL with none) is not a shape the
+    // real producer could ever emit.
+    if (value.status === "PASS" && value.failureReasons.length !== 0) return false;
+    if (value.status === "FAIL" && value.failureReasons.length === 0) return false;
+
     if (mode === "final") {
       if (value.notRun.length !== FINAL_NOT_RUN.length || !value.notRun.every((v, i) => v === FINAL_NOT_RUN[i])) {
         return false;
@@ -248,19 +269,247 @@ export function makeVerifyResultValidator(mode: VerifyMode): ResultValidator<Ver
 export const isFocusedVerifyResult = makeVerifyResultValidator("focused");
 export const isFinalVerifyResult = makeVerifyResultValidator("final");
 
+/**
+ * Structural validation plus the real `agent:scope-check` producer's status
+ * invariants (Codex finding, structured-codex-review-v1): a doctored/
+ * corrupted artifact whose `status` disagrees with its own
+ * `failureReasons`/`outOfScopePaths` — e.g. a `PASS` still carrying the
+ * `outOfScopePaths`/`failureReasons` of what was really a `FAIL` run — is not
+ * a shape the real producer (scope-check.ts's own status-selection logic)
+ * could ever emit, and must not be read as trustworthy evidence.
+ *
+ * - `PASS`: `failureReasons`/`outOfScopePaths` are both always empty (the
+ *   producer only reaches PASS once neither is populated).
+ * - `NOT_CONFIGURED`: same as PASS, plus `scopePatterns` is always empty too
+ *   — the producer normalizes an unconfigured scope's resolved value to `[]`
+ *   before this status is ever selected, so a NOT_CONFIGURED artifact
+ *   carrying nonempty scopePatterns was not really unconfigured.
+ * - `FAIL`: `failureReasons` is always nonempty (the producer only reaches
+ *   FAIL by pushing at least one reason, whether from an out-of-scope path
+ *   or an earlier ground-truth failure); `outOfScopePaths` has no fixed
+ *   shape (a ground-truth FAIL, e.g. an unresolved baseline, can leave it
+ *   empty), so it is intentionally left unconstrained here.
+ */
 export function isScopeCheckResult(value: unknown): value is ScopeCheckResult {
   if (!isObject(value)) return false;
   if (!hasOnlyKeys(value, ["status", "scopePatterns", "changeSetPaths", "outOfScopePaths", "failureReasons", "provenance"])) {
     return false;
   }
-  return (
-    (value.status === "PASS" || value.status === "FAIL" || value.status === "NOT_CONFIGURED") &&
-    isStringArray(value.scopePatterns) &&
-    isStringArray(value.changeSetPaths) &&
-    isStringArray(value.outOfScopePaths) &&
-    isStringArray(value.failureReasons) &&
-    isProvenanceBlock(value.provenance)
-  );
+  if (
+    (value.status !== "PASS" && value.status !== "FAIL" && value.status !== "NOT_CONFIGURED") ||
+    !isStringArray(value.scopePatterns) ||
+    !isStringArray(value.changeSetPaths) ||
+    !isStringArray(value.outOfScopePaths) ||
+    !isStringArray(value.failureReasons) ||
+    !isProvenanceBlock(value.provenance)
+  ) {
+    return false;
+  }
+
+  if (value.status === "PASS") {
+    return value.failureReasons.length === 0 && value.outOfScopePaths.length === 0;
+  }
+  if (value.status === "NOT_CONFIGURED") {
+    return (
+      value.failureReasons.length === 0 && value.outOfScopePaths.length === 0 && value.scopePatterns.length === 0
+    );
+  }
+  return value.failureReasons.length > 0; // FAIL
+}
+
+const RECONSTRUCTION_STATUSES = new Set(["MATCH", "MISMATCH", "APPLY_FAILED", "PATH_SET_MISMATCH", "CLEANUP_FAILED"]);
+
+/**
+ * `buildReconstructionProof` (reconstruction.ts) only ever sets a non-null
+ * `cleanupError` when cleanup itself failed, in which case `status` is always
+ * forced to `CLEANUP_FAILED` regardless of what the proof had concluded
+ * beforehand (see its own `cleanupError !== null` branch). Every other status
+ * is only ever returned with `cleanupError: null` hardcoded at the call site.
+ * A `MATCH`/`MISMATCH`/`APPLY_FAILED`/`PATH_SET_MISMATCH` carrying a
+ * cleanupError, or a `CLEANUP_FAILED` without one, is not a shape the real
+ * producer could ever emit.
+ */
+function isReconstructionProof(value: unknown): value is ReconstructionProof {
+  if (!isObject(value) || !hasOnlyKeys(value, ["status", "missingPaths", "extraPaths", "cleanupError"])) return false;
+  if (typeof value.status !== "string" || !RECONSTRUCTION_STATUSES.has(value.status)) return false;
+  if (!isStringArray(value.missingPaths)) return false;
+  if (!isStringArray(value.extraPaths)) return false;
+  if (value.cleanupError !== null && typeof value.cleanupError !== "string") return false;
+  if (value.status === "CLEANUP_FAILED") {
+    if (value.cleanupError === null) return false;
+  } else if (value.cleanupError !== null) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * A `NestedResult<T>` as `review-bundle.ts` actually produces it: `MISSING`
+ * always carries a non-null `missingReason` and a null `result`; `CURRENT`/
+ * `STALE` always carry a null `missingReason` and a schema-valid `result` —
+ * `loadGateResult` still hands back the stale result it read, it never nulls
+ * it out just because the artifact is no longer current.
+ *
+ * `enclosingFacts` is the review bundle's own top-level `git` facts
+ * (baselineSha/headSha/changeSetFingerprint). When a nested result claims
+ * `freshness: "CURRENT"`, its own embedded provenance is required to agree
+ * with those enclosing facts — `review-bundle.ts`'s real producer only ever
+ * marks a nested result CURRENT when `compareProvenance` already found it
+ * equal to those exact facts (see `loadGateResult`), so any artifact where
+ * they disagree was not assembled by a real run (hand-doctored or
+ * corrupted) and must not be read as trustworthy CURRENT evidence, even
+ * though the nested result is otherwise structurally well-formed.
+ */
+function isNestedResult<T extends { provenance: ProvenanceBlock }>(
+  value: unknown,
+  validateInner: ResultValidator<T>,
+  enclosingFacts: CurrentFacts,
+): value is NestedResult<T> {
+  if (!isObject(value) || !hasOnlyKeys(value, ["freshness", "missingReason", "result"])) return false;
+  if (value.freshness !== "CURRENT" && value.freshness !== "STALE" && value.freshness !== "MISSING") return false;
+  if (value.missingReason !== null && value.missingReason !== "NOT_FOUND" && value.missingReason !== "INVALID_ARTIFACT") {
+    return false;
+  }
+  if (value.freshness === "MISSING") {
+    return value.missingReason !== null && value.result === null;
+  }
+  if (value.missingReason !== null || value.result === null || !validateInner(value.result)) return false;
+  if (value.freshness === "CURRENT" && compareProvenance(value.result.provenance, enclosingFacts) !== "CURRENT") {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Strict structural validator for `review.json` — the same "unknown fields
+ * rejected, nested shapes independently validated" discipline every other
+ * artifact validator in this file follows. Unlike `VerifyResult`/
+ * `ScopeCheckResult`, a review bundle has no top-level `provenance` field (its
+ * ground-truth facts live directly under `git`), so it is not a
+ * `loadGateResult` consumer — `codex-review.ts` reads and freshness-checks it
+ * directly against those `git` facts instead.
+ */
+export function isReviewBundleResult(value: unknown): value is ReviewBundleResult {
+  if (
+    !isObject(value) ||
+    !hasOnlyKeys(value, [
+      "status",
+      "failureReason",
+      "git",
+      "reconstructionProof",
+      "verify",
+      "scopeCheck",
+      "taskDeclarationHash",
+    ])
+  ) {
+    return false;
+  }
+  if (value.status !== "OK" && value.status !== "FAILED") return false;
+  if (value.failureReason !== null && typeof value.failureReason !== "string") return false;
+  if (value.taskDeclarationHash !== null && typeof value.taskDeclarationHash !== "string") return false;
+
+  const git = value.git;
+  if (!isObject(git) || !hasOnlyKeys(git, ["baselineSha", "headSha", "branch", "changedPaths", "diffHash", "changeSetFingerprint"])) {
+    return false;
+  }
+  if (typeof git.baselineSha !== "string") return false;
+  if (typeof git.headSha !== "string") return false;
+  if (git.branch !== null && typeof git.branch !== "string") return false;
+  if (!isStringArray(git.changedPaths)) return false;
+  if (typeof git.diffHash !== "string") return false;
+  if (typeof git.changeSetFingerprint !== "string") return false;
+
+  const reconstructionProof = value.reconstructionProof;
+  if (!isReconstructionProof(reconstructionProof)) return false;
+
+  // Producer-invariant check, beyond mere structural validity: the real
+  // agent:review-bundle producer never emits status: "OK" alongside a
+  // non-null failureReason or a reconstructionProof that isn't MATCH (see
+  // review-bundle.ts's own "failureReason === null only once reconstruction
+  // is MATCH" gating), and never emits status: "FAILED" with a null
+  // failureReason. An artifact claiming otherwise was not produced by a real
+  // run — whether hand-crafted or corrupted — and must not be read as
+  // trustworthy evidence. This intentionally stops at these top-level/
+  // reconstruction contradictions: it does not require any particular
+  // verify.focused/verify.final/scopeCheck freshness or status, since
+  // review-bundle is an evidence collector allowed to record nested
+  // CURRENT/STALE/MISSING evidence of any shape.
+  if (value.status === "OK" && (value.failureReason !== null || reconstructionProof.status !== "MATCH")) {
+    return false;
+  }
+  if (value.status === "FAILED" && value.failureReason === null) return false;
+
+  const enclosingFacts: CurrentFacts = {
+    baselineSha: git.baselineSha,
+    headSha: git.headSha,
+    changeSetFingerprint: git.changeSetFingerprint,
+  };
+
+  const verify = value.verify;
+  if (!isObject(verify) || !hasOnlyKeys(verify, ["focused", "final"])) return false;
+  if (!isNestedResult(verify.focused, isFocusedVerifyResult, enclosingFacts)) return false;
+  if (!isNestedResult(verify.final, isFinalVerifyResult, enclosingFacts)) return false;
+
+  if (!isNestedResult(value.scopeCheck, isScopeCheckResult, enclosingFacts)) return false;
+
+  return true;
+}
+
+// --- Codex review artifact freshness -----------------------------------------
+
+/**
+ * The seven-fact freshness definition for a Codex review artifact:
+ * `compareProvenance`'s three state facts, plus `review.json`'s exact bytes,
+ * plus `review.diff`'s exact bytes, plus — when an explicit `--task` was
+ * given — the task declaration's exact bytes, plus one more: the stored
+ * `review.diff` bytes hash must still equal a *freshly regenerated* diff over
+ * the current complete change set (`currentChangeSetDiffHash`, computed by the
+ * caller via the exact same `generateReviewDiff` semantics `agent:review-bundle`
+ * itself uses — never a second diff format).
+ *
+ * That seventh fact exists because `changeSetFingerprint` (one of
+ * `compareProvenance`'s three state facts) deliberately does not hash file
+ * mode bits (see `fingerprint.ts`'s "Known v1 cut"), while `git diff` output
+ * *does* include `old mode`/`new mode` lines. Without this fact, a
+ * mode-only change to an already-changed path (e.g. `chmod +x` after
+ * `agent:review-bundle` ran) would leave every other fact identical —
+ * `review.diff`'s own on-disk bytes are untouched, so `currentReviewDiffHash`
+ * still matches too — even though the current Git-relevant diff no longer
+ * matches what was frozen into `review.diff` and handed to Codex. Two
+ * distinct hashes are compared here, deliberately not one ambiguous
+ * "currentReviewDiffHash": `storedReviewDiffHash`/`currentReviewDiffHash` are
+ * the stored review-artifact *bytes* hash re-read from disk (catches
+ * `review.diff` itself being mutated or the working tree drifting from a
+ * frozen `review.diff` a caller failed to notice), while
+ * `currentChangeSetDiffHash` is the *regenerated* current change-set diff,
+ * independently proving the frozen bytes still represent Git reality right
+ * now.
+ *
+ * `taskDeclarationHash` is compared with plain `!==`: `null !== null` is
+ * `false`, so "no task declared on either side" never itself forces STALE,
+ * while `null` vs. any non-null hash (or two different hashes) always does.
+ * This is the single freshness definition both codex-review.ts's own
+ * pre-invocation and post-invocation TOCTOU re-checks — and any future
+ * external consumer of review-findings.json — must use: comparing only a
+ * subset of these seven facts is exactly the fail-open gap this helper closes.
+ */
+export function codexArtifactFreshness(
+  storedProvenance: ProvenanceBlock,
+  storedReviewJsonHash: string,
+  storedReviewDiffHash: string,
+  storedTaskDeclarationHash: string | null,
+  current: CurrentFacts,
+  currentReviewJsonHash: string,
+  currentReviewDiffHash: string,
+  currentTaskDeclarationHash: string | null,
+  currentChangeSetDiffHash: string,
+): Freshness {
+  if (compareProvenance(storedProvenance, current) !== "CURRENT") return "STALE";
+  if (storedReviewJsonHash !== currentReviewJsonHash) return "STALE";
+  if (storedReviewDiffHash !== currentReviewDiffHash) return "STALE";
+  if (storedTaskDeclarationHash !== currentTaskDeclarationHash) return "STALE";
+  if (storedReviewDiffHash !== currentChangeSetDiffHash) return "STALE";
+  return "CURRENT";
 }
 
 // --- command-semantic freshness ---------------------------------------------

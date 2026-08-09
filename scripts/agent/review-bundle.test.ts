@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -266,6 +267,39 @@ describe("agent:review-bundle (e2e, spawned CLI)", () => {
     }
   });
 
+  // BLOCKER regression (HQ), command level: taskDeclarationHash and the
+  // task-derived facts baked into the bundle (here, baselineSha via the
+  // declaration's "baseline" field) must always describe the exact same
+  // bytes. Asserts both against an independently-computed hash of the file
+  // on disk at invocation time, which only holds if hashing and parsing
+  // shared a single read rather than each doing its own.
+  it("taskDeclarationHash and baseline resolution both describe the exact same captured task-declaration bytes", () => {
+    const setup = baseFixture();
+    fixture = setup.fixture;
+    fixture.writeFile("second.txt", "second commit content");
+    fixture.add("second.txt");
+    const taskBaseline = fixture.commit("second");
+    fixture.writeFile("third.txt", "change after the declared baseline");
+
+    const externalDir = mkdtempSync(join(tmpdir(), "task-decl-"));
+    const taskPath = join(externalDir, "task.json");
+    const declarationBytes = JSON.stringify({
+      $schema: "opspilot-harness/task-declaration@1",
+      baseline: taskBaseline,
+    });
+    writeFileSync(taskPath, declarationBytes);
+
+    try {
+      const result = JSON.parse(runReviewBundle(fixture.dir, ["--print-json", "--task", taskPath]).stdout);
+      expect(result.taskDeclarationHash).toBe(createHash("sha256").update(readFileSync(taskPath)).digest("hex"));
+      // Only reachable if the baseline used for resolution came from parsing
+      // the very same bytes the hash was computed over.
+      expect(result.git.baselineSha).toBe(taskBaseline);
+    } finally {
+      rmSync(externalDir, { recursive: true, force: true });
+    }
+  });
+
   it("a task-sourced scope that review-bundle was given no --task for fails closed to STALE", () => {
     const setup = baseFixture();
     fixture = setup.fixture;
@@ -409,6 +443,7 @@ describe("computeReviewBundle (direct import — resolved configuration truthful
       cliTaskPath: "/some/explicit/task.json",
       taskDeclaration: null,
       taskDeclarationError: null,
+      taskDeclarationHash: null,
     });
 
     expect(resolvedConfig.taskPath).toEqual({ value: "/some/explicit/task.json", source: "cli" });
@@ -426,6 +461,7 @@ describe("computeReviewBundle (direct import — resolved configuration truthful
       cliBaseline: baseline,
       taskDeclaration: null,
       taskDeclarationError: null,
+      taskDeclarationHash: null,
     });
 
     expect(resolvedConfig.taskPath).toEqual({ value: null, source: "default" });
@@ -445,6 +481,7 @@ describe("computeReviewBundle (direct import — resolved configuration truthful
       cliAgentDir: customAgentDir,
       taskDeclaration: null,
       taskDeclarationError: null,
+      taskDeclarationHash: null,
     });
 
     expect(resolvedConfig.agentDir).toEqual({ value: customAgentDir, source: "cli" });
@@ -463,6 +500,7 @@ describe("computeReviewBundle (direct import — resolved configuration truthful
       cliBaseline: baseline,
       taskDeclaration: null,
       taskDeclarationError: null,
+      taskDeclarationHash: null,
     });
 
     expect(resolvedConfig.agentDir).toEqual({ value: defaultAgentDir, source: "default" });
@@ -480,6 +518,7 @@ describe("computeReviewBundle (direct import — resolved configuration truthful
       cliBaseline: baseline,
       taskDeclaration: null,
       taskDeclarationError: null,
+      taskDeclarationHash: null,
     });
 
     expect(resolvedConfig.baselineSha).toBe(baseline);
@@ -498,6 +537,7 @@ describe("computeReviewBundle (direct import — resolved configuration truthful
       agentDirDefault: join(fixture.dir, ".agent"),
       taskDeclaration: null,
       taskDeclarationError: null,
+      taskDeclarationHash: null,
     });
 
     expect(resolvedConfig.baselineSource).toBe("merge-base-origin-main");
@@ -537,6 +577,7 @@ describe("computeReviewBundle (direct import — diff-injection scenarios)", () 
       cliBaseline: baseline,
       taskDeclaration: null,
       taskDeclarationError: null,
+      taskDeclarationHash: null,
       diffTextOverride: badDiff,
     });
 
@@ -574,6 +615,7 @@ describe("computeReviewBundle (direct import — diff-injection scenarios)", () 
       cliBaseline: baseline,
       taskDeclaration: null,
       taskDeclarationError: null,
+      taskDeclarationHash: null,
       diffTextOverride: stubDiff,
     });
 
@@ -605,6 +647,7 @@ describe("computeReviewBundle (direct import — diff-injection scenarios)", () 
         cliBaseline: baseline,
         taskDeclaration: null,
         taskDeclarationError: null,
+        taskDeclarationHash: null,
       });
 
       expect(result.reconstructionProof.status).toBe("CLEANUP_FAILED");
@@ -628,6 +671,7 @@ describe("renderMarkdown", () => {
         branch: "main",
         changedPaths: ["x.txt"],
         diffHash: "d".repeat(64),
+        changeSetFingerprint: "e".repeat(64),
       },
       reconstructionProof: { status: "MATCH", missingPaths: [], extraPaths: [], cleanupError: null },
       verify: {
@@ -635,10 +679,12 @@ describe("renderMarkdown", () => {
         final: { freshness: "MISSING", missingReason: "NOT_FOUND", result: null },
       },
       scopeCheck: { freshness: "MISSING", missingReason: "NOT_FOUND", result: null },
+      taskDeclarationHash: null,
     });
 
     expect(md).toContain("status: OK");
     expect(md).toContain("x.txt");
     expect(md).toContain("MATCH");
+    expect(md).toContain("no task declaration");
   });
 });

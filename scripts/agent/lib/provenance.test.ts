@@ -5,11 +5,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   buildProvenance,
+  codexArtifactFreshness,
   compareProvenance,
   FINAL_NOT_RUN,
   FINAL_STEP_COMMANDS,
   isFinalVerifyResult,
   isFocusedVerifyResult,
+  isReviewBundleResult,
   isScopeCheckResult,
   loadGateResult,
   scopeSemanticsCurrent,
@@ -385,6 +387,67 @@ describe("final-mode step/notRun contract (Codex finding: doctored PASS-with-no-
   });
 });
 
+// MAJOR regression (HQ-adjudicated, structured-codex-review-v1 final
+// re-review): the real agent:verify producer (verify.ts) selects
+// status/failureReasons and each step's status/exitCode as exact bijections —
+// `status: failureReasons.length === 0 ? "PASS" : "FAIL"` at the result level,
+// `status: exitCode === 0 ? "PASS" : "FAIL"` at the step level (an abnormal/
+// signal-killed spawn's null exit status is already normalized to 1 before
+// this ever reaches disk). A doctored/corrupted artifact whose fields
+// disagree with those bijections is not a shape the real producer could ever
+// emit and must not be read as trustworthy evidence.
+describe("verify-result producer invariants (status/failureReasons, step status/exitCode)", () => {
+  it("(A) rejects PASS with non-empty failureReasons", () => {
+    const bad = { ...sampleVerifyResult(sampleProvenance(), "focused"), failureReasons: ["stale failure reason"] };
+    expect(isFocusedVerifyResult(bad)).toBe(false);
+  });
+
+  it("(B) rejects FAIL with empty failureReasons", () => {
+    const bad = { ...sampleVerifyResult(sampleProvenance(), "focused"), status: "FAIL" as const, failureReasons: [] };
+    expect(isFocusedVerifyResult(bad)).toBe(false);
+  });
+
+  it("(C) rejects a PASS step carrying a producer-invalid nonzero exitCode", () => {
+    const bad = {
+      ...sampleVerifyResult(sampleProvenance(), "focused"),
+      steps: [{ ...sampleStep("pnpm test", "PASS"), exitCode: 1 }],
+    };
+    expect(isFocusedVerifyResult(bad)).toBe(false);
+  });
+
+  it("(D) rejects a FAIL step carrying the producer's successful exitCode (0)", () => {
+    const bad = {
+      ...sampleVerifyResult(sampleProvenance(), "focused"),
+      status: "FAIL" as const,
+      steps: [{ ...sampleStep("pnpm test", "FAIL"), exitCode: 0 }],
+      failureReasons: ["step failed: pnpm test (exit 0)"],
+    };
+    expect(isFocusedVerifyResult(bad)).toBe(false);
+  });
+
+  it("(E) accepts normal producer-generated focused/final PASS and FAIL shapes", () => {
+    expect(isFocusedVerifyResult(sampleVerifyResult(sampleProvenance(), "focused"))).toBe(true);
+    expect(isFinalVerifyResult(sampleVerifyResult(sampleProvenance(), "final"))).toBe(true);
+
+    const focusedFail = {
+      ...sampleVerifyResult(sampleProvenance(), "focused"),
+      status: "FAIL" as const,
+      touchedWorkspaces: ["@opspilot/web"],
+      steps: [sampleStep("pnpm --filter @opspilot/web run test", "FAIL")],
+      failureReasons: ["step failed: pnpm --filter @opspilot/web run test (exit 1)"],
+    };
+    expect(isFocusedVerifyResult(focusedFail)).toBe(true);
+
+    const finalFail = {
+      ...sampleVerifyResult(sampleProvenance(), "final"),
+      status: "FAIL" as const,
+      steps: [sampleStep(FINAL_STEP_COMMANDS[0] ?? "", "FAIL")],
+      failureReasons: ["step failed: pnpm typecheck (exit 1)"],
+    };
+    expect(isFinalVerifyResult(finalFail)).toBe(true);
+  });
+});
+
 // Regression (Codex finding: provenance recorded resolvedConfig but freshness
 // ignored it, so a scope-check artifact stayed CURRENT after the scope it
 // checked against changed).
@@ -425,6 +488,565 @@ describe("scopeSemanticsCurrent", () => {
     const stored = sampleScopeCheckResult({ value: [], source: "task-declaration" });
     expect(scopeSemanticsCurrent(stored, { taskDeclarationSupplied: true, taskScope: [] })).toBe(true);
     expect(scopeSemanticsCurrent(stored, { taskDeclarationSupplied: true, taskScope: ["docs/**"] })).toBe(false);
+  });
+});
+
+// Codex finding (structured-codex-review-v1, HQ-adjudicated MAJOR): the real
+// agent:scope-check producer only ever emits three status/failureReasons/
+// outOfScopePaths combinations (see scope-check.ts's own status-selection
+// logic) — a doctored/corrupted artifact whose status disagrees with those
+// fields (e.g. a PASS still carrying a real FAIL's outOfScopePaths) must not
+// be read as trustworthy evidence.
+describe("isScopeCheckResult producer invariants", () => {
+  it("(A) rejects PASS with non-empty outOfScopePaths", () => {
+    const bad = { ...sampleScopeCheckResult({ value: ["apps/**"], source: "task-declaration" }), status: "PASS" as const, outOfScopePaths: ["x.txt"] };
+    expect(isScopeCheckResult(bad)).toBe(false);
+  });
+
+  it("(B) rejects PASS with non-empty failureReasons", () => {
+    const bad = {
+      ...sampleScopeCheckResult({ value: ["apps/**"], source: "task-declaration" }),
+      status: "PASS" as const,
+      failureReasons: ["some stale failure reason"],
+    };
+    expect(isScopeCheckResult(bad)).toBe(false);
+  });
+
+  it("(C) rejects FAIL with empty failureReasons", () => {
+    const bad = { ...sampleScopeCheckResult({ value: ["apps/**"], source: "task-declaration" }), status: "FAIL" as const, failureReasons: [] };
+    expect(isScopeCheckResult(bad)).toBe(false);
+  });
+
+  it("(D) accepts producer-valid PASS / FAIL / NOT_CONFIGURED examples", () => {
+    const pass = sampleScopeCheckResult({ value: ["apps/**"], source: "task-declaration" });
+    expect(pass.status).toBe("PASS");
+    expect(isScopeCheckResult(pass)).toBe(true);
+
+    const fail = {
+      ...sampleScopeCheckResult({ value: ["apps/**"], source: "task-declaration" }),
+      status: "FAIL" as const,
+      outOfScopePaths: ["x.txt"],
+      failureReasons: ["1 path(s) outside declared scope: x.txt"],
+    };
+    expect(isScopeCheckResult(fail)).toBe(true);
+
+    const notConfigured = {
+      ...sampleScopeCheckResult({ value: null, source: "default" }),
+      status: "NOT_CONFIGURED" as const,
+    };
+    expect(isScopeCheckResult(notConfigured)).toBe(true);
+  });
+
+  it("rejects NOT_CONFIGURED with non-empty scopePatterns (not the producer's actual unconfigured shape)", () => {
+    const bad = {
+      ...sampleScopeCheckResult({ value: ["apps/**"], source: "default" }),
+      status: "NOT_CONFIGURED" as const,
+    };
+    expect(bad.scopePatterns).toEqual(["apps/**"]);
+    expect(isScopeCheckResult(bad)).toBe(false);
+  });
+
+  it("rejects NOT_CONFIGURED with non-empty outOfScopePaths or failureReasons", () => {
+    const withOutOfScope = {
+      ...sampleScopeCheckResult({ value: null, source: "default" }),
+      status: "NOT_CONFIGURED" as const,
+      outOfScopePaths: ["x.txt"],
+    };
+    expect(isScopeCheckResult(withOutOfScope)).toBe(false);
+
+    const withFailureReason = {
+      ...sampleScopeCheckResult({ value: null, source: "default" }),
+      status: "NOT_CONFIGURED" as const,
+      failureReasons: ["some reason"],
+    };
+    expect(isScopeCheckResult(withFailureReason)).toBe(false);
+  });
+});
+
+describe("isReviewBundleResult", () => {
+  function sampleReviewBundleResult(): import("./types").ReviewBundleResult {
+    return {
+      status: "OK",
+      failureReason: null,
+      git: {
+        baselineSha: "a".repeat(40),
+        headSha: "b".repeat(40),
+        branch: "main",
+        changedPaths: ["x.txt"],
+        diffHash: "d".repeat(64),
+        changeSetFingerprint: "e".repeat(64),
+      },
+      reconstructionProof: { status: "MATCH", missingPaths: [], extraPaths: [], cleanupError: null },
+      verify: {
+        focused: { freshness: "MISSING", missingReason: "NOT_FOUND", result: null },
+        final: { freshness: "MISSING", missingReason: "NOT_FOUND", result: null },
+      },
+      scopeCheck: { freshness: "MISSING", missingReason: "NOT_FOUND", result: null },
+      taskDeclarationHash: null,
+    };
+  }
+
+  it("accepts a well-formed review bundle result", () => {
+    expect(isReviewBundleResult(sampleReviewBundleResult())).toBe(true);
+  });
+
+  /** A provenance block whose baselineSha/headSha/changeSetFingerprint agree exactly with `sampleReviewBundleResult()`'s own `git` facts — what the real producer always embeds in a nested result it marks CURRENT. */
+  function provenanceMatchingBundleGit(config: ResolvedConfig = sampleResolvedConfig()): ProvenanceBlock {
+    const { baselineSha, headSha, changeSetFingerprint } = sampleReviewBundleResult().git;
+    return buildProvenance(baselineSha, headSha, changeSetFingerprint, config);
+  }
+
+  it("accepts a nested CURRENT verify/scope-check result whose provenance agrees with the enclosing git facts", () => {
+    const withNested = sampleReviewBundleResult();
+    withNested.verify.focused = {
+      freshness: "CURRENT",
+      missingReason: null,
+      result: sampleVerifyResult(provenanceMatchingBundleGit(), "focused"),
+    };
+    withNested.scopeCheck = {
+      freshness: "CURRENT",
+      missingReason: null,
+      result: {
+        ...sampleScopeCheckResult({ value: null, source: "default" }),
+        provenance: provenanceMatchingBundleGit(sampleResolvedConfig({ scope: { value: null, source: "default" } })),
+      },
+    };
+    expect(isReviewBundleResult(withNested)).toBe(true);
+  });
+
+  // Codex finding (structured-codex-review-v1): a CURRENT nested result is
+  // only trustworthy evidence if its own provenance actually agrees with the
+  // enclosing bundle's git facts — the real producer (loadGateResult) only
+  // ever marks a nested result CURRENT once compareProvenance already
+  // confirmed exactly that. A forged artifact that hand-sets freshness:
+  // "CURRENT" on a nested result carrying a different baseline/head/
+  // fingerprint must fail structural validation outright (INPUT_INVALID at
+  // the codex-review.ts layer), never be read as trustworthy CURRENT
+  // evidence.
+  it("rejects a forged CURRENT nested verify result whose provenance disagrees with the enclosing git facts", () => {
+    const forged = sampleReviewBundleResult();
+    forged.verify.focused = {
+      freshness: "CURRENT",
+      missingReason: null,
+      // Uses the unrelated default sampleProvenance() facts, not the
+      // bundle's own git facts — a mismatched baseline/head/fingerprint.
+      result: sampleVerifyResult(sampleProvenance(), "focused"),
+    };
+    expect(isReviewBundleResult(forged)).toBe(false);
+  });
+
+  it("rejects a forged CURRENT nested scope-check result whose provenance disagrees with the enclosing git facts", () => {
+    const forged = sampleReviewBundleResult();
+    forged.scopeCheck = {
+      freshness: "CURRENT",
+      missingReason: null,
+      result: sampleScopeCheckResult({ value: null, source: "default" }),
+    };
+    expect(isReviewBundleResult(forged)).toBe(false);
+  });
+
+  it("a STALE nested result is never required to agree with the enclosing git facts", () => {
+    const withStale = sampleReviewBundleResult();
+    withStale.verify.final = {
+      freshness: "STALE",
+      missingReason: null,
+      result: sampleVerifyResult(sampleProvenance(), "final"),
+    };
+    expect(isReviewBundleResult(withStale)).toBe(true);
+  });
+
+  it("rejects an unknown top-level field", () => {
+    expect(isReviewBundleResult({ ...sampleReviewBundleResult(), extra: 1 })).toBe(false);
+  });
+
+  it("rejects a missing changeSetFingerprint on git", () => {
+    const bad = sampleReviewBundleResult();
+    const { changeSetFingerprint: _drop, ...gitWithoutFingerprint } = bad.git;
+    expect(isReviewBundleResult({ ...bad, git: gitWithoutFingerprint })).toBe(false);
+  });
+
+  it("rejects an invalid reconstructionProof.status", () => {
+    const bad = sampleReviewBundleResult();
+    expect(
+      isReviewBundleResult({ ...bad, reconstructionProof: { ...bad.reconstructionProof, status: "UNKNOWN" } }),
+    ).toBe(false);
+  });
+
+  // MAJOR regression (HQ-adjudicated, structured-codex-review-v1 final
+  // re-review): the real reconstruction producer (reconstruction.ts's
+  // buildReconstructionProof) only ever sets a non-null cleanupError when
+  // cleanup itself failed, in which case status is unconditionally forced to
+  // CLEANUP_FAILED — every other status is hardcoded with `cleanupError:
+  // null` at its call site. A MATCH (or any other non-cleanup status)
+  // carrying a cleanupError, or a CLEANUP_FAILED without one, is not a shape
+  // the real producer could ever emit.
+  describe("reconstructionProof producer invariant (status vs. cleanupError)", () => {
+    it("(A) rejects MATCH with a non-null cleanupError", () => {
+      const bad = sampleReviewBundleResult();
+      expect(
+        isReviewBundleResult({
+          ...bad,
+          reconstructionProof: { status: "MATCH", missingPaths: [], extraPaths: [], cleanupError: "leaked worktree" },
+        }),
+      ).toBe(false);
+    });
+
+    it("(B) rejects a non-cleanup status (MISMATCH) carrying a cleanupError", () => {
+      const bad = sampleReviewBundleResult();
+      expect(
+        isReviewBundleResult({
+          ...bad,
+          status: "FAILED",
+          failureReason: "reconstruction proof: MISMATCH",
+          reconstructionProof: { status: "MISMATCH", missingPaths: [], extraPaths: [], cleanupError: "leaked worktree" },
+        }),
+      ).toBe(false);
+    });
+
+    it("(C) rejects CLEANUP_FAILED without a cleanupError", () => {
+      const bad = sampleReviewBundleResult();
+      expect(
+        isReviewBundleResult({
+          ...bad,
+          status: "FAILED",
+          failureReason: "reconstruction proof: CLEANUP_FAILED",
+          reconstructionProof: { status: "CLEANUP_FAILED", missingPaths: [], extraPaths: [], cleanupError: null },
+        }),
+      ).toBe(false);
+    });
+
+    it("(D) accepts normal producer-generated reconstruction states", () => {
+      const match = sampleReviewBundleResult();
+      expect(isReviewBundleResult(match)).toBe(true);
+
+      const mismatch = {
+        ...sampleReviewBundleResult(),
+        status: "FAILED" as const,
+        failureReason: "reconstruction proof: MISMATCH",
+        reconstructionProof: { status: "MISMATCH" as const, missingPaths: [], extraPaths: [], cleanupError: null },
+      };
+      expect(isReviewBundleResult(mismatch)).toBe(true);
+
+      const cleanupFailed = {
+        ...sampleReviewBundleResult(),
+        status: "FAILED" as const,
+        failureReason: "reconstruction proof: CLEANUP_FAILED",
+        reconstructionProof: {
+          status: "CLEANUP_FAILED" as const,
+          missingPaths: [],
+          extraPaths: [],
+          cleanupError: "worktree is still registered at /tmp/x",
+        },
+      };
+      expect(isReviewBundleResult(cleanupFailed)).toBe(true);
+    });
+  });
+
+  it("rejects a MISSING nested result with a non-null missingReason contract violated (result present)", () => {
+    const bad = sampleReviewBundleResult();
+    expect(
+      isReviewBundleResult({
+        ...bad,
+        verify: {
+          ...bad.verify,
+          focused: { freshness: "MISSING", missingReason: "NOT_FOUND", result: sampleVerifyResult(sampleProvenance()) },
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects a CURRENT nested result with a null result", () => {
+    const bad = sampleReviewBundleResult();
+    expect(
+      isReviewBundleResult({
+        ...bad,
+        scopeCheck: { freshness: "CURRENT", missingReason: null, result: null },
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts a non-null taskDeclarationHash", () => {
+    const withHash = { ...sampleReviewBundleResult(), taskDeclarationHash: "f".repeat(64) };
+    expect(isReviewBundleResult(withHash)).toBe(true);
+  });
+
+  it("rejects a missing taskDeclarationHash field", () => {
+    const bad = sampleReviewBundleResult();
+    const { taskDeclarationHash: _drop, ...withoutHash } = bad;
+    expect(isReviewBundleResult(withoutHash)).toBe(false);
+  });
+
+  it("rejects a non-string, non-null taskDeclarationHash", () => {
+    expect(isReviewBundleResult({ ...sampleReviewBundleResult(), taskDeclarationHash: 123 })).toBe(false);
+  });
+
+  // MAJOR regression (HQ): the real agent:review-bundle producer never emits
+  // these combinations (review-bundle.ts only sets failureReason to null once
+  // reconstructionProof.status === "MATCH", and status: "OK" only once
+  // failureReason stays null) — a hand-crafted or corrupted artifact claiming
+  // otherwise must not be read as trustworthy evidence, so a Codex review
+  // built on it must never reach INPUT_STALE/CURRENT at all: it fails
+  // structural validation outright (INPUT_INVALID, Codex never invoked).
+  describe("producer-invariant contradictions (status vs. failureReason vs. reconstructionProof)", () => {
+    it("rejects status: OK with a MISMATCH reconstructionProof, even with failureReason null", () => {
+      const bad = sampleReviewBundleResult();
+      expect(
+        isReviewBundleResult({
+          ...bad,
+          status: "OK",
+          failureReason: null,
+          reconstructionProof: { status: "MISMATCH", missingPaths: [], extraPaths: [], cleanupError: null },
+        }),
+      ).toBe(false);
+    });
+
+    it("rejects status: OK with a non-null failureReason, even with a MATCH reconstructionProof", () => {
+      const bad = sampleReviewBundleResult();
+      expect(
+        isReviewBundleResult({
+          ...bad,
+          status: "OK",
+          failureReason: "some failure",
+          reconstructionProof: { status: "MATCH", missingPaths: [], extraPaths: [], cleanupError: null },
+        }),
+      ).toBe(false);
+    });
+
+    it("rejects status: FAILED with a null failureReason", () => {
+      const bad = sampleReviewBundleResult();
+      expect(
+        isReviewBundleResult({
+          ...bad,
+          status: "FAILED",
+          failureReason: null,
+        }),
+      ).toBe(false);
+    });
+
+    it("accepts a normal producer-generated OK + MATCH bundle", () => {
+      const good = sampleReviewBundleResult();
+      expect(good.status).toBe("OK");
+      expect(good.failureReason).toBeNull();
+      expect(good.reconstructionProof.status).toBe("MATCH");
+      expect(isReviewBundleResult(good)).toBe(true);
+    });
+
+    it("accepts a normal producer-generated FAILED bundle with a non-null failureReason", () => {
+      const failed = sampleReviewBundleResult();
+      expect(
+        isReviewBundleResult({
+          ...failed,
+          status: "FAILED",
+          failureReason: "reconstruction proof: MISMATCH",
+          reconstructionProof: { status: "MISMATCH", missingPaths: [], extraPaths: [], cleanupError: null },
+        }),
+      ).toBe(true);
+    });
+
+    // review-bundle remains an evidence collector: nested verify/scope-check
+    // freshness/status of any shape must not be required by this validator —
+    // only a CURRENT-claiming nested result's provenance is required to
+    // agree with the enclosing git facts (see the dedicated describe block
+    // above), which this CURRENT scopeCheck satisfies via
+    // provenanceMatchingBundleGit.
+    it("does not require nested verify/scope-check CURRENT/PASS for an OK + MATCH bundle", () => {
+      const withStaleNested = sampleReviewBundleResult();
+      withStaleNested.verify.focused = {
+        freshness: "STALE",
+        missingReason: null,
+        result: sampleVerifyResult(sampleProvenance(), "focused"),
+      };
+      const { baselineSha, headSha, changeSetFingerprint } = withStaleNested.git;
+      withStaleNested.scopeCheck = {
+        freshness: "CURRENT",
+        missingReason: null,
+        result: {
+          ...sampleScopeCheckResult({ value: null, source: "default" }),
+          status: "FAIL",
+          // A producer-valid FAIL always carries at least one failure reason.
+          failureReasons: ["1 path(s) outside declared scope: x.txt"],
+          provenance: buildProvenance(baselineSha, headSha, changeSetFingerprint, sampleResolvedConfig({ scope: { value: null, source: "default" } })),
+        },
+      };
+      expect(isReviewBundleResult(withStaleNested)).toBe(true);
+    });
+  });
+});
+
+describe("codexArtifactFreshness", () => {
+  function facts(provenance: ProvenanceBlock): { baselineSha: string; headSha: string; changeSetFingerprint: string } {
+    return {
+      baselineSha: provenance.baselineSha,
+      headSha: provenance.headSha,
+      changeSetFingerprint: provenance.changeSetFingerprint,
+    };
+  }
+
+  it("CURRENT when all seven facts match, including both task-declaration hashes null", () => {
+    const provenance = sampleProvenance();
+    const result = codexArtifactFreshness(
+      provenance,
+      "review-json-hash",
+      "review-diff-hash",
+      null,
+      facts(provenance),
+      "review-json-hash",
+      "review-diff-hash",
+      null,
+      "review-diff-hash",
+    );
+    expect(result).toBe("CURRENT");
+  });
+
+  it("STALE when the provenance state facts differ", () => {
+    const provenance = sampleProvenance();
+    const result = codexArtifactFreshness(
+      provenance,
+      "review-json-hash",
+      "review-diff-hash",
+      null,
+      { ...facts(provenance), headSha: "different" },
+      "review-json-hash",
+      "review-diff-hash",
+      null,
+      "review-diff-hash",
+    );
+    expect(result).toBe("STALE");
+  });
+
+  it("STALE when reviewJsonHash differs", () => {
+    const provenance = sampleProvenance();
+    const result = codexArtifactFreshness(
+      provenance,
+      "review-json-hash",
+      "review-diff-hash",
+      null,
+      facts(provenance),
+      "different-review-json-hash",
+      "review-diff-hash",
+      null,
+      "review-diff-hash",
+    );
+    expect(result).toBe("STALE");
+  });
+
+  it("STALE when reviewDiffHash differs", () => {
+    const provenance = sampleProvenance();
+    const result = codexArtifactFreshness(
+      provenance,
+      "review-json-hash",
+      "review-diff-hash",
+      null,
+      facts(provenance),
+      "review-json-hash",
+      "different-review-diff-hash",
+      null,
+      "review-diff-hash",
+    );
+    expect(result).toBe("STALE");
+  });
+
+  // BLOCKER regression (HQ): changeSetFingerprint deliberately never hashes
+  // file mode bits, and review.diff's own re-read bytes hash cannot catch
+  // drift either when review.diff itself was never touched — only a
+  // regenerated diff over the *current* change set proves the frozen
+  // review.diff bytes still represent Git reality. This is the seventh fact.
+  it("STALE when currentChangeSetDiffHash disagrees with the stored review.diff bytes hash, even with every other fact identical (mode-only drift)", () => {
+    const provenance = sampleProvenance();
+    const result = codexArtifactFreshness(
+      provenance,
+      "review-json-hash",
+      "review-diff-hash",
+      null,
+      facts(provenance),
+      "review-json-hash",
+      "review-diff-hash",
+      null,
+      "regenerated-diff-hash-reflecting-a-mode-change",
+    );
+    expect(result).toBe("STALE");
+  });
+
+  it("CURRENT when currentChangeSetDiffHash agrees with the stored review.diff bytes hash", () => {
+    const provenance = sampleProvenance();
+    const result = codexArtifactFreshness(
+      provenance,
+      "review-json-hash",
+      "review-diff-hash",
+      null,
+      facts(provenance),
+      "review-json-hash",
+      "review-diff-hash",
+      null,
+      "review-diff-hash",
+    );
+    expect(result).toBe("CURRENT");
+  });
+
+  // The specific HQ scenario: identical provenance/diff-relevant facts,
+  // differing taskDeclarationHash — this must be caught, since a task
+  // declaration can change (or vanish) without moving any of the other five
+  // facts at all.
+  it("STALE when taskDeclarationHash differs, with every other fact identical", () => {
+    const provenance = sampleProvenance();
+    const result = codexArtifactFreshness(
+      provenance,
+      "review-json-hash",
+      "review-diff-hash",
+      "task-hash-a",
+      facts(provenance),
+      "review-json-hash",
+      "review-diff-hash",
+      "task-hash-b",
+      "review-diff-hash",
+    );
+    expect(result).toBe("STALE");
+  });
+
+  it("STALE when one side has a task declaration hash and the other does not", () => {
+    const provenance = sampleProvenance();
+    expect(
+      codexArtifactFreshness(
+        provenance,
+        "review-json-hash",
+        "review-diff-hash",
+        "task-hash-a",
+        facts(provenance),
+        "review-json-hash",
+        "review-diff-hash",
+        null,
+        "review-diff-hash",
+      ),
+    ).toBe("STALE");
+    expect(
+      codexArtifactFreshness(
+        provenance,
+        "review-json-hash",
+        "review-diff-hash",
+        null,
+        facts(provenance),
+        "review-json-hash",
+        "review-diff-hash",
+        "task-hash-b",
+        "review-diff-hash",
+      ),
+    ).toBe("STALE");
+  });
+
+  it("both sides null for taskDeclarationHash does not itself force STALE", () => {
+    const provenance = sampleProvenance();
+    const result = codexArtifactFreshness(
+      provenance,
+      "review-json-hash",
+      "review-diff-hash",
+      null,
+      facts(provenance),
+      "review-json-hash",
+      "review-diff-hash",
+      null,
+      "review-diff-hash",
+    );
+    expect(result).toBe("CURRENT");
   });
 });
 

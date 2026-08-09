@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { CliArgsError, getBooleanFlag, getStringFlag, parseArgsList, parseCommonArgs } from "./cli-args";
+import { assertKnownFlags, CliArgsError, getBooleanFlag, getStringFlag, parseArgsList, parseCommonArgs } from "./cli-args";
 
 describe("parseArgsList", () => {
   it("parses value flags", () => {
@@ -48,5 +48,28 @@ describe("getStringFlag / getBooleanFlag", () => {
     expect(getStringFlag(raw, "out")).toBe("dir");
     expect(getBooleanFlag(raw, "render-md")).toBe(true);
     expect(getBooleanFlag(raw, "missing")).toBe(false);
+  });
+});
+
+describe("assertKnownFlags", () => {
+  it("accepts every common flag with no command-specific flags declared", () => {
+    const raw = parseArgsList(["--task", "t.json", "--baseline", "HEAD~1", "--agent-dir", "/tmp/x", "--print-json"]);
+    expect(() => assertKnownFlags(raw, [])).not.toThrow();
+  });
+
+  it("accepts a declared command-specific flag alongside common flags", () => {
+    const raw = parseArgsList(["--out", "dir", "--task", "t.json"]);
+    expect(() => assertKnownFlags(raw, ["out", "render-md"])).not.toThrow();
+  });
+
+  it("rejects an unknown flag not in COMMON_FLAGS or the declared command flags", () => {
+    const raw = parseArgsList(["--out", "dir", "--review-dri", "custom"]);
+    expect(() => assertKnownFlags(raw, ["out", "render-md"])).toThrow(CliArgsError);
+    expect(() => assertKnownFlags(raw, ["out", "render-md"])).toThrow(/--review-dri/);
+  });
+
+  it("rejects a flag that is valid on a different command but not declared here", () => {
+    const raw = parseArgsList(["--scope", "apps/web/**"]);
+    expect(() => assertKnownFlags(raw, ["out", "render-md"])).toThrow(CliArgsError);
   });
 });

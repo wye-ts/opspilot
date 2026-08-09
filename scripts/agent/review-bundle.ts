@@ -10,10 +10,11 @@
 // malformed task declaration, or an unrecoverable git/fs error.
 
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { writeFileAtomic, writeJsonAtomic } from "./lib/atomic-write";
-import { CliArgsError, getBooleanFlag, getStringFlag, parseArgsList, parseCommonArgs } from "./lib/cli-args";
+import { assertKnownFlags, CliArgsError, getBooleanFlag, getStringFlag, parseArgsList, parseCommonArgs } from "./lib/cli-args";
 import { computeChangeSetFingerprint } from "./lib/fingerprint";
 import { getCompleteChangeSet, getCurrentBranch, getHeadSha } from "./lib/git";
 import {
@@ -26,11 +27,11 @@ import {
 import { printFailureReasons, printResolvedConfig, printStatusLine } from "./lib/report";
 import { buildReconstructionProof } from "./lib/reconstruction";
 import { BaselineResolutionError, resolveBaseline, resolveField } from "./lib/resolved-config";
-import { loadTaskDeclaration, TaskDeclarationError } from "./lib/task-declaration";
+import { parseTaskDeclaration, TaskDeclarationError } from "./lib/task-declaration";
 import type { ChangeEntry, ReconstructionProof, ResolvedConfig, ReviewBundleResult, TaskDeclaration } from "./lib/types";
 
-function sha256(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex");
+function sha256(data: Buffer | string): string {
+  return createHash("sha256").update(data).digest("hex");
 }
 
 export function renderMarkdown(result: ReviewBundleResult): string {
@@ -73,6 +74,8 @@ export function renderMarkdown(result: ReviewBundleResult): string {
     `- scope-check: freshness=${result.scopeCheck.freshness} missingReason=${result.scopeCheck.missingReason ?? "null"} status=${result.scopeCheck.result?.status ?? "n/a"}`,
   );
   lines.push("");
+  lines.push(`- taskDeclarationHash: ${result.taskDeclarationHash ?? "no task declaration"}`);
+  lines.push("");
   return lines.join("\n");
 }
 
@@ -86,6 +89,13 @@ export interface ComputeReviewBundleOptions {
   cliBaseline?: string;
   taskDeclaration: TaskDeclaration | null;
   taskDeclarationError: string | null;
+  /**
+   * SHA-256 of the exact raw bytes read from `cliTaskPath`, or null when no
+   * explicit --task was given. Computed by the caller (main()) independently
+   * of task-declaration parse success, since a malformed-but-readable task
+   * declaration still has bytes worth binding the bundle to.
+   */
+  taskDeclarationHash: string | null;
   /**
    * Test-only seam, threaded straight through to
    * lib/reconstruction.ts's own diffText override — lets tests engineer an
@@ -103,8 +113,16 @@ export interface ComputeReviewBundleOutput {
 
 /** The full evidence-collection computation, independent of CLI/process concerns — exported so tests can exercise it directly (including the diffTextOverride seam) without spawning a process. */
 export function computeReviewBundle(options: ComputeReviewBundleOptions): ComputeReviewBundleOutput {
-  const { cwd, agentDirDefault, cliAgentDir, cliTaskPath, cliBaseline, taskDeclaration, taskDeclarationError } =
-    options;
+  const {
+    cwd,
+    agentDirDefault,
+    cliAgentDir,
+    cliTaskPath,
+    cliBaseline,
+    taskDeclaration,
+    taskDeclarationError,
+    taskDeclarationHash,
+  } = options;
 
   let failureReason: string | null = taskDeclarationError;
 
@@ -210,10 +228,11 @@ export function computeReviewBundle(options: ComputeReviewBundleOptions): Comput
   const result: ReviewBundleResult = {
     status: failureReason === null ? "OK" : "FAILED",
     failureReason,
-    git: { baselineSha, headSha, branch, changedPaths, diffHash },
+    git: { baselineSha, headSha, branch, changedPaths, diffHash, changeSetFingerprint },
     reconstructionProof,
     verify: { focused: verifyFocused, final: verifyFinal },
     scopeCheck,
+    taskDeclarationHash,
   };
 
   return { result, diffText, resolvedConfig };
@@ -222,20 +241,34 @@ export function computeReviewBundle(options: ComputeReviewBundleOptions): Comput
 function main(): void {
   const cwd = process.cwd();
   const raw = parseArgsList(process.argv.slice(2));
+  assertKnownFlags(raw, ["out", "render-md"]);
   const common = parseCommonArgs(raw);
   const renderMd = getBooleanFlag(raw, "render-md");
   const outFlag = getStringFlag(raw, "out");
 
   let taskDeclaration: TaskDeclaration | null = null;
   let taskDeclarationError: string | null = null;
+  let taskDeclarationHash: string | null = null;
   if (common.task !== undefined) {
+    // Single read: the exact bytes captured here drive both the hash and the
+    // parse below, so taskDeclarationHash always describes exactly the bytes
+    // that produced (or failed to produce) taskDeclaration.
+    let taskDeclarationRaw: Buffer | null = null;
     try {
-      taskDeclaration = loadTaskDeclaration(common.task);
+      taskDeclarationRaw = readFileSync(common.task);
     } catch (err) {
-      if (err instanceof TaskDeclarationError) {
-        taskDeclarationError = `malformed task declaration: ${err.message}`;
-      } else {
-        throw err;
+      taskDeclarationError = `task declaration not found or unreadable at ${common.task}: ${String(err)}`;
+    }
+    if (taskDeclarationRaw !== null) {
+      taskDeclarationHash = sha256(taskDeclarationRaw);
+      try {
+        taskDeclaration = parseTaskDeclaration(taskDeclarationRaw, common.task);
+      } catch (err) {
+        if (err instanceof TaskDeclarationError) {
+          taskDeclarationError = `malformed task declaration: ${err.message}`;
+        } else {
+          throw err;
+        }
       }
     }
   }
@@ -250,6 +283,7 @@ function main(): void {
     ...(common.baseline !== undefined ? { cliBaseline: common.baseline } : {}),
     taskDeclaration,
     taskDeclarationError,
+    taskDeclarationHash,
   });
 
   printResolvedConfig(resolvedConfig);

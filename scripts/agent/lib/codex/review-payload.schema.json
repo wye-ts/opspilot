@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CodexReviewPayload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "findings"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["READY_FOR_OWNER_REVIEW", "NEEDS_FIXES"]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "severity",
+          "title",
+          "location",
+          "reproduction",
+          "whyItMatters",
+          "smallestFix",
+          "missingTest"
+        ],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["BLOCKER", "MAJOR", "MINOR"]
+          },
+          "title": { "type": "string" },
+          "location": { "type": "string" },
+          "reproduction": { "type": "string" },
+          "whyItMatters": { "type": "string" },
+          "smallestFix": { "type": "string" },
+          "missingTest": { "type": "string" }
+        }
+      }
+    }
+  }
+}
