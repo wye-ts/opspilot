@@ -7,7 +7,12 @@ repetitive parts of that workflow — it does not touch plan approval, independe
 authorship, adjudication, or the commit/push/merge decision, which stay human/model judgment. See
 `CONTEXT.md` (repo root) for the frozen vocabulary and constraints.
 
-## The four commands
+**Engineering posture**: OpsPilot is portfolio-grade and production-like, not
+theoretically/adversarially perfect — prefer the smallest sufficient solution and avoid speculative
+hardening or abstraction. `CONTEXT.md`'s "Engineering posture" and "Review closure" sections are the
+source of truth.
+
+## The five commands
 
 | Command | Purpose | Reference |
 | --- | --- | --- |
@@ -15,11 +20,12 @@ authorship, adjudication, or the commit/push/merge decision, which stay human/mo
 | `pnpm agent:verify --focused\|--final` | Focused (touched-workspace) or final (CI-equivalent) verification | [`scripts/agent/README.md`](scripts/agent/README.md), [`CONTEXT.md`](CONTEXT.md) |
 | `pnpm agent:scope-check` | Opt-in check that the complete change set matches a declared scope | [`scripts/agent/README.md`](scripts/agent/README.md), [`CONTEXT.md`](CONTEXT.md) |
 | `pnpm agent:review-bundle` | Evidence collector: diff + machine-readable manifest, never a correctness gate | [`scripts/agent/README.md`](scripts/agent/README.md), [`CONTEXT.md`](CONTEXT.md) |
+| `pnpm agent:codex-review` | Evidence collector: invokes read-only Codex against the review bundle, never a verdict gate | [`scripts/agent/README.md`](scripts/agent/README.md), [`CONTEXT.md`](CONTEXT.md) |
 
 Full CLI flags, JSON shapes, and exit codes: [`scripts/agent/README.md`](scripts/agent/README.md).
 
 **Safety guarantee**: a task declaration is only ever read via an explicit `--task <path>` on any
-of the four commands above — never auto-discovered by well-known filename.
+of the five commands above — never auto-discovered by well-known filename.
 
 ## Where to go next
 

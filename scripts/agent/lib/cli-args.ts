@@ -63,3 +63,23 @@ export function getStringFlag(raw: Map<string, string | boolean>, key: string): 
 export function getBooleanFlag(raw: Map<string, string | boolean>, key: string): boolean {
   return raw.get(key) === true;
 }
+
+/** Accepted on every command's entrypoint — see parseCommonArgs. */
+export const COMMON_FLAGS: readonly string[] = ["task", "baseline", "agent-dir", "print-json"];
+
+/**
+ * Rejects any flag not in COMMON_FLAGS ∪ commandFlags. Every entrypoint calls
+ * this immediately after parseArgsList, before any evidence selection, tool
+ * probing, or provider invocation — an unknown or misspelled flag (e.g.
+ * --review-dri) must never be silently ignored and fall through to running
+ * with an unintended default; it is a CliArgsError, exit 1, nothing else
+ * attempted.
+ */
+export function assertKnownFlags(raw: Map<string, string | boolean>, commandFlags: readonly string[]): void {
+  const allowed = new Set<string>([...COMMON_FLAGS, ...commandFlags]);
+  for (const key of raw.keys()) {
+    if (!allowed.has(key)) {
+      throw new CliArgsError(`unknown flag --${key}`);
+    }
+  }
+}

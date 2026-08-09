@@ -29,6 +29,7 @@
     "agent:verify": "tsx scripts/agent/verify.ts",
     "agent:scope-check": "tsx scripts/agent/scope-check.ts",
     "agent:review-bundle": "tsx scripts/agent/review-bundle.ts",
+    "agent:codex-review": "tsx scripts/agent/codex-review.ts",
     "agent:typecheck": "tsc -p scripts/agent/tsconfig.json --noEmit",
     "agent:test": "vitest run scripts/agent"
   },

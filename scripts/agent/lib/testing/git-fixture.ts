@@ -4,7 +4,7 @@
 // never touches the owner's real repository or global git config.
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -18,6 +18,7 @@ export interface GitFixture {
   dir: string;
   git(...args: string[]): GitRunResult;
   writeFile(relPath: string, content: string): void;
+  chmodFile(relPath: string, mode: number): void;
   removeFile(relPath: string): void;
   add(...relPaths: string[]): void;
   commit(message: string): string;
@@ -72,6 +73,9 @@ export function createGitFixture(): GitFixture {
       const full = join(dir, relPath);
       mkdirSync(dirname(full), { recursive: true });
       writeFileSync(full, content);
+    },
+    chmodFile(relPath, mode) {
+      chmodSync(join(dir, relPath), mode);
     },
     removeFile(relPath) {
       run(["rm", "-f", "--", relPath]);

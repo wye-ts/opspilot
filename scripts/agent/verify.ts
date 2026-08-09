@@ -11,7 +11,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { writeFileAtomic, writeJsonAtomic } from "./lib/atomic-write";
-import { CliArgsError, getBooleanFlag, parseArgsList, parseCommonArgs } from "./lib/cli-args";
+import { assertKnownFlags, CliArgsError, getBooleanFlag, parseArgsList, parseCommonArgs } from "./lib/cli-args";
 import { computeChangeSetFingerprint } from "./lib/fingerprint";
 import { getCompleteChangeSet, getHeadSha } from "./lib/git";
 import { printFailureReasons, printResolvedConfig, printStatusLine } from "./lib/report";
@@ -180,6 +180,7 @@ function runFinal(cwd: string, agentDir: string): VerifyStep[] {
 function main(): void {
   const cwd = process.cwd();
   const raw = parseArgsList(process.argv.slice(2));
+  assertKnownFlags(raw, ["focused", "final"]);
   const common = parseCommonArgs(raw);
   const focused = getBooleanFlag(raw, "focused");
   const final = getBooleanFlag(raw, "final");

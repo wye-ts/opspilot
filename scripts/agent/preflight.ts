@@ -10,7 +10,7 @@
 import { join } from "node:path";
 
 import { writeJsonAtomic } from "./lib/atomic-write";
-import { CliArgsError, getStringFlag, parseArgsList, parseCommonArgs } from "./lib/cli-args";
+import { assertKnownFlags, CliArgsError, getStringFlag, parseArgsList, parseCommonArgs } from "./lib/cli-args";
 import { computeChangeSetFingerprint } from "./lib/fingerprint";
 import { getCompleteChangeSet, getCurrentBranch, getHeadSha, getStagedPaths, getWorkingTreeStatus } from "./lib/git";
 import { printFailureReasons, printResolvedConfig, printStatusLine } from "./lib/report";
@@ -24,6 +24,7 @@ const DOC_POINTERS = ["CONTEXT.md", "AGENTS.md", "scripts/agent/README.md", "doc
 function main(): void {
   const cwd = process.cwd();
   const raw = parseArgsList(process.argv.slice(2));
+  assertKnownFlags(raw, ["branch", "working-tree", "index"]);
   const common = parseCommonArgs(raw);
 
   const branchFlag = getStringFlag(raw, "branch");

@@ -9,7 +9,7 @@
 import { join } from "node:path";
 
 import { writeJsonAtomic } from "./lib/atomic-write";
-import { CliArgsError, getStringFlag, parseArgsList, parseCommonArgs } from "./lib/cli-args";
+import { assertKnownFlags, CliArgsError, getStringFlag, parseArgsList, parseCommonArgs } from "./lib/cli-args";
 import { computeChangeSetFingerprint } from "./lib/fingerprint";
 import { getCompleteChangeSet, getHeadSha } from "./lib/git";
 import { printFailureReasons, printResolvedConfig, printStatusLine } from "./lib/report";
@@ -21,6 +21,7 @@ import type { ResolvedConfig, ScopeCheckResult, ScopeCheckStatus, TaskDeclaratio
 function main(): void {
   const cwd = process.cwd();
   const raw = parseArgsList(process.argv.slice(2));
+  assertKnownFlags(raw, ["scope"]);
   const common = parseCommonArgs(raw);
 
   const cliScopeRaw = getStringFlag(raw, "scope");

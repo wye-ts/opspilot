@@ -143,6 +143,7 @@ export interface ReviewBundleResult {
     branch: string | null;
     changedPaths: string[];
     diffHash: string;
+    changeSetFingerprint: string;
   };
   reconstructionProof: ReconstructionProof;
   verify: {
@@ -150,6 +151,66 @@ export interface ReviewBundleResult {
     final: NestedResult<VerifyResult>;
   };
   scopeCheck: NestedResult<ScopeCheckResult>;
+  /**
+   * SHA-256 of the exact raw bytes of the task declaration this review-bundle
+   * invocation was given, or null when it was run with no explicit --task.
+   * Binds the bundle to the exact task bytes that produced it, so a Codex
+   * invocation against a gitignored task declaration that was silently
+   * swapped after the bundle was generated is detectable even when baseline,
+   * HEAD, changeSetFingerprint, and diffHash all stay unchanged.
+   */
+  taskDeclarationHash: string | null;
+}
+
+export type CodexSeverity = "BLOCKER" | "MAJOR" | "MINOR";
+
+export interface CodexFinding {
+  severity: CodexSeverity;
+  title: string;
+  location: string;
+  reproduction: string;
+  whyItMatters: string;
+  smallestFix: string;
+  missingTest: string;
+}
+
+export interface CodexReviewPayload {
+  verdict: "READY_FOR_OWNER_REVIEW" | "NEEDS_FIXES";
+  findings: CodexFinding[];
+}
+
+export type CodexReviewFailureCategory =
+  | "GROUND_TRUTH_UNRESOLVED"
+  | "INPUT_MISSING"
+  | "INPUT_INVALID"
+  | "INPUT_STALE"
+  | "OUTPUT_DESTINATION_UNSAFE"
+  | "CODEX_UNAVAILABLE"
+  | "CODEX_EXECUTION_FAILED"
+  | "CODEX_OUTPUT_INVALID"
+  | null;
+
+export interface CodexReviewResult {
+  status: "OK" | "FAILED";
+  failureCategory: CodexReviewFailureCategory;
+  failureReason: string | null;
+  payload: CodexReviewPayload | null;
+  reviewInput: {
+    freshness: Freshness;
+    missingReason: MissingReason;
+    reviewJsonPath: string;
+    reviewDiffPath: string;
+  };
+  codexExec: {
+    invoked: boolean;
+    exitCode: number | null;
+    durationMs: number | null;
+    logPath: string | null;
+  };
+  reviewJsonHash: string | null;
+  reviewDiffHash: string | null;
+  taskDeclarationHash: string | null;
+  provenance: ProvenanceBlock | null;
 }
 
 export interface TaskDeclaration {
