@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import type { InvestigationEventRecord } from "@opspilot/contracts";
 
+import { deriveExecutionStageDerivation } from "./execution-stage-derivation";
 import { deriveInvestigationProgressStages, presentInvestigationProgressStage } from "./investigation-progress-stages";
 
 const BASE = {
@@ -10,6 +12,7 @@ const BASE = {
   runOutcomeType: null,
   approvalLoadStatus: "idle" as const,
   executionStageDerivation: { kind: "legacy" as const },
+  events: [],
 };
 
 function stagesFrom(input: Parameters<typeof deriveInvestigationProgressStages>[0]) {
@@ -147,6 +150,129 @@ describe("deriveInvestigationProgressStages", () => {
     expect(active?.label).toBe("Creating investigation…");
     expect(failed?.label).toBe("Creating investigation…");
     expect(completed?.label).toBe("Investigation created");
+  });
+
+  describe("nested events ride along as a view of the run row children", () => {
+    // Four completed canonical stages — a run whose execution detail is
+    // available (kind "canonical"), independent of what events are shown.
+    const canonicalStages = [
+      { key: "INVESTIGATION_CREATED" as const, status: "completed" as const, startedAt: "2026-01-01T00:00:00.000Z", completedAt: "2026-01-01T00:00:01.000Z", elapsedMs: 1000 },
+      { key: "AGENT_ANALYSIS" as const, status: "completed" as const, startedAt: "2026-01-01T00:00:01.000Z", completedAt: "2026-01-01T00:00:31.000Z", elapsedMs: 30_000 },
+      { key: "DIAGNOSTIC_EXECUTION" as const, status: "completed" as const, startedAt: "2026-01-01T00:00:31.000Z", completedAt: "2026-01-01T00:01:01.000Z", elapsedMs: 30_000 },
+      { key: "REPORT_GENERATION" as const, status: "completed" as const, startedAt: "2026-01-01T00:01:01.000Z", completedAt: "2026-01-01T00:01:31.000Z", elapsedMs: 30_000 },
+    ];
+    const canonicalDerivation = { kind: "canonical" as const, stages: canonicalStages };
+
+    it("populates run-row children with events grouped under the correct stages", () => {
+      const stages = stagesFrom({
+        ...BASE,
+        jobCreated: true,
+        runOutcomeType: "COMPLETED",
+        executionStageDerivation: canonicalDerivation,
+        events: [
+          { runId: "11111111-1111-4111-8111-111111111111", sequence: 1, recordedAt: "2026-01-01T00:00:00.000Z", payload: { type: "RUN_CREATED" } },
+          { runId: "11111111-1111-4111-8111-111111111111", sequence: 2, recordedAt: "2026-01-01T00:00:00.100Z", payload: { type: "AGENT_STARTED" } },
+          { runId: "11111111-1111-4111-8111-111111111111", sequence: 3, recordedAt: "2026-01-01T00:00:00.200Z", payload: { type: "TOOL_REQUESTED", toolCallId: "c1", toolName: "check_status" } },
+        ],
+      });
+      const children = stages.find((s) => s.key === "run")?.children;
+      expect(children).not.toBeNull();
+      expect(children?.find((c) => c.key === "INVESTIGATION_CREATED")?.events).toEqual([
+        { sequence: 1, label: "Run created" },
+      ]);
+      expect(children?.find((c) => c.key === "AGENT_ANALYSIS")?.events).toEqual([
+        { sequence: 2, label: "Agent started" },
+      ]);
+      expect(children?.find((c) => c.key === "DIAGNOSTIC_EXECUTION")?.events).toEqual([
+        { sequence: 3, label: "Tool requested" },
+      ]);
+      expect(children?.find((c) => c.key === "REPORT_GENERATION")?.events).toBeUndefined();
+    });
+
+    it("carries no nested events when the events list is empty", () => {
+      const stages = stagesFrom({
+        ...BASE,
+        jobCreated: true,
+        runOutcomeType: "COMPLETED",
+        executionStageDerivation: canonicalDerivation,
+        events: [],
+      });
+      const children = stages.find((s) => s.key === "run")?.children;
+      expect(children).not.toBeNull();
+      expect(children?.every((c) => c.events === undefined)).toBe(true);
+    });
+
+    it("requires the events field on the input (compile-time)", () => {
+      // `events` is a required input field — omitting it is a compile error,
+      // so no call site can silently drop the event view.
+      // @ts-expect-error — `events` is required
+      stagesFrom({ ...BASE, events: undefined });
+    });
+  });
+
+  describe("#40 fail-closed: canonical-invalid last-good rows never nest events from the invalid stream", () => {
+    const FAIL_CLOSED_RUN_ID = "11111111-1111-4111-8111-111111111111";
+    const NOW = "2026-01-01T00:01:00.000Z";
+    const makeEvent = (sequence: number, payload: InvestigationEventRecord["payload"]): InvestigationEventRecord => ({
+      runId: FAIL_CLOSED_RUN_ID,
+      sequence,
+      recordedAt: NOW,
+      payload,
+    });
+
+    // Same-run trusted snapshot — the reducer accepts this partial RUNNING
+    // prefix, so it establishes the run's last-good stages.
+    const trustedEvents = [
+      makeEvent(1, { type: "RUN_CREATED" }),
+      makeEvent(2, { type: "AGENT_STARTED" }),
+    ];
+    // Newer same-run snapshot that is reducer-INVALID: it adds a
+    // canonical-looking TOOL_REQUESTED then an out-of-phase RETRIEVAL_COMPLETED
+    // (retrieval belongs to analysis; the tool phase has already begun). The
+    // reducer rejects the stream, so none of its events may be trusted.
+    const corruptEvents = [
+      ...trustedEvents,
+      makeEvent(3, { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" }),
+      makeEvent(4, { type: "RETRIEVAL_COMPLETED", chunks: [] }),
+    ];
+
+    it("keeps the frozen last-good stage statuses and renders NO nested events from the invalid stream", () => {
+      // 1. The valid same-run snapshot establishes last-good canonical stages.
+      const first = deriveExecutionStageDerivation(trustedEvents, "RUNNING", NOW, { kind: "legacy" });
+      expect(first.kind).toBe("canonical");
+
+      // 2+3. The newer same-run stream is reducer-invalid → the derivation is
+      // canonical-invalid while still carrying the run's last-good stages.
+      const second = deriveExecutionStageDerivation(corruptEvents, "RUNNING", NOW, first);
+      expect(second.kind).toBe("canonical-invalid");
+      if (second.kind === "canonical-invalid") {
+        expect(second.lastGoodStages).not.toBeNull();
+      }
+
+      const stages = stagesFrom({
+        ...BASE,
+        jobCreated: true,
+        runOutcomeType: "RUNNING",
+        executionStageDerivation: second,
+        events: corruptEvents,
+      });
+      const children = stages.find((s) => s.key === "run")?.children;
+      expect(children).not.toBeNull();
+
+      // 4. The Timeline keeps the frozen last-good statuses — the invalid
+      // stream's TOOL_REQUESTED must not advance AGENT_ANALYSIS or
+      // DIAGNOSTIC_EXECUTION.
+      expect(children?.find((c) => c.key === "INVESTIGATION_CREATED")?.status).toBe("completed");
+      expect(children?.find((c) => c.key === "AGENT_ANALYSIS")?.status).toBe("active");
+      expect(children?.find((c) => c.key === "DIAGNOSTIC_EXECUTION")?.status).toBe("pending");
+      expect(children?.find((c) => c.key === "REPORT_GENERATION")?.status).toBe("pending");
+
+      // 5. Fail-closed: the last-good rows carry NO nested events at all —
+      // not even RUN_CREATED/AGENT_STARTED from the invalid snapshot, and
+      // certainly not its new TOOL_REQUESTED. This is the explicit rule,
+      // not just "this one event is gone".
+      expect(children?.every((c) => c.events === undefined)).toBe(true);
+    });
   });
 });
 

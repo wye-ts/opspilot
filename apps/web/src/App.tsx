@@ -2082,6 +2082,9 @@ export function App() {
           runOutcomeType: run?.outcome.type ?? null,
           approvalLoadStatus,
           executionStageDerivation,
+          // A VIEW of the observed event stream, nested under execution-stage
+          // rows — never a driver of stage state (see investigation-progress-stages.ts).
+          events,
         })
       : null;
   const progressStages = progressStagesResult?.stages ?? [];

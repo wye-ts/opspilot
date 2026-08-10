@@ -3,7 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { InvestigationProgressTimeline } from "./InvestigationProgressTimeline";
-import type { InvestigationProgressStageViewModel } from "../investigation-progress/investigation-progress-stages";
+import type {
+  InvestigationProgressStageStatus,
+  InvestigationProgressStageViewModel,
+} from "../investigation-progress/investigation-progress-stages";
 import type { ExecutionStageRowViewModel } from "../investigation-progress/execution-stage-rows";
 
 /**
@@ -24,7 +27,7 @@ function stage(overrides: Partial<InvestigationProgressStageViewModel> = {}): In
   return { key: "run", status: "active", label: "Agent investigation in progress…", ...overrides };
 }
 
-function childRow(key: string, status: string, label: string): ExecutionStageRowViewModel {
+function childRow(key: string, status: InvestigationProgressStageStatus, label: string): ExecutionStageRowViewModel {
   return { key, status, label };
 }
 
@@ -243,5 +246,141 @@ describe("InvestigationProgressTimeline — canonical-invalid presentation", () 
     // No disclosure control either — nothing to disclose.
     expect(screen.queryByRole("button", { name: /Hide steps|Show steps/ })).toBeNull();
     expect(screen.getByText("Detailed step-by-step progress isn't available for this run right now.")).toBeInTheDocument();
+  });
+});
+
+describe("InvestigationProgressTimeline — nested events under execution-stage rows", () => {
+  const CHILDREN_WITH_EVENTS: readonly ExecutionStageRowViewModel[] = [
+    {
+      key: "INVESTIGATION_CREATED",
+      status: "completed",
+      label: "Investigation created",
+      events: [{ sequence: 1, label: "Run created" }],
+    },
+    {
+      key: "AGENT_ANALYSIS",
+      status: "completed",
+      label: "Agent analysis",
+      events: [{ sequence: 2, label: "Agent started" }],
+    },
+    {
+      key: "DIAGNOSTIC_EXECUTION",
+      status: "active",
+      label: "Diagnostic execution",
+      events: [
+        { sequence: 3, label: "Tool requested" },
+        { sequence: 4, label: "Tool completed" },
+      ],
+    },
+    childRow("REPORT_GENERATION", "pending", "Report generation"),
+  ];
+
+  function eventItems(): HTMLElement[] {
+    return [...document.querySelectorAll(".investigation-progress-event-item")] as HTMLElement[];
+  }
+
+  it("renders a nested event list under each child row that carries events", () => {
+    render(
+      <InvestigationProgressTimeline
+        stages={[stage({ status: "active", children: CHILDREN_WITH_EVENTS })]}
+        elapsedLabel="5s"
+        runExpansionKey="job-1:run-1:1"
+        executionDetailNote={null}
+      />,
+    );
+    expect(document.querySelectorAll(".investigation-progress-event-list")).toHaveLength(3);
+    expect(eventItems()).toHaveLength(4);
+    expect(document.querySelectorAll(".investigation-progress-event-item")).toHaveLength(4);
+  });
+
+  it("renders no nested event list for child rows without events", () => {
+    render(
+      <InvestigationProgressTimeline
+        stages={[stage({ status: "active", children: FOUR_CHILDREN })]}
+        elapsedLabel="5s"
+        runExpansionKey="job-1:run-1:1"
+        executionDetailNote={null}
+      />,
+    );
+    expect(document.querySelector(".investigation-progress-children-list")).not.toBeNull();
+    expect(document.querySelector(".investigation-progress-event-list")).toBeNull();
+  });
+
+  it("displays event labels in canonical sequence order", () => {
+    render(
+      <InvestigationProgressTimeline
+        stages={[stage({ status: "active", children: CHILDREN_WITH_EVENTS })]}
+        elapsedLabel="5s"
+        runExpansionKey="job-1:run-1:1"
+        executionDetailNote={null}
+      />,
+    );
+    const labels = eventItems().map((el) => el.textContent);
+    expect(labels).toEqual(["Run created", "Agent started", "Tool requested", "Tool completed"]);
+  });
+
+  it("the collapse toggle hides and restores both the stage rows AND their nested events", async () => {
+    const user = userEvent.setup();
+    render(
+      <InvestigationProgressTimeline
+        stages={[stage({ status: "completed", children: CHILDREN_WITH_EVENTS })]}
+        elapsedLabel="30s"
+        runExpansionKey="job-1:run-1:1"
+        executionDetailNote={null}
+      />,
+    );
+    expect(document.querySelector(".investigation-progress-children-list")).not.toBeNull();
+    expect(document.querySelector(".investigation-progress-event-list")).not.toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Hide steps" }));
+    expect(document.querySelector(".investigation-progress-children-list")).toBeNull();
+    expect(document.querySelector(".investigation-progress-event-list")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Show steps" }));
+    expect(document.querySelector(".investigation-progress-children-list")).not.toBeNull();
+    expect(document.querySelector(".investigation-progress-event-list")).not.toBeNull();
+  });
+
+  it("an omitted stage never renders its nested events", () => {
+    const children: readonly ExecutionStageRowViewModel[] = [
+      {
+        key: "INVESTIGATION_CREATED",
+        status: "completed",
+        label: "Investigation created",
+        events: [{ sequence: 1, label: "Run created" }],
+      },
+      {
+        key: "DIAGNOSTIC_EXECUTION",
+        status: "omitted",
+        label: "Diagnostic execution",
+        events: [{ sequence: 3, label: "Tool requested" }],
+      },
+    ];
+    render(
+      <InvestigationProgressTimeline
+        stages={[stage({ status: "completed", children })]}
+        elapsedLabel="30s"
+        runExpansionKey="job-1:run-1:1"
+        executionDetailNote={null}
+      />,
+    );
+    // Only INVESTIGATION_CREATED's nested list renders — the omitted
+    // diagnostic stage shows no event rows at all.
+    expect(document.querySelectorAll(".investigation-progress-event-list")).toHaveLength(1);
+    expect(eventItems().map((el) => el.textContent)).toEqual(["Run created"]);
+  });
+
+  it("a legacy run (no canonical children) renders no nested events", () => {
+    render(
+      <InvestigationProgressTimeline
+        stages={[stage({ status: "completed" })]}
+        elapsedLabel="30s"
+        runExpansionKey="job-1:run-1:1"
+        executionDetailNote={null}
+      />,
+    );
+    expect(document.querySelector(".investigation-progress-children-list")).toBeNull();
+    expect(document.querySelector(".investigation-progress-event-list")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Hide steps|Show steps/ })).toBeNull();
   });
 });

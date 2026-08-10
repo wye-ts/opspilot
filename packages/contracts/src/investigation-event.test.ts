@@ -5,8 +5,14 @@ import {
   INVESTIGATION_EVENT_LEGACY_TYPE_COUNT,
   INVESTIGATION_EVENT_NEW_WRITE_TYPE_COUNT,
   InvestigationEventPayloadSchema,
+  InvestigationEventRecordPayloadSchema,
   InvestigationEventRecordSchema,
+  mapInvestigationEventToExecutionStage,
 } from "./investigation-event";
+import {
+  INVESTIGATION_EXECUTION_STAGE_ORDER,
+  type InvestigationExecutionStage,
+} from "./investigation-execution-stage";
 
 const RUN_ID = "11111111-1111-4111-8111-111111111111";
 
@@ -217,6 +223,89 @@ describe("RUN_FAILED carries no free-form message (public-safety)", () => {
       failedStage: "REPORT_GENERATION",
     });
     expect(Object.keys(parsed).sort()).toEqual(["failedStage", "failureCode", "type"]);
+  });
+});
+
+describe("mapInvestigationEventToExecutionStage", () => {
+  // One minimal fixture per member of the 13-type record-payload union —
+  // the same shapes the strict-union suite uses, plus the legacy
+  // REPORT_GENERATED read-compat type.
+  const fixtures: Readonly<Record<string, unknown>> = {
+    RUN_CREATED: { type: "RUN_CREATED" },
+    AGENT_STARTED: { type: "AGENT_STARTED" },
+    RETRIEVAL_COMPLETED: { type: "RETRIEVAL_COMPLETED", chunks: [] },
+    TOOL_REQUESTED: { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "check_status" },
+    TOOL_COMPLETED: { type: "TOOL_COMPLETED", toolCallId: "call-1", toolName: "check_status" },
+    TOOL_FAILED: {
+      type: "TOOL_FAILED",
+      toolCallId: "call-1",
+      toolName: "check_status",
+      failureCode: "TOOL_EXECUTION_FAILED",
+    },
+    REPORT_GENERATION_STARTED: { type: "REPORT_GENERATION_STARTED" },
+    REPORT_SUBMITTED: { type: "REPORT_SUBMITTED" },
+    REPORT_VALIDATED: { type: "REPORT_VALIDATED" },
+    REPORT_VALIDATION_FAILED: { type: "REPORT_VALIDATION_FAILED", failureCode: "REPORT_SCHEMA_INVALID" },
+    RUN_COMPLETED: { type: "RUN_COMPLETED" },
+    RUN_FAILED: { type: "RUN_FAILED", failureCode: "PROVIDER_TIMEOUT", failedStage: "AGENT_ANALYSIS" },
+    REPORT_GENERATED: { type: "REPORT_GENERATED" },
+  };
+
+  const expectedStageByType: Readonly<Record<string, InvestigationExecutionStage | null>> = {
+    RUN_CREATED: "INVESTIGATION_CREATED",
+    AGENT_STARTED: "AGENT_ANALYSIS",
+    RETRIEVAL_COMPLETED: "AGENT_ANALYSIS",
+    TOOL_REQUESTED: "DIAGNOSTIC_EXECUTION",
+    TOOL_COMPLETED: "DIAGNOSTIC_EXECUTION",
+    TOOL_FAILED: "DIAGNOSTIC_EXECUTION",
+    REPORT_GENERATION_STARTED: "REPORT_GENERATION",
+    REPORT_SUBMITTED: "REPORT_GENERATION",
+    REPORT_VALIDATED: "REPORT_GENERATION",
+    REPORT_VALIDATION_FAILED: "REPORT_GENERATION",
+    RUN_COMPLETED: null,
+    RUN_FAILED: null,
+    REPORT_GENERATED: null,
+  };
+
+  it("returns the correct execution stage for all 12 canonical types", () => {
+    for (const [type, fixture] of Object.entries(fixtures)) {
+      if (type === "REPORT_GENERATED") continue;
+      const payload = InvestigationEventRecordPayloadSchema.parse(fixture);
+      expect(
+        mapInvestigationEventToExecutionStage(payload),
+        `expected ${type} to map to ${expectedStageByType[type]}`,
+      ).toBe(expectedStageByType[type]);
+    }
+  });
+
+  it("returns null for the RUN_COMPLETED terminal event", () => {
+    const payload = InvestigationEventRecordPayloadSchema.parse(fixtures.RUN_COMPLETED);
+    expect(mapInvestigationEventToExecutionStage(payload)).toBeNull();
+  });
+
+  it("returns null for the RUN_FAILED terminal event", () => {
+    const payload = InvestigationEventRecordPayloadSchema.parse(fixtures.RUN_FAILED);
+    expect(mapInvestigationEventToExecutionStage(payload)).toBeNull();
+  });
+
+  it("returns null for the legacy REPORT_GENERATED read-compat type", () => {
+    const payload = InvestigationEventRecordPayloadSchema.parse(fixtures.REPORT_GENERATED);
+    expect(mapInvestigationEventToExecutionStage(payload)).toBeNull();
+  });
+
+  it("is exhaustive over every record-payload union member — no default branch hides a new member", () => {
+    // The switch has no `default` branch (a new union member is a compile
+    // error), so the runtime half of that guarantee is a defined result for
+    // every member: all 13 types map to either a canonical stage or null,
+    // never undefined.
+    expect(Object.keys(fixtures)).toHaveLength(13);
+    for (const [type, fixture] of Object.entries(fixtures)) {
+      const payload = InvestigationEventRecordPayloadSchema.parse(fixture);
+      const stage = mapInvestigationEventToExecutionStage(payload);
+      expect(stage === null || INVESTIGATION_EXECUTION_STAGE_ORDER.includes(stage), `${type} mapped to ${stage}`).toBe(
+        true,
+      );
+    }
   });
 });
 

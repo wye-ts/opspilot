@@ -7,7 +7,10 @@ import {
   ToolCompletedTraceEventSchema,
   ToolRequestedTraceEventSchema,
 } from "./agent-trace-event";
-import { InvestigationExecutionStageSchema } from "./investigation-execution-stage";
+import {
+  InvestigationExecutionStageSchema,
+  type InvestigationExecutionStage,
+} from "./investigation-execution-stage";
 
 // Repository-evidenced subset of AgentOrchestratorErrorCodeSchema that a
 // TOOL_FAILED event may carry — traced against the exact codes
@@ -193,3 +196,36 @@ export type InvestigationEventRecord = z.infer<typeof InvestigationEventRecordSc
 // against one source instead of re-counting union members by hand.
 export const INVESTIGATION_EVENT_NEW_WRITE_TYPE_COUNT = 12;
 export const INVESTIGATION_EVENT_LEGACY_TYPE_COUNT = 1;
+
+/**
+ * Maps an investigation event (canonical or legacy) to the execution stage it
+ * belongs to.
+ *
+ * Returns `null` for terminal events (RUN_COMPLETED, RUN_FAILED) and for the
+ * legacy read-compat REPORT_GENERATED type — none of these map to an execution
+ * stage row.
+ */
+export function mapInvestigationEventToExecutionStage(
+  payload: InvestigationEventRecordPayload,
+): InvestigationExecutionStage | null {
+  switch (payload.type) {
+    case "RUN_CREATED":
+      return "INVESTIGATION_CREATED";
+    case "AGENT_STARTED":
+    case "RETRIEVAL_COMPLETED":
+      return "AGENT_ANALYSIS";
+    case "TOOL_REQUESTED":
+    case "TOOL_COMPLETED":
+    case "TOOL_FAILED":
+      return "DIAGNOSTIC_EXECUTION";
+    case "REPORT_GENERATION_STARTED":
+    case "REPORT_SUBMITTED":
+    case "REPORT_VALIDATED":
+    case "REPORT_VALIDATION_FAILED":
+      return "REPORT_GENERATION";
+    case "RUN_COMPLETED":
+    case "RUN_FAILED":
+    case "REPORT_GENERATED":
+      return null;
+  }
+}
