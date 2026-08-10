@@ -20,6 +20,7 @@ import {
   type PersistenceErrorCode,
   type PrismaClient,
   type ProviderMode,
+  type PublicTrialReservationInput,
   type RunProviderUsageWrite,
   type StartedAgentRun,
 } from "@opspilot/database";
@@ -261,6 +262,14 @@ export interface ExecuteAndPersistParams<
    */
   readonly clientRequestId?: string;
   /**
+   * Present only for a PUBLIC trial LIVE run (issue #39) — unlike the four
+   * inputs above, OPTIONAL even when `providerMode` is `"LIVE"`: a private,
+   * token-authenticated LIVE call supplies every other live input but never
+   * this one. Forbidden on a FAKE call, exactly like the other live-only
+   * inputs.
+   */
+  readonly publicTrial?: PublicTrialReservationInput;
+  /**
    * Supplied for a LIVE run so the persisted failure code can distinguish "ran
    * out of time" from "caller went away" — the merged signal alone cannot,
    * because the SDK reports both as a user abort. See resolveAbortProvenance.
@@ -384,6 +393,8 @@ interface LiveExecutionInputs<TCollector extends AgentRunUsageCollector> {
   readonly liveAttemptLimit: number;
   readonly budgetReservationInput: LiveRunBudgetReservationInput;
   readonly clientRequestId: string;
+  /** Present only for a PUBLIC trial LIVE run (issue #39) — see ExecuteAndPersistParams. */
+  readonly publicTrial: PublicTrialReservationInput | undefined;
 }
 
 /**
@@ -415,12 +426,17 @@ interface LiveExecutionInputs<TCollector extends AgentRunUsageCollector> {
 function resolveLiveInputs<TCollector extends AgentRunUsageCollector>(
   params: ExecuteAndPersistParams<TCollector>,
 ): LiveExecutionInputs<TCollector> | null {
-  const { usageHooks, liveAttemptLimit, budgetReservationInput, clientRequestId } = params;
+  const { usageHooks, liveAttemptLimit, budgetReservationInput, clientRequestId, publicTrial } = params;
   const present = {
     usageHooks: usageHooks !== undefined,
     liveAttemptLimit: liveAttemptLimit !== undefined,
     budgetReservationInput: budgetReservationInput !== undefined,
     clientRequestId: clientRequestId !== undefined,
+    // Checked for FORBIDDEN-on-FAKE alongside the other four, but — unlike
+    // them — never checked for REQUIRED-on-LIVE below: a private,
+    // token-authenticated LIVE call has every other live input and never
+    // this one.
+    publicTrial: publicTrial !== undefined,
   };
   const names = (wanted: boolean) =>
     Object.entries(present)
@@ -433,7 +449,8 @@ function resolveLiveInputs<TCollector extends AgentRunUsageCollector>(
       present.usageHooks ||
       present.liveAttemptLimit ||
       present.budgetReservationInput ||
-      present.clientRequestId
+      present.clientRequestId ||
+      present.publicTrial
     ) {
       throw new AgentRunConfigurationError(
         `executeAndPersist: providerMode "${params.providerMode}" does not accept live-only inputs (${names(true)}).`,
@@ -444,7 +461,8 @@ function resolveLiveInputs<TCollector extends AgentRunUsageCollector>(
 
   // Re-tested individually rather than via the booleans above so TypeScript
   // narrows each field — this is what makes the returned object's non-optional
-  // types real rather than asserted.
+  // types real rather than asserted. publicTrial is deliberately excluded from
+  // this check: it stays optional even on a LIVE call.
   if (
     usageHooks === undefined ||
     liveAttemptLimit === undefined ||
@@ -456,7 +474,7 @@ function resolveLiveInputs<TCollector extends AgentRunUsageCollector>(
     );
   }
 
-  return { usageHooks, liveAttemptLimit, budgetReservationInput, clientRequestId };
+  return { usageHooks, liveAttemptLimit, budgetReservationInput, clientRequestId, publicTrial };
 }
 
 /**
@@ -669,6 +687,7 @@ export function createAgentRunService(repository: AgentRunRepositoryInterface): 
             maxLiveAttempts: live.liveAttemptLimit,
             budget: live.budgetReservationInput,
             clientRequestId: live.clientRequestId,
+            ...(live.publicTrial !== undefined ? { publicTrial: live.publicTrial } : {}),
           });
 
           /**

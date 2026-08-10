@@ -88,9 +88,30 @@ model LiveRunBudget {
   /// zero closes the cost gate for the rest of the day — an unknown cost is
   /// never reconciled as a known $0.
   pricingUnknownRuns   Int      @default(0) @map("pricing_unknown_runs")
+  /// PUBLIC-scoped subset of `runsReserved` (issue #39). No completed
+  /// counterpart: the shared `runsCompleted = runsReserved` latch above is
+  /// the sole staleness guard for both the private and public paths.
+  publicRunsReserved         Int    @default(0) @map("public_runs_reserved")
+  /// PUBLIC-scoped subset of `estimatedCostNanoUsd` (issue #39).
+  publicEstimatedCostNanoUsd BigInt @default(0) @map("public_estimated_cost_nano_usd")
   updatedAt            DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@map("live_run_budget")
+}
+
+/// One row per `(visitorId, usageDate)` — the durable per-visitor half of the
+/// PUBLIC LIVE trial's daily gate (issue #39). Insert-only: written once via
+/// `ON CONFLICT DO NOTHING` at reservation time
+/// (`startLiveRunWithAttemptLimit`) and never updated afterward — the row's
+/// mere presence for today is the entire fact this table records, so there is
+/// no counter column and no reconciliation step.
+model LiveRunVisitorUsage {
+  visitorId String   @map("visitor_id") @db.Uuid
+  usageDate DateTime @map("usage_date") @db.Date
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@id([visitorId, usageDate])
+  @@map("live_run_visitor_usage")
 }
 
 model AgentRunApproval {

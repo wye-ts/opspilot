@@ -94,13 +94,22 @@ export interface ApprovalView {
  *
  * Deliberately opaque: `UNAVAILABLE` covers capability absent, kill switch off,
  * and daily budget exhausted alike, so the UI cannot report which safeguard is
- * engaged even if it wanted to. There is no `PUBLIC` access mode in this
- * release — LIVE is always token-protected when it is available at all.
+ * engaged even if it wanted to. A discriminated union, not a flat shape with
+ * optional fields: `PUBLIC_TRIAL` (issue #39) is the only variant carrying
+ * `visitorRunsRemaining` / `turnstileSiteKey`, and the type system keeps
+ * either from being read off a `TOKEN_REQUIRED` or `NOT_APPLICABLE` response.
+ * Mirrors apps/api's CapabilitiesResponse exactly.
  */
-export interface CapabilitiesView {
-  readonly liveAgentRuns: "AVAILABLE" | "UNAVAILABLE";
-  readonly liveAccess: "TOKEN_REQUIRED" | "NOT_APPLICABLE";
-}
+export type CapabilitiesView =
+  | { readonly liveAgentRuns: "UNAVAILABLE"; readonly liveAccess: "NOT_APPLICABLE" }
+  | { readonly liveAgentRuns: "AVAILABLE"; readonly liveAccess: "TOKEN_REQUIRED" }
+  | {
+      readonly liveAgentRuns: "AVAILABLE";
+      readonly liveAccess: "PUBLIC_TRIAL";
+      /** THIS caller's own remaining trial allowance today — 0 or 1, never a global count. */
+      readonly visitorRunsRemaining: 0 | 1;
+      readonly turnstileSiteKey: string;
+    };
 
 /**
  * One snapshot of a job and its latest run — the response from

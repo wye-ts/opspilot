@@ -9,6 +9,7 @@ import type {
   PersistedAgentRun,
   PersistedInvestigationState,
   ProviderMode,
+  PublicTrialReservationInput,
   ReplayedLiveRun,
   RunProviderUsageWrite,
   StartedAgentRun,
@@ -49,6 +50,8 @@ export interface AgentRunRepositoryInterface {
     readonly maxLiveAttempts: number;
     readonly budget: LiveRunBudgetReservationInput;
     readonly clientRequestId: string;
+    /** Present only for a PUBLIC trial attempt (issue #39). */
+    readonly publicTrial?: PublicTrialReservationInput;
   }): Promise<LiveRunStartResult>;
   /**
    * Whether this key already names a LIVE run on this job — READ ONLY.

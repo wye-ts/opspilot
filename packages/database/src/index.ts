@@ -27,6 +27,7 @@ import {
   getInvestigationEventRecords as _getInvestigationEventRecords,
   getInvestigationState as _getInvestigationState,
   isLiveRunBudgetOpen as _isLiveRunBudgetOpen,
+  isVisitorTrialAvailable as _isVisitorTrialAvailable,
   reconcileLiveRunBudget as _reconcileLiveRunBudget,
   replayLiveRun as _replayLiveRun,
   startLiveRunWithAttemptLimit as _startLiveRunWithAttemptLimit,
@@ -60,6 +61,7 @@ export const startLiveRunWithAttemptLimit = _startLiveRunWithAttemptLimit;
 export const replayLiveRun = _replayLiveRun;
 export const reconcileLiveRunBudget = _reconcileLiveRunBudget;
 export const isLiveRunBudgetOpen = _isLiveRunBudgetOpen;
+export const isVisitorTrialAvailable = _isVisitorTrialAvailable;
 export const currentBudgetDate = _currentBudgetDate;
 export const recordApprovalDecision = _recordApprovalDecision;
 export const getApprovalDecision = _getApprovalDecision;
@@ -79,7 +81,7 @@ export type AgentRunApprovalError = InstanceType<typeof AgentRunApprovalError>;
 export type { AgentRunApprovalErrorCode } from "./approval-errors";
 // Same TS2323-avoidance pattern as PersistenceError above.
 export type LiveRunAdmissionError = InstanceType<typeof LiveRunAdmissionError>;
-export type { LiveRunAdmissionErrorCode } from "./live-run-errors";
+export type { LiveRunAdmissionErrorCode, LiveRunBudgetRejectionReason } from "./live-run-errors";
 export type {
   AgentJobRecord,
   AgentRunApprovalRecord,
@@ -97,6 +99,7 @@ export type {
   LiveRunBudgetReservation,
   LiveRunBudgetReservationInput,
   LiveRunStartResult,
+  PublicTrialReservationInput,
   RecordApprovalDecisionParams,
   RecordApprovalDecisionResult,
   ReplayedLiveRun,

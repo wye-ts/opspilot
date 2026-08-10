@@ -258,7 +258,7 @@ function createFakeRepository(options: FakeRepositoryOptions = {}) {
         },
       };
     },
-    startLiveRunWithAttemptLimit: async ({ jobId, modelIdentifier, budget, clientRequestId }) => {
+    startLiveRunWithAttemptLimit: async ({ jobId, modelIdentifier, budget, clientRequestId, publicTrial }) => {
       calls.startLiveRunWithAttemptLimit += 1;
       if (options.startLiveRunError) throw options.startLiveRunError;
       clientRequestIds.push(clientRequestId);
@@ -300,7 +300,7 @@ function createFakeRepository(options: FakeRepositoryOptions = {}) {
         run,
         // Echoed back from the "committed" row, exactly as the real transaction
         // does, so reconciliation keys off the reservation rather than a clock.
-        reservation: { budgetDate: budget.budgetDate, runsReserved: 1 },
+        reservation: { budgetDate: budget.budgetDate, runsReserved: 1, isPublic: publicTrial !== undefined },
       };
     },
     /**
@@ -1221,7 +1221,7 @@ describe("executeAndPersist — service-owned usage collector", () => {
     );
 
     if (result.persistence !== "persisted") throw new Error("expected a persisted result");
-    expect(result.reservation).toEqual({ budgetDate: "2026-07-29", runsReserved: 1 });
+    expect(result.reservation).toEqual({ budgetDate: "2026-07-29", runsReserved: 1, isPublic: false });
   });
 
   it("persists usage for a FAILED live run too", async () => {
@@ -1346,7 +1346,7 @@ describe("executeAndPersist — service-owned usage collector", () => {
       throw new Error("expected a finalization-unavailable result");
     }
     expect(result.usageSummary?.estimatedCostNanoUsd).toBe(17_956_000n);
-    expect(result.reservation).toEqual({ budgetDate: "2026-07-29", runsReserved: 1 });
+    expect(result.reservation).toEqual({ budgetDate: "2026-07-29", runsReserved: 1, isPublic: false });
   });
 
   it("attaches usage and reservation to a crash so the budget can still be reconciled", async () => {
@@ -1372,6 +1372,7 @@ describe("executeAndPersist — service-owned usage collector", () => {
     expect(serviceError.executionContext?.reservation).toEqual({
       budgetDate: "2026-07-29",
       runsReserved: 1,
+      isPublic: false,
     });
   });
 

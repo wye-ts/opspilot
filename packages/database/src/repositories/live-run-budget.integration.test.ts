@@ -153,7 +153,7 @@ describe("startLiveRunWithAttemptLimit — happy path", () => {
     expect(started.run.status).toBe("RUNNING");
     expect(started.run.modelIdentifier).toBe("claude-sonnet-5");
     expect(started.run.attemptNumber).toBe(1);
-    expect(started.reservation).toEqual({ budgetDate: BUDGET_DATE, runsReserved: 1 });
+    expect(started.reservation).toEqual({ budgetDate: BUDGET_DATE, runsReserved: 1, isPublic: false });
     expect(started.job.id).toBe(job.id);
   });
 
@@ -429,6 +429,179 @@ describe("startLiveRunWithAttemptLimit — daily budget gate", () => {
         budget: budget({ budgetDate: "2026-07-29", dailyLimit: 1 }),
       }),
     ).resolves.toBeTruthy();
+  });
+});
+
+/**
+ * Issue #39 — internal rejection classification, all six reasons plus the
+ * precedence case, forced DIRECTLY against `startLiveRunWithAttemptLimit`
+ * rather than through HTTP.
+ *
+ * This is the layer where every reason is deterministically reachable. The
+ * PRE-EXISTING #19 advisory pre-check (`isLiveRunBudgetOpen`, run by
+ * live-run-admission.ts before the authoritative transaction) mirrors the
+ * four SHARED conditions below and would intercept a serial HTTP test before
+ * the authoritative transaction's own classification ever ran for them — see
+ * apps/api/test/live-run-public-budget-latch.postgres.integration.test.ts,
+ * which covers the two PUBLIC-specific reasons the advisory check cannot
+ * pre-empt, end to end through the real server.
+ */
+describe("startLiveRunWithAttemptLimit — internal rejection classification (issue #39)", () => {
+  function publicTrial(overrides: { readonly dailyLimit?: number; readonly costCeilingNanoUsd?: bigint } = {}) {
+    return {
+      visitorId: randomUUID(),
+      publicDailyLimit: overrides.dailyLimit ?? 5,
+      publicCostCeilingNanoUsd: overrides.costCeilingNanoUsd ?? 500_000_000n,
+    };
+  }
+
+  it("BUDGET_LATCH_UNRECONCILED — an outstanding reservation, PUBLIC or private", async () => {
+    const job = await newJob("TKT-reason-latch");
+    const params = {
+      jobId: job.id,
+      modelIdentifier: null,
+      maxLiveAttempts: 10,
+      budget: budget({ dailyLimit: 50 }),
+    };
+
+    // Left unreconciled on purpose.
+    await startLiveRunWithAttemptLimit(prisma, { ...params, publicTrial: publicTrial() });
+
+    await expect(
+      startLiveRunWithAttemptLimit(prisma, { ...params, publicTrial: publicTrial() }),
+    ).rejects.toMatchObject({ code: "LIVE_RUN_BUDGET_EXHAUSTED", reason: "BUDGET_LATCH_UNRECONCILED" });
+  });
+
+  it("BUDGET_PRICING_UNKNOWN — an unreconciled cost closes the gate for the rest of the day", async () => {
+    const job = await newJob("TKT-reason-pricing-unknown");
+    const params = {
+      jobId: job.id,
+      modelIdentifier: null,
+      maxLiveAttempts: 10,
+      budget: budget({ dailyLimit: 50 }),
+    };
+
+    const started = await startLiveRunWithAttemptLimit(prisma, { ...params, publicTrial: publicTrial() });
+    await reconcileLiveRunBudget(
+      prisma,
+      started.reservation,
+      usage({ estimatedCostNanoUsd: null, pricingStatus: "UNKNOWN_MODEL" }),
+    );
+
+    await expect(
+      startLiveRunWithAttemptLimit(prisma, { ...params, publicTrial: publicTrial() }),
+    ).rejects.toMatchObject({ code: "LIVE_RUN_BUDGET_EXHAUSTED", reason: "BUDGET_PRICING_UNKNOWN" });
+  });
+
+  it("BUDGET_OVERALL_COUNT_EXHAUSTED — the overall count, with the public sub-limit still open", async () => {
+    const job = await newJob("TKT-reason-overall-count");
+    const params = {
+      jobId: job.id,
+      modelIdentifier: null,
+      maxLiveAttempts: 10,
+      budget: budget({ dailyLimit: 1 }),
+    };
+
+    await reserveAndReconcile({ ...params, publicTrial: publicTrial({ dailyLimit: 50 }) });
+
+    await expect(
+      startLiveRunWithAttemptLimit(prisma, { ...params, publicTrial: publicTrial({ dailyLimit: 50 }) }),
+    ).rejects.toMatchObject({ code: "LIVE_RUN_BUDGET_EXHAUSTED", reason: "BUDGET_OVERALL_COUNT_EXHAUSTED" });
+  });
+
+  it("BUDGET_OVERALL_COST_EXHAUSTED — the overall ceiling, with the public ceiling still open", async () => {
+    const job = await newJob("TKT-reason-overall-cost");
+    const params = {
+      jobId: job.id,
+      modelIdentifier: null,
+      maxLiveAttempts: 10,
+      budget: budget({ dailyLimit: 50, costCeilingNanoUsd: 20_000_000n }),
+    };
+
+    await reserveAndReconcile(
+      { ...params, publicTrial: publicTrial({ costCeilingNanoUsd: 5_000_000_000n }) },
+      { estimatedCostNanoUsd: 35_912_000n },
+    );
+
+    await expect(
+      startLiveRunWithAttemptLimit(prisma, {
+        ...params,
+        publicTrial: publicTrial({ costCeilingNanoUsd: 5_000_000_000n }),
+      }),
+    ).rejects.toMatchObject({ code: "LIVE_RUN_BUDGET_EXHAUSTED", reason: "BUDGET_OVERALL_COST_EXHAUSTED" });
+  });
+
+  it("BUDGET_PUBLIC_COUNT_EXHAUSTED — the public sub-limit alone, overall count still open", async () => {
+    const job = await newJob("TKT-reason-public-count");
+    const params = {
+      jobId: job.id,
+      modelIdentifier: null,
+      maxLiveAttempts: 10,
+      budget: budget({ dailyLimit: 50 }),
+    };
+
+    await reserveAndReconcile({ ...params, publicTrial: publicTrial({ dailyLimit: 1 }) });
+
+    await expect(
+      startLiveRunWithAttemptLimit(prisma, { ...params, publicTrial: publicTrial({ dailyLimit: 1 }) }),
+    ).rejects.toMatchObject({ code: "LIVE_RUN_BUDGET_EXHAUSTED", reason: "BUDGET_PUBLIC_COUNT_EXHAUSTED" });
+  });
+
+  it("BUDGET_PUBLIC_COST_EXHAUSTED — the public ceiling alone, overall ceiling still open", async () => {
+    const job = await newJob("TKT-reason-public-cost");
+    const params = {
+      jobId: job.id,
+      modelIdentifier: null,
+      maxLiveAttempts: 10,
+      budget: budget({ dailyLimit: 50, costCeilingNanoUsd: 5_000_000_000n }),
+    };
+
+    await reserveAndReconcile(
+      { ...params, publicTrial: publicTrial({ costCeilingNanoUsd: 20_000_000n }) },
+      { estimatedCostNanoUsd: 35_912_000n },
+    );
+
+    await expect(
+      startLiveRunWithAttemptLimit(prisma, {
+        ...params,
+        publicTrial: publicTrial({ costCeilingNanoUsd: 20_000_000n }),
+      }),
+    ).rejects.toMatchObject({ code: "LIVE_RUN_BUDGET_EXHAUSTED", reason: "BUDGET_PUBLIC_COST_EXHAUSTED" });
+  });
+
+  it("resolves precedence when the OVERALL count and the PUBLIC count are simultaneously exhausted — overall wins", async () => {
+    const job = await newJob("TKT-reason-precedence-count");
+    const params = {
+      jobId: job.id,
+      modelIdentifier: null,
+      maxLiveAttempts: 10,
+      // Both limits are 1: a single reconciled PUBLIC reservation exhausts
+      // the overall count AND the public count in the same instant.
+      budget: budget({ dailyLimit: 1 }),
+    };
+
+    await reserveAndReconcile({ ...params, publicTrial: publicTrial({ dailyLimit: 1 }) });
+
+    await expect(
+      startLiveRunWithAttemptLimit(prisma, { ...params, publicTrial: publicTrial({ dailyLimit: 1 }) }),
+    ).rejects.toMatchObject({ code: "LIVE_RUN_BUDGET_EXHAUSTED", reason: "BUDGET_OVERALL_COUNT_EXHAUSTED" });
+  });
+
+  it("resolves precedence when the LATCH and the PUBLIC count are simultaneously true — the latch wins", async () => {
+    const job = await newJob("TKT-reason-precedence-latch");
+    const params = {
+      jobId: job.id,
+      modelIdentifier: null,
+      maxLiveAttempts: 10,
+      budget: budget({ dailyLimit: 50 }),
+    };
+
+    // Left unreconciled AND exhausts the public count of 1 at the same time.
+    await startLiveRunWithAttemptLimit(prisma, { ...params, publicTrial: publicTrial({ dailyLimit: 1 }) });
+
+    await expect(
+      startLiveRunWithAttemptLimit(prisma, { ...params, publicTrial: publicTrial({ dailyLimit: 1 }) }),
+    ).rejects.toMatchObject({ code: "LIVE_RUN_BUDGET_EXHAUSTED", reason: "BUDGET_LATCH_UNRECONCILED" });
   });
 });
 
@@ -851,7 +1024,11 @@ describe("reconcileLiveRunBudget", () => {
   it("is a no-op against a date with no row rather than creating one", async () => {
     // Reconciliation only ever follows a committed reservation, so a missing row
     // means something is already wrong upstream — inventing one would hide it.
-    await reconcileLiveRunBudget(prisma, { budgetDate: "2026-01-01", runsReserved: 1 }, usage());
+    await reconcileLiveRunBudget(
+      prisma,
+      { budgetDate: "2026-01-01", runsReserved: 1, isPublic: false },
+      usage(),
+    );
 
     expect(await budgetRow("2026-01-01")).toBeUndefined();
   });

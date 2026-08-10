@@ -82,7 +82,14 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   // Built conditionally, not with possibly-undefined values on every key —
   // under exactOptionalPropertyTypes, assigning `key: undefined` to a
   // RequestInit property is a type error distinct from omitting the key.
-  const init: RequestInit = { method: options.method ?? "GET" };
+  //
+  // `credentials: "same-origin"` is EXPLICIT rather than relying on the
+  // fetch default (which is already "same-origin", so this is a no-op for
+  // every existing token-based flow) — issue #39's visitor cookie must round
+  // -trip on PUBLIC trial requests, and stating the credentials mode here
+  // makes that a decision this file records rather than an assumption about
+  // what the platform default happens to be.
+  const init: RequestInit = { method: options.method ?? "GET", credentials: "same-origin" };
   const headers: Record<string, string> = { ...options.headers };
   if (hasBody) {
     headers["Content-Type"] = "application/json";

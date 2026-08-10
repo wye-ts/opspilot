@@ -1,9 +1,10 @@
 import { PersistenceError, type LiveRunBudgetReservationInput } from "@opspilot/database";
-import type { Request } from "express";
+import type { Request, Response } from "express";
 import { describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../errors/api-error";
 import { createLiveRunAdmissionController } from "./live-run-admission";
+import { LIVE_RUN_ACCESS_TOKEN_HEADER } from "./live-run-access";
 import type { LiveRunAdmissionDecisionLogger } from "./live-run-budget-log";
 import { parseRunExecutionConfig, type RunExecutionConfig } from "./run-execution-config";
 
@@ -635,6 +636,466 @@ describe("createLiveRunAdmissionController — authorize versus admitNewRun", ()
 
       expect(() => authorized.recordAdmitted()).not.toThrow();
       lease.concurrencyLease.release();
+    });
+  });
+});
+
+/**
+ * Issue #39 — Stage B: Turnstile + visitor identity, PUBLIC trial only.
+ *
+ * `authorizePublicTrial` is a NO-OP on the private-token path — the bulk of
+ * this suite proves that directly, since every OTHER test in this file
+ * exercises the private path and none of them supplies a turnstileVerifier or
+ * visitorIdentity fake, yet all of them pass. These tests cover the PUBLIC
+ * branch specifically.
+ */
+describe("createLiveRunAdmissionController — PUBLIC trial (issue #39)", () => {
+  const TURNSTILE_SECRET = "turnstile-secret-do-not-use-1f14e45fceea";
+  const VISITOR_SECRET = "visitor-secret-do-not-use-9f14e45fceea";
+  const TURNSTILE_SITE_KEY = "turnstile-site-key-do-not-use";
+  const VISITOR_ID = "11111111-1111-4111-8111-111111111111";
+
+  function publicTrialConfig(overrides: Record<string, string> = {}): RunExecutionConfig {
+    return parseRunExecutionConfig({
+      ANTHROPIC_API_KEY: "sk-ant-test-do-not-use-0123456789",
+      ANTHROPIC_MODEL: "claude-sonnet-5",
+      LIVE_AGENT_RUNS_ENABLED: "true",
+      ANTHROPIC_MAX_RETRIES: "0",
+      LIVE_PUBLIC_TRIAL_ENABLED: "true",
+      TURNSTILE_SECRET_KEY: TURNSTILE_SECRET,
+      TURNSTILE_SITE_KEY,
+      LIVE_PUBLIC_TRIAL_VISITOR_SECRET: VISITOR_SECRET,
+      ...overrides,
+    });
+  }
+
+  function fakeVerifier(result: boolean) {
+    const calls: Array<{ readonly token: string | undefined; readonly ip: string | undefined }> = [];
+    return {
+      calls,
+      verifier: { verify: async (token: string | undefined, ip: string | undefined) => {
+        calls.push({ token, ip });
+        return result;
+      } },
+    };
+  }
+
+  function fakeVisitorIdentity(existingVisitorId: string | null = null) {
+    const cookiesSet: Array<{ readonly visitorId: string }> = [];
+    return {
+      cookiesSet,
+      identity: {
+        mintVisitorId: () => VISITOR_ID,
+        resolveVisitorId: () => existingVisitorId,
+        setVisitorCookie: (_response: unknown, visitorId: string) => {
+          cookiesSet.push({ visitorId });
+        },
+      },
+    };
+  }
+
+  function publicRequest(token?: string): Request {
+    return {
+      ip: "203.0.113.7",
+      header: (name: string) => (name.toLowerCase() === "x-opspilot-turnstile-token" ? token : undefined),
+    } as unknown as Request;
+  }
+
+  function fakeResponse(): Response {
+    return {} as unknown as Response;
+  }
+
+  it("is a no-op on the private token path — never verifies, never touches a cookie", async () => {
+    const { verifier, calls } = fakeVerifier(true);
+    const { identity, cookiesSet } = fakeVisitorIdentity();
+    const controller = createLiveRunAdmissionController({
+      config: servableConfig(),
+      isBudgetOpen: async () => true,
+      turnstileVerifier: verifier,
+      visitorIdentity: identity,
+      logDecision: () => undefined,
+    });
+
+    const authorized = controller.authorize(request());
+    const result = await controller.authorizePublicTrial(request(), fakeResponse(), authorized);
+
+    expect(result).toBeNull();
+    expect(calls).toHaveLength(0);
+    expect(cookiesSet).toHaveLength(0);
+  });
+
+  it("throws LIVE_RUN_TURNSTILE_FAILED and sets no cookie when the challenge fails", async () => {
+    const { verifier } = fakeVerifier(false);
+    const { identity, cookiesSet } = fakeVisitorIdentity();
+    const config = publicTrialConfig();
+    const controller = createLiveRunAdmissionController({
+      config,
+      isBudgetOpen: async () => true,
+      turnstileVerifier: verifier,
+      visitorIdentity: identity,
+      logDecision: () => undefined,
+    });
+
+    const authorized = controller.authorize(publicRequest("bad-token"));
+    await expect(controller.authorizePublicTrial(publicRequest("bad-token"), fakeResponse(), authorized)).rejects.toMatchObject(
+      { code: "LIVE_RUN_TURNSTILE_FAILED", status: 401 },
+    );
+    expect(cookiesSet).toHaveLength(0);
+  });
+
+  it("records exactly one rejected line, under LIVE_RUN_TURNSTILE_FAILED, through the SAME recorder authorize created", async () => {
+    const { verifier } = fakeVerifier(false);
+    const { identity } = fakeVisitorIdentity();
+    const logDecision = vi.fn<LiveRunAdmissionDecisionLogger>();
+    const controller = createLiveRunAdmissionController({
+      config: publicTrialConfig(),
+      isBudgetOpen: async () => true,
+      turnstileVerifier: verifier,
+      visitorIdentity: identity,
+      logDecision,
+    });
+
+    const authorized = controller.authorize(publicRequest("bad-token"));
+    await expect(controller.authorizePublicTrial(publicRequest("bad-token"), fakeResponse(), authorized)).rejects.toBeInstanceOf(ApiError);
+
+    expect(logDecision).toHaveBeenCalledTimes(1);
+    expect(logDecision).toHaveBeenCalledWith({ decision: "rejected", code: "LIVE_RUN_TURNSTILE_FAILED" });
+  });
+
+  it("mints a fresh visitor id and sets the cookie when no existing cookie resolves", async () => {
+    const { verifier } = fakeVerifier(true);
+    const { identity, cookiesSet } = fakeVisitorIdentity(null);
+    const config = publicTrialConfig();
+    const controller = createLiveRunAdmissionController({
+      config,
+      isBudgetOpen: async () => true,
+      turnstileVerifier: verifier,
+      visitorIdentity: identity,
+      logDecision: () => undefined,
+    });
+
+    const authorized = controller.authorize(publicRequest("solved-token"));
+    const result = await controller.authorizePublicTrial(publicRequest("solved-token"), fakeResponse(), authorized);
+
+    expect(result).toEqual({
+      visitorId: VISITOR_ID,
+      publicDailyLimit: 5,
+      publicCostCeilingNanoUsd: 500_000_000n,
+    });
+    expect(cookiesSet).toEqual([{ visitorId: VISITOR_ID }]);
+  });
+
+  it("reuses an existing resolved visitor id rather than minting a new one", async () => {
+    const { verifier } = fakeVerifier(true);
+    const existing = "22222222-2222-4222-8222-222222222222";
+    const { identity, cookiesSet } = fakeVisitorIdentity(existing);
+    const controller = createLiveRunAdmissionController({
+      config: publicTrialConfig(),
+      isBudgetOpen: async () => true,
+      turnstileVerifier: verifier,
+      visitorIdentity: identity,
+      logDecision: () => undefined,
+    });
+
+    const authorized = controller.authorize(publicRequest("solved-token"));
+    const result = await controller.authorizePublicTrial(publicRequest("solved-token"), fakeResponse(), authorized);
+
+    expect(result?.visitorId).toBe(existing);
+    // Still set unconditionally, even for a resolved (already-valid) cookie —
+    // see the interface doc comment.
+    expect(cookiesSet).toEqual([{ visitorId: existing }]);
+  });
+
+  it("passes the presented token and the request IP straight through to the verifier", async () => {
+    const { verifier, calls } = fakeVerifier(true);
+    const { identity } = fakeVisitorIdentity();
+    const controller = createLiveRunAdmissionController({
+      config: publicTrialConfig(),
+      isBudgetOpen: async () => true,
+      turnstileVerifier: verifier,
+      visitorIdentity: identity,
+      logDecision: () => undefined,
+    });
+
+    const authorized = controller.authorize(publicRequest("solved-token"));
+    await controller.authorizePublicTrial(publicRequest("solved-token"), fakeResponse(), authorized);
+
+    expect(calls).toEqual([{ token: "solved-token", ip: "203.0.113.7" }]);
+  });
+
+  describe("getVisitorRunsRemaining", () => {
+    it("reports 1 for a caller with no cookie, without any database read", async () => {
+      const { identity } = fakeVisitorIdentity(null);
+      let reads = 0;
+      const controller = createLiveRunAdmissionController({
+        config: publicTrialConfig(),
+        isBudgetOpen: async () => true,
+        visitorIdentity: identity,
+        isVisitorTrialAvailable: async () => {
+          reads += 1;
+          return true;
+        },
+        logDecision: () => undefined,
+      });
+
+      await expect(controller.getVisitorRunsRemaining(publicRequest())).resolves.toBe(1);
+      expect(reads).toBe(0);
+    });
+
+    it("delegates to isVisitorTrialAvailable for a resolved visitor", async () => {
+      const { identity } = fakeVisitorIdentity(VISITOR_ID);
+      const controller = createLiveRunAdmissionController({
+        config: publicTrialConfig(),
+        isBudgetOpen: async () => true,
+        visitorIdentity: identity,
+        isVisitorTrialAvailable: async () => false,
+        logDecision: () => undefined,
+      });
+
+      await expect(controller.getVisitorRunsRemaining(publicRequest())).resolves.toBe(0);
+    });
+
+    it("fails closed to 0 on a PersistenceError from the visitor-availability read", async () => {
+      const { identity } = fakeVisitorIdentity(VISITOR_ID);
+      const controller = createLiveRunAdmissionController({
+        config: publicTrialConfig(),
+        isBudgetOpen: async () => true,
+        visitorIdentity: identity,
+        isVisitorTrialAvailable: () =>
+          Promise.reject(new PersistenceError("PERSISTENCE_UNAVAILABLE", "connection refused")),
+        logDecision: () => undefined,
+      });
+
+      await expect(controller.getVisitorRunsRemaining(publicRequest())).resolves.toBe(0);
+    });
+
+    it("returns 0 for a TOKEN_REQUIRED deployment — nothing to report", async () => {
+      const controller = createLiveRunAdmissionController({
+        config: servableConfig(),
+        isBudgetOpen: async () => true,
+        logDecision: () => undefined,
+      });
+
+      await expect(controller.getVisitorRunsRemaining(request())).resolves.toBe(0);
+    });
+  });
+
+  it("isAvailable() is true for a PUBLIC_TRIAL deployment with the budget open", async () => {
+    const controller = createLiveRunAdmissionController({
+      config: publicTrialConfig(),
+      isBudgetOpen: async () => true,
+      logDecision: () => undefined,
+    });
+
+    await expect(controller.isAvailable()).resolves.toBe(true);
+  });
+
+  it("isAvailable(true) delegates the PUBLIC sub-ceilings to isBudgetOpen", async () => {
+    let capturedBudget: LiveRunBudgetReservationInput | undefined;
+    const controller = createLiveRunAdmissionController({
+      config: publicTrialConfig(),
+      isBudgetOpen: async (budget) => {
+        capturedBudget = budget;
+        return true;
+      },
+      logDecision: () => undefined,
+    });
+
+    await expect(controller.isAvailable(true)).resolves.toBe(true);
+    expect(capturedBudget).toBeDefined();
+    expect(capturedBudget!.publicDailyLimit).toBe(5);
+    expect(capturedBudget!.publicCostCeilingNanoUsd).toBe(500_000_000n);
+  });
+
+  it("isAvailable(false) omits the PUBLIC sub-ceilings, preserving the private budget check", async () => {
+    let capturedBudget: LiveRunBudgetReservationInput | undefined;
+    const controller = createLiveRunAdmissionController({
+      config: publicTrialConfig(),
+      isBudgetOpen: async (budget) => {
+        capturedBudget = budget;
+        return true;
+      },
+      logDecision: () => undefined,
+    });
+
+    await expect(controller.isAvailable(false)).resolves.toBe(true);
+    expect(capturedBudget).toBeDefined();
+    expect(capturedBudget!.publicDailyLimit).toBeUndefined();
+    expect(capturedBudget!.publicCostCeilingNanoUsd).toBeUndefined();
+  });
+
+  it("reports UNAVAILABLE when isBudgetOpen returns false (covering the public sub-budget)", async () => {
+    const controller = createLiveRunAdmissionController({
+      config: publicTrialConfig(),
+      isBudgetOpen: async () => false,
+      logDecision: () => undefined,
+    });
+
+    await expect(controller.isAvailable(true)).resolves.toBe(false);
+  });
+
+  describe("authorizePublicTrial with both a token and the public flag configured (regression: BLOCKER)", () => {
+    const DEMO_TOKEN = "demo-token-do-not-use-8f14e45fceea";
+
+    function tokenAndPublicConfig(): RunExecutionConfig {
+      return parseRunExecutionConfig({
+        ANTHROPIC_API_KEY: "sk-ant-test-do-not-use-0123456789",
+        ANTHROPIC_MODEL: "claude-sonnet-5",
+        LIVE_AGENT_RUNS_ENABLED: "true",
+        ANTHROPIC_MAX_RETRIES: "0",
+        LIVE_RUN_ACCESS_TOKEN: DEMO_TOKEN,
+        LIVE_PUBLIC_TRIAL_ENABLED: "true",
+        TURNSTILE_SECRET_KEY: TURNSTILE_SECRET,
+        TURNSTILE_SITE_KEY,
+        LIVE_PUBLIC_TRIAL_VISITOR_SECRET: VISITOR_SECRET,
+      });
+    }
+
+    it("routes a caller WITHOUT a valid token to the PUBLIC trial path (Turnstile), not ACCESS_DENIED", async () => {
+      const { verifier, calls } = fakeVerifier(true);
+      const { identity, cookiesSet } = fakeVisitorIdentity(null);
+      const controller = createLiveRunAdmissionController({
+        config: tokenAndPublicConfig(),
+        isBudgetOpen: async () => true,
+        turnstileVerifier: verifier,
+        visitorIdentity: identity,
+        logDecision: () => undefined,
+      });
+
+      // authorizeOnce: no valid token presented, but public trial is enabled →
+      // authorized (Stage A passes).
+      const authorized = controller.authorize(publicRequest(undefined));
+      // authorizePublicTrial: THIS request has no valid token → Turnstile runs.
+      const result = await controller.authorizePublicTrial(
+        publicRequest("solved-token"),
+        fakeResponse(),
+        authorized,
+      );
+
+      expect(result).not.toBeNull();
+      expect(calls).toHaveLength(1);
+      expect(cookiesSet).toHaveLength(1);
+    });
+
+    it("C. throws LIVE_RUN_ACCESS_DENIED for an INVALID presented token — never downgrades to PUBLIC", async () => {
+      const { verifier, calls } = fakeVerifier(true);
+      const { identity, cookiesSet } = fakeVisitorIdentity(null);
+      const controller = createLiveRunAdmissionController({
+        config: tokenAndPublicConfig(),
+        isBudgetOpen: async () => true,
+        turnstileVerifier: verifier,
+        visitorIdentity: identity,
+        logDecision: () => undefined,
+      });
+
+      const invalidReq = {
+        ip: "203.0.113.7",
+        header: (name: string) =>
+          name.toLowerCase() === LIVE_RUN_ACCESS_TOKEN_HEADER ? "wrong-token" : undefined,
+      } as unknown as Request;
+
+      // authorize MUST throw — the invalid token is never downgraded to PUBLIC.
+      expect(() => controller.authorize(invalidReq)).toThrow(
+        expect.objectContaining({ code: "LIVE_RUN_ACCESS_DENIED" }),
+      );
+      // authorizePublicTrial was never reached — Turnstile, visitor identity,
+      // and public admission are all untouched.
+      expect(calls).toHaveLength(0);
+      expect(cookiesSet).toHaveLength(0);
+    });
+
+    it("still routes a caller WITH a valid token straight to the private path (no-op)", async () => {
+      const { verifier, calls } = fakeVerifier(true);
+      const { identity, cookiesSet } = fakeVisitorIdentity(null);
+      const controller = createLiveRunAdmissionController({
+        config: tokenAndPublicConfig(),
+        isBudgetOpen: async () => true,
+        turnstileVerifier: verifier,
+        visitorIdentity: identity,
+        logDecision: () => undefined,
+      });
+
+      const privateReq = {
+        ip: "203.0.113.7",
+        header: (name: string) =>
+          name.toLowerCase() === LIVE_RUN_ACCESS_TOKEN_HEADER ? DEMO_TOKEN : undefined,
+      } as unknown as Request;
+
+      const authorized = controller.authorize(privateReq);
+      const result = await controller.authorizePublicTrial(privateReq, fakeResponse(), authorized);
+
+      expect(result).toBeNull();
+      expect(calls).toHaveLength(0);
+      expect(cookiesSet).toHaveLength(0);
+    });
+  });
+
+  describe("PUBLIC rate-limit slot is consumed exactly once per request (regression: double-charge)", () => {
+    function publicRequestWithIp(token: string | undefined, ip: string): Request {
+      return { ip, header: (name: string) => (name.toLowerCase() === "x-opspilot-turnstile-token" ? token : undefined) } as unknown as Request;
+    }
+
+    it("checks the rate limiter before Turnstile and Turnstile is never reached when rate-limited", async () => {
+      const { verifier, calls } = fakeVerifier(true);
+      const { identity } = fakeVisitorIdentity(null);
+      const controller = createLiveRunAdmissionController({
+        config: publicTrialConfig(),
+        isBudgetOpen: async () => true,
+        turnstileVerifier: verifier,
+        visitorIdentity: identity,
+        logDecision: () => undefined,
+      });
+
+      // Fill the rate-limit bucket (max 2) for this IP.
+      const ip = "203.0.113.99";
+      for (let i = 0; i < 2; i++) {
+        const authorized = controller.authorize(publicRequestWithIp("solved-token", ip));
+        // authorizePublicTrial succeeds → consumes one rate-limit slot.
+        // admitNewRun is NOT exercised here; the slot consumption alone
+        // is what fills the bucket.
+        await controller.authorizePublicTrial(publicRequestWithIp("solved-token", ip), fakeResponse(), authorized);
+      }
+
+      // The third call should be rate-limited inside authorizePublicTrial.
+      const verifierCallsBefore = calls.length;
+      const authorized = controller.authorize(publicRequestWithIp("solved-token", ip));
+      await expect(
+        controller.authorizePublicTrial(publicRequestWithIp("solved-token", ip), fakeResponse(), authorized),
+      ).rejects.toMatchObject({ code: "LIVE_RUN_RATE_LIMITED", status: 429 });
+      // Turnstile was never reached — the rate limiter stopped the request first.
+      expect(calls.length).toBe(verifierCallsBefore);
+    });
+
+    it("a successful PUBLIC request does not consume a second rate-limit slot in admitNewRun", async () => {
+      const { verifier } = fakeVerifier(true);
+      const { identity } = fakeVisitorIdentity(null);
+      const controller = createLiveRunAdmissionController({
+        config: publicTrialConfig(),
+        isBudgetOpen: async () => true,
+        turnstileVerifier: verifier,
+        visitorIdentity: identity,
+        logDecision: () => undefined,
+      });
+
+      const ip = "203.0.113.100";
+      // Request 1: authorizePublicTrial consumes 1 slot, admitNewRun skips its check.
+      const auth1 = controller.authorize(publicRequestWithIp("solved-token", ip));
+      await controller.authorizePublicTrial(publicRequestWithIp("solved-token", ip), fakeResponse(), auth1);
+      const lease1 = await controller.admitNewRun(publicRequestWithIp("solved-token", ip), auth1);
+      lease1.concurrencyLease.release();
+
+      // Request 2 from the same IP: should still be allowed (only 1 slot consumed
+      // per request, so the bucket stands at 1, not 2).
+      const auth2 = controller.authorize(publicRequestWithIp("solved-token", ip));
+      await controller.authorizePublicTrial(publicRequestWithIp("solved-token", ip), fakeResponse(), auth2);
+      const lease2 = await controller.admitNewRun(publicRequestWithIp("solved-token", ip), auth2);
+      lease2.concurrencyLease.release();
+
+      // Request 3 from the same IP: should now be rate-limited (bucket at 2).
+      const auth3 = controller.authorize(publicRequestWithIp("solved-token", ip));
+      await expect(
+        controller.authorizePublicTrial(publicRequestWithIp("solved-token", ip), fakeResponse(), auth3),
+      ).rejects.toMatchObject({ code: "LIVE_RUN_RATE_LIMITED", status: 429 });
     });
   });
 });

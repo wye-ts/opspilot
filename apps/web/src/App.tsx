@@ -1316,17 +1316,29 @@ export function App() {
      */
     if (submission.providerMode === "LIVE") {
       /**
-       * DEFENSIVE TOKEN CHECK, before even the capability request.
+       * DEFENSIVE CREDENTIAL CHECK, before even the capability request.
        *
-       * The form already blocks a tokenless LIVE submission, so this is
+       * The form already blocks a credential-less LIVE submission, so this is
        * belt-and-braces — but it is the parent that actually issues requests,
        * and "the child validated it" is not something the request-issuing code
        * should have to assume. Costs one string check and removes a whole class
-       * of avoidable 401s and stranded jobs.
+       * of avoidable rejections and stranded jobs.
+       *
+       * Issue #39: `turnstileToken`'s presence on the submission is what says
+       * this is a PUBLIC trial attempt — the form only ever includes it under
+       * a PUBLIC_TRIAL deployment, mutually exclusively with `liveAccessToken`.
        */
-      if ((submission.liveAccessToken ?? "").trim() === "") {
+      const isPublicSubmission = capabilities?.liveAccess === "PUBLIC_TRIAL";
+      const missingCredential = isPublicSubmission
+        ? submission.turnstileToken === undefined
+        : (submission.liveAccessToken ?? "").trim() === "";
+      if (missingCredential) {
         setError(null);
-        setNotice("A live demo access token is required for a live run.");
+        setNotice(
+          isPublicSubmission
+            ? "A completed verification challenge is required for a live run."
+            : "A live demo access token is required for a live run.",
+        );
         return;
       }
     }
@@ -1374,7 +1386,10 @@ export function App() {
       // Defensive: a NEWER workflow (another submission, a resume, a
       // navigation) could have started while this preflight was in flight.
       if (isStale(generation)) return;
-      if (fresh?.liveAgentRuns !== "AVAILABLE" || fresh.liveAccess !== "TOKEN_REQUIRED") {
+      if (
+        fresh?.liveAgentRuns !== "AVAILABLE" ||
+        (fresh.liveAccess !== "TOKEN_REQUIRED" && fresh.liveAccess !== "PUBLIC_TRIAL")
+      ) {
         // Nothing is generated and nothing is sent: no ticket id, no
         // createAgentJob, no startAgentRun — and emphatically no silent
         // downgrade to FAKE. The form has already been switched to the
@@ -1386,6 +1401,20 @@ export function App() {
         setSubmittedFinishedAt(Date.now());
         // Back to idle, completing the busy edge: the form unlocks and the token
         // clears, exactly as it does after any other terminal outcome.
+        setPhase("idle");
+        return;
+      }
+      // Issue #39 — a fresh PUBLIC_TRIAL response with visitorRunsRemaining
+      // !== 1 means this visitor's trial was consumed between page load and
+      // submission (another tab, a concurrent request). Refuse BEFORE creating
+      // the job — the submission-time freshness check is what makes this
+      // authoritative enough to avoid a stranded job.
+      if (fresh.liveAccess === "PUBLIC_TRIAL" && fresh.visitorRunsRemaining !== 1) {
+        setNotice(
+          "Your live trial run for today has already been used. The deterministic demo remains available.",
+        );
+        setFailedStage("availability");
+        setSubmittedFinishedAt(Date.now());
         setPhase("idle");
         return;
       }
@@ -1418,6 +1447,10 @@ export function App() {
       providerMode: submission.providerMode,
       ...(submission.liveAccessToken !== undefined
         ? { liveAccessToken: submission.liveAccessToken }
+        : {}),
+      // Issue #39 — PUBLIC trial only, mutually exclusive with liveAccessToken.
+      ...(submission.turnstileToken !== undefined
+        ? { turnstileToken: submission.turnstileToken }
         : {}),
       ...(requestKey !== null ? { idempotencyKey: requestKey } : {}),
     };
@@ -1482,7 +1515,13 @@ export function App() {
       // An abort or a superseded generation returns above WITHOUT setting this —
       // a cancelled request is not a refusal.
       if (submission.providerMode === "LIVE") {
-        setLiveRetryPending(true);
+        // Issue #39: PUBLIC trial has NO retry mechanism — exactly one
+        // attempt, no recovery. `turnstileToken`'s presence is what marks
+        // this as a PUBLIC submission (see runRequest above); only the
+        // PRIVATE path ever enters recovery mode.
+        if (submission.turnstileToken === undefined) {
+          setLiveRetryPending(true);
+        }
         // The refusal itself is evidence the answer changed. Refreshing keeps
         // the LIVE option and the recovery banner's copy honest — it does NOT
         // gate the recovery, which sends regardless (see retryLiveRunWithToken).

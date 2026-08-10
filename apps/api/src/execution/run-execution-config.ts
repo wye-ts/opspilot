@@ -32,6 +32,29 @@ import { DEFAULT_PROVIDER_DEADLINE_MS } from "./run-abort-context";
  *     process termination can leave real spend that no estimate ever observed.
  *     The hard control is the daily run COUNT, not the dollar figure.
  */
+/**
+ * The PUBLIC LIVE trial's config (issue #39) — a discriminated union rather
+ * than nullable fields, so a caller cannot read `turnstileSiteKey` without
+ * first narrowing on `enabled`.
+ *
+ * `dailyLimit` (5) and `costCeilingNanoUsd` ($0.50) are FIXED policy numbers
+ * from the confirmed public-trial design, not operator-configurable — unlike
+ * the private path's `LIVE_RUN_DAILY_LIMIT`/`LIVE_RUN_DAILY_COST_CEILING_USD`,
+ * there is no env var for either. Mirrors REQUIRED_MAX_CONCURRENCY's pinned
+ * treatment below: the number is part of what was reviewed and approved, so
+ * it is not a dial an operator can turn.
+ */
+export type LivePublicTrialConfig =
+  | {
+      readonly enabled: true;
+      readonly turnstileSecretKey: string;
+      readonly turnstileSiteKey: string;
+      readonly visitorSecret: string;
+      readonly dailyLimit: number;
+      readonly costCeilingNanoUsd: bigint;
+    }
+  | { readonly enabled: false };
+
 export interface LiveRunSafeguardConfig {
   /** Per-turn output ceiling for an API LIVE run — the exact, hard bound on output spend. */
   readonly maxOutputTokens: number;
@@ -83,6 +106,14 @@ export interface RunExecutionConfig {
   readonly liveRunAccess: LiveRunAccessPolicy;
   readonly liveRunSafeguards: LiveRunSafeguardConfig;
   /**
+   * Whether the PUBLIC LIVE trial path exists on this deployment (issue #39).
+   * Selects whether the PUBLIC path exists UNDERNEATH `liveAgentRunsEnabled`
+   * — never reinterpreted as private-only, and never a substitute for the
+   * master kill switch, which continues to gate whether EITHER path may run
+   * at all.
+   */
+  readonly livePublicTrial: LivePublicTrialConfig;
+  /**
    * How many reverse-proxy hops in front of this process may be trusted to
    * have set `X-Forwarded-For`. A NUMBER, passed to `app.set("trust proxy", n)`.
    *
@@ -111,6 +142,17 @@ export const LIVE_RUN_DEFAULTS = {
   dailyLimit: 10,
   dailyCostCeilingUsd: "1.00",
   trustProxyHops: 1,
+} as const;
+
+// The confirmed public-trial policy numbers (issue #39,
+// docs/reviews/23-issue-39-public-live-trial-plan.md), not operator-tunable
+// — see LivePublicTrialConfig. `maxAttemptsPerJob` is PUBLIC's per-job
+// attempt cap — always exactly 1, never LIVE_RUN_MAX_ATTEMPTS_PER_JOB (the
+// private path's configurable default of 2) — see agent-runs.controller.ts.
+export const PUBLIC_TRIAL_DEFAULTS = {
+  dailyLimit: 5,
+  costCeilingUsd: "0.50",
+  maxAttemptsPerJob: 1,
 } as const;
 
 /**
@@ -218,6 +260,48 @@ function parseCostCeilingNanoUsd(raw: string | undefined, variableName: string):
 }
 
 /**
+ * Requires a non-blank secret/key value. Never echoes the supplied value in
+ * the error message, matching every other parser here.
+ */
+function requireNonEmpty(raw: string | undefined, variableName: string): string {
+  const trimmed = raw?.trim();
+  if (trimmed === undefined || trimmed === "") {
+    throw new ProviderConfigError(`${variableName} is required when LIVE_PUBLIC_TRIAL_ENABLED=true.`);
+  }
+  return trimmed;
+}
+
+/**
+ * The PUBLIC LIVE trial config (issue #39). Fail-closed exactly like
+ * parseLiveRunAccess: when the flag is on, every one of the three secrets is
+ * required or startup fails — never a half-configured public path that comes
+ * up silently degraded.
+ */
+function parseLivePublicTrialConfig(env: EnvRecord): LivePublicTrialConfig {
+  const enabled = parseStrictBoolean(env.LIVE_PUBLIC_TRIAL_ENABLED, false, "LIVE_PUBLIC_TRIAL_ENABLED");
+  if (!enabled) {
+    return { enabled: false };
+  }
+
+  const costCeilingNanoUsd = parseUsdDecimalToNanoUsd(PUBLIC_TRIAL_DEFAULTS.costCeilingUsd);
+  // Unreachable — PUBLIC_TRIAL_DEFAULTS.costCeilingUsd is a fixed, known-valid
+  // literal, never operator input. Guarded anyway, matching this file's other
+  // defensive invariants.
+  if (costCeilingNanoUsd === null) {
+    throw new ProviderConfigError("Internal: PUBLIC_TRIAL_DEFAULTS.costCeilingUsd failed to parse.");
+  }
+
+  return {
+    enabled: true,
+    turnstileSecretKey: requireNonEmpty(env.TURNSTILE_SECRET_KEY, "TURNSTILE_SECRET_KEY"),
+    turnstileSiteKey: requireNonEmpty(env.TURNSTILE_SITE_KEY, "TURNSTILE_SITE_KEY"),
+    visitorSecret: requireNonEmpty(env.LIVE_PUBLIC_TRIAL_VISITOR_SECRET, "LIVE_PUBLIC_TRIAL_VISITOR_SECRET"),
+    dailyLimit: PUBLIC_TRIAL_DEFAULTS.dailyLimit,
+    costCeilingNanoUsd,
+  };
+}
+
+/**
  * Accepts only the exact string "1" (or an absent/empty value, which defaults to
  * 1). Every other value — including in-range-looking ones like "2" — fails
  * startup rather than silently weakening the documented overrun guarantee.
@@ -291,14 +375,22 @@ function parseLiveRunSafeguards(env: EnvRecord): LiveRunSafeguardConfig {
 
 /**
  * Resolves the access policy, and refuses the one combination that would put a
- * tokenless LIVE path in front of the public internet.
+ * tokenless LIVE path in front of the public internet with no admission
+ * control at all.
  *
- * The token is optional *as long as LIVE cannot actually be served*. That is
- * the shipped state — kill switch off, no credential, no token — and it is the
- * state CI and local development run in. But a deployment that has both a
- * credential and the switch on is one HTTP request away from spending money on
- * behalf of an anonymous caller, and this milestone ships no public tokenless
- * mode. So that combination fails startup rather than serving.
+ * The token is optional *as long as LIVE cannot actually be served*, OR as
+ * long as `LIVE_PUBLIC_TRIAL_ENABLED=true` supplies a different admission
+ * control for the tokenless case (issue #39: Turnstile + the visitor/day and
+ * public-budget gates, parsed separately by parseLivePublicTrialConfig). That
+ * is the whole point of the flag: it is what turns a previously-forbidden
+ * "capable, enabled, no token" startup into a deliberately supported one.
+ *
+ * A deployment that has BOTH a token AND the public flag on is permitted but
+ * the flag is inert for it: `liveRunAccess.kind === "token-required"` always
+ * takes the private branch in live-run-admission.ts, so there is no anonymous
+ * PUBIC path to reach in that shape. Not forbidden at startup because nothing
+ * about it is unsafe — merely unused — and forbidding it would be exactly the
+ * speculative validation this project's engineering posture avoids.
  *
  * Failing startup rather than resolving to "LIVE unavailable" is deliberate: an
  * operator who set the switch to `true` clearly intended live runs, and
@@ -309,15 +401,18 @@ function parseLiveRunAccess(
   env: EnvRecord,
   liveCapability: LiveCapability,
   liveAgentRunsEnabled: boolean,
+  livePublicTrialEnabled: boolean,
 ): LiveRunAccessPolicy {
   const rawToken = env.LIVE_RUN_ACCESS_TOKEN?.trim();
   const hasToken = rawToken !== undefined && rawToken !== "";
 
   if (!hasToken) {
-    if (liveCapability.kind === "present" && liveAgentRunsEnabled) {
+    if (liveCapability.kind === "present" && liveAgentRunsEnabled && !livePublicTrialEnabled) {
       throw new ProviderConfigError(
         "LIVE_RUN_ACCESS_TOKEN is required when LIVE_AGENT_RUNS_ENABLED=true and Anthropic " +
-          "configuration is present. This release ships no tokenless public LIVE mode.",
+          "configuration is present, unless LIVE_PUBLIC_TRIAL_ENABLED=true. This release serves " +
+          "either a token-protected private LIVE path or the public trial path — never a " +
+          "tokenless LIVE path with no admission control at all.",
       );
     }
 
@@ -394,6 +489,11 @@ export function parseRunExecutionConfig(env: EnvRecord): RunExecutionConfig {
     "LIVE_AGENT_RUNS_ENABLED",
   );
 
+  // Public-trial config BEFORE the access policy: parseLiveRunAccess's
+  // fail-closed rule needs to know whether the flag supplies a different
+  // admission control for the tokenless case.
+  const livePublicTrial = parseLivePublicTrialConfig(env);
+
   // Access policy FIRST, then the retry invariant. Both guard the same servable
   // combination, so an operator who has just switched LIVE on can trip either —
   // and "you are one request away from anonymous paid execution" is the more
@@ -404,6 +504,7 @@ export function parseRunExecutionConfig(env: EnvRecord): RunExecutionConfig {
     env,
     providerConfig.liveCapability,
     liveAgentRunsEnabled,
+    livePublicTrial.enabled,
   );
 
   assertNoOpaqueRetriesOnProtectedLivePath(providerConfig.liveCapability, liveAgentRunsEnabled);
@@ -420,6 +521,7 @@ export function parseRunExecutionConfig(env: EnvRecord): RunExecutionConfig {
       "AGENT_RUN_PROVIDER_DEADLINE_MS",
     ),
     liveRunAccess,
+    livePublicTrial,
     liveRunSafeguards: parseLiveRunSafeguards(env),
     trustProxyHops: parseBoundedInteger(
       env.TRUST_PROXY_HOPS,

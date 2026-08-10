@@ -171,12 +171,15 @@ describe("parseRunExecutionConfig — shared access token", () => {
     );
   });
 
-  it("names no tokenless public mode in the failure message", () => {
+  it("names LIVE_PUBLIC_TRIAL_ENABLED as the escape hatch in the failure message", () => {
+    // Issue #39: this exact combination is no longer forbidden outright — it's
+    // forbidden unless the public-trial flag supplies a different admission
+    // control. The message should say so.
     try {
       parseRunExecutionConfig(capableEnv({ LIVE_AGENT_RUNS_ENABLED: "true" }));
       throw new Error("expected the configuration to be rejected");
     } catch (error) {
-      expect((error as Error).message).toMatch(/no tokenless public LIVE mode/);
+      expect((error as Error).message).toMatch(/unless LIVE_PUBLIC_TRIAL_ENABLED=true/);
     }
   });
 
@@ -655,5 +658,101 @@ describe("parseRunExecutionConfig — Anthropic rollout inputs are a pair", () =
 
     const withRetries = { ...complete, ANTHROPIC_MAX_RETRIES: "1" };
     expect(() => parseRunExecutionConfig(withRetries)).toThrow(/ANTHROPIC_MAX_RETRIES/);
+  });
+});
+
+const TURNSTILE_SECRET = "turnstile-secret-do-not-use-1f14e45fceea";
+const TURNSTILE_SITE_KEY = "turnstile-site-key-do-not-use";
+const VISITOR_SECRET = "visitor-secret-do-not-use-9f14e45fceea";
+
+function publicTrialEnv(overrides: EnvRecord = {}): EnvRecord {
+  return capableEnv({
+    LIVE_AGENT_RUNS_ENABLED: "true",
+    ANTHROPIC_MAX_RETRIES: "0",
+    LIVE_PUBLIC_TRIAL_ENABLED: "true",
+    TURNSTILE_SECRET_KEY: TURNSTILE_SECRET,
+    TURNSTILE_SITE_KEY,
+    LIVE_PUBLIC_TRIAL_VISITOR_SECRET: VISITOR_SECRET,
+    ...overrides,
+  });
+}
+
+describe("parseRunExecutionConfig — PUBLIC LIVE trial (issue #39)", () => {
+  it("defaults to disabled", () => {
+    const config = parseRunExecutionConfig({});
+    expect(config.livePublicTrial).toEqual({ enabled: false });
+  });
+
+  it("is the escape hatch for a tokenless, capable, enabled deployment", () => {
+    // This exact combination — capable, switch on, no token — fails startup
+    // WITHOUT the flag (see the "shared access token" suite above) and
+    // succeeds WITH it.
+    const config = parseRunExecutionConfig(publicTrialEnv());
+
+    expect(config.liveRunAccess.kind).toBe("absent");
+    expect(config.livePublicTrial.enabled).toBe(true);
+  });
+
+  it("fails closed when enabled with any of the three secrets missing", () => {
+    expect(() =>
+      parseRunExecutionConfig(publicTrialEnv({ TURNSTILE_SECRET_KEY: undefined })),
+    ).toThrow(/TURNSTILE_SECRET_KEY is required/);
+    expect(() =>
+      parseRunExecutionConfig(publicTrialEnv({ TURNSTILE_SITE_KEY: undefined })),
+    ).toThrow(/TURNSTILE_SITE_KEY is required/);
+    expect(() =>
+      parseRunExecutionConfig(publicTrialEnv({ LIVE_PUBLIC_TRIAL_VISITOR_SECRET: undefined })),
+    ).toThrow(/LIVE_PUBLIC_TRIAL_VISITOR_SECRET is required/);
+  });
+
+  it("fails closed on a whitespace-only secret, same as an absent one", () => {
+    expect(() =>
+      parseRunExecutionConfig(publicTrialEnv({ TURNSTILE_SECRET_KEY: "   " })),
+    ).toThrow(/TURNSTILE_SECRET_KEY is required/);
+  });
+
+  it("parses the fixed, non-configurable policy numbers — 5/day, $0.50 ceiling", () => {
+    const config = parseRunExecutionConfig(publicTrialEnv());
+    if (!config.livePublicTrial.enabled) throw new Error("expected the public trial to be enabled");
+
+    expect(config.livePublicTrial.dailyLimit).toBe(5);
+    expect(config.livePublicTrial.costCeilingNanoUsd).toBe(500_000_000n);
+  });
+
+  it("ignores an env var attempting to override the fixed policy numbers — there is none to set", () => {
+    // There is deliberately no LIVE_PUBLIC_TRIAL_DAILY_LIMIT or cost-ceiling
+    // env var at all; an operator cannot tune these even if they try.
+    const config = parseRunExecutionConfig(
+      publicTrialEnv({
+        LIVE_PUBLIC_TRIAL_DAILY_LIMIT: "999",
+        LIVE_PUBLIC_TRIAL_COST_CEILING_USD: "999.00",
+      }),
+    );
+    if (!config.livePublicTrial.enabled) throw new Error("expected the public trial to be enabled");
+
+    expect(config.livePublicTrial.dailyLimit).toBe(5);
+    expect(config.livePublicTrial.costCeilingNanoUsd).toBe(500_000_000n);
+  });
+
+  it("rejects an anything-but-'true'/'false' value, matching every other strict boolean", () => {
+    expect(() =>
+      parseRunExecutionConfig(capableEnv({ LIVE_PUBLIC_TRIAL_ENABLED: "1" })),
+    ).toThrow(/LIVE_PUBLIC_TRIAL_ENABLED must be exactly 'true' or 'false'/);
+  });
+
+  it("permits a token AND the public flag together — inert, not forbidden", () => {
+    // Not a supported dual-routing mode: liveRunAccess.kind === "token-required"
+    // always wins in live-run-admission.ts, so the flag has no anonymous path
+    // to reach. Not unsafe, merely unused — so it is not rejected at startup.
+    const config = parseRunExecutionConfig(
+      publicTrialEnv({ LIVE_RUN_ACCESS_TOKEN: DEMO_TOKEN }),
+    );
+
+    expect(config.liveRunAccess.kind).toBe("token-required");
+    expect(config.livePublicTrial.enabled).toBe(true);
+  });
+
+  it("never requires the three secrets when the flag is off, even with everything else present", () => {
+    expect(() => parseRunExecutionConfig(servableEnv())).not.toThrow();
   });
 });

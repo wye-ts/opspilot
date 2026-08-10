@@ -83,6 +83,9 @@ const EXPECTED_CHECK_CONSTRAINT_NAMES = [
   "live_run_budget_estimated_cost_nano_usd_chk",
   "live_run_budget_pricing_unknown_runs_chk",
   "live_run_budget_completed_within_reserved_chk",
+  "live_run_budget_public_runs_reserved_chk",
+  "live_run_budget_public_cost_nano_usd_chk",
+  "live_run_budget_public_within_overall_chk",
 ] as const;
 
 let handle: PrismaClientHandle;
