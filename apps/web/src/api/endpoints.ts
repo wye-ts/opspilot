@@ -30,6 +30,15 @@ const LIVE_ACCESS_TOKEN_HEADER = "X-OpsPilot-Demo-Token";
  */
 const LIVE_RUN_IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
 
+/**
+ * The header carrying a solved Turnstile token, PUBLIC trial requests only
+ * (issue #39). Never sent alongside a private access token — the two paths
+ * are mutually exclusive per submission, mirroring the server's own
+ * per-deployment access mode. Never placed in the request body next to
+ * `providerMode`: same reasoning as the two headers above it.
+ */
+const TURNSTILE_TOKEN_HEADER = "X-OpsPilot-Turnstile-Token";
+
 export interface CreateAgentJobInput {
   readonly ticketId: string;
   readonly summary: string;
@@ -55,6 +64,13 @@ export interface StartAgentRunInput {
    * of the key is that a repeat can be recognized.
    */
   readonly idempotencyKey?: string;
+  /**
+   * The solved Turnstile token, PUBLIC trial requests only (issue #39). Held
+   * in React state by TurnstileChallenge and passed straight through to a
+   * request header — never stored, never placed in the request body next to
+   * `providerMode`, and never sent alongside `liveAccessToken`.
+   */
+  readonly turnstileToken?: string;
 }
 
 /**
@@ -77,10 +93,12 @@ export function startAgentRun(input: StartAgentRunInput, signal?: AbortSignal) {
   const live = input.providerMode === "LIVE";
   const sendToken = live && (input.liveAccessToken ?? "") !== "";
   const sendKey = live && (input.idempotencyKey ?? "") !== "";
+  const sendTurnstileToken = live && (input.turnstileToken ?? "") !== "";
 
   const headers: Record<string, string> = {
     ...(sendToken ? { [LIVE_ACCESS_TOKEN_HEADER]: input.liveAccessToken as string } : {}),
     ...(sendKey ? { [LIVE_RUN_IDEMPOTENCY_KEY_HEADER]: input.idempotencyKey as string } : {}),
+    ...(sendTurnstileToken ? { [TURNSTILE_TOKEN_HEADER]: input.turnstileToken as string } : {}),
   };
 
   return request<AgentRunDetail>(`/v1/agent-jobs/${input.jobId}/runs`, {

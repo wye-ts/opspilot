@@ -153,6 +153,30 @@ export interface LiveRunBudgetReservationInput {
   readonly budgetDate: string;
   readonly dailyLimit: number;
   readonly costCeilingNanoUsd: bigint;
+  /**
+   * Issue #39 — when present, `isLiveRunBudgetOpen` also verifies the PUBLIC
+   * sub-ceilings (public_runs_reserved, public_estimated_cost_nano_usd). Absent
+   * in every private-path call — the private path's budget check is unchanged.
+   */
+  readonly publicDailyLimit?: number;
+  readonly publicCostCeilingNanoUsd?: bigint;
+}
+
+/**
+ * The PUBLIC-trial-only extension to a LIVE reservation request (issue #39).
+ *
+ * Absent from `startLiveRunWithAttemptLimit`'s params ⇒ the transaction is
+ * byte-identical to today's private path — token holders are unaffected by
+ * construction, not by a parallel code path kept in sync by hand. Present ⇒
+ * the transaction also reserves the visitor-day row and the public
+ * sub-ceiling. Deliberately no `visitorDailyLimit`: the per-visitor gate is
+ * `live_run_visitor_usage`'s `(visitor_id, usage_date)` primary key, not a
+ * counter with its own limit.
+ */
+export interface PublicTrialReservationInput {
+  readonly visitorId: string;
+  readonly publicDailyLimit: number;
+  readonly publicCostCeilingNanoUsd: bigint;
 }
 
 // Echoed back out of the transaction that took it, so reconciliation uses the
@@ -160,6 +184,14 @@ export interface LiveRunBudgetReservationInput {
 export interface LiveRunBudgetReservation {
   readonly budgetDate: string;
   readonly runsReserved: number;
+  /**
+   * Whether this reservation consumed the PUBLIC sub-ceiling (issue #39).
+   * Carried on the reservation itself, rather than threaded separately
+   * through the caller, so `reconcileLiveRunBudget` can decide whether to
+   * credit `public_estimated_cost_nano_usd` from the one value it is already
+   * given.
+   */
+  readonly isPublic: boolean;
 }
 
 // Returned by startLiveRunWithAttemptLimit when it actually created a run: the

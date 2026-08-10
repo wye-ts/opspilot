@@ -82,10 +82,12 @@ function buildFakeProviderFactory(): AgentProviderFactory {
 
 function buildFakeResponse() {
   // `once`/`off` are what createRequestAbortHandle attaches; a LIVE run needs
-  // them, and a FAKE run never touches them.
+  // them, and a FAKE run never touches them. `cookie` is what
+  // authorizePublicTrial's visitor-identity stage attaches (issue #39).
   return {
     status: vi.fn(),
     setHeader: vi.fn(),
+    cookie: vi.fn(),
     once: vi.fn(),
     off: vi.fn(),
     writableFinished: false,
@@ -102,15 +104,19 @@ function buildFakeRequest(
     readonly token?: string;
     readonly ip?: string;
     readonly idempotencyKey?: string | null;
+    /** Issue #39 — the solved Turnstile token, PUBLIC trial requests only. */
+    readonly turnstileToken?: string;
   } = {},
 ): import("express").Request {
   const idempotencyKey =
     options.idempotencyKey === undefined ? DEFAULT_IDEMPOTENCY_KEY : options.idempotencyKey;
   return {
     ip: options.ip ?? "203.0.113.7",
+    headers: {},
     header: (name: string) => {
       const lower = name.toLowerCase();
       if (lower === "x-opspilot-demo-token") return options.token;
+      if (lower === "x-opspilot-turnstile-token") return options.turnstileToken;
       // `null` models an absent header — `header()` returns undefined for one,
       // which is exactly what the schema must reject.
       if (lower === "idempotency-key") return idempotencyKey ?? undefined;
@@ -146,6 +152,9 @@ function buildController(
     readonly providerFactory?: AgentProviderFactory;
     readonly isBudgetOpen?: () => Promise<boolean>;
     readonly logDecision?: LiveRunAdmissionDecisionLogger;
+    // Issue #39 — only meaningful when `config.livePublicTrial.enabled`.
+    readonly turnstileVerifier?: Parameters<typeof createLiveRunAdmissionController>[0]["turnstileVerifier"];
+    readonly visitorIdentity?: Parameters<typeof createLiveRunAdmissionController>[0]["visitorIdentity"];
   } = {},
 ) {
   return new AgentRunsController(
@@ -159,6 +168,8 @@ function buildController(
       // Silent by default so the decision line does not drown the suite's
       // output; the tests that care about it inject a recorder.
       logDecision: overrides.logDecision ?? (() => undefined),
+      ...(overrides.turnstileVerifier ? { turnstileVerifier: overrides.turnstileVerifier } : {}),
+      ...(overrides.visitorIdentity ? { visitorIdentity: overrides.visitorIdentity } : {}),
     }),
     createApiUsageHooks(),
   );
@@ -962,7 +973,7 @@ describe("AgentRunsController.createAgentRun — LIVE admission", () => {
       pricingStatus: "CURRENT" as const,
       possibleUnobservedCost: false,
     };
-    const RESERVATION = { budgetDate: "2026-07-29", runsReserved: 1 };
+    const RESERVATION = { budgetDate: "2026-07-29", runsReserved: 1, isPublic: false };
 
     it("reconciles using the reservation's own budget date", async () => {
       const reconcileLiveRunBudget = vi.fn().mockResolvedValue(undefined);
@@ -2179,5 +2190,154 @@ describe("AgentRunsController.createAgentRun — replay bypasses new-run spend a
     // No run of ANY mode was started — the returned run is the one that already
     // existed, and it is LIVE.
     expect(harness.executeAndPersist).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Issue #39 — PUBLIC trial wiring through the real controller: the
+ * `publicTrial` block reaches `executeAndPersist`, and the attempt limit is
+ * the fixed 1, never LIVE_RUN_MAX_ATTEMPTS_PER_JOB.
+ */
+describe("AgentRunsController.createAgentRun — PUBLIC trial (issue #39)", () => {
+  const TURNSTILE_SECRET = "turnstile-secret-do-not-use-1f14e45fceea";
+  const VISITOR_SECRET = "visitor-secret-do-not-use-9f14e45fceea";
+  const TURNSTILE_SITE_KEY = "turnstile-site-key-do-not-use";
+  const VISITOR_ID = "11111111-1111-4111-8111-111111111111";
+
+  function publicTrialConfig(overrides: Partial<RunExecutionConfig> = {}): RunExecutionConfig {
+    return buildConfig({
+      ...parseRunExecutionConfig({
+        ANTHROPIC_API_KEY: "sk-ant-test-do-not-use-0123456789",
+        ANTHROPIC_MODEL: "claude-sonnet-5",
+        LIVE_AGENT_RUNS_ENABLED: "true",
+        ANTHROPIC_MAX_RETRIES: "0",
+        LIVE_PUBLIC_TRIAL_ENABLED: "true",
+        TURNSTILE_SECRET_KEY: TURNSTILE_SECRET,
+        TURNSTILE_SITE_KEY,
+        LIVE_PUBLIC_TRIAL_VISITOR_SECRET: VISITOR_SECRET,
+      }),
+      ...overrides,
+    });
+  }
+
+  function publicController(configOverrides: Partial<RunExecutionConfig> = {}) {
+    const executeAndPersist = vi
+      .fn()
+      .mockResolvedValue({ persistence: "persisted", run: PERSISTED_RUN, usageSummary: null, reservation: null });
+    const service = buildFakeService({ executeAndPersist });
+    const controller = buildController(publicTrialConfig(configOverrides), {
+      service,
+      turnstileVerifier: { verify: async () => true },
+      visitorIdentity: { mintVisitorId: () => VISITOR_ID, resolveVisitorId: () => null, setVisitorCookie: () => undefined },
+    });
+    return { controller, executeAndPersist };
+  }
+
+  it("passes publicTrial through to executeAndPersist, with the fixed 5/day and $0.50 policy numbers", async () => {
+    const { controller, executeAndPersist } = publicController();
+
+    await controller.createAgentRun(
+      "job-1",
+      { providerMode: "LIVE" },
+      buildFakeRequest({ turnstileToken: "solved-token" }),
+      buildFakeResponse(),
+    );
+
+    const params = executeAndPersist.mock.calls[0]?.[0];
+    expect(params.publicTrial).toEqual({
+      visitorId: VISITOR_ID,
+      publicDailyLimit: 5,
+      publicCostCeilingNanoUsd: 500_000_000n,
+    });
+  });
+
+  it("uses the fixed attempt limit of 1, never LIVE_RUN_MAX_ATTEMPTS_PER_JOB", async () => {
+    const { controller, executeAndPersist } = publicController();
+
+    await controller.createAgentRun(
+      "job-1",
+      { providerMode: "LIVE" },
+      buildFakeRequest({ turnstileToken: "solved-token" }),
+      buildFakeResponse(),
+    );
+
+    expect(executeAndPersist.mock.calls[0]?.[0].liveAttemptLimit).toBe(1);
+  });
+
+  function privateLiveController() {
+    const executeAndPersist = vi
+      .fn()
+      .mockResolvedValue({ persistence: "persisted", run: PERSISTED_RUN, usageSummary: null, reservation: null });
+    const service = buildFakeService({ executeAndPersist });
+    return { executeAndPersist, controller: buildController(servableConfig(), { service }) };
+  }
+
+  it("keeps the private path's configurable attempt limit unaffected", async () => {
+    const { controller, executeAndPersist } = privateLiveController();
+
+    await controller.createAgentRun(
+      "job-1",
+      { providerMode: "LIVE" },
+      buildFakeRequest({ token: DEMO_TOKEN }),
+      buildFakeResponse(),
+    );
+
+    expect(executeAndPersist.mock.calls[0]?.[0].liveAttemptLimit).toBe(2);
+  });
+
+  it("omits publicTrial entirely on the private token path", async () => {
+    const { controller, executeAndPersist } = privateLiveController();
+
+    await controller.createAgentRun(
+      "job-1",
+      { providerMode: "LIVE" },
+      buildFakeRequest({ token: DEMO_TOKEN }),
+      buildFakeResponse(),
+    );
+
+    expect(executeAndPersist.mock.calls[0]?.[0]).not.toHaveProperty("publicTrial");
+  });
+
+  it("refuses with LIVE_RUN_TURNSTILE_FAILED when the challenge fails, before executeAndPersist is ever called", async () => {
+    const executeAndPersist = vi.fn();
+    const service = buildFakeService({ executeAndPersist });
+    const controller = buildController(publicTrialConfig(), {
+      service,
+      turnstileVerifier: { verify: async () => false },
+      visitorIdentity: { mintVisitorId: () => VISITOR_ID, resolveVisitorId: () => null, setVisitorCookie: () => undefined },
+    });
+
+    await expect(
+      controller.createAgentRun(
+        "job-1",
+        { providerMode: "LIVE" },
+        buildFakeRequest({ turnstileToken: "bad-token" }),
+        buildFakeResponse(),
+      ),
+    ).rejects.toMatchObject({ code: "LIVE_RUN_TURNSTILE_FAILED", status: 401 });
+    expect(executeAndPersist).not.toHaveBeenCalled();
+  });
+
+  it("calls setVisitorCookie exactly once, unconditionally on a solved challenge", async () => {
+    const setVisitorCookie = vi.fn();
+    const executeAndPersist = vi
+      .fn()
+      .mockResolvedValue({ persistence: "persisted", run: PERSISTED_RUN, usageSummary: null, reservation: null });
+    const controller = buildController(publicTrialConfig(), {
+      service: buildFakeService({ executeAndPersist }),
+      turnstileVerifier: { verify: async () => true },
+      visitorIdentity: { mintVisitorId: () => VISITOR_ID, resolveVisitorId: () => null, setVisitorCookie },
+    });
+    const res = buildFakeResponse();
+
+    await controller.createAgentRun(
+      "job-1",
+      { providerMode: "LIVE" },
+      buildFakeRequest({ turnstileToken: "solved-token" }),
+      res,
+    );
+
+    expect(setVisitorCookie).toHaveBeenCalledTimes(1);
+    expect(setVisitorCookie).toHaveBeenCalledWith(res, VISITOR_ID);
   });
 });

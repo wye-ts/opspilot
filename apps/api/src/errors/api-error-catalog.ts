@@ -20,7 +20,15 @@ export type ApiErrorCode =
   | "LIVE_RUN_ATTEMPT_LIMIT"
   | "LIVE_RUN_BUDGET_EXHAUSTED"
   | "LIVE_RUN_IDEMPOTENCY_KEY_INVALID"
-  | "LIVE_RUN_CONTEXT_INVALID";
+  | "LIVE_RUN_CONTEXT_INVALID"
+  // PUBLIC trial only (issue #39). Its own distinct code — unlike
+  // LIVE_RUN_BUDGET_EXHAUSTED, it needs no internal reason classification,
+  // since it already carries an unambiguous meaning.
+  | "LIVE_RUN_VISITOR_QUOTA_EXHAUSTED"
+  // PUBLIC trial only. Distinct and retryable: the frontend re-presents the
+  // Turnstile widget rather than offering the FAKE demo, which is what
+  // every OTHER PUBLIC rejection does.
+  | "LIVE_RUN_TURNSTILE_FAILED";
 
 interface ApiErrorCatalogEntry {
   readonly status: number;
@@ -130,6 +138,21 @@ export const API_ERROR_CATALOG: Readonly<Record<ApiErrorCode, ApiErrorCatalogEnt
   LIVE_RUN_BUDGET_EXHAUSTED: {
     status: 429,
     message: "The live agent run allowance for today has been used. The deterministic demo remains available.",
+  },
+  // PUBLIC trial only. Same opacity discipline as the code above: no count, no
+  // remaining allowance, nothing that distinguishes "this visitor already
+  // used today's trial" from any other closed-gate reason at the wire level
+  // beyond the code itself.
+  LIVE_RUN_VISITOR_QUOTA_EXHAUSTED: {
+    status: 429,
+    message: "Your live trial run for today has already been used. The deterministic demo remains available.",
+  },
+  // 401, matching LIVE_RUN_ACCESS_DENIED: both are "present a fresh credential
+  // and retry" rejections on the same admission step. Retryable, unlike a
+  // quota rejection — a caller may re-solve the challenge and try again.
+  LIVE_RUN_TURNSTILE_FAILED: {
+    status: 401,
+    message: "The bot challenge could not be verified. Please solve it again and retry.",
   },
   // 400, and decided in the same breath as body validation — before the token
   // check, before the rate limiter, and before any lease is taken. A malformed

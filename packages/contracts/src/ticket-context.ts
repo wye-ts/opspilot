@@ -11,6 +11,16 @@ export const TICKET_SUMMARY_MIN_LENGTH = 15;
 export const TICKET_SUMMARY_MAX_LENGTH = 2000;
 
 /**
+ * Issue #39 — the PUBLIC LIVE trial's stricter summary ceiling. The floor
+ * (15) is unchanged and shared with the private bound; only the ceiling
+ * tightens, from 2000 to 300, per the confirmed public-trial policy
+ * (docs/reviews/23-issue-39-public-live-trial-plan.md). Not configurable —
+ * see PUBLIC_TRIAL_DEFAULTS in apps/api's run-execution-config.ts for the
+ * sibling policy numbers that are equally fixed.
+ */
+export const PUBLIC_TICKET_SUMMARY_MAX_LENGTH = 300;
+
+/**
  * The REQUEST/WRITE boundary schema — what a caller may submit, and what gets
  * persisted.
  *
@@ -30,6 +40,22 @@ export const TicketContextSchema = z
   .strict();
 
 export type TicketContext = z.infer<typeof TicketContextSchema>;
+
+/**
+ * Issue #39 — the PUBLIC-trial write boundary: identical to
+ * `TicketContextSchema` except the summary ceiling is 300, not 2000. Used
+ * only by `isPublicLiveExecutionEligible` below, at LIVE-execution time —
+ * job CREATION (`POST /v1/agent-jobs`) always validates against the shared
+ * `TicketContextSchema`, regardless of which provider mode a caller later
+ * requests, since a job's eventual provider mode is not known when it is
+ * created.
+ */
+export const PublicTicketContextSchema = z
+  .object({
+    ticketId: z.string().trim().min(1).max(TICKET_ID_MAX_LENGTH),
+    summary: z.string().trim().min(TICKET_SUMMARY_MIN_LENGTH).max(PUBLIC_TICKET_SUMMARY_MAX_LENGTH),
+  })
+  .strict();
 
 /**
  * The READ boundary schema — revalidates a `ticket_context` JSONB snapshot
@@ -108,6 +134,26 @@ export type StoredTicketContext = z.infer<typeof StoredTicketContextSchema>;
  */
 export function isLiveExecutionEligible(context: StoredTicketContext): boolean {
   const parsed = TicketContextSchema.safeParse(context);
+  return (
+    parsed.success &&
+    parsed.data.ticketId === context.ticketId &&
+    parsed.data.summary === context.summary
+  );
+}
+
+/**
+ * Issue #39 — the PUBLIC-trial counterpart to `isLiveExecutionEligible`,
+ * identical in every respect (same canonical-form requirement, same
+ * predicate-not-transform contract, same "only new executions are held to
+ * this" scope) except the summary ceiling: 300 characters, not 2000. A job
+ * whose stored summary satisfies the private 15..2000 bound but exceeds 300
+ * is eligible for a PRIVATE, token-authenticated LIVE run and NOT eligible
+ * for a PUBLIC trial run of the same job — the two checks are not
+ * interchangeable, and the repository selects between them by path (see
+ * agent-run-repository.ts's `startLiveRunWithAttemptLimit`).
+ */
+export function isPublicLiveExecutionEligible(context: StoredTicketContext): boolean {
+  const parsed = PublicTicketContextSchema.safeParse(context);
   return (
     parsed.success &&
     parsed.data.ticketId === context.ticketId &&

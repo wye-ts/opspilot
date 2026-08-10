@@ -78,6 +78,7 @@ afterAll(async () => {
 afterEach(async () => {
   await truncateAllTables(handle);
   await prisma.$executeRaw`DELETE FROM live_run_budget`;
+  await prisma.$executeRaw`DELETE FROM live_run_visitor_usage`;
 });
 
 /** A row that `createJob` would refuse today, inserted the way history did. */
@@ -357,5 +358,64 @@ describe("a replay outranks the bounds", () => {
     // A NEW key against the same now-ineligible job is still refused — the
     // exemption is for the run that exists, not for the job.
     await expect(startLive(jobId)).rejects.toMatchObject({ code: "LIVE_RUN_CONTEXT_INVALID" });
+  });
+});
+
+/**
+ * Issue #39 — the PUBLIC trial's stricter 15..300 bound, distinct from the
+ * private 15..2000 bound above. Same canonical-form contract, same rejection
+ * code, same "before any paid side effect" placement — only the ceiling
+ * differs, and only for a request carrying `publicTrial`.
+ */
+describe("PUBLIC trial eligibility uses the 15..300 bound, not 15..2000", () => {
+  function startPublic(jobId: string) {
+    return startLiveRunWithAttemptLimit(prisma, {
+      jobId,
+      modelIdentifier: "claude-sonnet-5",
+      maxLiveAttempts: 3,
+      budget: budget(),
+      clientRequestId: randomUUID(),
+      publicTrial: { visitorId: randomUUID(), publicDailyLimit: 5, publicCostCeilingNanoUsd: 500_000_000n },
+    });
+  }
+
+  it("admits a summary within 15..300 for PUBLIC", async () => {
+    const jobId = await legacyJob("TKT-public-ok", "Elevated API error rate on billing-service");
+    await expect(startPublic(jobId)).resolves.toMatchObject({ outcome: "started" });
+  });
+
+  it("refuses a summary that PASSES the private 15..2000 bound but exceeds 300, for PUBLIC only", async () => {
+    const summary = "y".repeat(301);
+    const publicJob = await legacyJob("TKT-public-over-301a", summary);
+    await expect(startPublic(publicJob)).rejects.toMatchObject({ code: "LIVE_RUN_CONTEXT_INVALID" });
+
+    // The SAME summary is eligible for the PRIVATE path — proving this is a
+    // stricter PUBLIC-only bound, not a global tightening of 2000 to 300.
+    const privateJob = await legacyJob("TKT-public-over-301b", summary);
+    await expect(startLive(privateJob)).resolves.toMatchObject({ outcome: "started" });
+  });
+
+  it("is refused at exactly one character over 300, and admitted at exactly 300", async () => {
+    const over = await legacyJob("TKT-public-301", "y".repeat(301));
+    await expect(startPublic(over)).rejects.toMatchObject({ code: "LIVE_RUN_CONTEXT_INVALID" });
+
+    const at = await legacyJob("TKT-public-300", "y".repeat(300));
+    await expect(startPublic(at)).resolves.toMatchObject({ outcome: "started" });
+  });
+
+  it("still refuses below the shared 15-character floor for PUBLIC", async () => {
+    const jobId = await legacyJob("TKT-public-short", "Disk full");
+    await expect(startPublic(jobId)).rejects.toMatchObject({ code: "LIVE_RUN_CONTEXT_INVALID" });
+  });
+
+  it("consumes no visitor-day row and no budget row on a PUBLIC eligibility refusal", async () => {
+    const jobId = await legacyJob("TKT-public-refused-side-effects", "y".repeat(301));
+
+    await expect(startPublic(jobId)).rejects.toBeInstanceOf(LiveRunAdmissionError);
+
+    await expectNoPaidSideEffect(jobId);
+    const [row] = await prisma.$queryRaw<{ count: bigint }[]>`
+      SELECT count(*)::bigint AS count FROM live_run_visitor_usage`;
+    expect(row?.count ?? 0n).toBe(0n);
   });
 });

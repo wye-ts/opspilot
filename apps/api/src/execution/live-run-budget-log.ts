@@ -119,6 +119,14 @@ export function logBudgetReconciliationFailure(params: {
 export type LiveRunAdmissionDecisionLogger = (params: {
   readonly decision: "admitted" | "replayed" | "rejected";
   readonly code: string | null;
+  /**
+   * Issue #39 — internal-only classification of WHICH condition closed the
+   * shared budget gate, set only when `code` is `LIVE_RUN_BUDGET_EXHAUSTED`
+   * (see `LiveRunBudgetRejectionReason` in @opspilot/database). `null` for
+   * every other decision and every other rejection code — this is never a
+   * generic free-text field.
+   */
+  readonly reason?: string | null;
 }) => void;
 
 /**
@@ -128,8 +136,9 @@ export type LiveRunAdmissionDecisionLogger = (params: {
  * Carries no budget figures, counts, or headroom — those belong in the database,
  * not in a log line an operator might paste into an issue. It carries no token,
  * no header value, and no client address either. The decision and its fixed
- * catalog code are what make the safeguards observable; everything quantitative
- * about them stays private.
+ * catalog code (plus, for a budget-exhausted rejection, the closed `reason`
+ * classification) are what make the safeguards observable; everything
+ * quantitative about them stays private.
  */
 export const logLiveRunAdmissionDecision: LiveRunAdmissionDecisionLogger = (params) => {
   emitLogSafely(() =>
@@ -138,6 +147,7 @@ export const logLiveRunAdmissionDecision: LiveRunAdmissionDecisionLogger = (para
         event: "live_run_admission",
         decision: params.decision,
         code: params.code,
+        reason: params.reason ?? null,
       }),
     ),
   );

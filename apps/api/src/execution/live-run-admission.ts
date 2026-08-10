@@ -1,5 +1,10 @@
-import { PersistenceError, type LiveRunBudgetReservationInput } from "@opspilot/database";
-import type { Request } from "express";
+import {
+  LiveRunAdmissionError,
+  PersistenceError,
+  type LiveRunBudgetReservationInput,
+  type PublicTrialReservationInput,
+} from "@opspilot/database";
+import type { Request, Response } from "express";
 
 import { ApiError } from "../errors/api-error";
 import { LIVE_RUN_ACCESS_TOKEN_HEADER } from "./live-run-access";
@@ -11,6 +16,17 @@ import {
 import { createLiveRunConcurrencyLimiter, type LiveRunConcurrencyLease } from "./live-run-concurrency";
 import { createLiveRunRateLimiter } from "./live-run-rate-limiter";
 import type { RunExecutionConfig } from "./run-execution-config";
+import type { TurnstileVerifier } from "./turnstile-verifier";
+import type { VisitorIdentity } from "./visitor-identity";
+
+/**
+ * The header carrying a solved Turnstile token, PUBLIC trial requests only
+ * (issue #39). Never read on the private-token path, and never a body field —
+ * same reasoning as LIVE_RUN_ACCESS_TOKEN_HEADER: a token in a URL or body
+ * ends up in more places than a header does, none of which the gate could
+ * then undo.
+ */
+export const TURNSTILE_TOKEN_HEADER = "x-opspilot-turnstile-token";
 
 /**
  * What a successfully admitted NEW LIVE run carries into execution.
@@ -114,8 +130,51 @@ export interface LiveRunAdmissionController {
    * execution, reconciliation, release) remain the caller's.
    */
   admitNewRun(request: Request, authorized: AuthorizedLiveRequest): Promise<NewRunAdmissionLease>;
-  /** Whether a new LIVE run could be admitted right now. Advisory; see below. */
-  isAvailable(): Promise<boolean>;
+  /**
+   * STAGE B (issue #39) — PUBLIC trial only: Turnstile verification, then
+   * visitor identity resolution. A no-op on the private-token path — resolves
+   * to `null` immediately, no network call, no cookie read or write — because
+   * `authorize` already fully authorized that request.
+   *
+   * MUST run between `authorize` and any database access (the replay lookup
+   * included): docs/reviews/23-issue-39-public-live-trial-plan.md §9 requires
+   * Turnstile to be the first thing checked on the PUBLIC path, before any
+   * database access at all, so a missing/failed challenge never lets an
+   * unauthenticated caller learn whether a client key already names a run.
+   *
+   * A failed Turnstile check throws LIVE_RUN_TURNSTILE_FAILED, through the
+   * SAME one-shot recorder `authorize` created — consuming no visitor quota,
+   * no public budget, and creating no reservation, exactly like every other
+   * Stage A/B rejection.
+   *
+   * On success, sets the signed visitor cookie on `response` UNCONDITIONALLY
+   * — regardless of what the eventual admission transaction decides — so a
+   * quota-exhausted visitor converges on a stable identity instead of
+   * re-solving Turnstile for nothing on a later attempt (§5).
+   */
+  authorizePublicTrial(
+    request: Request,
+    response: Response,
+    authorized: AuthorizedLiveRequest,
+  ): Promise<PublicTrialReservationInput | null>;
+  /**
+   * Issue #39 — the current visitor's own remaining PUBLIC trial allowance for
+   * `/v1/capabilities`. READ-ONLY: resolves an existing cookie if present but
+   * never mints or sets one — a caller with no cookie is a new visitor with
+   * the default allowance of 1, not something this probe should ever create
+   * state for merely because a page loaded. Advisory, like `isAvailable`; the
+   * authoritative gate remains the visitor-day reservation inside
+   * `startLiveRunWithAttemptLimit`.
+   */
+  getVisitorRunsRemaining(request: Request): Promise<0 | 1>;
+  /**
+   * Whether a new LIVE run could be admitted right now. Advisory; see below.
+   *
+   * When `publicTrial` is `true`, also verifies the PUBLIC sub-ceilings
+   * (5/day, $0.50/day) against the budget row. When absent/false, checks
+   * only the overall budget — the private path's existing behavior, unchanged.
+   */
+  isAvailable(publicTrial?: boolean): Promise<boolean>;
 }
 
 export interface LiveRunAdmissionDependencies {
@@ -137,6 +196,19 @@ export interface LiveRunAdmissionDependencies {
    * here would silently turn admission observability back into dead code.
    */
   readonly logDecision?: LiveRunAdmissionDecisionLogger;
+  /**
+   * Issue #39 — required iff `config.livePublicTrial.enabled`. Absent on a
+   * private-only deployment, where `authorizePublicTrial` never reaches the
+   * code that would use them.
+   */
+  readonly turnstileVerifier?: TurnstileVerifier;
+  readonly visitorIdentity?: VisitorIdentity;
+  /**
+   * Whether the given visitor could still start today's PUBLIC trial run.
+   * Injected exactly like `isBudgetOpen`, so this module stays free of
+   * persistence concerns.
+   */
+  readonly isVisitorTrialAvailable?: (visitorId: string, budgetDate: string) => Promise<boolean>;
 }
 
 /**
@@ -155,7 +227,7 @@ function utcBudgetDate(now: Date): string {
 export function createLiveRunAdmissionController(
   dependencies: LiveRunAdmissionDependencies,
 ): LiveRunAdmissionController {
-  const { config, isBudgetOpen } = dependencies;
+  const { config, isBudgetOpen, turnstileVerifier, visitorIdentity, isVisitorTrialAvailable } = dependencies;
   const now = dependencies.now ?? (() => new Date());
   /**
    * The injected sink, wrapped ONCE so no call site can forget.
@@ -237,10 +309,16 @@ export function createLiveRunAdmissionController(
    */
   function createDecisionRecorder() {
     let settled = false;
-    const record = (decision: "admitted" | "replayed" | "rejected", code: string | null) => {
+    // `reason` is OMITTED from the call to `logDecision` entirely (not passed
+    // as `null`) unless a genuine classification exists — see
+    // LiveRunAdmissionDecisionLogger. Keeping the two-key shape for every
+    // other decision is deliberate, not an oversight: it is what every
+    // existing "emits {decision, code}" assertion in this suite continues to
+    // mean unchanged.
+    const record = (decision: "admitted" | "replayed" | "rejected", code: string | null, reason: string | null = null) => {
       if (settled) return;
       settled = true;
-      logDecision({ decision, code });
+      logDecision(reason !== null ? { decision, code, reason } : { decision, code });
     };
     return {
       admitted: () => record("admitted", null),
@@ -249,7 +327,21 @@ export function createLiveRunAdmissionController(
       // the presented token, the client address, the budget figures, or the
       // remaining headroom. A non-ApiError has no public code, so it logs as
       // `null` rather than having an internal message pressed into service.
-      rejected: (error: unknown) => record("rejected", error instanceof ApiError ? error.code : null),
+      //
+      // Issue #39 — the one exception to "no figures": when the rejection is a
+      // LIVE_RUN_BUDGET_EXHAUSTED wrapping a LiveRunAdmissionError that carries
+      // an internal `reason` classification (see agent-run-repository.ts's
+      // classifyBudgetRejection), that closed six-value enum rides along too.
+      // It is not a figure or a count — it names WHICH condition closed the
+      // gate, never how close any of them were.
+      rejected: (error: unknown) => {
+        const code = error instanceof ApiError ? error.code : null;
+        const reason =
+          error instanceof ApiError && error.cause instanceof LiveRunAdmissionError && error.cause.reason !== undefined
+            ? error.cause.reason
+            : null;
+        record("rejected", code, reason);
+      },
     };
   }
 
@@ -265,6 +357,15 @@ export function createLiveRunAdmissionController(
    * for requests that ended before Stage C.
    */
   const recorders = new WeakMap<AuthorizedLiveRequest, DecisionRecorder>();
+
+  /**
+   * Issue #39 — tracks which `AuthorizedLiveRequest` handles have already
+   * consumed their rate-limit slot inside `authorizePublicTrial`. When present,
+   * `admitNewRunOnce` skips its own rate-limit check, so a single PUBLIC
+   * request consumes exactly one slot — not one before Turnstile and a second
+   * one in Stage C.
+   */
+  const rateLimitConsumed = new WeakSet<AuthorizedLiveRequest>();
 
   function authorizeOnce(request: Request): void {
     // ── Step 2. Capability ─────────────────────────────────────────────────
@@ -283,7 +384,7 @@ export function createLiveRunAdmissionController(
       throw new ApiError("LIVE_RUNS_DISABLED");
     }
 
-    // ── Step 4. Shared access token ────────────────────────────────────────
+    // ── Step 4. Shared access token, OR the PUBLIC trial path (issue #39) ───
     // Before the rate limiter on purpose: an unauthenticated caller should not
     // be able to consume another client's rate-limit budget, and the token
     // check is pure local computation.
@@ -295,30 +396,66 @@ export function createLiveRunAdmissionController(
     //
     // The provided value is read straight into verify() and never stored,
     // logged, echoed, or copied anywhere else.
-    if (config.liveRunAccess.kind !== "token-required") {
-      // Unreachable by construction: startup fails when capability is present
-      // and the switch is on but no token is configured (see
-      // parseLiveRunAccess). Refusing here rather than trusting that keeps the
-      // failure closed even if that invariant is ever weakened.
+    if (config.liveRunAccess.kind === "token-required") {
+      const presented = request.header(LIVE_RUN_ACCESS_TOKEN_HEADER);
+      if (config.liveRunAccess.verify(presented)) {
+        // Valid private token — private path. authorizePublicTrial is a no-op
+        // for this request.
+        return;
+      }
+      // A token was EXPLICITLY presented but is invalid. This caller is on the
+      // private path — deny unconditionally, even when the public trial flag is
+      // also on. An invalid token is never downgraded to PUBLIC, never reaches
+      // Turnstile, never touches visitor identity, and never enters public
+      // admission.
+      if (presented !== undefined) {
+        throw new ApiError("LIVE_RUN_ACCESS_DENIED");
+      }
+      // No token presented at all. When the PUBLIC trial flag is on, the
+      // request is eligible for the public path — Stage B (authorizePublicTrial)
+      // will gate it with Turnstile + visitor identity.
+      if (config.livePublicTrial.enabled) {
+        return;
+      }
+      // No token, no public flag — nothing left to try.
       throw new ApiError("LIVE_RUN_ACCESS_DENIED");
     }
 
-    const presented = request.header(LIVE_RUN_ACCESS_TOKEN_HEADER);
-    if (!config.liveRunAccess.verify(presented)) {
-      throw new ApiError("LIVE_RUN_ACCESS_DENIED");
+    // No token configured. Valid ONLY when the PUBLIC trial flag supplies a
+    // different admission control for this request — Turnstile + visitor
+    // identity, checked next by authorizePublicTrial (Stage B), never here.
+    // This method deliberately does nothing more in that case: no token to
+    // check, and Stage B's own gate is what makes the request safe.
+    if (config.livePublicTrial.enabled) {
+      return;
     }
+
+    // Unreachable by construction: startup fails when capability is present,
+    // the switch is on, no token is configured, AND the public flag is off
+    // (see parseLiveRunAccess). Refusing here rather than trusting that keeps
+    // the failure closed even if that invariant is ever weakened.
+    throw new ApiError("LIVE_RUN_ACCESS_DENIED");
   }
 
-  async function admitNewRunOnce(request: Request): Promise<NewRunAdmissionLease> {
+  async function admitNewRunOnce(
+    request: Request,
+    authorized: AuthorizedLiveRequest,
+  ): Promise<NewRunAdmissionLease> {
     // ── Step 5. Per-client rate limit ──────────────────────────────────────
     // `req.ip`, which is only meaningful because main.ts set a NUMERIC
     // `trust proxy` hop count. This raises the cost of casual abuse; it is not
     // identity and not a spend guarantee.
-    const rateDecision = rateLimiter.check(request.ip ?? "unknown");
-    if (!rateDecision.allowed) {
-      throw new ApiError("LIVE_RUN_RATE_LIMITED", {
-        retryAfterSeconds: rateDecision.retryAfterSeconds,
-      });
+    //
+    // Skipped when the PUBLIC path already consumed this request's rate-limit
+    // slot inside authorizePublicTrial (issue #39) — one request, one slot,
+    // never two.
+    if (!rateLimitConsumed.has(authorized)) {
+      const rateDecision = rateLimiter.check(request.ip ?? "unknown");
+      if (!rateDecision.allowed) {
+        throw new ApiError("LIVE_RUN_RATE_LIMITED", {
+          retryAfterSeconds: rateDecision.retryAfterSeconds,
+        });
+      }
     }
 
     // ONE reservation input per admission attempt, captured here — after the
@@ -405,14 +542,136 @@ export function createLiveRunAdmissionController(
       const recorder = recorders.get(authorized) ?? createDecisionRecorder();
 
       try {
-        return await admitNewRunOnce(request);
+        return await admitNewRunOnce(request, authorized);
       } catch (error) {
         recorder.rejected(error);
         throw error;
       }
     },
 
-    async isAvailable(): Promise<boolean> {
+    async authorizePublicTrial(
+      request: Request,
+      response: Response,
+      authorized: AuthorizedLiveRequest,
+    ): Promise<PublicTrialReservationInput | null> {
+      if (config.liveRunAccess.kind === "token-required") {
+        // If THIS request bears a valid private token, it is on the private
+        // path — Turnstile is unnecessary. Return null immediately (no-op).
+        // The deployment may have BOTH a token and the public flag on; a
+        // request with a valid token takes the private path, a request
+        // without one falls through to Turnstile below.
+        const presented = request.header(LIVE_RUN_ACCESS_TOKEN_HEADER);
+        if (config.liveRunAccess.verify(presented)) {
+          return null;
+        }
+      }
+
+      if (!config.livePublicTrial.enabled || turnstileVerifier === undefined || visitorIdentity === undefined) {
+        // Unreachable by construction: authorizeOnce already refused any
+        // request that reaches here unless config.livePublicTrial.enabled,
+        // and createLiveRunAdmissionController's factory (run-execution.module.ts)
+        // supplies both dependencies whenever that flag is on. Fail closed
+        // rather than trust the invariant.
+        const recorder = recorders.get(authorized) ?? createDecisionRecorder();
+        const error = new ApiError("INTERNAL_ERROR");
+        recorder.rejected(error);
+        throw error;
+      }
+
+      const recorder = recorders.get(authorized) ?? createDecisionRecorder();
+
+      // ── Step 5 (public). Per-client rate limit (same limiter, same window,
+      // same bucket as admitNewRunOnce). Applied BEFORE Turnstile so a bot
+      // that fails the challenge repeatedly still hits the 2/60s burst
+      // limiter — a missing Turnstile check must not be cheaper than a
+      // missing token check. Consumes no visitor quota, no public budget, and
+      // creates no reservation.
+      const rateDecision = rateLimiter.check(request.ip ?? "unknown");
+      if (!rateDecision.allowed) {
+        const error = new ApiError("LIVE_RUN_RATE_LIMITED", {
+          retryAfterSeconds: rateDecision.retryAfterSeconds,
+        });
+        recorder.rejected(error);
+        throw error;
+      }
+      // The rate-limit slot is consumed NOW — before Turnstile — so that
+      // admitNewRunOnce skips its own duplicate check. One PUBLIC request
+      // consumes exactly one slot regardless of whether Turnstile or the
+      // admission transaction later passes or fails.
+      rateLimitConsumed.add(authorized);
+
+      // ── Step 6 (public). Turnstile — before ANY database access, including
+      // the replay lookup the caller runs immediately after this resolves.
+      // See docs/reviews/23-issue-39-public-live-trial-plan.md §9: a missing
+      // or failed challenge is a generic client-visible rejection, consumes
+      // no visitor quota and no public budget, and creates no reservation.
+      const verified = await turnstileVerifier.verify(request.header(TURNSTILE_TOKEN_HEADER), request.ip);
+      if (!verified) {
+        const error = new ApiError("LIVE_RUN_TURNSTILE_FAILED");
+        recorder.rejected(error);
+        throw error;
+      }
+
+      // ── Step 7 (public). Visitor identity — resolve, else mint fresh.
+      const visitorId = visitorIdentity.resolveVisitorId(request) ?? visitorIdentity.mintVisitorId();
+      // UNCONDITIONAL, regardless of what admission decides next — see the
+      // interface doc comment: a quota-exhausted visitor must still converge
+      // on a stable identity rather than re-solving Turnstile for nothing.
+      visitorIdentity.setVisitorCookie(response, visitorId);
+
+      return {
+        visitorId,
+        publicDailyLimit: config.livePublicTrial.dailyLimit,
+        publicCostCeilingNanoUsd: config.livePublicTrial.costCeilingNanoUsd,
+      };
+    },
+
+    async getVisitorRunsRemaining(request: Request): Promise<0 | 1> {
+      // A caller with a valid private token is on the private path — the
+      // PUBLIC trial visitor allowance is not relevant for them, and 0 is
+      // the honest answer.
+      if (
+        config.liveRunAccess.kind === "token-required" &&
+        config.liveRunAccess.verify(request.header(LIVE_RUN_ACCESS_TOKEN_HEADER))
+      ) {
+        return 0;
+      }
+      // A caller who explicitly presented a token (even invalid) is on the
+      // private path — never evaluate their PUBLIC visitor allowance.
+      if (
+        config.liveRunAccess.kind === "token-required" &&
+        request.header(LIVE_RUN_ACCESS_TOKEN_HEADER) !== undefined
+      ) {
+        return 0;
+      }
+      // Token-only deployment — no PUBLIC trial to query.
+      if (!config.livePublicTrial.enabled) {
+        return 0;
+      }
+      if (visitorIdentity === undefined || isVisitorTrialAvailable === undefined) {
+        return 0;
+      }
+
+      const visitorId = visitorIdentity.resolveVisitorId(request);
+      if (visitorId === null) {
+        // No trustworthy cookie at all — a new visitor with the default
+        // allowance. See visitor-identity.ts and §5: never minted here.
+        return 1;
+      }
+
+      try {
+        const available = await isVisitorTrialAvailable(visitorId, utcBudgetDate(now()));
+        return available ? 1 : 0;
+      } catch (error) {
+        // Fails closed toward the safer under-promise — mirrors isAvailable:
+        // an unreadable row must never claim a trial is available when the
+        // server cannot actually confirm it.
+        if (error instanceof PersistenceError) return 0;
+        throw error;
+      }
+    },
+
+    async isAvailable(publicTrial?: boolean): Promise<boolean> {
       // Every unavailable reason collapses to a single boolean on purpose — see
       // the capabilities controller. A caller learns that LIVE cannot be started,
       // never which safeguard is engaged or how much headroom remains.
@@ -422,10 +681,24 @@ export function createLiveRunAdmissionController(
       // would bury the decisions that matter.
       if (config.liveCapability.kind !== "present") return false;
       if (!config.liveAgentRunsEnabled) return false;
-      if (config.liveRunAccess.kind !== "token-required") return false;
+      // Available under EITHER access mode — the private token path or the
+      // PUBLIC trial path (issue #39). Neither is a substitute for the other;
+      // the kill switch above still gates both.
+      if (config.liveRunAccess.kind !== "token-required" && !config.livePublicTrial.enabled) return false;
 
       try {
-        return await isBudgetOpen(reservationInput());
+        const budget = reservationInput();
+        // When called for the PUBLIC trial path, also verify the public
+        // sub-ceilings (5/day, $0.50/day). The private path never passes this
+        // flag, so its availability check is unaffected by public exhaustion.
+        if (publicTrial && config.livePublicTrial.enabled) {
+          return await isBudgetOpen({
+            ...budget,
+            publicDailyLimit: config.livePublicTrial.dailyLimit,
+            publicCostCeilingNanoUsd: config.livePublicTrial.costCeilingNanoUsd,
+          });
+        }
+        return await isBudgetOpen(budget);
       } catch (error) {
         // Fails closed, and stays opaque: an unreadable budget row reports
         // UNAVAILABLE like every other reason rather than turning a public,

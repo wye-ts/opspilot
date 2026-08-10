@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 
 import type { CapabilitiesView } from "../api/types";
+import { TurnstileChallenge } from "./TurnstileChallenge";
 
 export type ProviderModeChoice = "FAKE" | "LIVE";
 
@@ -9,10 +10,17 @@ export interface InvestigationFormSubmission {
   readonly approvalDemo: boolean;
   readonly providerMode: ProviderModeChoice;
   /**
-   * Present only for a LIVE submission. Travels to the API client, which puts it
-   * in a request header and nowhere else.
+   * Present only for a PRIVATE LIVE submission. Travels to the API client,
+   * which puts it in a request header and nowhere else.
    */
   readonly liveAccessToken?: string;
+  /**
+   * Present only for a PUBLIC trial LIVE submission (issue #39) — mutually
+   * exclusive with `liveAccessToken`, mirroring the server's own
+   * per-deployment access mode. Travels to the API client, which puts it in
+   * a request header and nowhere else.
+   */
+  readonly turnstileToken?: string;
 }
 
 /**
@@ -56,8 +64,16 @@ export interface InvestigationFormProps {
 export const SUMMARY_MIN_LENGTH = 15;
 export const SUMMARY_MAX_LENGTH = 2000;
 
+// The PUBLIC trial's stricter ceiling (issue #39) — mirrors
+// PUBLIC_TICKET_SUMMARY_MAX_LENGTH (packages/contracts) exactly. The floor is
+// shared with the private bound; only the ceiling tightens.
+export const PUBLIC_SUMMARY_MAX_LENGTH = 300;
+
 const LIVE_UNAVAILABLE_REASON =
   "Live Claude is temporarily unavailable — the deterministic demo is always available.";
+
+const VISITOR_QUOTA_EXHAUSTED_REASON =
+  "You've already used today's live trial run — the deterministic demo is always available.";
 
 // Owns only `summary`, `approvalDemo`, the provider mode, and the live token —
 // no ticket-ID field exists here or anywhere in the app. The internal ticket ID
@@ -83,6 +99,22 @@ export function InvestigationForm({
    * and a shared demo credential never outlives the tab that typed it.
    */
   const [liveAccessToken, setLiveAccessToken] = useState("");
+  /**
+   * Issue #39 — the solved Turnstile token, held only for the duration of one
+   * PUBLIC trial submission. `null` means "no valid, unexpired solve held
+   * right now" — the same role `liveAccessToken`'s emptiness plays for the
+   * private path, and the reason `canSubmit` treats them identically.
+   */
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  /**
+   * Bumped on the same busy→idle edge that clears the token, and passed to
+   * `<TurnstileChallenge key={...}>` below — forcing a full remount, which is
+   * what makes the widget itself re-render a fresh, unsolved challenge rather
+   * than sitting there visually "solved" while `turnstileToken` has already
+   * been cleared underneath it (a state the widget's own callback would never
+   * fire again to correct, since nothing re-triggers it).
+   */
+  const [turnstileResetKey, setTurnstileResetKey] = useState(0);
 
   const summaryId = useId();
   const approvalDemoId = useId();
@@ -97,15 +129,16 @@ export function InvestigationForm({
   // after a render.
   const submittingRef = useRef(false);
 
-  const trimmedSummary = summary.trim();
-  const summaryLongEnough = trimmedSummary.length >= SUMMARY_MIN_LENGTH;
-  const summaryShortEnough = trimmedSummary.length <= SUMMARY_MAX_LENGTH;
+  /**
+   * Narrows `capabilities` to the PUBLIC_TRIAL variant, or `null` — the one
+   * place that discriminant is checked, so every other PUBLIC-specific value
+   * below (`visitorRunsRemaining`, `turnstileSiteKey`) reads off THIS rather
+   * than re-narrowing `capabilities` independently and risking disagreement.
+   */
+  const publicTrialCapabilities =
+    capabilities !== null && capabilities.liveAccess === "PUBLIC_TRIAL" ? capabilities : null;
+  const isPublicTrial = publicTrialCapabilities !== null;
 
-  const liveAvailable = capabilities?.liveAgentRuns === "AVAILABLE";
-  // NOTE: `capabilities.liveAccess` is deliberately NOT consulted here. It once
-  // decided whether a token was required at all, which is what allowed a
-  // tokenless LIVE submission — see `tokenSatisfied` below. Availability governs
-  // whether LIVE can be offered; it never governs whether it needs authenticating.
   // `!= null` catches BOTH null and undefined on purpose. `null` is the real
   // "not retrying" value, but a caller that omits the prop entirely must land on
   // the ordinary creation form — defaulting the other way would silently render
@@ -115,11 +148,35 @@ export function InvestigationForm({
   // radio group — the run being retried was a live run, and a retry must not be
   // able to become a different kind of run.
   const liveSelected = retrying || providerMode === "LIVE";
-  // A LIVE submission with no token would be a guaranteed 401, so the button
-  // stays disabled rather than spending a round trip to be told so.
+
+  const trimmedSummary = summary.trim();
+  const summaryLongEnough = trimmedSummary.length >= SUMMARY_MIN_LENGTH;
+  // PUBLIC's ceiling is stricter (300, not 2000) — but only while LIVE is
+  // actually selected under a PUBLIC_TRIAL deployment; the FAKE form (and a
+  // TOKEN_REQUIRED deployment's LIVE form) keep the private 2000 ceiling.
+  // Retry mode never applies here: PUBLIC has no retry mechanism (exactly 1
+  // attempt, no retry), so `isPublicTrial` and `retrying` are never both true.
+  const effectiveSummaryMaxLength =
+    isPublicTrial && liveSelected ? PUBLIC_SUMMARY_MAX_LENGTH : SUMMARY_MAX_LENGTH;
+  const summaryShortEnough = trimmedSummary.length <= effectiveSummaryMaxLength;
+
+  const visitorRunsRemaining = publicTrialCapabilities?.visitorRunsRemaining ?? null;
+  // Unavailable OUTRIGHT (`liveAgentRuns !== "AVAILABLE"`) or available at the
+  // deployment level but THIS visitor's own trial is already used — both
+  // collapse to the same "LIVE cannot be offered right now" state, but with
+  // distinct help text (see the radio's option-help span below).
+  const liveAvailable =
+    capabilities?.liveAgentRuns === "AVAILABLE" && !(isPublicTrial && visitorRunsRemaining === 0);
+  // NOTE: `capabilities.liveAccess` is deliberately NOT consulted here beyond
+  // the PUBLIC_TRIAL narrowing above. It once decided whether a token was
+  // required at all, which is what allowed a tokenless LIVE submission — see
+  // `tokenSatisfied` below. Availability governs whether LIVE can be offered;
+  // it never governs whether it needs authenticating.
+  // A LIVE submission with no credential would be a guaranteed rejection, so
+  // the button stays disabled rather than spending a round trip to be told so.
   /**
-   * A LIVE submission ALWAYS needs a token. Not "when the current capability
-   * snapshot says so".
+   * A LIVE submission ALWAYS needs a credential. Not "when the current
+   * capability snapshot says so".
    *
    * The previous rule was `!tokenRequired || token.length > 0`, which let an
    * UNAVAILABLE snapshot make a tokenless LIVE submission look valid — the token
@@ -129,9 +186,12 @@ export function InvestigationForm({
    * partial workflow.
    *
    * Availability and authentication are different questions. Capability governs
-   * the first; the protected public path requires the second unconditionally.
+   * the first; whichever protected path is active requires the second
+   * unconditionally — a private access token, or (issue #39) a solved
+   * Turnstile challenge. The two are mutually exclusive per deployment, so
+   * exactly one of these two checks is ever the live one.
    */
-  const tokenSatisfied = !liveSelected || liveAccessToken.trim().length > 0;
+  const tokenSatisfied = !liveSelected || (isPublicTrial ? turnstileToken !== null : liveAccessToken.trim().length > 0);
 
   // Recovery validates ONLY the token. The summary belongs to a row that already
   // exists in PostgreSQL and is not being submitted, so re-checking its length
@@ -153,6 +213,7 @@ export function InvestigationForm({
     setProviderMode(next);
     if (next === "FAKE") {
       setLiveAccessToken("");
+      setTurnstileToken(null);
     } else {
       setApprovalDemo(false);
     }
@@ -178,7 +239,8 @@ export function InvestigationForm({
       // approvalDemo, whatever sequence of clicks produced this state.
       approvalDemo: liveSelected ? false : approvalDemo,
       providerMode,
-      ...(liveSelected && liveAccessToken !== "" ? { liveAccessToken } : {}),
+      ...(liveSelected && !isPublicTrial && liveAccessToken !== "" ? { liveAccessToken } : {}),
+      ...(liveSelected && isPublicTrial && turnstileToken !== null ? { turnstileToken } : {}),
     });
   }
 
@@ -204,7 +266,15 @@ export function InvestigationForm({
   useEffect(() => {
     if (!disabled) {
       submittingRef.current = false;
-      if (wasDisabledRef.current) setLiveAccessToken("");
+      if (wasDisabledRef.current) {
+        setLiveAccessToken("");
+        // Issue #39: a solved Turnstile token authorizes exactly one attempt,
+        // same as the private token above. Bumping the reset key remounts the
+        // widget so the user sees a fresh, unsolved challenge rather than one
+        // that still looks solved after its token was already spent.
+        setTurnstileToken(null);
+        setTurnstileResetKey((key) => key + 1);
+      }
     }
     wasDisabledRef.current = disabled;
   }, [disabled]);
@@ -318,7 +388,9 @@ export function InvestigationForm({
             <span className="mode-option-help">
               {liveAvailable
                 ? "Real claude-sonnet-5. Protected by availability and usage limits."
-                : LIVE_UNAVAILABLE_REASON}
+                : isPublicTrial && visitorRunsRemaining === 0
+                  ? VISITOR_QUOTA_EXHAUSTED_REASON
+                  : LIVE_UNAVAILABLE_REASON}
             </span>
           </label>
         </div>
@@ -343,7 +415,7 @@ export function InvestigationForm({
             {trimmedSummary.length} / {SUMMARY_MIN_LENGTH}
           </span>
           {!summaryShortEnough ? (
-            <span className="form-error"> Maximum {SUMMARY_MAX_LENGTH} characters.</span>
+            <span className="form-error"> Maximum {effectiveSummaryMaxLength} characters.</span>
           ) : null}
         </p>
       </div>
@@ -368,11 +440,13 @@ export function InvestigationForm({
       ) : null}
 
       {/*
-        Rendered whenever LIVE is selected — including retained retry mode — and
-        NOT gated on the capability snapshot. A hidden field with a required
-        value is how a tokenless submission became possible.
+        Rendered whenever LIVE is selected on the PRIVATE token path —
+        including retained retry mode, which only ever exists for that path —
+        and NOT gated on the capability snapshot. A hidden field with a
+        required value is how a tokenless submission became possible.
+        Never rendered under PUBLIC_TRIAL: see TurnstileChallenge below.
       */}
-      {liveSelected ? (
+      {liveSelected && !isPublicTrial ? (
         <div className="form-field">
           <label htmlFor={tokenId}>Live demo access token</label>
           <input
@@ -390,6 +464,21 @@ export function InvestigationForm({
             Used only for this browser session. Not stored on this device.
           </p>
         </div>
+      ) : null}
+
+      {/*
+        Issue #39 — rendered ONLY when LIVE is selected under a PUBLIC_TRIAL
+        deployment. Never mounted alongside the private token field above; the
+        two paths are mutually exclusive per deployment. `key` forces a full
+        remount (a fresh, unsolved widget) after every submission — see
+        turnstileResetKey.
+      */}
+      {liveSelected && publicTrialCapabilities !== null ? (
+        <TurnstileChallenge
+          key={turnstileResetKey}
+          siteKey={publicTrialCapabilities.turnstileSiteKey}
+          onTokenChange={setTurnstileToken}
+        />
       ) : null}
 
       <div className="form-actions">

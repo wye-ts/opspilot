@@ -1,5 +1,5 @@
 import { Module } from "@nestjs/common";
-import { isLiveRunBudgetOpen, type PrismaClientHandle } from "@opspilot/database";
+import { isLiveRunBudgetOpen, isVisitorTrialAvailable, type PrismaClientHandle } from "@opspilot/database";
 
 import { PRISMA_CLIENT_HANDLE } from "../persistence/prisma.tokens";
 import { createAgentProviderFactory } from "./api-provider-factory";
@@ -9,11 +9,13 @@ import {
   RUN_EXECUTION_CONFIG,
   USAGE_HOOKS,
 } from "./execution.tokens";
-import { createLiveRunAdmissionController } from "./live-run-admission";
+import { createLiveRunAdmissionController, type LiveRunAdmissionDependencies } from "./live-run-admission";
 import { logLiveRunAdmissionDecision } from "./live-run-budget-log";
 import { logProviderEvent } from "./provider-event-log";
 import { parseRunExecutionConfig, type RunExecutionConfig } from "./run-execution-config";
+import { createTurnstileVerifier } from "./turnstile-verifier";
 import { createApiUsageHooks } from "./usage-hooks";
+import { createVisitorIdentity } from "./visitor-identity";
 
 /**
  * Reads the environment exactly once, at module-instantiation time, and builds
@@ -62,16 +64,33 @@ import { createApiUsageHooks } from "./usage-hooks";
       // Takes an `isBudgetOpen` callback rather than the Prisma handle itself, so
       // live-run-admission.ts stays free of persistence concerns and is
       // unit-testable with no database at all.
-      useFactory: (config: RunExecutionConfig, handle: PrismaClientHandle) =>
-        createLiveRunAdmissionController({
+      useFactory: (config: RunExecutionConfig, handle: PrismaClientHandle) => {
+        // turnstileVerifier/visitorIdentity are built ONLY when the public
+        // trial is actually enabled — the single place a real Cloudflare
+        // secret or a visitor-cookie secret is ever read into a live object,
+        // matching the same conditional-construction posture the Anthropic
+        // client already uses for liveCapability.
+        const publicTrialDeps: Pick<LiveRunAdmissionDependencies, "turnstileVerifier" | "visitorIdentity"> =
+          config.livePublicTrial.enabled
+            ? {
+                turnstileVerifier: createTurnstileVerifier(config.livePublicTrial.turnstileSecretKey),
+                visitorIdentity: createVisitorIdentity(config.livePublicTrial.visitorSecret),
+              }
+            : {};
+
+        return createLiveRunAdmissionController({
           config,
           isBudgetOpen: (budget) => isLiveRunBudgetOpen(handle.prisma, budget),
+          isVisitorTrialAvailable: (visitorId, budgetDate) =>
+            isVisitorTrialAvailable(handle.prisma, visitorId, budgetDate),
           // The production sink for the one-line-per-decision admission record.
           // Passed explicitly rather than left to the default so this module —
           // the single place the real controller is built — states what the
           // deployment actually logs.
           logDecision: logLiveRunAdmissionDecision,
-        }),
+          ...publicTrialDeps,
+        });
+      },
       inject: [RUN_EXECUTION_CONFIG, PRISMA_CLIENT_HANDLE],
     },
   ],

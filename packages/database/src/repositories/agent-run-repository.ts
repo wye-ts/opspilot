@@ -1,6 +1,7 @@
 import {
   InvestigationEventPayloadSchema,
   isLiveExecutionEligible,
+  isPublicLiveExecutionEligible,
   type InvestigationEventRecord,
 } from "@opspilot/contracts";
 
@@ -10,7 +11,7 @@ import type { PrismaClient } from "../client";
 // import if the generator's real `Prisma` namespace export differs.
 import { Prisma } from "../generated/prisma-client/client";
 import { normalizeDatabaseError, PersistenceError } from "../errors";
-import { LiveRunAdmissionError } from "../live-run-errors";
+import { LiveRunAdmissionError, type LiveRunBudgetRejectionReason } from "../live-run-errors";
 import {
   buildOutcome,
   fromAgentJobRow,
@@ -31,6 +32,7 @@ import type {
   PersistedAgentRun,
   PersistedInvestigationState,
   ProviderMode,
+  PublicTrialReservationInput,
   ReplayedLiveRun,
   RunProviderUsageWrite,
   StartedAgentRun,
@@ -90,6 +92,46 @@ function toBudgetDateString(value: Date): string {
 /** The UTC calendar day, as the "YYYY-MM-DD" string a reservation is keyed on. */
 export function currentBudgetDate(now: Date = new Date()): string {
   return toBudgetDateString(now);
+}
+
+/**
+ * Issue #39 — classifies WHY the budget reservation's WHERE clause rejected
+ * a request, from a snapshot read of the same row the failed attempt just
+ * observed. Pure and internal-only: see LiveRunBudgetRejectionReason.
+ *
+ * Fixed precedence, first match wins, evaluated only among conditions
+ * actually violated: the two shared/global latches gate everything and are
+ * checked first; the overall hard limits are more fundamental than a public
+ * sub-limit, so they outrank the public-specific reasons when several are
+ * simultaneously true.
+ */
+function classifyBudgetRejection(
+  row: {
+    readonly runsReserved: number;
+    readonly estimatedCostNanoUsd: bigint;
+    readonly pricingUnknownRuns: number;
+    readonly runsCompleted: number;
+    readonly publicRunsReserved: number;
+    readonly publicEstimatedCostNanoUsd: bigint;
+  },
+  budget: LiveRunBudgetReservationInput,
+  publicTrial: PublicTrialReservationInput | undefined,
+): LiveRunBudgetRejectionReason {
+  if (row.runsCompleted !== row.runsReserved) return "BUDGET_LATCH_UNRECONCILED";
+  if (row.pricingUnknownRuns !== 0) return "BUDGET_PRICING_UNKNOWN";
+  if (row.runsReserved >= budget.dailyLimit) return "BUDGET_OVERALL_COUNT_EXHAUSTED";
+  if (row.estimatedCostNanoUsd >= budget.costCeilingNanoUsd) return "BUDGET_OVERALL_COST_EXHAUSTED";
+  if (publicTrial !== undefined) {
+    if (row.publicRunsReserved >= publicTrial.publicDailyLimit) return "BUDGET_PUBLIC_COUNT_EXHAUSTED";
+    if (row.publicEstimatedCostNanoUsd >= publicTrial.publicCostCeilingNanoUsd) {
+      return "BUDGET_PUBLIC_COST_EXHAUSTED";
+    }
+  }
+  // Unreachable in practice — the WHERE clause rejected this row for some
+  // reason, and every clause it can fail on is covered above. Falling back to
+  // the most fundamental reason is safer than throwing a second, different
+  // error out of an already-failing admission path.
+  return "BUDGET_OVERALL_COUNT_EXHAUSTED";
 }
 
 export async function createJob(
@@ -181,9 +223,15 @@ export async function startRun(
  *     2. replay lookup by client key           -> returns the EXISTING run, done
  *     3. stored context vs. current bounds     -> LIVE_RUN_CONTEXT_INVALID (422)
  *     4. count LIVE runs for the job           -> LIVE_RUN_ATTEMPT_LIMIT (429)
- *     5. reserve the UTC-day budget row        -> LIVE_RUN_BUDGET_EXHAUSTED (429)
- *     6. allocate attempt_number; INSERT the run with its client key
+ *     5. [PUBLIC ONLY] reserve the visitor-day -> LIVE_RUN_VISITOR_QUOTA_EXHAUSTED (429)
+ *     6. reserve the UTC-day budget row        -> LIVE_RUN_BUDGET_EXHAUSTED (429)
+ *     7. allocate attempt_number; INSERT the run with its client key
  *   COMMIT
+ *
+ * Fixed lock order, public or private (issue #39):
+ * agent_jobs -> live_run_visitor_usage -> live_run_budget -> agent_runs insert.
+ * Absent `params.publicTrial`, step 5 does not run and every other step is
+ * byte-identical to the private path — see PublicTrialReservationInput.
  *
  * STEPS 2 AND 3 ARE BOTH BEFORE EVERY SIDE EFFECT — before the attempt count,
  * before the reservation, before the insert, and therefore before the provider
@@ -243,9 +291,16 @@ export async function startLiveRunWithAttemptLimit(
      * definition. See @opspilot/contracts' LIVE_RUN_IDEMPOTENCY_KEY_HEADER.
      */
     readonly clientRequestId: string;
+    /**
+     * Present only for a PUBLIC trial attempt (issue #39). Absent ⇒ this
+     * transaction is byte-identical to the private path — see
+     * PublicTrialReservationInput.
+     */
+    readonly publicTrial?: PublicTrialReservationInput;
   },
 ): Promise<LiveRunStartResult> {
-  const { jobId, modelIdentifier, maxLiveAttempts, budget, clientRequestId } = params;
+  const { jobId, modelIdentifier, maxLiveAttempts, budget, clientRequestId, publicTrial } = params;
+  const isPublic = publicTrial !== undefined;
 
   try {
     const result = await prisma.$transaction(async (tx) => {
@@ -310,7 +365,16 @@ export async function startLiveRunWithAttemptLimit(
       //    FAKE is unaffected and stays legacy-compatible. It goes through
       //    startRun, spends nothing, and has no reason to enforce an input rule
       //    retroactively.
-      if (!isLiveExecutionEligible(jobRecord.ticketContext)) {
+      //
+      //    PUBLIC (issue #39) uses the STRICTER 15..300 bound instead of
+      //    15..2000 — isPublicLiveExecutionEligible, not a relaxed variant of
+      //    the private check. A job whose stored summary satisfies 15..2000
+      //    but exceeds 300 is eligible for a private, token-authenticated LIVE
+      //    run and refused for a PUBLIC trial run of that same job.
+      const eligible = isPublic
+        ? isPublicLiveExecutionEligible(jobRecord.ticketContext)
+        : isLiveExecutionEligible(jobRecord.ticketContext);
+      if (!eligible) {
         throw new LiveRunAdmissionError("LIVE_RUN_CONTEXT_INVALID");
       }
 
@@ -327,12 +391,31 @@ export async function startLiveRunWithAttemptLimit(
         throw new LiveRunAdmissionError("LIVE_RUN_ATTEMPT_LIMIT");
       }
 
-      // 5. Reserve the day. A single statement does insert-or-increment with the
+      // 5. [PUBLIC ONLY] Reserve the visitor-day row (issue #39). Insert-only:
+      //    a returned row means this visitor has not yet used today's trial;
+      //    zero rows means the primary key already exists for
+      //    (visitor_id, usage_date) — no counter, no visitorDailyLimit, the
+      //    key itself is the one-per-day gate. Placed BEFORE the budget
+      //    reservation so the lock order stays fixed and global:
+      //    agent_jobs -> live_run_visitor_usage -> live_run_budget -> agent_runs.
+      if (publicTrial !== undefined) {
+        const visitorRows = await tx.$queryRaw<{ visitorId: string }[]>`
+          INSERT INTO live_run_visitor_usage (visitor_id, usage_date, created_at)
+          VALUES (${publicTrial.visitorId}::uuid, ${budget.budgetDate}::date, now())
+          ON CONFLICT (visitor_id, usage_date) DO NOTHING
+          RETURNING visitor_id AS "visitorId"`;
+        if (visitorRows.length === 0) {
+          throw new LiveRunAdmissionError("LIVE_RUN_VISITOR_QUOTA_EXHAUSTED");
+        }
+      }
+
+      // 6. Reserve the day. A single statement does insert-or-increment with the
       //    gate in its WHERE clause, so the read and the write cannot be
       //    separated by another transaction. Zero returned rows means the gate
       //    is closed — the run count is used up, the accumulated cost has
-      //    crossed the ceiling, some earlier run's true cost is unknown, or an
-      //    earlier reservation was never reconciled.
+      //    crossed the ceiling, some earlier run's true cost is unknown, an
+      //    earlier reservation was never reconciled, or (PUBLIC only) the
+      //    public sub-ceiling is closed.
       //
       //    pricing_unknown_runs = 0 is required: an unknown cost is never
       //    treated as a known $0, so one unmeasurable run closes the cost gate
@@ -347,7 +430,9 @@ export async function startLiveRunWithAttemptLimit(
       //    the unknown-pricing gate would both be evaluated against figures that
       //    are known to be stale, and the day could keep admitting paid runs
       //    until only the hard run COUNT stopped it. The observed-estimate gate
-      //    would have failed OPEN.
+      //    would have failed OPEN. This single shared latch is the sole
+      //    staleness guard for BOTH paths — there is no separate
+      //    public_runs_completed counterpart.
       //
       //    Requiring the counters to match makes an unreconciled reservation
       //    close the day by itself. The latch is the durable row, not process
@@ -358,23 +443,69 @@ export async function startLiveRunWithAttemptLimit(
       //    and an existing day the same code path — and the INSERT arm is
       //    unaffected, so the first reservation of a new UTC day always
       //    succeeds even if yesterday's row is latched.
+      //
+      //    A PUBLIC run is also counted in the overall runs_reserved/
+      //    estimated_cost_nano_usd figures — the public sub-ceiling is an
+      //    ADDITIONAL gate a public request must also pass, not a substitute
+      //    for the overall one (see live_run_budget_public_within_overall_chk).
       const reservationRows = await tx.$queryRaw<{ budgetDate: Date; runsReserved: number }[]>`
-        INSERT INTO live_run_budget (budget_date, runs_reserved, updated_at)
-        VALUES (${budget.budgetDate}::date, 1, now())
+        INSERT INTO live_run_budget (budget_date, runs_reserved, public_runs_reserved, updated_at)
+        VALUES (${budget.budgetDate}::date, 1, ${isPublic ? 1 : 0}, now())
         ON CONFLICT (budget_date) DO UPDATE
           SET runs_reserved = live_run_budget.runs_reserved + 1,
+              public_runs_reserved = live_run_budget.public_runs_reserved + ${isPublic ? 1 : 0},
               updated_at = now()
           WHERE live_run_budget.runs_reserved < ${budget.dailyLimit}
             AND live_run_budget.estimated_cost_nano_usd < ${budget.costCeilingNanoUsd}
             AND live_run_budget.pricing_unknown_runs = 0
             AND live_run_budget.runs_completed = live_run_budget.runs_reserved
+            AND ${
+              publicTrial === undefined
+                ? Prisma.sql`TRUE`
+                : Prisma.sql`(
+                     live_run_budget.public_runs_reserved < ${publicTrial.publicDailyLimit}
+                 AND live_run_budget.public_estimated_cost_nano_usd < ${publicTrial.publicCostCeilingNanoUsd}
+                   )`
+            }
         RETURNING budget_date AS "budgetDate", runs_reserved AS "runsReserved"`;
       const [reservationRow] = reservationRows;
       if (!reservationRow) {
-        throw new LiveRunAdmissionError("LIVE_RUN_BUDGET_EXHAUSTED");
+        // Internal-only classification of WHICH condition above closed the
+        // gate — one additional read-only SELECT of the SAME row, still
+        // inside this transaction, so it is consistent with the failed
+        // attempt. Never surfaced to the anonymous caller: the public
+        // ApiError code stays the single opaque LIVE_RUN_BUDGET_EXHAUSTED
+        // regardless of which reason fired. See classifyBudgetRejection.
+        const [budgetRow] = await tx.$queryRaw<
+          {
+            runsReserved: number;
+            estimatedCostNanoUsd: bigint;
+            pricingUnknownRuns: number;
+            runsCompleted: number;
+            publicRunsReserved: number;
+            publicEstimatedCostNanoUsd: bigint;
+          }[]
+        >`
+          SELECT runs_reserved AS "runsReserved",
+                 estimated_cost_nano_usd AS "estimatedCostNanoUsd",
+                 pricing_unknown_runs AS "pricingUnknownRuns",
+                 runs_completed AS "runsCompleted",
+                 public_runs_reserved AS "publicRunsReserved",
+                 public_estimated_cost_nano_usd AS "publicEstimatedCostNanoUsd"
+          FROM live_run_budget WHERE budget_date = ${budget.budgetDate}::date`;
+        // The row is guaranteed to exist: a zero-row reservation result is
+        // only possible when a conflict occurred, meaning the row was
+        // already there. Guarded anyway as a defensive invariant, matching
+        // this file's other "unreachable but asserted" branches.
+        if (!budgetRow) {
+          throw new LiveRunAdmissionError("LIVE_RUN_BUDGET_EXHAUSTED");
+        }
+        throw new LiveRunAdmissionError("LIVE_RUN_BUDGET_EXHAUSTED", {
+          reason: classifyBudgetRejection(budgetRow, budget, publicTrial),
+        });
       }
 
-      // 6. attempt_number counts ALL attempts, live and deterministic alike —
+      // 7. attempt_number counts ALL attempts, live and deterministic alike —
       //    it is the run's ordinal within the job, not a live-only counter. The
       //    attempt LIMIT above counts only LIVE rows, which is why the two
       //    numbers legitimately differ.
@@ -424,6 +555,7 @@ export async function startLiveRunWithAttemptLimit(
         // input string, so reconciliation keys off the committed value.
         budgetDate: toBudgetDateString(result.reservationRow.budgetDate),
         runsReserved: result.reservationRow.runsReserved,
+        isPublic,
       },
     };
   } catch (error) {
@@ -568,6 +700,7 @@ export async function reconcileLiveRunBudget(
       UPDATE live_run_budget
          SET runs_completed = runs_completed + 1,
              estimated_cost_nano_usd = estimated_cost_nano_usd + ${observedNanoUsd},
+             public_estimated_cost_nano_usd = public_estimated_cost_nano_usd + ${reservation.isPublic ? observedNanoUsd : 0n},
              pricing_unknown_runs = pricing_unknown_runs + ${unknownIncrement},
              updated_at = now()
        WHERE budget_date = ${reservation.budgetDate}::date`;
@@ -608,12 +741,16 @@ export async function isLiveRunBudgetOpen(
         runsCompleted: number;
         estimatedCostNanoUsd: bigint;
         pricingUnknownRuns: number;
+        publicRunsReserved: number;
+        publicEstimatedCostNanoUsd: bigint;
       }[]
     >`
       SELECT runs_reserved AS "runsReserved",
              runs_completed AS "runsCompleted",
              estimated_cost_nano_usd AS "estimatedCostNanoUsd",
-             pricing_unknown_runs AS "pricingUnknownRuns"
+             pricing_unknown_runs AS "pricingUnknownRuns",
+             public_runs_reserved AS "publicRunsReserved",
+             public_estimated_cost_nano_usd AS "publicEstimatedCostNanoUsd"
       FROM live_run_budget WHERE budget_date = ${budget.budgetDate}::date`;
 
     if (!row) return true;
@@ -625,10 +762,43 @@ export async function isLiveRunBudgetOpen(
       // The fail-closed latch. An outstanding reservation means the cost figures
       // above are stale by a run that has already executed, so they cannot be
       // trusted to gate another one.
-      row.runsCompleted === row.runsReserved
+      row.runsCompleted === row.runsReserved &&
+      // Issue #39 — when a PUBLIC caller is asking, also verify the public
+      // sub-ceilings. Absent optional fields ⇒ private-path call ⇒ these
+      // checks are skipped and the function is byte-identical to before #39.
+      (budget.publicDailyLimit === undefined || row.publicRunsReserved < budget.publicDailyLimit) &&
+      (budget.publicCostCeilingNanoUsd === undefined ||
+        row.publicEstimatedCostNanoUsd < budget.publicCostCeilingNanoUsd)
     );
   } catch (error) {
     throw normalizeDatabaseError(error, "isLiveRunBudgetOpen");
+  }
+}
+
+/**
+ * Issue #39 — whether THIS visitor could still start today's PUBLIC trial run,
+ * without reserving one. Read-only and advisory, the visitor-scoped
+ * counterpart to `isLiveRunBudgetOpen`: it powers `/v1/capabilities`'
+ * `visitorRunsRemaining`, never enforcement. The authoritative gate is the
+ * `ON CONFLICT DO NOTHING` insert inside `startLiveRunWithAttemptLimit`.
+ *
+ * A missing row means this visitor has not used today's trial yet, which is
+ * open by definition — the same "no row yet" reading `isLiveRunBudgetOpen`
+ * gives a fresh UTC day.
+ */
+export async function isVisitorTrialAvailable(
+  prisma: PrismaClient,
+  visitorId: string,
+  budgetDate: string,
+): Promise<boolean> {
+  try {
+    const [row] = await prisma.$queryRaw<{ visitorId: string }[]>`
+      SELECT visitor_id AS "visitorId"
+      FROM live_run_visitor_usage
+      WHERE visitor_id = ${visitorId}::uuid AND usage_date = ${budgetDate}::date`;
+    return row === undefined;
+  } catch (error) {
+    throw normalizeDatabaseError(error, "isVisitorTrialAvailable");
   }
 }
 

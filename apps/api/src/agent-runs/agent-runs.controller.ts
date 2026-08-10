@@ -38,7 +38,7 @@ import { logBudgetReconciliationFailure } from "../execution/live-run-budget-log
 import { logEventEmissionFailure } from "../execution/event-emission-log";
 import { logReportValidationFailure } from "../execution/report-validation-log";
 import { createRunAbortHandles } from "../execution/run-abort-context";
-import type { RunExecutionConfig } from "../execution/run-execution-config";
+import { PUBLIC_TRIAL_DEFAULTS, type RunExecutionConfig } from "../execution/run-execution-config";
 import type { ApiUsageHooks } from "../execution/usage-hooks";
 import { UuidParamSchema } from "../validation/uuid-param.schema";
 import { ZodParamValidationPipe, ZodValidationPipe } from "../validation/zod-validation.pipe";
@@ -201,6 +201,9 @@ export class AgentRunsController {
    *
    *    1b   client request key                — a 400 before anything is held
    *    2–4  AUTHORIZATION                     (this.admission.authorize)
+   *    4c   PUBLIC trial only (issue #39)     (this.admission.authorizePublicTrial)
+   *         — Turnstile + visitor identity, a no-op on the private path,
+   *           BEFORE 4b's database access
    *    4b   locked replay-only lookup         — answers 200, or falls through
    *    5–7  NEW-RUN SPEND ADMISSION           (this.admission.admitNewRun)
    *    8    authoritative transaction        — commits before any provider call
@@ -253,6 +256,13 @@ export class AgentRunsController {
     // any rejection, and holds nothing: no lease, no allowance, no reservation.
     const authorized = this.admission.authorize(request);
 
+    // Step 4c (issue #39) — PUBLIC trial only: Turnstile, then visitor
+    // identity. A no-op on the private-token path. MUST run before any
+    // database access, the replay lookup included — see
+    // docs/reviews/23-issue-39-public-live-trial-plan.md §9 and
+    // authorizePublicTrial's own doc comment.
+    const publicTrial = await this.admission.authorizePublicTrial(request, res, authorized);
+
     // Step 4b. A locked, read-only lookup that takes no lease and consumes no
     // allowance — so a closed budget, a latched day, an exhausted rate window, or
     // a busy concurrency slot cannot stand between a caller and a run that
@@ -303,9 +313,18 @@ export class AgentRunsController {
         toolRegistry: this.toolRegistry,
         maxOutputTokens: this.config.liveRunSafeguards.maxOutputTokens,
         usageHooks: this.usageHooks,
-        liveAttemptLimit: this.config.liveRunSafeguards.maxAttemptsPerJob,
+        // PUBLIC (issue #39) is a fixed, non-configurable 1 — never
+        // LIVE_RUN_MAX_ATTEMPTS_PER_JOB, which remains the private path's
+        // (configurable, default 2) limit. See PUBLIC_TRIAL_DEFAULTS.
+        liveAttemptLimit:
+          publicTrial !== null
+            ? PUBLIC_TRIAL_DEFAULTS.maxAttemptsPerJob
+            : this.config.liveRunSafeguards.maxAttemptsPerJob,
         budgetReservationInput: admission.reservationInput,
         clientRequestId,
+        // Present only for a PUBLIC trial attempt (issue #39) — absent here
+        // makes this call byte-identical to the private path.
+        ...(publicTrial !== null ? { publicTrial } : {}),
         // Only `abortContext` is passed — never a separately-derived `signal`
         // alongside it. AgentRunService computes the effective signal from
         // `abortContext.signal` itself, which is what makes it impossible for the

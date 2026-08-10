@@ -30,6 +30,9 @@ import {
 } from "./agent-trace-event";
 import {
   isLiveExecutionEligible as _isLiveExecutionEligible,
+  isPublicLiveExecutionEligible as _isPublicLiveExecutionEligible,
+  PUBLIC_TICKET_SUMMARY_MAX_LENGTH as _PUBLIC_TICKET_SUMMARY_MAX_LENGTH,
+  PublicTicketContextSchema as _PublicTicketContextSchema,
   StoredTicketContextSchema as _StoredTicketContextSchema,
   TICKET_ID_MAX_LENGTH as _TICKET_ID_MAX_LENGTH,
   TICKET_SUMMARY_MAX_LENGTH as _TICKET_SUMMARY_MAX_LENGTH,
@@ -82,10 +85,13 @@ export const AgentTraceEventSchema = _AgentTraceEventSchema;
 export const RetrievalSummaryEntrySchema = _RetrievalSummaryEntrySchema;
 export const TicketContextSchema = _TicketContextSchema;
 export const StoredTicketContextSchema = _StoredTicketContextSchema;
+export const PublicTicketContextSchema = _PublicTicketContextSchema;
 export const TICKET_ID_MAX_LENGTH = _TICKET_ID_MAX_LENGTH;
 export const TICKET_SUMMARY_MIN_LENGTH = _TICKET_SUMMARY_MIN_LENGTH;
 export const TICKET_SUMMARY_MAX_LENGTH = _TICKET_SUMMARY_MAX_LENGTH;
+export const PUBLIC_TICKET_SUMMARY_MAX_LENGTH = _PUBLIC_TICKET_SUMMARY_MAX_LENGTH;
 export const isLiveExecutionEligible = _isLiveExecutionEligible;
+export const isPublicLiveExecutionEligible = _isPublicLiveExecutionEligible;
 export const LIVE_RUN_IDEMPOTENCY_KEY_HEADER = _LIVE_RUN_IDEMPOTENCY_KEY_HEADER;
 export const LiveRunIdempotencyKeySchema = _LiveRunIdempotencyKeySchema;
 export const InvestigationExecutionStageSchema = _InvestigationExecutionStageSchema;

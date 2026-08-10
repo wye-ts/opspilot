@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   isLiveExecutionEligible,
+  isPublicLiveExecutionEligible,
+  PUBLIC_TICKET_SUMMARY_MAX_LENGTH,
+  PublicTicketContextSchema,
   StoredTicketContextSchema,
   TICKET_ID_MAX_LENGTH,
   TICKET_SUMMARY_MAX_LENGTH,
@@ -301,5 +304,79 @@ describe("isLiveExecutionEligible", () => {
       const parsed = TicketContextSchema.parse({ ticketId: "TICKET-1", summary });
       expect(isLiveExecutionEligible(parsed)).toBe(true);
     }
+  });
+});
+
+describe("PublicTicketContextSchema", () => {
+  it("shares the same 15-character floor as the private schema", () => {
+    expect(PublicTicketContextSchema.safeParse({ ...validTicketContext, summary: "a".repeat(14) }).success).toBe(
+      false,
+    );
+    expect(PublicTicketContextSchema.safeParse({ ...validTicketContext, summary: "a".repeat(15) }).success).toBe(
+      true,
+    );
+  });
+
+  it("exposes the stricter 300-character ceiling", () => {
+    expect(PUBLIC_TICKET_SUMMARY_MAX_LENGTH).toBe(300);
+    expect(
+      PublicTicketContextSchema.safeParse({
+        ...validTicketContext,
+        summary: "a".repeat(PUBLIC_TICKET_SUMMARY_MAX_LENGTH),
+      }).success,
+    ).toBe(true);
+    expect(
+      PublicTicketContextSchema.safeParse({
+        ...validTicketContext,
+        summary: "a".repeat(PUBLIC_TICKET_SUMMARY_MAX_LENGTH + 1),
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a summary the PRIVATE schema accepts — 301..2000 characters", () => {
+    const summary = "a".repeat(301);
+    expect(TicketContextSchema.safeParse({ ...validTicketContext, summary }).success).toBe(true);
+    expect(PublicTicketContextSchema.safeParse({ ...validTicketContext, summary }).success).toBe(false);
+  });
+});
+
+/**
+ * Issue #39 — the PUBLIC-trial counterpart to `isLiveExecutionEligible`,
+ * identical in contract (canonical form, not mere parseability) except the
+ * ceiling.
+ */
+describe("isPublicLiveExecutionEligible", () => {
+  it("admits a canonical value within 15..300", () => {
+    expect(
+      isPublicLiveExecutionEligible({ ticketId: "TICKET-1", summary: "Elevated API error rate" }),
+    ).toBe(true);
+  });
+
+  it("admits the exact boundary lengths", () => {
+    expect(
+      isPublicLiveExecutionEligible({ ticketId: "T", summary: "y".repeat(TICKET_SUMMARY_MIN_LENGTH) }),
+    ).toBe(true);
+    expect(
+      isPublicLiveExecutionEligible({
+        ticketId: "T",
+        summary: "y".repeat(PUBLIC_TICKET_SUMMARY_MAX_LENGTH),
+      }),
+    ).toBe(true);
+  });
+
+  it("refuses a summary that isLiveExecutionEligible (private) admits, once past 300", () => {
+    const context = { ticketId: "T", summary: "y".repeat(301) };
+    expect(isLiveExecutionEligible(context)).toBe(true);
+    expect(isPublicLiveExecutionEligible(context)).toBe(false);
+  });
+
+  it("refuses a padded summary whose TRIMMED value would be valid — same canonical-form contract", () => {
+    expect(
+      isPublicLiveExecutionEligible({ ticketId: "T", summary: "  Elevated API error rate  " }),
+    ).toBe(false);
+  });
+
+  it("refuses below the shared 15-character floor", () => {
+    expect(isPublicLiveExecutionEligible({ ticketId: "T", summary: "Disk full" })).toBe(false);
   });
 });
