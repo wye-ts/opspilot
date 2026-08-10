@@ -79,7 +79,13 @@ export function InvestigationProgressTimeline({
               {showChildren && (
                 <ol className="investigation-progress-children-list">
                   {runRow!.children!.map((child) => {
-                    const childPresentation = presentInvestigationProgressStage(child.status as any);
+                    const childPresentation = presentInvestigationProgressStage(child.status);
+                    const hasNestedEvents =
+                      child.events !== undefined &&
+                      child.events.length > 0 &&
+                      // A stage that provably never ran renders no nested
+                      // activity — nothing was observed for it to show.
+                      child.status !== "omitted";
                     return (
                       <li
                         key={child.key}
@@ -91,6 +97,15 @@ export function InvestigationProgressTimeline({
                           label={childPresentation.badgeLabel}
                         />
                         <span className="investigation-progress-label">{child.label}</span>
+                        {hasNestedEvents && (
+                          <ol className="investigation-progress-event-list">
+                            {child.events.map((event) => (
+                              <li key={event.sequence} className="investigation-progress-event-item">
+                                {event.label}
+                              </li>
+                            ))}
+                          </ol>
+                        )}
                       </li>
                     );
                   })}

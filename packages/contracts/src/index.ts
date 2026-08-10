@@ -59,6 +59,7 @@ import {
   InvestigationEventRecordSchema as _InvestigationEventRecordSchema,
   ReportValidationFailureCodeSchema as _ReportValidationFailureCodeSchema,
   ToolFailureCodeSchema as _ToolFailureCodeSchema,
+  mapInvestigationEventToExecutionStage as _mapInvestigationEventToExecutionStage,
 } from "./investigation-event";
 import {
   hasCanonicalInvestigationLifecycleMarker as _hasCanonicalInvestigationLifecycleMarker,
@@ -107,6 +108,7 @@ export const InvestigationEventRecordPayloadSchema = _InvestigationEventRecordPa
 export const InvestigationEventRecordSchema = _InvestigationEventRecordSchema;
 export const INVESTIGATION_EVENT_NEW_WRITE_TYPE_COUNT = _INVESTIGATION_EVENT_NEW_WRITE_TYPE_COUNT;
 export const INVESTIGATION_EVENT_LEGACY_TYPE_COUNT = _INVESTIGATION_EVENT_LEGACY_TYPE_COUNT;
+export const mapInvestigationEventToExecutionStage = _mapInvestigationEventToExecutionStage;
 export const hasCanonicalInvestigationLifecycleMarker = _hasCanonicalInvestigationLifecycleMarker;
 export const projectToLegacyAgentTraceEvent = _projectToLegacyAgentTraceEvent;
 export const deriveExecutionStageProgress = _deriveExecutionStageProgress;

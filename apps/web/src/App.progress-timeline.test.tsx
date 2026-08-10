@@ -2,8 +2,10 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { InvestigationEventRecord } from "@opspilot/contracts";
+
 import { App } from "./App";
-import type { AgentJobResponse, AgentRunDetail, ApprovalView } from "./api/types";
+import type { AgentJobResponse, AgentRunDetail, ApprovalView, InvestigationStateResponse } from "./api/types";
 
 /**
  * Focused coverage for #34 (immediate frontend-known progress) and #35
@@ -650,5 +652,143 @@ describe("Investigation progress timeline (#34/#35)", () => {
       // Converged — still Completed, not Failed.
       expect(within(stageRow("Approval state loaded")).getByText("Done")).toBeInTheDocument();
     });
+  });
+});
+
+// ── #40: nested events never duplicate across incremental poll observations ──
+// A real v4-shaped UUID — InvestigationEventRecordSchema validates runId
+// against the strict UUID pattern, so a placeholder like "run-1" would make
+// every canonical event fixture fail reducer validation and silently land in
+// `canonical-invalid`.
+const POLL_RUN_ID = "22222222-2222-4222-8222-222222222222";
+
+function pollMakeEvent(sequence: number, payload: InvestigationEventRecord["payload"]): InvestigationEventRecord {
+  return { runId: POLL_RUN_ID, sequence, recordedAt: "2026-07-23T10:00:00.000Z", payload };
+}
+
+function pollRunningSnapshot(events: readonly InvestigationEventRecord[]): InvestigationStateResponse {
+  return {
+    job: jobResponse(),
+    run: {
+      id: POLL_RUN_ID,
+      jobId: "job-1",
+      attemptNumber: 1,
+      status: "RUNNING",
+      providerMode: "FAKE",
+      modelIdentifier: null,
+      startedAt: "2026-07-23T10:00:00.000Z",
+      finishedAt: null,
+      createdAt: "2026-07-23T10:00:00.000Z",
+      estimatedCostUsd: null,
+    },
+    trace: [],
+    outcome: { type: "RUNNING" },
+    events,
+  };
+}
+
+/** URL-routed fetch stub for the two-observation test — each endpoint has its
+ * own queue/fallback, so a polling tick can never wrongly consume a response
+ * meant for job/run/approval (same shape as App.polling.test.tsx's mockFetch). */
+function mockPollFetch(investigation: Response[]) {
+  const investigationQueue = [...investigation];
+  const fetchMock = vi.fn((input: unknown, init?: unknown) => {
+    const url = String(input);
+    const method = (init as RequestInit | undefined)?.method ?? "GET";
+    if (url === "/v1/capabilities") {
+      return Promise.resolve(fakeCapabilitiesResponse());
+    }
+    if (url === "/v1/agent-jobs" && method === "POST") {
+      return Promise.resolve(jsonResponse(201, { data: jobResponse() }));
+    }
+    if (url.endsWith("/runs") && method === "POST") {
+      return Promise.resolve(jsonResponse(201, { data: pollRunningSnapshot([]) }));
+    }
+    if (url.endsWith("/investigation")) {
+      const next = investigationQueue.shift();
+      if (next === undefined) {
+        // No more scripted ticks — a harmless 404 stops polling.
+        return Promise.resolve(jsonResponse(404, errorEnvelope("AGENT_JOB_NOT_FOUND", "no more scripted ticks")));
+      }
+      return Promise.resolve(next);
+    }
+    if (url.endsWith("/approval")) {
+      return Promise.resolve(jsonResponse(200, { data: approvalView() }));
+    }
+    throw new Error(`unexpected request: ${method} ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+/** The nested-event labels under one execution-stage child row, in DOM order. */
+function nestedEventLabels(stageLabel: string): string[] {
+  const childrenList = progressRegion().querySelector(".investigation-progress-children-list");
+  if (childrenList === null) throw new Error("no canonical child list rendered");
+  const row = within(childrenList as HTMLElement).getByText(stageLabel).closest("li");
+  if (row === null) throw new Error(`no child row for "${stageLabel}"`);
+  return [...row.querySelectorAll(".investigation-progress-event-item")].map((el) => el.textContent ?? "");
+}
+
+describe("Investigation progress timeline — incremental poll observations never duplicate nested events (#40)", () => {
+  it("appends events across two sequential observations without duplicating rows or regressing stage progress", async () => {
+    const user = userEvent.setup();
+    // Accepted observation 1: events [RUN_CREATED, AGENT_STARTED].
+    const observationOne = [
+      pollMakeEvent(1, { type: "RUN_CREATED" }),
+      pollMakeEvent(2, { type: "AGENT_STARTED" }),
+    ];
+    // Newer accepted observation 2: events [RUN_CREATED, AGENT_STARTED,
+    // TOOL_REQUESTED, TOOL_COMPLETED].
+    const observationTwo = [
+      ...observationOne,
+      pollMakeEvent(3, { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" }),
+      pollMakeEvent(4, { type: "TOOL_COMPLETED", toolCallId: "call-1", toolName: "get_service_status" }),
+    ];
+    mockPollFetch([
+      jsonResponse(200, { data: pollRunningSnapshot(observationOne) }),
+      jsonResponse(200, { data: pollRunningSnapshot(observationTwo) }),
+    ]);
+
+    render(<App />);
+    await submit(user);
+
+    // Observation 1 lands: each observed event nested exactly once under its
+    // own stage.
+    await waitFor(
+      () => expect(nestedEventLabels("Investigation created")).toEqual(["Run created"]),
+      { timeout: 5000 },
+    );
+    await waitFor(() => expect(nestedEventLabels("Agent analysis")).toEqual(["Agent started"]), { timeout: 5000 });
+
+    // Observation 2 appends the newly observed tool events under
+    // DIAGNOSTIC_EXECUTION, in canonical sequence order.
+    await waitFor(
+      () =>
+        expect(nestedEventLabels("Diagnostic execution")).toEqual([
+          "Tool requested: Get service status",
+          "Tool completed: Get service status",
+        ]),
+      { timeout: 5000 },
+    );
+
+    // A remains exactly once, B exactly once — no duplicate DOM event rows.
+    expect(nestedEventLabels("Investigation created")).toEqual(["Run created"]);
+    expect(nestedEventLabels("Agent analysis")).toEqual(["Agent started"]);
+    const allEventItems = [...progressRegion().querySelectorAll(".investigation-progress-event-item")];
+    expect(allEventItems).toHaveLength(4);
+
+    // Prior stage progress has not regressed: INVESTIGATION_CREATED and
+    // AGENT_ANALYSIS stay completed, DIAGNOSTIC_EXECUTION is the active stage.
+    const childrenList = progressRegion().querySelector(".investigation-progress-children-list") as HTMLElement;
+    expect(within(childrenList).getByText("Investigation created").closest("li")).toHaveClass(
+      "investigation-progress-item--completed",
+    );
+    expect(within(childrenList).getByText("Agent analysis").closest("li")).toHaveClass(
+      "investigation-progress-item--completed",
+    );
+    expect(within(childrenList).getByText("Diagnostic execution").closest("li")).toHaveClass(
+      "investigation-progress-item--active",
+    );
   });
 });

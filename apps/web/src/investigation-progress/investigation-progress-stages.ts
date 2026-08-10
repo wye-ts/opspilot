@@ -1,6 +1,12 @@
+import type { InvestigationEventRecord } from "@opspilot/contracts";
+
 import type { BadgeTone } from "../components/StatusBadge";
 import type { ExecutionStageDerivation } from "./execution-stage-derivation";
-import { buildExecutionStageRows, type ExecutionStageRowViewModel } from "./execution-stage-rows";
+import {
+  buildExecutionStageRows,
+  groupEventsByStage,
+  type ExecutionStageRowViewModel,
+} from "./execution-stage-rows";
 
 export type InvestigationProgressStageKey = "availability" | "job" | "run" | "approval";
 
@@ -110,6 +116,12 @@ export interface DeriveInvestigationProgressStagesInput {
    * `{ kind: "legacy" }` and behavior is byte-identical to today.
    */
   readonly executionStageDerivation: ExecutionStageDerivation;
+  /**
+   * The observed investigation events, grouped as a VIEW beneath their
+   * execution-stage rows. Never drives stage state itself — stage status is
+   * derived exclusively from the authoritative lifecycle signals above.
+   */
+  readonly events: readonly InvestigationEventRecord[];
 }
 
 function stageViewModel(key: InvestigationProgressStageKey, status: InvestigationProgressStageStatus): InvestigationProgressStageViewModel {
@@ -134,10 +146,8 @@ function approvalStageStatus(approvalLoadStatus: ApprovalLoadStatus): Investigat
  * The run stage is the one row whose status is NOT a simple pending/active/
  * completed progression through request boundaries: the underlying HTTP
  * request can resolve (run !== null) while the agent's own work is still
- * `RUNNING` — Phase A has no polling (#38 is explicitly out of scope), so
- * that state can persist until the user's own Refresh click returns a
- * terminal outcome. A `RUNNING` outcome therefore reads as Active, not
- * Completed and not Pending, for as long as it remains the run's outcome.
+ * `RUNNING`, so that state reads as Active, not Completed and not Pending,
+ * for as long as it remains the run's outcome.
  */
 function runStageStatus(input: DeriveInvestigationProgressStagesInput): InvestigationProgressStageStatus {
   if (input.failedStage === "run" || input.runOutcomeType === "FAILED") return "failed";
@@ -213,7 +223,10 @@ export function deriveInvestigationProgressStages(
     : [...workflowKeys, "approval"];
 
   // Canonical child rows — built once, attached only to the run row.
-  const { canonicalChildren, executionDetailNote } = deriveCanonicalChildren(input.executionStageDerivation);
+  const { canonicalChildren, executionDetailNote } = deriveCanonicalChildren(
+    input.executionStageDerivation,
+    input.events,
+  );
 
   let blocked = false;
   const stages = keys.map((key) => {
@@ -252,19 +265,36 @@ export function deriveInvestigationProgressStages(
  * Derives canonical child rows and the optional detail-unavailable note from
  * the execution-stage derivation. Returns `null` for children when this run
  * has no canonical detail to show (legacy or canonical-invalid with no
- * last-good stages).
+ * last-good stages). Nested events ride along as a VIEW of the observed
+ * event stream — they never affect which stages exist or their status.
+ *
+ * #40 fail-closed: nested events are attached ONLY from a trusted `canonical`
+ * stream. A `canonical-invalid` stream's events are the very stream whose
+ * reduction just failed, so the frozen last-good rows are rendered WITHOUT
+ * them — never-present is the only trustworthy statement a corrupt stream can
+ * make about its own detail.
  */
 function deriveCanonicalChildren(
   derivation: ExecutionStageDerivation,
+  events: readonly InvestigationEventRecord[],
 ): { canonicalChildren: readonly ExecutionStageRowViewModel[] | null; executionDetailNote: string | null } {
   switch (derivation.kind) {
     case "legacy":
       return { canonicalChildren: null, executionDetailNote: null };
     case "canonical":
-      return { canonicalChildren: buildExecutionStageRows(derivation.stages), executionDetailNote: null };
+      return {
+        canonicalChildren: buildExecutionStageRows(derivation.stages, groupEventsByStage(events)),
+        executionDetailNote: null,
+      };
     case "canonical-invalid":
       if (derivation.lastGoodStages !== null) {
-        return { canonicalChildren: buildExecutionStageRows(derivation.lastGoodStages), executionDetailNote: null };
+        return {
+          // Frozen statuses, but no nested events — the current stream is
+          // reducer-invalid, so grouping its events beneath last-good rows
+          // would present newly-corrupt detail as trustworthy (fail-closed).
+          canonicalChildren: buildExecutionStageRows(derivation.lastGoodStages),
+          executionDetailNote: null,
+        };
       }
       return {
         canonicalChildren: null,

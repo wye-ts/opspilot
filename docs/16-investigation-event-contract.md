@@ -3,10 +3,10 @@
 | Field | Value |
 |---|---|
 | Document | Investigation Stage/Event Contract — Implementation Record |
-| Status | Contract layer implemented in `packages/contracts`. **Consumed in production as of issue #37**: the repository persists canonical events incrementally and reducer-validates every write, and the orchestrator emits them at the real transition points. Not consumed by frontend code (that is #38). |
+| Status | Contract layer implemented in `packages/contracts`. **Consumed in production as of issue #37**: the repository persists canonical events incrementally and reducer-validates every write, and the orchestrator emits them at the real transition points. **Consumed by frontend code as of issue #40**: the Progress Timeline nests observed events under the four canonical execution-stage rows. |
 | Project | OpsPilot |
 | Purpose | Define the canonical, provider-neutral execution-stage and event contract a live Timeline needs, shared by a future incremental persistence layer (#37) and polling/resume layer (#38), so neither invents its own shape |
-| Related documents | `docs/04-agent-design.md` §16 (an aspirational, unimplemented queue/worker design this contract deliberately does not adopt — see §1), `docs/11-agent-run-persistence.md` (the implemented batch-at-completion persistence this contract's legacy layer stays compatible with), `docs/14-web-ui.md` (the frontend-simulated Timeline, which has **not** adopted this contract) |
+| Related documents | `docs/04-agent-design.md` §16 (an aspirational, unimplemented queue/worker design this contract deliberately does not adopt — see §1), `docs/11-agent-run-persistence.md` (the implemented batch-at-completion persistence this contract's legacy layer stays compatible with), `docs/14-web-ui.md` (the frontend Timeline, which adopts this contract as of #40 via nested execution-stage event rows) |
 
 ---
 
