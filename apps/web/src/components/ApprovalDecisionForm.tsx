@@ -5,6 +5,25 @@ import type { RecordApprovalDecisionInput } from "../api/types";
 export const REVIEWER_NAME_MAX_LENGTH = 100;
 export const NOTE_MAX_LENGTH = 1000;
 
+// Leading glyphs for the Reject/Approve CTAs — the reference's Font Awesome
+// `fa-xmark` / `fa-check`, redrawn as inline stroke SVGs matching the
+// ActionRequiredBanner icon treatment rather than pulling in an icon font.
+function XIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M6 6l12 12M18 6L6 18" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M5 13l4 4L19 7" />
+    </svg>
+  );
+}
+
 export interface ApprovalDecisionFormProps {
   // True whenever ANY workflow is in flight (App's phase !== "idle") — not
   // only the approval POST itself. Gates every control. Distinct from
@@ -74,37 +93,52 @@ export function ApprovalDecisionForm({ disabled, submitting, onSubmit }: Approva
     // irreversible terminal outcomes, an implicit key press must never pick
     // one on the reviewer's behalf.
     <form className="approval-decision-form" onSubmit={(event) => event.preventDefault()} aria-busy={disabled}>
-      <div className="form-field">
-        <label htmlFor={reviewerNameId}>Reviewer name</label>
-        <input
-          id={reviewerNameId}
-          type="text"
-          value={reviewerName}
-          onChange={(event) => setReviewerName(event.target.value)}
-          disabled={disabled}
-          required
-          maxLength={REVIEWER_NAME_MAX_LENGTH}
-        />
+      {/* Final UX Pilot fidelity pass — side-by-side on desktop (the
+          reference's `sm:grid-cols-2`), stacked on mobile. */}
+      <div className="approval-decision-fields">
+        <div className="form-field">
+          <label htmlFor={reviewerNameId}>Reviewer name</label>
+          <input
+            id={reviewerNameId}
+            type="text"
+            value={reviewerName}
+            onChange={(event) => setReviewerName(event.target.value)}
+            disabled={disabled}
+            required
+            maxLength={REVIEWER_NAME_MAX_LENGTH}
+          />
+        </div>
+
+        <div className="form-field">
+          <label htmlFor={noteId}>Note (optional)</label>
+          {/* Follow-up polish pass — rows=1 and no resize handle so this
+              field renders as the exact same height/shape as the Reviewer
+              name input beside it (the reference's two identical-looking
+              `<input>` fields); still a textarea, so a pasted multi-line
+              note is not silently collapsed to one line. */}
+          <textarea
+            id={noteId}
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            disabled={disabled}
+            maxLength={NOTE_MAX_LENGTH}
+            rows={1}
+          />
+        </div>
       </div>
 
-      <div className="form-field">
-        <label htmlFor={noteId}>Note (optional)</label>
-        <textarea
-          id={noteId}
-          value={note}
-          onChange={(event) => setNote(event.target.value)}
-          disabled={disabled}
-          maxLength={NOTE_MAX_LENGTH}
-          rows={3}
-        />
-      </div>
-
+      {/* Reject then Approve in DOM order — right-aligned on desktop reads
+          left-to-right as Reject/Approve (the reference's row order);
+          `column-reverse` on mobile puts Approve, the primary action, on
+          top when the pair stacks (the reference's mobile order-first). */}
       <div className="approval-decision-actions">
-        <button type="button" onClick={() => handleDecision("APPROVED")} disabled={!canSubmit}>
-          {submitting && pendingDecision === "APPROVED" ? "Approving…" : "Approve"}
-        </button>
         <button type="button" data-kind="reject" onClick={() => handleDecision("REJECTED")} disabled={!canSubmit}>
+          <XIcon />
           {submitting && pendingDecision === "REJECTED" ? "Rejecting…" : "Reject"}
+        </button>
+        <button type="button" data-kind="approve" onClick={() => handleDecision("APPROVED")} disabled={!canSubmit}>
+          <CheckIcon />
+          {submitting && pendingDecision === "APPROVED" ? "Approving…" : "Approve"}
         </button>
       </div>
     </form>

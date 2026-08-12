@@ -20,6 +20,27 @@
   --color-neutral-bg: #ecedf0;
   --color-neutral-text: #3b3f45;
 
+  /* Border tints for the bordered-pill badge treatment (Final UX Pilot
+     fidelity pass) — one shade darker than each tone's bg, never relying on
+     an invented new hue family. */
+  --color-success-border: #bfe8cc;
+  --color-warning-border: #f6dfb1;
+  --color-danger-border: #f0c4c4;
+  --color-info-border: #bcd4f5;
+  --color-neutral-border: #d8dbe0;
+
+  /* A darker amber, reserved for the action-required banner's title — one
+     step stronger than --color-warning-text, matching the reference's
+     amber-900 vs amber-700 pairing without a whole parallel token family. */
+  --color-warning-text-strong: #5c3d00;
+
+  /* Soft purple/lavender — the Live provider metadata pill, deliberately a
+     different hue family from the blue "Running" status so the two are
+     never confusable at a glance. */
+  --color-live-bg: #f3eeff;
+  --color-live-border: #cdbbff;
+  --color-live-text: #6d4aff;
+
   --space-1: 0.25rem;
   --space-2: 0.5rem;
   --space-3: 0.75rem;
@@ -225,6 +246,22 @@ html {
   color: var(--color-text);
 }
 
+/* Standard visually-hidden-but-accessible utility — content stays in the
+   accessibility tree (and discoverable by text queries) while occupying no
+   visual space. Used by the notice region below to suppress a redundant
+   visible sentence without dropping its screen-reader announcement. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* ── Global live region / error banner. ───────────────────────────────── */
 .notice-region {
   min-height: 1.25rem;
@@ -281,22 +318,6 @@ html {
   gap: var(--space-3);
 }
 
-.composer-intro {
-  text-align: center;
-}
-
-.composer-title {
-  margin: 0;
-  font-size: var(--text-lg);
-  font-weight: 700;
-}
-
-.composer-value {
-  margin: var(--space-1) 0 0;
-  color: var(--color-text-muted);
-  font-size: var(--text-sm);
-}
-
 /* ── Card surface system (Milestone-10). ──────────────────────────────── */
 .investigation-form,
 .current-investigation,
@@ -318,18 +339,24 @@ html {
   gap: var(--space-3);
 }
 
-/* Compact pre-job Live availability summary (Issue #41 polish §6) — reads as
-   a small status notice, not a heading inside the form: very light amber
-   surface, subtle border, compact one-line truth. The Live provider card
-   beneath it carries the fuller reason, so nothing is repeated. */
-.composer-availability-notice {
+/* Final UX Pilot fidelity pass, HQ item 1 — the card header lives inside the
+   composer card, top-left, with a subtle separator before the rest of the
+   form (the reference's `px-8 pt-7 pb-5 border-b` card-header pattern). */
+.investigation-form-header {
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.investigation-form-title {
   margin: 0;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid #f0ddb4;
-  border-radius: var(--radius);
-  background: var(--color-warning-bg);
-  color: var(--color-warning-text);
-  font-size: var(--text-xs);
+  font-size: var(--text-lg);
+  font-weight: 700;
+}
+
+.investigation-form-value {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
 }
 
 /* ── Provider cards (§6) — whole-card radios, side-by-side on desktop. ── */
@@ -473,10 +500,11 @@ html {
 }
 
 .current-investigation-eyebrow {
-  margin: 0;
-  font-size: var(--text-xs);
+  margin: 0 0 var(--space-1);
+  font-size: 0.6875rem;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
   color: var(--color-text-muted);
 }
 
@@ -497,7 +525,7 @@ html {
 
 .current-investigation-title {
   margin: 0;
-  font-size: var(--text-md);
+  font-size: var(--text-sm);
   font-weight: 600;
   overflow-wrap: anywhere;
 }
@@ -509,12 +537,32 @@ html {
   flex-wrap: wrap;
 }
 
+/* Final UX Pilot fidelity pass, HQ item 3 — a compact bordered pill matching
+   the adjacent StatusBadge's shape/height/weight/border, so the pair reads
+   as `[ Live ]  [ Completed ]` rather than bare uppercase text beside a bold
+   pill. Sentence-case text now (the component passes "Live"/"Demo" as
+   authored) — no CSS uppercase transform. Demo stays neutral. */
 .current-investigation-provider {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border-radius: 999px;
+  border: 1px solid var(--color-neutral-border);
+  padding: var(--space-1) var(--space-3);
   font-size: var(--text-xs);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: var(--color-text-muted);
+  background: var(--color-neutral-bg);
+  color: var(--color-neutral-text);
+}
+
+/* Final polish pass, item 4 — a distinct soft purple/lavender metadata pill
+   for Live, deliberately NOT the blue info tone: that blue is reserved for
+   the Running/In progress lifecycle status, and the two badges sitting
+   side by side here were reading as confusingly similar. */
+.current-investigation-provider--live {
+  background: var(--color-live-bg);
+  color: var(--color-live-text);
+  border-color: var(--color-live-border);
 }
 
 /* Issue #41 polish §8 — the page-level terminal CTA, placed AFTER Run Details
@@ -566,6 +614,16 @@ html {
      the narrow column beside an empty track. */
   .resolution-row > :only-child {
     grid-column: 1 / -1;
+  }
+
+  /* HQ item 5 (final UX Pilot fidelity pass) — while RUNNING, this row pairs
+     Progress with Agent Activity instead of Resolution. The reference's
+     running screen gives Progress the WIDE column and Activity the narrow
+     one — the opposite ratio from the terminal Progress(narrow)/
+     Resolution(wide) pairing above, since Progress is the primary surface
+     while a run is still in flight. */
+  .resolution-row--running {
+    grid-template-columns: minmax(0, 1fr) minmax(15rem, 20rem);
   }
 }
 
@@ -710,9 +768,12 @@ dl div {
 
 dt {
   font-size: 0.8rem;
+  font-weight: 600;
   color: var(--color-text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.02em;
+  /* Final UX Pilot fidelity pass, HQ item 6 — widened from 0.02em to match
+     the reference's tracking-wider section labels more closely. */
+  letter-spacing: 0.05em;
 }
 
 dd {
@@ -725,6 +786,9 @@ dd {
   align-items: center;
   gap: var(--space-1);
   border-radius: 999px;
+  /* Final UX Pilot fidelity pass — a 1px tone-matched border, per the
+     reference's bordered-pill badge treatment (rounded-full + border). */
+  border: 1px solid transparent;
   padding: var(--space-1) var(--space-3);
   font-weight: 600;
   font-size: var(--text-xs);
@@ -733,53 +797,124 @@ dd {
 .status-badge-success {
   background: var(--color-success-bg);
   color: var(--color-success-text);
+  border-color: var(--color-success-border);
 }
 
 .status-badge-danger {
   background: var(--color-danger-bg);
   color: var(--color-danger-text);
+  border-color: var(--color-danger-border);
 }
 
 .status-badge-info {
   background: var(--color-info-bg);
   color: var(--color-info-text);
+  border-color: var(--color-info-border);
 }
 
 .status-badge-neutral {
   background: var(--color-neutral-bg);
   color: var(--color-neutral-text);
+  border-color: var(--color-neutral-border);
 }
 
 /* ── Section headings (flat-flow cards). ──────────────────────────────── */
+/* Final UX Pilot fidelity pass — the reference's card-header title is
+   text-sm/font-semibold everywhere, not a larger 1.05rem heading. */
 .investigation-progress h2,
 .report-panel h2,
 .approval-panel h2,
 .trace-section h2,
 .investigation-summary h2 {
   margin: 0 0 var(--space-3);
-  font-size: 1.05rem;
+  font-size: var(--text-sm);
+  font-weight: 600;
 }
 
-.report-panel h3 {
-  margin: var(--space-4) 0 var(--space-2);
-  font-size: var(--text-sm);
+/* ── Shared title(+subtitle)+divider card header, used by cards whose header
+   is nothing more than that (Suggested actions, Human approval, Run
+   details). Investigation progress / Agent activity have their own richer
+   header (extra inline content), styled separately above/below. ────────── */
+.card-header {
+  padding-bottom: var(--space-4);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
 }
+
+.card-header h2 {
+  margin: 0;
+}
+
+.card-header-subtitle {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
 
 /* ── Progress — vertical lifecycle stepper (Issue #41 polish §2). ─────────
    One vertical axis: a small status node per authoritative stage, a subtle
    connector spine running down the left rail, stage title beside the node,
    and the canonical nested events directly underneath their parent stage.
    No per-stage bordered cards, no collapse toggle, no horizontal overflow. */
-.investigation-progress-elapsed {
-  margin: 0 0 var(--space-4);
+
+/* Final UX Pilot fidelity pass, HQ item 4 — the overall lifecycle status
+   (Running/Completed/Failed) lives top-right of the card header, beside the
+   heading; it is the OVERALL investigation state, never a fifth stepper row. */
+.investigation-progress-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  /* Final UX Pilot fidelity pass — the reference's card-header anatomy
+     (title row, subtle full-width divider, then the stepper body), matching
+     the same pattern used by every other primary card. */
+  padding-bottom: var(--space-4);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.investigation-progress-header h2 {
+  margin: 0;
+}
+
+.investigation-progress-overall-status {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.investigation-progress-overall-status--success {
+  color: var(--color-success-text);
+}
+
+.investigation-progress-overall-status--danger {
+  color: var(--color-danger-text);
+}
+
+.investigation-progress-overall-status--info {
+  color: var(--color-info-text);
+}
+
+.investigation-progress-overall-status--neutral {
   color: var(--color-text-muted);
-  font-size: var(--text-sm);
+}
+
+/* Moved from directly under the heading to the bottom of the card, per HQ
+   item 4 — small, muted, low-emphasis, right-aligned, never a badge. */
+.investigation-progress-elapsed {
+  margin: var(--space-4) 0 0;
+  text-align: right;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
 }
 
 /* Live availability is setup/preflight metadata, never a stepper row (Issue
-   #41 HQ polish §1) — a single quiet line above the stepper, not a node on
-   the vertical axis. Status still never rides on color alone: the glyph is
-   decorative (aria-hidden) and the visible badge text carries the state. */
+   #41 HQ polish §1). Final UX Pilot fidelity pass, HQ review — the
+   reference's Progress card never shows it at all, so this is rendered
+   `sr-only` (see InvestigationProgressTimeline.tsx) rather than removed:
+   present for screen readers, invisible on screen. These layout rules stay
+   so the element still has sane geometry when read by assistive tech. */
 .investigation-progress-preflight {
   display: flex;
   align-items: baseline;
@@ -843,6 +978,13 @@ dd {
    any nested wrapper — HQ review §1), so each needs its own rule. */
 .investigation-progress-list > .investigation-progress-item:last-child > .investigation-progress-marker::after,
 .investigation-progress-children-list > .investigation-progress-item:last-child > .investigation-progress-marker::after {
+  display: none;
+}
+
+/* The approval row is `sr-only` (invisible, out of flow) — when it is the
+   list's actual last child, the row before it is the last one a sighted
+   user sees, so ITS trailing connector must be the one hidden instead. */
+.investigation-progress-item:has(+ .investigation-progress-item--approval) > .investigation-progress-marker::after {
   display: none;
 }
 
@@ -923,11 +1065,12 @@ dd {
    execution / Report generation) are the ONLY visually dominant stepper
    rows; when they exist, "job" and "run" are not rendered at all (see
    InvestigationProgressTimeline.tsx), not merely dimmed. What remains as a
-   `--system` row — Approval state loaded, or job/run in the legacy fallback
-   with no canonical breakdown — is a secondary lifecycle annotation: smaller,
-   muted, never bold, with a quieter node. Live availability never renders as
-   a stepper row at all (see .investigation-progress-preflight below). Real
-   status color (active blue / failed red) still surfaces via the
+   visible `--system` row is job/run in the legacy fallback with no canonical
+   breakdown — a secondary lifecycle annotation: smaller, muted, never bold,
+   with a quieter node. Approval is always `sr-only` (never a visible row —
+   see InvestigationProgressTimeline.tsx), and Live availability never
+   renders as a stepper row at all (see .investigation-progress-preflight
+   below). Real status color (active blue / failed red) still surfaces via the
    higher-specificity overrides below. */
 .investigation-progress-item--system .investigation-progress-label,
 .investigation-progress-item--system .investigation-progress-status {
@@ -1019,30 +1162,60 @@ dd {
   }
 }
 
-/* ── Resolution / report panel (§16, Issue #41 polish §9). ─────────────── */
+/* ── Resolution / report panel (§16, Issue #41 polish §9). ───────────────
+   Final UX Pilot fidelity pass — the same card-header + divider anatomy as
+   every other primary card; Category/Confidence stay on the header's own
+   row, beside the title, never pushed below the divider. */
 .report-panel-header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
   flex-wrap: wrap;
-  margin-bottom: var(--space-3);
+  padding-bottom: var(--space-4);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
 }
 
 .report-panel-header h2 {
   margin: 0;
-  font-size: var(--text-md);
 }
 
 /* Secondary metadata — Category/Confidence sit quietly beside the heading and
-   never visually precede the actual resolution. */
+   never visually precede the actual resolution. Final polish pass, item 5 —
+   two compact neutral pills rather than raw debug-looking text. */
 .report-panel-meta {
   margin: 0;
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
   display: flex;
-  gap: var(--space-3);
+  gap: var(--space-2);
   flex-wrap: wrap;
+}
+
+.report-panel-meta-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid var(--color-neutral-border);
+  background: var(--color-neutral-bg);
+  color: var(--color-neutral-text);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* Follow-up polish pass — Confidence is visually lighter than Outcome: plain
+   metadata text with no fill/border, so the two no longer read as identical
+   tags. Deliberately no red/amber/green threshold coloring — a low
+   confidence score is informational, not an error state. */
+.report-panel-meta-confidence {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-1) 0;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--color-text-muted);
+  white-space: nowrap;
 }
 
 .report-panel-fields {
@@ -1077,15 +1250,15 @@ dd {
 }
 
 .report-panel-field--lead dd {
-  font-size: var(--text-base);
-  /* §9: Summary is the primary field but is long report content — normal
-     weight (never heading-weight). The uppercase small dt labels carry the
-     emphasis instead, so the whole paragraph does not read too heavy. */
+  /* Final UX Pilot fidelity pass, HQ item 6 — the reference keeps every
+     report field (Summary included) at a uniform text-sm; bumping only
+     Summary to text-base read as visibly oversized next to the rest. The
+     uppercase small dt labels already carry the emphasis (§9), so a
+     dedicated size for the lead field isn't needed on top of that. */
   font-weight: 400;
 }
 
-.report-panel-evidence,
-.report-panel-actions {
+.report-panel-evidence {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -1094,30 +1267,225 @@ dd {
   gap: var(--space-3);
 }
 
+/* Final UX Pilot fidelity pass — the reference's desktop 3-column compact
+   card grid, stacking to one column on mobile. */
+.report-panel-actions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-4);
+}
+
+@media (min-width: 48rem) {
+  .report-panel-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.report-panel-actions > li {
+  height: 100%;
+}
+
 .suggested-action-card {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   padding: var(--space-4);
 }
 
+.suggested-action-card-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.suggested-action-icon {
+  flex: none;
+  display: inline-flex;
+}
+
+.suggested-action-icon--escalation {
+  color: #d9770b;
+}
+
+.suggested-action-icon--reply {
+  color: var(--color-info-text);
+}
+
+/* Follow-up polish pass, item 5 — Draft customer reply's header Copy CTA.
+   Compact and quiet, right-aligned in the header row via `margin-left: auto`
+   (the header is otherwise `justify-content: flex-start`). Color shifts
+   green/red on copied/error so the outcome is visible without relying on
+   the text change alone. */
+.suggested-action-copy-button {
+  flex: none;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  padding: 0.2rem 0.5rem;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.suggested-action-copy-button:hover {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
+.suggested-action-copy-button[data-state="copied"] {
+  border-color: var(--color-success-border);
+  color: var(--color-success-text);
+}
+
+.suggested-action-copy-button[data-state="error"] {
+  border-color: var(--color-danger-border);
+  color: var(--color-danger-text);
+}
+
+.suggested-action-icon--ticket {
+  color: #7c3aed;
+}
+
 .suggested-action-card h4 {
-  margin: 0 0 var(--space-2);
+  margin: 0;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.suggested-action-card dl {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.suggested-action-card dt {
+  font-size: 0.6875rem;
+  font-weight: 400;
+}
+
+.suggested-action-card dd {
+  margin-top: 0.125rem;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+/* Compact rectangular chip — priority / status values, distinct from the
+   rounded-full StatusBadge pill (the reference uses `rounded`, not
+   `rounded-full`, for these inline field values). */
+.suggested-action-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  padding: 0.0625rem 0.375rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+.suggested-action-chip--neutral {
+  background: var(--color-neutral-bg);
+  color: var(--color-neutral-text);
+  border-color: var(--color-neutral-border);
+}
+
+.suggested-action-chip--info {
+  background: var(--color-info-bg);
+  color: var(--color-info-text);
+  border-color: var(--color-info-border);
+}
+
+.suggested-action-chip--warning {
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+  border-color: var(--color-warning-border);
+}
+
+.suggested-action-chip--danger {
+  background: var(--color-danger-bg);
+  color: var(--color-danger-text);
+  border-color: var(--color-danger-border);
+}
+
+.suggested-action-chip--success {
+  background: var(--color-success-bg);
+  color: var(--color-success-text);
+  border-color: var(--color-success-border);
 }
 
 .suggested-action-body {
-  margin-top: var(--space-2);
+  margin-top: 0;
   max-height: 12rem;
   overflow-y: auto;
   white-space: pre-wrap;
   background: var(--color-surface-muted);
   border-radius: var(--radius);
   padding: var(--space-3);
+  font-size: var(--text-xs);
 }
 
 /* ── Human Approval (§18, Issue #41 polish §10). ──────────────────────── */
+/* Final UX Pilot fidelity pass — the reference's compact amber-accent
+   approval panel: an amber card border, amber-tinted header divider. The
+   NOT_ELIGIBLE no-op state below overrides back to a neutral border — there
+   is nothing to draw attention to when no decision is possible. */
+.approval-panel {
+  border-color: var(--color-warning-border);
+}
+
+.approval-panel-header {
+  display: flex;
+  /* Follow-up polish pass — the reference (`flex items-center`) reads the
+     icon and the title/subtitle pair as one horizontally centered header
+     block, not the icon pinned to the first line's baseline. */
+  align-items: center;
+  gap: var(--space-3);
+  padding-bottom: var(--space-4);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--color-warning-border);
+}
+
+.approval-panel-header h2 {
+  margin: 0;
+}
+
+.approval-panel-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+  font-size: 0.75rem;
+}
+
+.approval-panel-header-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.approval-panel-header .status-badge {
+  flex: none;
+}
+
 /* NOT_ELIGIBLE is a no-op state — a compact secondary status, not a card. */
 .approval-panel--not-eligible {
   padding: var(--space-3) var(--space-4);
+  border-color: var(--color-border);
 }
 
 .approval-panel--not-eligible h2 {
@@ -1132,10 +1500,6 @@ dd {
   flex-wrap: wrap;
   font-size: var(--text-sm);
   color: var(--color-text-muted);
-}
-
-.approval-panel-status {
-  margin: 0 0 var(--space-3);
 }
 
 .approval-panel-hint {
@@ -1165,27 +1529,81 @@ dd {
   margin-top: var(--space-4);
 }
 
+/* Final UX Pilot fidelity pass — side-by-side on desktop (reference:
+   `sm:grid-cols-2`), stacked on mobile. */
+.approval-decision-fields {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-4);
+}
+
+@media (min-width: 40rem) {
+  .approval-decision-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Follow-up polish pass — the reference's label treatment for this pair of
+   fields specifically (`text-xs font-medium text-gray-500 mb-1`), scoped to
+   these two fields rather than the shared `.form-field label` rule (which
+   also styles InvestigationForm's unrelated labels and must stay untouched). */
+.approval-decision-fields .form-field {
+  gap: var(--space-1);
+}
+
+.approval-decision-fields label {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--color-text-muted);
+}
+
 .approval-decision-form input,
 .approval-decision-form textarea {
-  padding: var(--space-3);
+  /* Final UX Pilot fidelity pass — the reference's compact px-3 py-2 input
+     sizing, tighter than the generic --space-3 all-around padding. */
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   background: var(--color-surface-muted);
   color: var(--color-text);
 }
 
+/* Follow-up polish pass — the note field is a single row (see
+   ApprovalDecisionForm's `rows={1}`) so it renders as the same height/shape
+   as the Reviewer name input beside it; a resize handle would let it grow
+   out of that alignment again. */
 .approval-decision-form textarea {
-  resize: vertical;
+  resize: none;
 }
 
+/* Final UX Pilot fidelity pass — right-aligned Reject/Approve on desktop
+   (DOM order is Reject then Approve, so this reads left-to-right exactly as
+   the reference does); mobile stacks with Approve, the primary action, on
+   top via `column-reverse`. */
 .approval-decision-actions {
   display: flex;
+  flex-direction: column-reverse;
   gap: var(--space-3);
-  flex-wrap: wrap;
 }
 
-.approval-decision-actions button:first-child {
-  /* "Approve actions" is primary; Reject is secondary (§18). */
+/* Follow-up polish pass — leading Reject/Approve icons (§ApprovalDecisionForm's
+   XIcon/CheckIcon), matching the reference's icon size and icon/text gap. */
+.approval-decision-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+}
+
+@media (min-width: 40rem) {
+  .approval-decision-actions {
+    flex-direction: row;
+    justify-content: flex-end;
+  }
+}
+
+.approval-decision-actions button[data-kind="approve"] {
+  /* Approve is primary; Reject is secondary (§18). */
   background: var(--color-accent);
 }
 
@@ -1195,37 +1613,134 @@ dd {
   color: var(--color-text-muted);
 }
 
-/* The item-2 banner: informational jump to the item-5 decision surface. */
+/* The item-2 banner: informational jump to the item-5 decision surface.
+   Final polish pass — the UX Pilot amber action-required treatment,
+   replacing the earlier blue informational notice. Still purely a jump link
+   (the panel below decides, this banner never does); no new state.
+   Follow-up polish pass — colors scoped to this banner ONLY via local custom
+   properties (not the shared --color-warning-* tokens, which also drive the
+   provider-unavailable notice, availability pill, and approval panel
+   elsewhere) so lightening this one surface can't shift amber tone anywhere
+   else in the app. Values are read directly from the UX Pilot reference
+   (Screen C, #approval-banner): bg-amber-50 / border-amber-200, an
+   amber-100/amber-300 icon circle, amber-900/amber-700 title/subtitle, and
+   an amber-100 secondary-button CTA (never the earlier filled-primary
+   look). */
 .action-required-banner {
-  display: block;
-  background: var(--color-info-bg);
-  color: var(--color-info-text);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  padding: var(--space-4);
+  --banner-bg: #fffbeb;
+  --banner-border: #fde68a;
+  --banner-icon-bg: #fef3c7;
+  --banner-icon-border: #fcd34d;
+  --banner-icon-fg: #d97706;
+  --banner-title: #78350f;
+  --banner-subtitle: #b45309;
+  --banner-cta-bg: #fef3c7;
+  --banner-cta-bg-hover: #fde68a;
+  --banner-cta-border: #fcd34d;
+  --banner-cta-fg: #92400e;
+
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+  background: var(--banner-bg);
+  border: 1px solid var(--banner-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-5);
+}
+
+@media (min-width: 40rem) {
+  .action-required-banner {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+}
+
+.action-required-banner-main {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.action-required-banner-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  margin-top: 0.125rem;
+  border-radius: 50%;
+  background: var(--banner-icon-bg);
+  border: 1px solid var(--banner-icon-border);
+  color: var(--banner-icon-fg);
+}
+
+.action-required-banner-title {
+  margin: 0;
+  font-size: var(--text-sm);
   font-weight: 600;
+  color: var(--banner-title);
+}
+
+.action-required-banner-subtitle {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-xs);
+  color: var(--banner-subtitle);
+}
+
+/* A restrained secondary action, not a filled primary CTA — amber-tinted
+   outline button, not a solid block. */
+.action-required-banner-cta {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  border: 1px solid var(--banner-cta-border);
+  border-radius: var(--radius);
+  background: var(--banner-cta-bg);
+  color: var(--banner-cta-fg);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-xs);
+  font-weight: 500;
   text-decoration: none;
+  transition: background-color 0.15s ease;
 }
 
-.action-required-banner:hover,
-.action-required-banner:focus-visible {
-  text-decoration: underline;
+.action-required-banner-cta:hover,
+.action-required-banner-cta:focus-visible {
+  background: var(--banner-cta-bg-hover);
 }
 
-/* ── Agent Activity (§14) — product labels, identifiers behind disclosure. ─ */
+/* ── Agent Activity (§14) — product labels, identifiers behind disclosure. ─
+   Final UX Pilot fidelity pass — same card-header + divider anatomy as every
+   other primary card. */
+.trace-section-header {
+  padding-bottom: var(--space-4);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.trace-section-header h2 {
+  margin: 0;
+}
+
 .trace-timeline {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  /* §11: compact log rows — tighter than the standard card spacing. */
-  gap: 0.375rem;
+  /* Final UX Pilot fidelity pass — the reference's space-y-2.5/3 row rhythm. */
+  gap: 0.625rem;
 }
 
 .trace-timeline-item {
   display: flex;
-  gap: var(--space-2);
+  align-items: flex-start;
+  gap: 0.625rem;
 }
 
 .trace-timeline-content {
@@ -1233,53 +1748,55 @@ dd {
 }
 
 /* Agent Activity (§11) — a lightweight checklist/event-list, NEVER a numbered
-   second timeline. Compact glyphs: green check = completed, small blue dot =
-   running (a tool request whose completion hasn't arrived), restrained dot =
-   neutral. Smaller type than primary Progress stage titles, normal weight,
-   tight rows. */
+   second timeline. Final UX Pilot fidelity pass — bare glyphs (no circular
+   badge), matching the reference's plain icon-before-text treatment: green
+   check = completed, small blue dot = running (a tool request whose
+   completion hasn't arrived), restrained dot = neutral. */
 .trace-timeline-step {
   flex: none;
-  width: 1.125rem;
-  height: 1.125rem;
-  margin-top: 0.125rem;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.6875rem;
+  width: 1rem;
+  margin-top: 0.1875rem;
+  text-align: center;
+  font-size: 0.75rem;
   font-weight: 700;
   line-height: 1;
 }
 
 .trace-timeline-step--completed {
-  background: var(--color-success-bg);
   color: var(--color-success-text);
 }
 
 .trace-timeline-step--running {
-  background: var(--color-info-bg);
   color: var(--color-info-text);
 }
 
 .trace-timeline-step--neutral {
-  background: var(--color-neutral-bg);
-  color: var(--color-neutral-text);
+  color: var(--color-text-muted);
 }
 
 .trace-timeline-label {
   margin: 0;
-  /* §11: normal/medium weight, smaller than Progress stage titles. */
-  font-size: var(--text-sm);
-  font-weight: 500;
+  /* Final UX Pilot fidelity pass — the reference's text-xs log rows, normal
+     weight; only the active "running" row gets emphasis (below). */
+  font-size: var(--text-xs);
+  font-weight: 400;
+  color: var(--color-text);
+}
+
+.trace-timeline-item--running .trace-timeline-label {
+  color: var(--color-info-text);
+  font-weight: 600;
 }
 
 .trace-timeline-detail {
   margin: var(--space-1) 0 0;
+  font-size: var(--text-xs);
   color: var(--color-text-muted);
 }
 
 .trace-timeline-empty {
   color: var(--color-text-muted);
+  font-size: var(--text-sm);
 }
 
 /* Raw tool identifiers live ONLY behind this disclosure — never in the
@@ -1291,12 +1808,48 @@ dd {
 }
 
 .technical-details summary {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
   cursor: pointer;
   font-size: var(--text-xs);
   /* §11: the disclosure label is sentence-case "Technical details" — no
      visual uppercase anywhere (matches the Run Details disclosure). */
   color: var(--color-text-muted);
   user-select: none;
+  /* Final UX Pilot fidelity pass, HQ item 7 — a custom rotating chevron
+     replaces the browser's default disclosure marker. */
+  list-style: none;
+}
+
+.technical-details summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Final polish pass — sized/weighted per spec (14-16px, medium stroke
+   weight via the SVG's own strokeWidth, vertically centered with the label
+   through the summary's flex `align-items: center`, smooth rotation). */
+.technical-details-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 1rem;
+  transition: transform 0.15s ease;
+}
+
+.technical-details-chevron svg {
+  display: block;
+}
+
+.technical-details[open] .technical-details-chevron {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .technical-details-chevron {
+    transition: none;
+  }
 }
 
 .technical-details-list {
@@ -1315,13 +1868,36 @@ dd {
   font-size: var(--text-xs);
 }
 
-/* ── Run Details (item 7, §12) — compact primary row + disclosure. ─────── */
+/* ── Run Details (item 7, §12) — compact primary row + disclosure. ───────
+   Follow-up polish pass — tighter rhythm than the shared card defaults
+   (header divider, primary grid, and the Technical details disclosure sit
+   closer together, matching the reference's denser `pt-5 pb-4` / `py-4` /
+   `mt-4 pt-3` spacing). Scoped to `.investigation-summary` only — `.card-header`
+   and `.technical-details` are shared with Suggested actions and Agent
+   activity respectively, which keep their existing spacing. */
+.investigation-summary .card-header {
+  padding-bottom: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.investigation-summary .technical-details {
+  margin-top: var(--space-3);
+}
+
 .investigation-summary-status {
   display: flex;
   align-items: center;
   gap: var(--space-3);
   margin-bottom: var(--space-4);
   flex-wrap: wrap;
+}
+
+/* Final polish pass — Refresh is `sr-only` by default (item 2), so a row
+   with no Retry affordance visible either has nothing left to show; its
+   reserved spacing must collapse rather than leave a blank gap above the
+   Provider/Model/Duration/Attempt grid, matching the reference exactly. */
+.investigation-summary-status--empty {
+  margin-bottom: 0;
 }
 
 /* Refresh/Retry sit quietly on the right edge — secondary actions that never
@@ -1354,8 +1930,20 @@ dd {
   min-width: 0;
 }
 
+/* Follow-up polish pass — smaller, more muted uppercase labels (the
+   reference's `text-[11px] ... text-gray-400`, vs. the shared `dt` default's
+   larger 12.8px), scoped to this grid only. */
+.investigation-summary-primary dt {
+  font-size: 0.6875rem;
+}
+
+/* Follow-up polish pass — these values inherited the ambient 1rem body size
+   at font-weight 600, reading as visibly heavier than the reference's plain
+   text-sm value. Sized and lightened so PROVIDER/MODEL/DURATION/ATTEMPT stay
+   readable without dominating the card. */
 .investigation-summary-primary dd {
-  font-weight: 600;
+  font-size: var(--text-sm);
+  font-weight: 500;
   overflow-wrap: anywhere;
 }
 

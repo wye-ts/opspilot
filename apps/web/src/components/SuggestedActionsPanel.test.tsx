@@ -17,7 +17,9 @@ describe("SuggestedActionsPanel", () => {
     expect(screen.getByText("Update ticket status")).toBeInTheDocument();
     expect(screen.getByText("Create escalation")).toBeInTheDocument();
     expect(screen.getByText("Draft customer reply")).toBeInTheDocument();
-    expect(screen.getByText("RESOLVED")).toBeInTheDocument();
+    // Sentence-case display text, matching the runStatusBadge convention —
+    // never the raw enum verbatim (Final UX Pilot fidelity pass).
+    expect(screen.getByText("Resolved")).toBeInTheDocument();
     expect(screen.getByText("platform")).toBeInTheDocument();
     expect(screen.getByText("We are looking into it.")).toBeInTheDocument();
   });

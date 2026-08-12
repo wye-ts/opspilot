@@ -20,8 +20,10 @@ describe("ReportPanel", () => {
     const outcome: ReportableOutcome = { type: "COMPLETED", report: baseReport };
     render(<ReportPanel outcome={outcome} />);
 
-    expect(screen.getByText(baseReport.category)).toBeInTheDocument();
-    expect(screen.getByText("0.75")).toBeInTheDocument();
+    // Sentence-case pill text, never the raw enum, and confidence as a
+    // rounded percentage (final polish pass, item 5).
+    expect(screen.getByText("Outcome · Service degradation")).toBeInTheDocument();
+    expect(screen.getByText("Confidence · 75%")).toBeInTheDocument();
     expect(screen.getByText(baseReport.summary)).toBeInTheDocument();
     expect(screen.getByText(baseReport.rootCause)).toBeInTheDocument();
     expect(screen.getByText(baseReport.customerImpact)).toBeInTheDocument();

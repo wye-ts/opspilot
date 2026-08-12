@@ -55,6 +55,7 @@ describe("InvestigationProgressTimeline — canonical child rows", () => {
         stages={[stage({ status: "completed", children: FOUR_CHILDREN })]}
         elapsedLabel="12s"
         executionDetailNote={null}
+        overallStatus={null}
       />,
     );
     const children = within(childList()).getAllByRole("listitem");
@@ -76,6 +77,7 @@ describe("InvestigationProgressTimeline — canonical child rows", () => {
         stages={[stage({ status: "completed", children })]}
         elapsedLabel="12s"
         executionDetailNote={null}
+        overallStatus={null}
       />,
     );
     const diagnosticRow = within(childList()).getByText("Diagnostic execution").closest("li");
@@ -91,6 +93,7 @@ describe("InvestigationProgressTimeline — authoritative stages never collapse"
         stages={[stage({ status: "completed", children: FOUR_CHILDREN })]}
         elapsedLabel="30s"
         executionDetailNote={null}
+        overallStatus={null}
       />,
     );
     // The stepper is a single vertical list; each canonical stage renders as
@@ -110,6 +113,7 @@ describe("InvestigationProgressTimeline — authoritative stages never collapse"
         stages={[stage({ status: "active", children: FOUR_CHILDREN })]}
         elapsedLabel="5s"
         executionDetailNote={null}
+        overallStatus={null}
       />,
     );
     // No disclosure control exists at all — running or terminal.
@@ -122,6 +126,7 @@ describe("InvestigationProgressTimeline — authoritative stages never collapse"
         stages={[stage({ status: "completed", children: FOUR_CHILDREN })]}
         elapsedLabel="30s"
         executionDetailNote={null}
+        overallStatus={null}
       />,
     );
     expect(screen.queryByRole("button", { name: /Hide steps|Show steps/ })).toBeNull();
@@ -135,6 +140,7 @@ describe("InvestigationProgressTimeline — authoritative stages never collapse"
         stages={[stage({ status: "completed", children: FOUR_CHILDREN })]}
         elapsedLabel="30s"
         executionDetailNote={null}
+        overallStatus={null}
       />,
     );
     rerender(
@@ -142,6 +148,7 @@ describe("InvestigationProgressTimeline — authoritative stages never collapse"
         stages={[stage({ status: "completed", children: freshChildren })]}
         elapsedLabel="31s"
         executionDetailNote={null}
+        overallStatus={null}
       />,
     );
     expect(within(childList()).getAllByRole("listitem")).toHaveLength(4);
@@ -155,6 +162,7 @@ describe("InvestigationProgressTimeline — canonical-invalid presentation", () 
         stages={[stage({ status: "completed", children: FOUR_CHILDREN })]}
         elapsedLabel="30s"
         executionDetailNote={null}
+        overallStatus={null}
       />,
     );
     expect(within(childList()).getAllByRole("listitem")).toHaveLength(4);
@@ -167,6 +175,7 @@ describe("InvestigationProgressTimeline — canonical-invalid presentation", () 
         stages={[stage({ status: "completed" })]} // no `children` at all
         elapsedLabel="30s"
         executionDetailNote="Detailed step-by-step progress isn't available for this run right now."
+        overallStatus={null}
       />,
     );
     expect(document.querySelector(".investigation-progress-children-list")).toBeNull();
@@ -210,6 +219,7 @@ describe("InvestigationProgressTimeline — nested events under execution-stage 
         stages={[stage({ status: "active", children: CHILDREN_WITH_EVENTS })]}
         elapsedLabel="5s"
         executionDetailNote={null}
+        overallStatus={null}
       />,
     );
     expect(document.querySelectorAll(".investigation-progress-event-list")).toHaveLength(3);
@@ -223,6 +233,7 @@ describe("InvestigationProgressTimeline — nested events under execution-stage 
         stages={[stage({ status: "active", children: FOUR_CHILDREN })]}
         elapsedLabel="5s"
         executionDetailNote={null}
+        overallStatus={null}
       />,
     );
     expect(document.querySelector(".investigation-progress-children-list")).not.toBeNull();
@@ -235,6 +246,7 @@ describe("InvestigationProgressTimeline — nested events under execution-stage 
         stages={[stage({ status: "active", children: CHILDREN_WITH_EVENTS })]}
         elapsedLabel="5s"
         executionDetailNote={null}
+        overallStatus={null}
       />,
     );
     const labels = eventItems().map((el) => el.textContent);
@@ -247,6 +259,7 @@ describe("InvestigationProgressTimeline — nested events under execution-stage 
         stages={[stage({ status: "completed", children: CHILDREN_WITH_EVENTS })]}
         elapsedLabel="30s"
         executionDetailNote={null}
+        overallStatus={null}
       />,
     );
     expect(document.querySelectorAll(".investigation-progress-children-list > .investigation-progress-item")).toHaveLength(4);
@@ -273,6 +286,7 @@ describe("InvestigationProgressTimeline — nested events under execution-stage 
         stages={[stage({ status: "completed", children })]}
         elapsedLabel="30s"
         executionDetailNote={null}
+        overallStatus={null}
       />,
     );
     // Only INVESTIGATION_CREATED's nested list renders — the omitted
@@ -287,6 +301,7 @@ describe("InvestigationProgressTimeline — nested events under execution-stage 
         stages={[stage({ status: "completed" })]}
         elapsedLabel="30s"
         executionDetailNote={null}
+        overallStatus={null}
       />,
     );
     expect(document.querySelector(".investigation-progress-children-list")).toBeNull();
@@ -307,6 +322,7 @@ describe("InvestigationProgressTimeline — hierarchy (Issue #41 HQ polish §1)"
         ]}
         elapsedLabel="12s"
         executionDetailNote={null}
+        overallStatus={null}
       />,
     );
 
@@ -346,6 +362,7 @@ describe("InvestigationProgressTimeline — hierarchy (Issue #41 HQ polish §1)"
         ]}
         elapsedLabel="12s"
         executionDetailNote={null}
+        overallStatus={null}
       />,
     );
 
@@ -371,6 +388,7 @@ describe("InvestigationProgressTimeline — Not reached vs Not applicable (Issue
         stages={[stage({ status: "failed", children })]}
         elapsedLabel="12s"
         executionDetailNote={null}
+        overallStatus={null}
       />,
     );
     const diagnosticRow = screen.getByText("Diagnostic execution").closest("li");
@@ -391,6 +409,7 @@ describe("InvestigationProgressTimeline — Not reached vs Not applicable (Issue
         stages={[stage({ status: "completed", children })]}
         elapsedLabel="12s"
         executionDetailNote={null}
+        overallStatus={null}
       />,
     );
     const diagnosticRow = screen.getByText("Diagnostic execution").closest("li");

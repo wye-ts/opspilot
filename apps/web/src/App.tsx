@@ -56,11 +56,13 @@ import { ReportPanel } from "./components/ReportPanel";
 import { SuggestedActionsPanel } from "./components/SuggestedActionsPanel";
 import { TraceTimeline } from "./components/TraceTimeline";
 import { useElapsedTime, formatElapsed } from "./hooks/useElapsedTime";
+import { runStatusBadge } from "./run/run-overview-presentation";
 import { findFailedExecutionStageLabel } from "./investigation-progress/execution-stage-rows";
 import {
   deriveInvestigationProgressStages,
   stageFailureAnnouncement,
   investigationCompleteAnnouncement,
+  INVESTIGATION_COMPLETE_ANNOUNCEMENT,
   APPROVAL_REQUIRED_ANNOUNCEMENT,
   STAGE_LABELS,
   type ApprovalLoadStatus,
@@ -737,17 +739,6 @@ export function App() {
      * never carries canonical `events[]` at all.
      */
     readonly skipAuthoritativeFinalRead: boolean;
-    /**
-     * P1 (final independent review): set ONLY by the resumed-FAILED hydration
-     * call site, to the persisted `run.finishedAt` it already read. Preserves
-     * the frozen resume elapsed-time clock through the shared owner write
-     * below instead of letting it be rewritten with `Date.now()` merely
-     * because FAILED resume now funnels through this coordinator. Every
-     * other caller (submit/retry/poll/ordinary Refresh) leaves this
-     * `undefined`, so their own terminal settlement still stamps the finish
-     * clock at the moment THEY observe it, unchanged from before.
-     */
-    readonly resumeObservedFinishedAt?: number;
   }): Promise<
     | { readonly kind: "stale" }
     | { readonly kind: "discarded" }
@@ -768,7 +759,6 @@ export function App() {
       source,
       pollGeneration,
       skipAuthoritativeFinalRead,
-      resumeObservedFinishedAt,
     } = params;
 
     // Stale/regressive guard FIRST — before any state write, for both
@@ -991,6 +981,22 @@ export function App() {
     setResumedJobOnly(false);
     const derivation = applyDerivationForCandidate(finalJob, finalRun, finalEvents);
     poll.stop("terminal");
+    // Elapsed-time bugfix: the clock freezes HERE, synchronously with the
+    // run/status sync above — the SAME render that shows the run as
+    // terminal also freezes its elapsed time, for every terminal
+    // observation (owner AND duplicate alike; both derive the identical
+    // value from the same `finalRun`, so re-applying it for a duplicate is
+    // harmless/idempotent). Always the run's OWN persisted `finishedAt` —
+    // never `Date.now()` — so resuming an already-completed/failed run
+    // shows the SAME real duration no matter how long the page was open
+    // before this observation, and a contradictory observation arriving
+    // later (e.g. during the COMPLETED branch's approval fetch below) can
+    // never leave the clock ticking past a status already shown as
+    // terminal. `finishedAt === null` on a terminal run is a data anomaly
+    // the elapsed-time hook fails safe for — see useElapsedTime's
+    // `isTerminal` contract — rather than inventing a number from
+    // `Date.now()`.
+    setSubmittedFinishedAt(finalRun.finishedAt !== null ? new Date(finalRun.finishedAt).getTime() : null);
     // Finding 3 (final Codex re-review): a canonical-invalid derivation
     // must enter the SAME fail-closed data-corrupt pause regardless of
     // ingestion path (terminal poll, terminal POST/Refresh authoritative
@@ -1010,7 +1016,9 @@ export function App() {
 
     if (decision.kind === "duplicate") {
       // Harmlessly re-applies the SAME authoritative terminal state — no
-      // approval load, no terminal notice, no clock freeze a second time.
+      // approval load, no terminal notice a second time. (The elapsed
+      // clock above IS re-applied, but idempotently — same `finalRun`,
+      // same value.)
       setPhase("idle");
       return { kind: "duplicate" };
     }
@@ -1024,16 +1032,16 @@ export function App() {
       // `isFinalizationAuthorized` being rechecked AFTER this await, so a
       // contradictory observation that arrives while this fetch is in
       // flight leaves ZERO trace from this continuation: no `approval`, no
-      // `approvalLoadStatus`, no error banner, no notice, no clock/phase
-      // rewrite — the inconsistency notice the contradictory observation
-      // already installed stands untouched.
+      // `approvalLoadStatus`, no error banner, no notice, no phase rewrite
+      // — the inconsistency notice the contradictory observation already
+      // installed stands untouched. (The run/status/elapsed-clock sync
+      // above already happened and is not part of this continuation.)
       const fetchResult = await fetchApprovalResult(finalRun.id, signal);
       if (isStale(generation)) return { kind: "stale" };
       if (!isFinalizationAuthorized(terminalSettlementClaimRef.current, identity)) {
         return { kind: "inconsistent" };
       }
       const loadedApproval = commitApprovalResultAtomically(fetchResult);
-      setSubmittedFinishedAt(Date.now());
       setNotice(investigationCompleteAnnouncement(loadedApproval?.status === "PENDING"));
       setPhase("idle");
       terminalSettlementClaimRef.current = markFinalizationSettled(terminalSettlementClaimRef.current, identity);
@@ -1045,7 +1053,6 @@ export function App() {
       return { kind: "inconsistent" };
     }
     setNotice(stageFailureAnnouncement("run"));
-    setSubmittedFinishedAt(resumeObservedFinishedAt ?? Date.now());
     setPhase("idle");
     terminalSettlementClaimRef.current = markFinalizationSettled(terminalSettlementClaimRef.current, identity);
     return { kind: "owner", outcome: "FAILED" };
@@ -1279,13 +1286,12 @@ export function App() {
       // through the shared coordinator rather than a second ad hoc
       // terminal-decision implementation. `skipAuthoritativeFinalRead: true`
       // — `state.events` above ALREADY came from a `getInvestigationState`
-      // read in this same function call. `resumeObservedFinishedAt`
-      // preserves the persisted `run.finishedAt` so this owner write does
-      // not stamp the finish clock with `Date.now()`. The coordinator's own
-      // terminal branch applies the same canonical-invalid data-corrupt
-      // pause policy uniformly (the known failure outcome above remains
-      // visible, but canonical detail stays untrusted with a functional
-      // "Check again") — see `applyObservedRunOutcome`.
+      // read in this same function call. The coordinator's own terminal
+      // write freezes the elapsed clock from `state.run.finishedAt` itself
+      // (never `Date.now()`) and applies the same canonical-invalid
+      // data-corrupt pause policy uniformly (the known failure outcome
+      // above remains visible, but canonical detail stays untrusted with a
+      // functional "Check again") — see `applyObservedRunOutcome`.
       await applyObservedRunOutcome({
         job: state.job,
         run: state.run,
@@ -1297,7 +1303,6 @@ export function App() {
         source: "post",
         pollGeneration: null,
         skipAuthoritativeFinalRead: true,
-        resumeObservedFinishedAt: state.run.finishedAt !== null ? new Date(state.run.finishedAt).getTime() : Date.now(),
       });
       return;
     }
@@ -2133,8 +2138,17 @@ export function App() {
   // the Progress Timeline renders — never a separately-invented mapping
   // (HQ review §3).
   const failedStageLabel = findFailedExecutionStageLabel(progressStages.find((s) => s.key === "run")?.children);
-  const elapsedMs = useElapsedTime(submittedAt, submittedFinishedAt);
+  // Elapsed-time bugfix: a real run object with a non-RUNNING outcome is
+  // terminal — `useElapsedTime` must never tick (via `Date.now()`) once
+  // this is true, even in the rare case `submittedFinishedAt` itself ends
+  // up null (see its own `isTerminal` fail-safe contract).
+  const isTerminalRun = run !== null && run.outcome.type !== "RUNNING";
+  const elapsedMs = useElapsedTime(submittedAt, submittedFinishedAt, isTerminalRun);
   const elapsedLabel = formatElapsed(elapsedMs);
+  // HQ item 4 — the overall lifecycle status shown in the Progress card
+  // header, top-right. `null` before any run exists yet (job created, run
+  // not yet returned).
+  const overallStatus = run !== null ? runStatusBadge(run.outcome.type) : null;
   // "Check again" is offered ONLY for the three pausable poll reasons —
   // never for terminal/not-found/permanent-invalid/aborted, none of which
   // ever set `pausedReason` (see createPollCallbacks's onStop).
@@ -2158,25 +2172,47 @@ export function App() {
     run !== null &&
     run.outcome.type !== "RUNNING" &&
     (run.outcome.type === "FAILED" || (approval !== null && approval.status !== "PENDING"));
+  // Final UX Pilot fidelity pass — Current Investigation/Progress already show
+  // completion via badges, so the redundant visible "Investigation complete."
+  // sentence is visually suppressed (kept in the DOM/aria-live tree for
+  // screen readers). Derived, not a second piece of tracked state: the
+  // completion announcement has a small fixed textual domain
+  // (`INVESTIGATION_COMPLETE_ANNOUNCEMENT`, optionally suffixed with the
+  // approval-required sentence), so comparing `notice` against it can't drift
+  // out of sync the way a manually-set companion flag at 20+ setNotice call
+  // sites could.
+  const noticeIsCompletionAnnouncement = notice !== null && notice.startsWith(INVESTIGATION_COMPLETE_ANNOUNCEMENT);
+  // Running desktop composition (HQ item 5) — while RUNNING, the resolution
+  // row pairs Progress with Agent Activity (Resolution has nothing to show
+  // yet); once terminal, it reverts to Progress+Resolution and Agent Activity
+  // returns to its normal item-6 position. Never both at once.
+  const isRunningOutcome = run !== null && run.outcome.type === "RUNNING";
+  // Single definition reused in whichever of the two mutually-exclusive slots
+  // applies (the running-composition pairing inside `.resolution-row`, or the
+  // normal item-6 position) — never rendered in both at once.
+  const agentActivitySection =
+    run !== null ? (
+      <section className="trace-section" aria-labelledby="timeline-heading">
+        <div className="trace-section-header">
+          <h2 id="timeline-heading" tabIndex={-1}>
+            Agent activity
+          </h2>
+        </div>
+        <TraceTimeline trace={run.trace} />
+      </section>
+    ) : null;
 
   return (
     <div className="app-shell">
       <ProductHeader />
 
       {error !== null ? <ErrorBanner error={error} onDismiss={() => setError(null)} /> : null}
-      <p className="notice-region" role="status" aria-live="polite">
+      <p className={`notice-region${noticeIsCompletionAnnouncement ? " sr-only" : ""}`} role="status" aria-live="polite">
         {progressText}
       </p>
 
       {showComposer ? (
         <section className="composer" aria-label="Start an investigation">
-          <div className="composer-intro">
-            <h2 className="composer-title">Start an investigation</h2>
-            <p className="composer-value">
-              Investigate issues with an AI agent that runs diagnostics, generates a resolution, and
-              proposes actions for human approval.
-            </p>
-          </div>
           <InvestigationForm
             key={formResetKey}
             disabled={isBusy}
@@ -2202,17 +2238,29 @@ export function App() {
 
       {/* 2. Human approval required banner when applicable. Informational jump
           to the item-5 decision surface — the panel, not the banner, decides. */}
-      {showActionRequiredBanner ? <ActionRequiredBanner /> : null}
+      {showActionRequiredBanner ? <ActionRequiredBanner suggestedActionCount={suggestedActionCount} /> : null}
 
       {/* 3. Progress + Resolution — share a row on desktop; Resolution gets the
           wider column (§15). Both stay gated on grounded truth; a RUNNING
-          outcome renders no report placeholder. */}
+          outcome renders no report placeholder.
+          HQ item 5 (Running desktop composition): while RUNNING, Agent
+          Activity takes the row's second slot instead of Resolution — wide
+          Progress + narrow Activity, the operations-console pairing the
+          reference uses for the running screen — via `.resolution-row--running`.
+          Terminal-state DOM order/CSS is unchanged from before this pass. */}
       {showProgressTimeline || showResolution ? (
-        <div className="resolution-row">
+        <div className={`resolution-row${isRunningOutcome ? " resolution-row--running" : ""}`}>
           {showProgressTimeline ? (
-            <InvestigationProgressTimeline stages={progressStages} elapsedLabel={elapsedLabel} executionDetailNote={executionDetailNote} />
+            <InvestigationProgressTimeline
+              stages={progressStages}
+              elapsedLabel={elapsedLabel}
+              executionDetailNote={executionDetailNote}
+              overallStatus={overallStatus}
+            />
           ) : null}
-          {run !== null && run.outcome.type !== "RUNNING" ? (
+          {isRunningOutcome ? (
+            agentActivitySection
+          ) : run !== null && run.outcome.type !== "RUNNING" ? (
             <ReportPanel outcome={run.outcome} failedStageLabel={failedStageLabel} />
           ) : null}
         </div>
@@ -2247,15 +2295,9 @@ export function App() {
       ) : null}
 
       {/* 6. Agent Activity — product-language labels, raw identifiers behind
-          Technical details (§14). */}
-      {run !== null ? (
-        <section className="trace-section" aria-labelledby="timeline-heading">
-          <h2 id="timeline-heading" tabIndex={-1}>
-            Agent activity
-          </h2>
-          <TraceTimeline trace={run.trace} />
-        </section>
-      ) : null}
+          Technical details (§14). While RUNNING, this section renders inside
+          the resolution row instead (HQ item 5) — never in both places. */}
+      {!isRunningOutcome ? agentActivitySection : null}
 
       {/* 7. Run Details — compact primary fields + Technical details
           disclosure (§12); absorbed RunOverviewPanel's unique facts. */}

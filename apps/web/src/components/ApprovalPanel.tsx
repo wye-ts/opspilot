@@ -31,7 +31,7 @@ export function ApprovalPanel({ approval, suggestedActionCount, decisionDisabled
   if (approval.status === "NOT_ELIGIBLE") {
     return (
       <section className="approval-panel approval-panel--not-eligible" aria-labelledby="approval-heading">
-        <h2 id="approval-heading" tabIndex={-1}>Approval</h2>
+        <h2 id="approval-heading" tabIndex={-1}>Human approval</h2>
         <p className="approval-not-eligible">
           <StatusBadge tone={presentation.tone} glyph={presentation.glyph} label={presentation.badgeLabel} />
           <span>Not eligible: this run produced no suggested actions.</span>
@@ -42,11 +42,20 @@ export function ApprovalPanel({ approval, suggestedActionCount, decisionDisabled
 
   return (
     <section className="approval-panel" aria-labelledby="approval-heading">
-      <h2 id="approval-heading" tabIndex={-1}>Approval</h2>
-      <p className="approval-panel-status">
+      {/* Final UX Pilot fidelity pass — the reference's compact amber-accent
+          approval header: icon + "Human approval" title + a state-accurate
+          subtitle (the existing `presentation.copy`, reused rather than a
+          second, PENDING-only "N proposed actions require review" string
+          that would misdescribe the APPROVED/REJECTED branches). The status
+          badge moves beside the title instead of its own line. */}
+      <div className="approval-panel-header">
+        <span className="approval-panel-icon" aria-hidden="true">✓</span>
+        <div className="approval-panel-header-text">
+          <h2 id="approval-heading" tabIndex={-1}>Human approval</h2>
+          <p className="card-header-subtitle">{presentation.copy}</p>
+        </div>
         <StatusBadge tone={presentation.tone} glyph={presentation.glyph} label={presentation.badgeLabel} />
-      </p>
-      <p>{presentation.copy}</p>
+      </div>
       {presentation.hint !== null ? <p className="approval-panel-hint">{presentation.hint}</p> : null}
       {presentation.showsDecisionForm ? (
         <ApprovalDecisionForm disabled={decisionDisabled} submitting={submittingDecision} onSubmit={onDecide} />

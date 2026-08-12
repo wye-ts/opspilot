@@ -1,5 +1,6 @@
 import type { InvestigationProgressStageViewModel } from "../investigation-progress/investigation-progress-stages";
 import { presentInvestigationProgressStage } from "../investigation-progress/investigation-progress-stages";
+import type { RunStatusBadgePresentation } from "../run/run-overview-presentation";
 
 export interface InvestigationProgressTimelineProps {
   readonly stages: readonly InvestigationProgressStageViewModel[];
@@ -11,6 +12,12 @@ export interface InvestigationProgressTimelineProps {
    * one row's label.
    */
   readonly executionDetailNote: string | null;
+  /**
+   * The overall investigation lifecycle state (Running/Completed/Failed),
+   * `null` before any run exists yet. Rendered in the card header, top-right
+   * — this is the OVERALL state, never a fifth timeline stage (HQ item 4).
+   */
+  readonly overallStatus: RunStatusBadgePresentation | null;
 }
 
 // Frontend-known request-lifecycle stages only — never backend diagnostic
@@ -28,14 +35,18 @@ export interface InvestigationProgressTimelineProps {
 // entirely rather than merely de-emphasized — "job"'s own "Investigation
 // created" would duplicate the first canonical stage, and "run"'s own
 // "Agent investigation in progress…"/"Investigation complete" would restate
-// what the four rows already show. "Live availability" never renders as a
-// stepper row at all — it is lightweight preflight metadata, a single line
-// above the stepper. A legacy run (no canonical breakdown) falls back to the
-// plain job/run/approval system-row stepper, unchanged.
+// what the four rows already show. Final UX Pilot fidelity pass, HQ review —
+// the reference's Progress card shows nothing about Live availability or
+// approval loading at all, so both are rendered `sr-only`: present in the
+// accessibility tree (screen-reader users still get the fact, and every
+// existing test keeps working unchanged), but never visible on screen. A
+// legacy run (no canonical breakdown) falls back to the plain job/run
+// system-row stepper, with approval still sr-only.
 export function InvestigationProgressTimeline({
   stages,
   elapsedLabel,
   executionDetailNote,
+  overallStatus,
 }: InvestigationProgressTimelineProps) {
   // The run row is the one that may carry the four canonical children.
   const runRow = stages.find((s) => s.key === "run");
@@ -44,19 +55,26 @@ export function InvestigationProgressTimeline({
   const availabilityStage = stages.find((s) => s.key === "availability") ?? null;
   // The job/run rows only render as system rows in the legacy fallback —
   // once the four canonical stages exist, they would just restate row 1
-  // ("Investigation created") and the run's own status.
+  // ("Investigation created") and the run's own status. Approval renders in
+  // every case (below), but always `sr-only` — see the module comment above.
   const systemStages = stages.filter(
     (s) => s.key !== "availability" && (canonicalStages === null || (s.key !== "job" && s.key !== "run")),
   );
 
   return (
     <section className="investigation-progress" aria-labelledby="investigation-progress-heading">
-      <h2 id="investigation-progress-heading" tabIndex={-1}>
-        Investigation progress
-      </h2>
-      <p className="investigation-progress-elapsed">Elapsed: {elapsedLabel}</p>
+      <div className="investigation-progress-header">
+        <h2 id="investigation-progress-heading" tabIndex={-1}>
+          Investigation progress
+        </h2>
+        {overallStatus !== null ? (
+          <span className={`investigation-progress-overall-status investigation-progress-overall-status--${overallStatus.tone}`}>
+            {overallStatus.label}
+          </span>
+        ) : null}
+      </div>
       {availabilityStage !== null ? (
-        <p className="investigation-progress-preflight">
+        <p className="investigation-progress-preflight sr-only">
           <span
             className={`investigation-progress-preflight-glyph investigation-progress-preflight-glyph--${availabilityStage.status}`}
             aria-hidden="true"
@@ -93,7 +111,11 @@ export function InvestigationProgressTimeline({
                 <div className="investigation-progress-content">
                   <div className="investigation-progress-title">
                     <span className="investigation-progress-label">{child.label}</span>
-                    <span className="investigation-progress-status">{badgeLabel}</span>
+                    {/* Visually suppressed (HQ item 4 — no repeated "Done"
+                        etc. per row) but kept for screen readers, which get
+                        no other status signal for this row: the icon carries
+                        color+shape only, and it's the sole marker of state. */}
+                    <span className="investigation-progress-status sr-only">{badgeLabel}</span>
                   </div>
                   {hasNestedEvents && (
                     <ol className="investigation-progress-event-list">
@@ -116,7 +138,7 @@ export function InvestigationProgressTimeline({
           return (
             <li
               key={stage.key}
-              className={`investigation-progress-item investigation-progress-item--system investigation-progress-item--${stage.status}`}
+              className={`investigation-progress-item investigation-progress-item--system investigation-progress-item--${stage.status}${stage.key === "approval" ? " investigation-progress-item--approval sr-only" : ""}`}
             >
               <span className="investigation-progress-marker" aria-hidden="true">
                 <span className={`investigation-progress-node investigation-progress-node--${stage.status}`}>
@@ -126,7 +148,12 @@ export function InvestigationProgressTimeline({
               <div className="investigation-progress-content">
                 <div className="investigation-progress-title">
                   <span className="investigation-progress-label">{stage.label}</span>
-                  <span className="investigation-progress-status">{presentation.badgeLabel}</span>
+                  {/* Same sr-only treatment as the canonical rows above —
+                      restyled, not removed, per HQ item 4's legacy-fallback
+                      preservation (this row set only renders for a run with
+                      no canonical event breakdown, a real degraded-data
+                      state, not mock-covered content). */}
+                  <span className="investigation-progress-status sr-only">{presentation.badgeLabel}</span>
                 </div>
               </div>
             </li>
@@ -136,6 +163,13 @@ export function InvestigationProgressTimeline({
       {executionDetailNote !== null && (
         <p className="investigation-progress-note">{executionDetailNote}</p>
       )}
+      {/* Final UX Pilot fidelity pass, HQ item 4 — moved from the top (under
+          the heading) to the bottom-right, small/muted/low-emphasis, not a
+          badge. Logic (`useElapsedTime`/`formatElapsed`) is untouched; this
+          is a pure position change. Still outside the app's aria-live
+          region (see the module comment above) — a per-second ticking value
+          is never re-announced. */}
+      <p className="investigation-progress-elapsed">Elapsed: {elapsedLabel}</p>
     </section>
   );
 }

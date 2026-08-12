@@ -373,7 +373,9 @@ describe("what a replay looks like to the user", () => {
     // Recovery is over: the form is back to the ordinary creation form.
     expect(screen.queryByRole("heading", { name: "Recover Live Run" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Recover Live Run" })).toBeNull();
-    expect(screen.getAllByText("RUNNING").length).toBeGreaterThan(0);
+    // Final UX Pilot fidelity pass — status badges render sentence-case
+    // ("Running") now, never the raw enum verbatim.
+    expect(screen.getAllByText("Running").length).toBeGreaterThan(0);
     // And a refresh control is there to observe its later state.
     expect(screen.getAllByRole("button", { name: "Refresh" }).length).toBeGreaterThan(0);
   });
@@ -412,7 +414,9 @@ describe("what a replay looks like to the user", () => {
 
     await screen.findByRole("heading", { name: "Agent activity" });
     expect(screen.queryByRole("heading", { name: "Recover Live Run" })).toBeNull();
-    expect(screen.getAllByText("COMPLETED").length).toBeGreaterThan(0);
+    // Final UX Pilot fidelity pass — status badges render sentence-case
+    // ("Completed") now, never the raw enum verbatim.
+    expect(screen.getAllByText("Completed").length).toBeGreaterThan(0);
   });
 
   it("says nothing about a replay when the run was genuinely created (201)", async () => {
@@ -508,7 +512,9 @@ describe("the notice when a replay meets an approval", () => {
     // The approval failure is still reported, through its own existing channel.
     expect(screen.getByText("The database is temporarily unavailable.")).toBeInTheDocument();
     // And the recovered run is still on screen.
-    expect(screen.getAllByText("COMPLETED").length).toBeGreaterThan(0);
+    // Final UX Pilot fidelity pass — status badges render sentence-case
+    // ("Completed") now, never the raw enum verbatim.
+    expect(screen.getAllByText("Completed").length).toBeGreaterThan(0);
   });
 
   it("leaves a genuinely STARTED run with the ordinary completion wording", async () => {

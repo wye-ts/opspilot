@@ -1,7 +1,5 @@
 import type { AgentJobResponse, AgentRunRecordView } from "../api/types";
 import { formatDateTime, formatDuration } from "../format/datetime";
-import { runStatusBadge } from "../run/run-overview-presentation";
-import { StatusBadge } from "./StatusBadge";
 import { TechnicalDetails } from "./TechnicalDetails";
 
 export interface InvestigationSummaryProps {
@@ -47,8 +45,6 @@ export function InvestigationSummary({
   refreshDisabled,
   onRefresh,
 }: InvestigationSummaryProps) {
-  const presentation = run !== null ? runStatusBadge(run.status) : null;
-
   // User-facing provider labels: `Demo` for FAKE, `Live` for LIVE (§12) —
   // raw enum values never appear as primary copy.
   const providerLabel = run !== null ? (run.providerMode === "LIVE" ? "Live" : "Demo") : null;
@@ -75,22 +71,37 @@ export function InvestigationSummary({
     technicalRows.push({ label: "Run ID", value: run.id });
   }
 
+  // Refresh is now `sr-only` (see below) and no longer counts as visible
+  // content for this row's own spacing — an otherwise-empty row (a
+  // COMPLETED run with no retry affordance) must not leave a blank gap
+  // above the Provider/Model/Duration/Attempt grid.
+  const hasVisibleStatusRow = showRetryRun || showLiveRetryTokenNotice;
+
   return (
     <section className="investigation-summary" aria-labelledby="investigation-summary-heading">
-      <h2 id="investigation-summary-heading">Run details</h2>
+      <div className="card-header">
+        <h2 id="investigation-summary-heading">Run details</h2>
+      </div>
 
-      <div className="investigation-summary-status">
-        {presentation !== null && run !== null ? (
-          <StatusBadge tone={presentation.tone} glyph={presentation.glyph} label={run.status} />
-        ) : (
-          <StatusBadge tone="danger" glyph="✕" label="Run not started" />
-        )}
-
-        {/* Refresh/Retry are secondary actions that must not compete with the
+      <div className={`investigation-summary-status${hasVisibleStatusRow ? "" : " investigation-summary-status--empty"}`}>
+        {/* Final UX Pilot fidelity pass, HQ item 8 — the overall
+            Completed/Running/Failed status is already shown in Current
+            Investigation and Investigation Progress; a third copy of the
+            same badge here was redundant, so it's removed. Refresh/Retry
+            are secondary actions that must not compete with the
             status/result (§12) — quiet text buttons on the right edge. */}
         <div className="investigation-summary-actions">
+          {/* Final polish pass — the reference's default Run Details card
+              shows no Refresh control at all. The refresh/reload request
+              itself is unchanged (still real, still callable) — only its
+              always-visible button is removed from the default view; the
+              control stays in the DOM as `sr-only` rather than deleted, so
+              existing recovery-flow coverage (App.refresh-terminal-canonical
+              and friends) keeps exercising the real request, and keyboard/
+              screen-reader users retain the affordance even though sighted
+              users no longer see it as a primary control (§12). */}
           {run !== null ? (
-            <button type="button" className="form-secondary-action" onClick={onRefresh} disabled={refreshDisabled}>
+            <button type="button" className="form-secondary-action sr-only" onClick={onRefresh} disabled={refreshDisabled}>
               Refresh
             </button>
           ) : null}

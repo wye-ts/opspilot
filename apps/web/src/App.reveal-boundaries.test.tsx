@@ -133,8 +133,8 @@ describe("Data-driven reveal boundaries", () => {
     expect(screen.queryByText("Agent activity")).toBeNull();
     expect(screen.queryByText("Resolution report")).toBeNull();
     expect(screen.queryByText("Suggested actions")).toBeNull();
-    expect(screen.queryByRole("region", { name: "Approval" })).toBeNull();
-    expect(screen.queryByRole("link", { name: /action required/i })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Human approval" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Review actions" })).toBeNull();
 
     deferredRun.resolve(jsonResponse(201, { data: runDetail() }));
   });
@@ -166,7 +166,7 @@ describe("Data-driven reveal boundaries", () => {
     expect(screen.getByText("Checking service status")).toBeInTheDocument();
     expect(screen.queryByText("Resolution report")).toBeNull();
     expect(screen.queryByText("Suggested actions")).toBeNull();
-    expect(screen.queryByRole("region", { name: "Approval" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Human approval" })).toBeNull();
   });
 
   // Scenario 3: terminal run with a report but empty actions.
@@ -192,7 +192,7 @@ describe("Data-driven reveal boundaries", () => {
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
     // NOT_ELIGIBLE is not "applicable" — the panel mounts (§18) but exposes no
     // decision surface.
-    const approvalRegion = screen.getByRole("region", { name: "Approval" });
+    const approvalRegion = screen.getByRole("region", { name: "Human approval" });
     expect(within(approvalRegion).queryByRole("button")).toBeNull();
   });
 
@@ -275,13 +275,13 @@ describe("Data-driven reveal boundaries", () => {
 
     await screen.findByText("Suggested actions");
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
-    expect(screen.queryByRole("link", { name: /action required/i })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Review actions" })).toBeNull();
 
     const suggestedActionsHeading = screen.getByRole("heading", { name: "Suggested actions" });
 
     deferredApproval.resolve(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
     const approveButton = await screen.findByRole("button", { name: "Approve" });
-    const banner = screen.getByRole("link", { name: /action required/i });
+    const banner = screen.getByRole("link", { name: "Review actions" });
 
     // In the Milestone-10 flat flow the banner precedes Suggested actions;
     // the approval control still follows it.

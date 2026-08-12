@@ -156,7 +156,7 @@ describe("Run context layout", () => {
     await submitDemo(user);
     await screen.findByText("Pending");
 
-    const banner = screen.getByRole("link", { name: /action required/i });
+    const banner = screen.getByRole("link", { name: "Review actions" });
     expect(banner).toHaveAttribute("href", "#approval-heading");
   });
 
@@ -177,8 +177,8 @@ describe("Run context layout", () => {
     await submitDemo(user);
     await screen.findByText("Pending");
 
-    const banner = screen.getByRole("link", { name: /action required/i });
-    const approvalRegion = screen.getByRole("region", { name: "Approval" });
+    const banner = screen.getByRole("link", { name: "Review actions" });
+    const approvalRegion = screen.getByRole("region", { name: "Human approval" });
     const runDetailsRegion = screen.getByRole("region", { name: "Run details" });
     expect(banner.compareDocumentPosition(approvalRegion) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(approvalRegion.compareDocumentPosition(runDetailsRegion) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -199,7 +199,7 @@ describe("Run context layout", () => {
     await submitOrdinary(user);
     await screen.findByText("Not eligible");
 
-    expect(screen.queryByRole("link", { name: /action required/i })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Review actions" })).toBeNull();
   });
 
   it("APPROVED does not render the Action required banner", async () => {
@@ -221,7 +221,7 @@ describe("Run context layout", () => {
     await submitDemo(user);
     await screen.findByText("Approved");
 
-    expect(screen.queryByRole("link", { name: /action required/i })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Review actions" })).toBeNull();
   });
 
   it("REJECTED does not render the Action required banner", async () => {
@@ -243,7 +243,7 @@ describe("Run context layout", () => {
     await submitDemo(user);
     await screen.findByText("Rejected");
 
-    expect(screen.queryByRole("link", { name: /action required/i })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Review actions" })).toBeNull();
   });
 
   it("exactly one Approve button and one Reject button exist while PENDING", async () => {
@@ -284,7 +284,7 @@ describe("Run context layout", () => {
 
     expect(screen.queryByText("Not eligible")).toBeNull();
     expect(screen.queryByText("This run has no suggested actions to approve.")).toBeNull();
-    expect(screen.queryByRole("link", { name: /action required/i })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Review actions" })).toBeNull();
   });
 
   it("NOT_ELIGIBLE renders a compact status with no ?approval-demo=1 leak", async () => {
@@ -306,7 +306,7 @@ describe("Run context layout", () => {
     // flat-flow regions now. §10 renders a compact NOT_ELIGIBLE status — the
     // query-param demo path stays a hidden entry point, never a user-facing
     // instruction, so no ?approval-demo=1 copy leaks into normal UI.
-    const approvalRegion = screen.getByRole("region", { name: "Approval" });
+    const approvalRegion = screen.getByRole("region", { name: "Human approval" });
     expect(within(approvalRegion).getByText("Not eligible")).toBeInTheDocument();
     expect(within(approvalRegion).getByText("Not eligible: this run produced no suggested actions.")).toBeInTheDocument();
     expect(within(approvalRegion).queryByText(/approval-demo=1/)).toBeNull();
@@ -327,7 +327,7 @@ describe("Run context layout", () => {
     await submitDemo(user);
     await screen.findByText("Pending");
 
-    expect(screen.getByRole("region", { name: "Approval" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Human approval" })).toBeInTheDocument();
     expect(screen.getByLabelText("Reviewer name")).toBeInTheDocument();
   });
 
@@ -350,7 +350,7 @@ describe("Run context layout", () => {
     await submitDemo(user);
     await screen.findByText("Approved");
 
-    expect(screen.getByRole("region", { name: "Approval" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Human approval" })).toBeInTheDocument();
     expect(screen.queryAllByRole("button", { name: /approve|reject/i })).toHaveLength(0);
   });
 
@@ -373,7 +373,7 @@ describe("Run context layout", () => {
     await submitDemo(user);
     await screen.findByText("Rejected");
 
-    expect(screen.getByRole("region", { name: "Approval" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Human approval" })).toBeInTheDocument();
     expect(screen.queryAllByRole("button", { name: /approve|reject/i })).toHaveLength(0);
   });
 
@@ -391,7 +391,7 @@ describe("Run context layout", () => {
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");
-    expect(screen.getByRole("link", { name: /action required/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Review actions" })).toBeInTheDocument();
 
     vi.mocked(fetch).mockResolvedValueOnce(
       jsonResponse(201, {
@@ -402,7 +402,7 @@ describe("Run context layout", () => {
     await user.click(screen.getByRole("button", { name: "Approve" }));
     await screen.findByText("Approved");
 
-    expect(screen.queryByRole("link", { name: /action required/i })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Review actions" })).toBeNull();
   });
 
   it("PENDING -> REJECTED removes the banner and shows the terminal record", async () => {
@@ -419,7 +419,7 @@ describe("Run context layout", () => {
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");
-    expect(screen.getByRole("link", { name: /action required/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Review actions" })).toBeInTheDocument();
 
     vi.mocked(fetch).mockResolvedValueOnce(
       jsonResponse(201, {
@@ -430,7 +430,7 @@ describe("Run context layout", () => {
     await user.click(screen.getByRole("button", { name: "Reject" }));
     await screen.findByText("Rejected");
 
-    expect(screen.queryByRole("link", { name: /action required/i })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Review actions" })).toBeNull();
   });
 
   it("a fresh investigation resolving to PENDING announces the completion notice", async () => {

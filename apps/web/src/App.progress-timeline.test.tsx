@@ -156,7 +156,7 @@ describe("Investigation progress timeline (#34/#35)", () => {
     expect(screen.queryByText("Investigation progress")).toBeNull();
     expect(screen.queryByText("Agent activity")).toBeNull();
     expect(screen.queryByText("Resolution report")).toBeNull();
-    expect(screen.queryByRole("region", { name: "Approval" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Human approval" })).toBeNull();
   });
 
   // Requirements 2 and 3: the busy CTA stays disabled while job creation is
@@ -388,11 +388,11 @@ describe("Investigation progress timeline (#34/#35)", () => {
 
     await screen.findByText("Resolution report");
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
-    expect(screen.queryByRole("region", { name: "Approval" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Human approval" })).toBeNull();
 
     deferredApproval.resolve(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
     await screen.findByRole("button", { name: "Approve" });
-    expect(screen.getByRole("region", { name: "Approval" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Human approval" })).toBeInTheDocument();
   });
 
   // Requirement 15: the LIVE-only availability stage is absent in FAKE mode

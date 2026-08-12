@@ -294,7 +294,7 @@ describe("App approval workflow", () => {
 
     await screen.findByText("This decision was already recorded — nothing changed.");
     expect(screen.getByText("Approved")).toBeInTheDocument();
-    const approvalSection = screen.getByRole("region", { name: "Approval" });
+    const approvalSection = screen.getByRole("region", { name: "Human approval" });
     expect(within(approvalSection).getByText(/2026/)).toBeInTheDocument();
   });
 

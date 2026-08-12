@@ -298,6 +298,20 @@ export function InvestigationForm({
   return (
     <form className="investigation-form" onSubmit={handleSubmit} aria-busy={disabled}>
       {/*
+        Final UX Pilot fidelity pass, HQ item 1 — the card header lives INSIDE
+        the composer card, top-left, not as a separate centered block above it.
+        Rendered unconditionally (both fresh and retry-mode) so this doesn't
+        change when the heading shows, only where/how.
+      */}
+      <div className="investigation-form-header">
+        <h2 className="investigation-form-title">Start an investigation</h2>
+        <p className="investigation-form-value">
+          Investigate issues with an AI agent that runs diagnostics, generates a resolution, and
+          proposes actions for human approval.
+        </p>
+      </div>
+
+      {/*
         RECOVERY MODE. Rendered instead of the provider selector and the editable
         summary, because in this mode neither is a choice: the job row already
         exists in PostgreSQL with its ticket and summary, and it was created for a
@@ -359,21 +373,18 @@ export function InvestigationForm({
       ) : null}
 
       {/*
-        Issue #41 polish §6 — compact top availability notice. Rendered only
-        when a real, pre-job capability snapshot says LIVE is closed. It is a
-        one-line summary; the Live provider card beneath it carries the fuller
-        truthful reason. Never renders while a recovery banner is showing (in
-        retry mode the provider selector is gone and the notice would be
-        explaining a card that does not exist). Runtime truth wins: wording
-        follows the actual capability state (temporary vs. daily-quota).
+        Final UX Pilot fidelity pass, HQ item 1 — the top-of-form availability
+        notice is removed. It restated exactly the same reason the Live
+        provider card already shows via `provider-card-unavailable`
+        (Issue #41 polish §6's own comment said as much: "the Live provider
+        card beneath it carries the fuller truthful reason"). Showing the same
+        local availability reason twice is exactly the duplication the HQ
+        decision asks to collapse — the per-card reason is the single source
+        now. A genuine global/system notice (kill switch, budget fail-closed,
+        preflight refusal) is a different mechanism entirely: it's surfaced by
+        App.tsx's shared notice region at submit time, not here, and is
+        untouched by this change.
       */}
-      {!retrying && !liveAvailable && providers.live.pill !== null ? (
-        <p className="composer-availability-notice">
-          {providers.live.pill.text === "Daily trial used"
-            ? "Live unavailable for today — daily trial used"
-            : "Live is temporarily unavailable"}
-        </p>
-      ) : null}
 
       {!retrying ? (
       <fieldset className="form-field form-field-modes" disabled={disabled}>
@@ -450,7 +461,14 @@ export function InvestigationForm({
             value={liveAccessToken}
             onChange={(event) => setLiveAccessToken(event.target.value)}
             disabled={disabled}
-            autoComplete="off"
+            // autocomplete="off" is documented to be ignored by Chrome on
+            // password fields (Chromium has done this since ~2014), which is
+            // why the browser still offers to save this as a login credential.
+            // "new-password" is the standard best-effort mitigation for a
+            // password-styled field that isn't an account credential — not a
+            // guarantee, since the save-password prompt is ultimately an
+            // opaque heuristic the page cannot fully control.
+            autoComplete="new-password"
             aria-describedby={`${tokenId}-help`}
           />
           <p id={`${tokenId}-help`} className="form-help">

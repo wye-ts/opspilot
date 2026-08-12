@@ -14,7 +14,14 @@ export interface SuggestedActionsPanelProps {
 export function SuggestedActionsPanel({ actions }: SuggestedActionsPanelProps) {
   return (
     <section className="report-panel" aria-labelledby="suggested-actions-heading">
-      <h2 id="suggested-actions-heading" tabIndex={-1}>Suggested actions</h2>
+      <div className="card-header">
+        <h2 id="suggested-actions-heading" tabIndex={-1}>Suggested actions</h2>
+        {actions.length > 0 ? (
+          <p className="card-header-subtitle">
+            {actions.length} action{actions.length === 1 ? "" : "s"} proposed based on the resolution
+          </p>
+        ) : null}
+      </div>
       <ul className="report-panel-actions">
         {actions.map((action, index) => (
           <li key={index}>

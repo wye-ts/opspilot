@@ -198,6 +198,37 @@ describe("Investigation resume (#38)", () => {
     expect(approvalCallCount(fetchMock)).toBe(0);
   });
 
+  /**
+   * Elapsed-time bugfix regression: a resumed terminal run must show its
+   * REAL persisted duration (`run.finishedAt - run.startedAt`), never a
+   * value derived from `Date.now()` at resume time. `completedState()`'s
+   * run started at 10:00:00 and finished at 10:00:05 — a real 5s run. Real
+   * timers are deliberately used (no `vi.useFakeTimers`/system-time
+   * manipulation): whatever the actual wall-clock date is when this test
+   * runs, it is never 2026-07-23T10:00:05Z, so a `Date.now()`-derived value
+   * would read as some other (near-certainly wildly different) number —
+   * only reading the persisted `finishedAt` directly produces exactly "5s".
+   */
+  it("a resumed COMPLETED run shows its real persisted duration, never a value derived from Date.now()", async () => {
+    window.history.pushState(null, "", `?job=${JOB_ID}`);
+    mockFetch({ investigation: [jsonResponse(200, { data: completedState() })] });
+
+    render(<App />);
+    await screen.findByText("Agent activity");
+    await waitFor(() =>
+      expect(document.querySelector(".investigation-progress-elapsed")).toHaveTextContent("Elapsed: 5s"),
+    );
+  });
+
+  it("a resumed FAILED run shows its real persisted duration, never a value derived from Date.now()", async () => {
+    window.history.pushState(null, "", `?job=${JOB_ID}`);
+    mockFetch({ investigation: [jsonResponse(200, { data: failedState() })] });
+
+    render(<App />);
+    await screen.findByText("Agent activity");
+    expect(document.querySelector(".investigation-progress-elapsed")).toHaveTextContent("Elapsed: 5s");
+  });
+
   it("a resumed job-only state (no run yet) is handled safely, with no retry affordance offered", async () => {
     window.history.pushState(null, "", `?job=${JOB_ID}`);
     mockFetch({ investigation: [jsonResponse(200, { data: jobOnlyState() })] });
@@ -522,14 +553,14 @@ describe("Investigation resume (#38)", () => {
       render(<App />);
       await screen.findByText("Agent activity");
       await waitFor(() => expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument());
-      expect(screen.getByText("Investigation completed. Human action required — review the proposed action.")).toBeInTheDocument();
+      expect(screen.getByText("Human approval required")).toBeInTheDocument();
 
       window.history.pushState(null, "", `?job=${JOB_ID_B}`);
       window.dispatchEvent(new PopStateEvent("popstate"));
       await waitFor(() => expect(screen.getByText(JOB_ID_B)).toBeInTheDocument());
 
       expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
-      expect(screen.queryByText("Investigation completed. Human action required — review the proposed action.")).toBeNull();
+      expect(screen.queryByText("Human approval required")).toBeNull();
       // job B is RUNNING — never eligible for approval, so it never issues
       // a second approval fetch; job A's is the only one that ever happened.
       expect(fetchMock.mock.calls.filter((c) => String(c[0]).endsWith("/approval")).length).toBe(1);
@@ -583,7 +614,7 @@ describe("Investigation resume (#38)", () => {
       // PENDING state (no decision controls, no action-required banner).
       await waitFor(() => expect(screen.getByText("job-b-reviewer")).toBeInTheDocument());
       expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
-      expect(screen.queryByText("Investigation completed. Human action required — review the proposed action.")).toBeNull();
+      expect(screen.queryByText("Human approval required")).toBeNull();
       expect(fetchMock.mock.calls.filter((c) => String(c[0]).endsWith("/approval")).length).toBe(2);
     });
   });

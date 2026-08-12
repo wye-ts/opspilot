@@ -212,7 +212,7 @@ describe("Initial submission — outcome-aware progress", () => {
     expect(
       vi.mocked(fetch).mock.calls.filter((call) => String(call[0]) === "/v1/agent-runs/run-1/approval"),
     ).toHaveLength(0);
-    expect(screen.queryByRole("region", { name: "Approval" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Human approval" })).toBeNull();
 
     const elapsedFrozen = document.querySelector(".investigation-progress-elapsed")?.textContent;
     await vi.advanceTimersByTimeAsync(3000);
@@ -370,7 +370,7 @@ describe("FAKE retry — outcome-aware, not converted to success", () => {
     expect(statusRegion()).toBeEmptyDOMElement();
     expect(screen.queryByText("Resolution report")).toBeNull();
     expect(screen.queryByText("Suggested actions")).toBeNull();
-    expect(screen.queryByRole("region", { name: "Approval" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Human approval" })).toBeNull();
     expect(document.getElementById("approval-heading")).toBeNull();
 
     const approvalCalls = vi.mocked(fetch).mock.calls.filter((call) => String(call[0]).endsWith("/approval"));
@@ -433,7 +433,7 @@ describe("Refresh of an already-FAILED run", () => {
     expectNoApprovalStage();
     expect(screen.getByText("RETRIEVAL_FAILED")).toBeInTheDocument();
     expect(screen.getByText("Runbook retrieval failed.")).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "Approval" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Human approval" })).toBeNull();
     expect(document.getElementById("approval-heading")).toBeNull();
     expect(statusRegion()).toHaveTextContent("Investigation failed while running the agent investigation.");
     expect(statusRegion()).not.toHaveTextContent("Investigation complete");
@@ -478,7 +478,7 @@ describe("LIVE recovery — outcome-aware, not converted to success", () => {
     expect(
       vi.mocked(fetch).mock.calls.filter((call) => String(call[0]) === "/v1/agent-runs/run-1/approval"),
     ).toHaveLength(0);
-    expect(screen.queryByRole("region", { name: "Approval" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Human approval" })).toBeNull();
   });
 
   it("a genuinely-started (201) recovery returning RUNNING stays Active, not Completed", async () => {

@@ -1,4 +1,5 @@
 import type { AgentRunOutcomeView } from "../api/types";
+import { humanizeEnum } from "../format/text";
 
 // RUNNING is excluded at the type level, not just gated at the call site —
 // App.tsx never passes it, and this makes that invariant checked rather than
@@ -31,7 +32,9 @@ export function ReportPanel({ outcome, failedStageLabel = null }: ReportPanelPro
   if (outcome.type === "FAILED") {
     return (
       <section className="report-panel" aria-labelledby="report-heading">
-        <h2 id="report-heading" tabIndex={-1}>Resolution report</h2>
+        <div className="report-panel-header">
+          <h2 id="report-heading" tabIndex={-1}>Resolution report</h2>
+        </div>
         <p>
           {failedStageLabel !== null
             ? `Investigation failed during ${failedStageLabel}.`
@@ -58,13 +61,20 @@ export function ReportPanel({ outcome, failedStageLabel = null }: ReportPanelPro
       <div className="report-panel-header">
         <h2 id="report-heading" tabIndex={-1}>Resolution report</h2>
         {/* Secondary metadata — Category/Confidence must not visually precede
-            the actual resolution (§9). Kept as real text, never hidden. */}
+            the actual resolution (§9). Kept as real text, never hidden.
+            Final polish pass, item 5 — two compact neutral pills instead of
+            raw "UNKNOWN   Confidence 0.25" debug-looking text: sentence
+            case (never the raw enum), and confidence as a rounded
+            percentage. The underlying `report.confidence` value is
+            unchanged — only its displayed form is converted.
+            Follow-up polish pass — Outcome and Confidence no longer read as
+            two identical tags. Outcome (the actual result) stays the filled
+            pill; Confidence steps down to plain, lighter metadata text, since
+            a low confidence score is informational, not itself an error —
+            no red/amber/green threshold coloring is introduced here. */}
         <p className="report-panel-meta">
-          <span>{report.category}</span>
-          <span>
-            Confidence{" "}
-            <span className="report-panel-confidence">{report.confidence.toFixed(2)}</span>
-          </span>
+          <span className="report-panel-meta-pill">Outcome · {humanizeEnum(report.category)}</span>
+          <span className="report-panel-meta-confidence">Confidence · {Math.round(report.confidence * 100)}%</span>
         </p>
       </div>
 
@@ -85,20 +95,27 @@ export function ReportPanel({ outcome, failedStageLabel = null }: ReportPanelPro
           <dt>Recommended resolution</dt>
           <dd>{report.recommendedResolution}</dd>
         </div>
+        {/* Final UX Pilot fidelity pass, HQ item 6 — Evidence now uses the
+            same dt/dd label pattern as every other section instead of a
+            standalone <h3>, so all five section labels read identically
+            (small, uppercase, muted), matching the reference exactly. */}
+        <div className="report-panel-field">
+          <dt>Evidence</dt>
+          <dd>
+            {report.evidence.length === 0 ? (
+              "No evidence was recorded."
+            ) : (
+              <ul className="report-panel-evidence">
+                {report.evidence.map((item) => (
+                  <li key={item.evidenceId}>
+                    <span className="mono">{item.sourceType}</span> — {item.finding}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </dd>
+        </div>
       </dl>
-
-      <h3>Evidence</h3>
-      {report.evidence.length === 0 ? (
-        <p>No evidence was recorded.</p>
-      ) : (
-        <ul className="report-panel-evidence">
-          {report.evidence.map((item) => (
-            <li key={item.evidenceId}>
-              <span className="mono">{item.sourceType}</span> — {item.finding}
-            </li>
-          ))}
-        </ul>
-      )}
     </section>
   );
 }
