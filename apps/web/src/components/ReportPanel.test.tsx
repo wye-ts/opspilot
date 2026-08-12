@@ -51,6 +51,48 @@ describe("ReportPanel", () => {
     expect(screen.queryByText(/Suggested actions/)).toBeNull();
   });
 
+  // Issue #41 HQ polish §2/§3 — the FAILED card's <dl> stacks vertically
+  // (never the cramped default two-column grid), the failure code never
+  // wraps mid-identifier, and the top summary is generic unless a real
+  // failed canonical stage grounds a more specific one.
+  describe("FAILED outcome polish (HQ review §2/§3)", () => {
+    const outcome: ReportableOutcome = {
+      type: "FAILED",
+      code: "PROVIDER_UNAVAILABLE",
+      message: "The provider was unavailable.",
+    };
+
+    it("the Failure code / Message fields use the vertical-stack layout class, not the default two-column <dl>", () => {
+      render(<ReportPanel outcome={outcome} />);
+      const dl = screen.getByText("Failure code").closest("dl");
+      expect(dl).not.toBeNull();
+      expect(dl).toHaveClass("report-panel-failure-fields");
+    });
+
+    it("the failure code carries a class overriding the generic .mono anywhere-wrap, so PROVIDER_UNAVAILABLE never breaks mid-identifier", () => {
+      render(<ReportPanel outcome={outcome} />);
+      const code = screen.getByText("PROVIDER_UNAVAILABLE");
+      expect(code).toHaveClass("mono");
+      expect(code).toHaveClass("report-panel-failure-code");
+    });
+
+    it("with no failedStageLabel, keeps the existing generic summary", () => {
+      render(<ReportPanel outcome={outcome} />);
+      expect(screen.getByText("The run failed before producing a report.")).toBeInTheDocument();
+    });
+
+    it("with a grounded failedStageLabel, shows the specific 'Investigation failed during X.' summary instead", () => {
+      render(<ReportPanel outcome={outcome} failedStageLabel="agent analysis" />);
+      expect(screen.getByText("Investigation failed during agent analysis.")).toBeInTheDocument();
+      expect(screen.queryByText("The run failed before producing a report.")).toBeNull();
+    });
+
+    it("never invents a failed-stage sentence for a COMPLETED outcome (prop is FAILED-only)", () => {
+      render(<ReportPanel outcome={{ type: "COMPLETED", report: baseReport }} failedStageLabel="agent analysis" />);
+      expect(screen.queryByText(/Investigation failed/)).toBeNull();
+    });
+  });
+
   // RUNNING is excluded at the type level now — App.tsx
   // never mounts this component for a RUNNING outcome at all.
 });

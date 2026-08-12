@@ -163,7 +163,7 @@ function fakeTurnstileClient() {
 const user = () => userEvent.setup();
 
 async function selectLive(u: ReturnType<typeof userEvent.setup>) {
-  await u.click(screen.getByRole("radio", { name: /Live Claude/ }));
+  await u.click(screen.getByRole("radio", { name: /Live/ }));
 }
 
 afterEach(() => {
@@ -200,11 +200,11 @@ describe("PUBLIC_TRIAL capabilities: token field hidden, Turnstile rendered", ()
     await selectLive(u);
     await waitFor(() => expect(fake.client.render).toHaveBeenCalledTimes(1));
 
-    expect(screen.getByRole("button", { name: "Run Investigation" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Start Investigation" })).toBeDisabled();
 
     fake.solve();
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Run Investigation" })).not.toBeDisabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start Investigation" })).not.toBeDisabled());
   });
 
   it("submits with X-OpsPilot-Turnstile-Token and no demo-token header", async () => {
@@ -222,8 +222,8 @@ describe("PUBLIC_TRIAL capabilities: token field hidden, Turnstile rendered", ()
     await selectLive(u);
     await waitFor(() => expect(fake.client.render).toHaveBeenCalledTimes(1));
     fake.solve();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Run Investigation" })).not.toBeDisabled());
-    await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start Investigation" })).not.toBeDisabled());
+    await u.click(screen.getByRole("button", { name: "Start Investigation" }));
 
     await waitFor(() => expect(runRequestCalls(fetchMock)).toHaveLength(1));
     const headers = headersOf(runRequestCalls(fetchMock)[0]!);
@@ -251,7 +251,7 @@ describe("visitorRunsRemaining: 0 — LIVE disabled, explicit FAKE offer, no aut
     setCapabilities([], () => publicTrialCapabilitiesResponse(0));
     render(<App />);
 
-    await waitFor(() => expect(screen.getByRole("radio", { name: /Live Claude/ })).toBeDisabled());
+    await waitFor(() => expect(screen.getByRole("radio", { name: /Live/ })).toBeDisabled());
     expect(screen.getByText(/already used today's live trial run/i)).toBeInTheDocument();
   });
 
@@ -260,11 +260,11 @@ describe("visitorRunsRemaining: 0 — LIVE disabled, explicit FAKE offer, no aut
     setCapabilities([], () => publicTrialCapabilitiesResponse(0));
     render(<App />);
 
-    await waitFor(() => expect(screen.getByRole("radio", { name: /Live Claude/ })).toBeDisabled());
+    await waitFor(() => expect(screen.getByRole("radio", { name: /Live/ })).toBeDisabled());
 
     // FAKE was never auto-selected on the visitor's behalf — it is exactly
     // where an ordinary page load leaves it, a click away, not pre-clicked.
-    expect(screen.getByRole("radio", { name: /Demo — FAKE/ })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /Demo/ })).toBeChecked();
   });
 
   it("refuses LIVE submission when the submission-time refresh shows visitorRunsRemaining 0", async () => {
@@ -287,13 +287,13 @@ describe("visitorRunsRemaining: 0 — LIVE disabled, explicit FAKE offer, no aut
     await selectLive(u);
     await waitFor(() => expect(fake.client.render).toHaveBeenCalledTimes(1));
     fake.solve();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Run Investigation" })).not.toBeDisabled());
-    await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start Investigation" })).not.toBeDisabled());
+    await u.click(screen.getByRole("button", { name: "Start Investigation" }));
 
     // The exhausted notice is shown — no job was created, no run was started.
     await screen.findByText(/Your live trial run for today has already been used/);
     // FAKE is not auto-selected.
-    expect(screen.getByRole("radio", { name: /Demo — FAKE/ })).not.toBeChecked();
+    expect(screen.getByRole("radio", { name: /Demo/ })).not.toBeChecked();
     // Neither createAgentJob nor startAgentRun was called.
     const runCalls = runRequestCalls(fetchMock);
     expect(runCalls).toHaveLength(0);
@@ -315,17 +315,18 @@ describe("a 429 mid-submission offers FAKE without auto-fallback", () => {
     await selectLive(u);
     await waitFor(() => expect(fake.client.render).toHaveBeenCalledTimes(1));
     fake.solve();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Run Investigation" })).not.toBeDisabled());
-    await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start Investigation" })).not.toBeDisabled());
+    await u.click(screen.getByRole("button", { name: "Start Investigation" }));
 
     await screen.findByText("Your live trial run for today has already been used.");
 
     // No PUBLIC retry mechanism exists — unlike the private path, no
     // "Recover Live Run" banner ever appears for this failure.
     expect(screen.queryByRole("heading", { name: "Recover Live Run" })).toBeNull();
-    // FAKE remains the ordinary, user-initiated alternative — never triggered
-    // by this component.
-    expect(screen.getByRole("radio", { name: /Demo — FAKE/ })).not.toBeChecked();
+    // The job was created, so the Milestone-10 composer (and with it the
+    // provider radios) has collapsed — FAKE is never auto-selected, and no
+    // radio is even offered for a run that is already grounded.
+    expect(screen.queryByRole("radio", { name: /Demo/ })).toBeNull();
   });
 });
 
@@ -341,11 +342,11 @@ describe("expired or failed Turnstile solve requires a fresh solve before submit
     await selectLive(u);
     await waitFor(() => expect(fake.client.render).toHaveBeenCalledTimes(1));
     fake.solve();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Run Investigation" })).not.toBeDisabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start Investigation" })).not.toBeDisabled());
 
     fake.expire();
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Run Investigation" })).toBeDisabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start Investigation" })).toBeDisabled());
   });
 
   it("clears the held token and disables submit again on a widget error", async () => {
@@ -359,11 +360,11 @@ describe("expired or failed Turnstile solve requires a fresh solve before submit
     await selectLive(u);
     await waitFor(() => expect(fake.client.render).toHaveBeenCalledTimes(1));
     fake.solve();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Run Investigation" })).not.toBeDisabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start Investigation" })).not.toBeDisabled());
 
     fake.error();
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Run Investigation" })).toBeDisabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start Investigation" })).toBeDisabled());
   });
 
   it("re-enables submit once a fresh solve arrives after expiry", async () => {
@@ -377,13 +378,13 @@ describe("expired or failed Turnstile solve requires a fresh solve before submit
     await selectLive(u);
     await waitFor(() => expect(fake.client.render).toHaveBeenCalledTimes(1));
     fake.solve();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Run Investigation" })).not.toBeDisabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start Investigation" })).not.toBeDisabled());
 
     fake.expire();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Run Investigation" })).toBeDisabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start Investigation" })).toBeDisabled());
 
     fake.solve("second-solved-token");
-    await waitFor(() => expect(screen.getByRole("button", { name: "Run Investigation" })).not.toBeDisabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start Investigation" })).not.toBeDisabled());
   });
 });
 
@@ -416,7 +417,7 @@ describe("the private token path never renders Turnstile and never sends its hea
     await selectLive(u);
     await u.type(screen.getByLabelText("Live demo access token"), "demo-token-do-not-use-8f14e45fceea");
     const fetchMock = (globalThis.fetch as ReturnType<typeof vi.fn>);
-    await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await u.click(screen.getByRole("button", { name: "Start Investigation" }));
 
     await waitFor(() => expect(runRequestCalls(fetchMock)).toHaveLength(1));
     expect(headersOf(runRequestCalls(fetchMock)[0]!)[TURNSTILE_HEADER]).toBeUndefined();

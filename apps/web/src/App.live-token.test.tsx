@@ -155,14 +155,14 @@ function headerOf(call: unknown[]): string | undefined {
 const user = () => userEvent.setup();
 
 async function selectLive(u: ReturnType<typeof userEvent.setup>) {
-  await u.click(screen.getByRole("radio", { name: /Live Claude/ }));
+  await u.click(screen.getByRole("radio", { name: /Live/ }));
 }
 
 async function submitLive(u: ReturnType<typeof userEvent.setup>, token = TOKEN) {
   await u.type(screen.getByLabelText("Issue Summary"), "Elevated error rate on billing");
   await selectLive(u);
   await u.type(screen.getByLabelText("Live demo access token"), token);
-  await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+  await u.click(screen.getByRole("button", { name: "Start Investigation" }));
 }
 
 afterEach(() => {
@@ -171,6 +171,7 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  window.history.replaceState(null, "", "/");
 });
 
 describe("live access token lifetime", () => {
@@ -201,10 +202,11 @@ describe("live access token lifetime", () => {
     await submitLive(u);
     await waitFor(() => expect(runRequestCalls(fetchMock)).toHaveLength(1));
 
-    // The field is the only place a token ever lived; emptying it is what makes
-    // "no copy survives the run" observable from the outside.
+    // The field is the only place a token ever lived; the composer collapsing
+    // on a created job removes it entirely — an even stronger "no copy
+    // survives the run" guarantee than merely emptying the field.
     await waitFor(() =>
-      expect(screen.getByLabelText("Live demo access token")).toHaveValue(""),
+      expect(screen.queryByLabelText("Live demo access token")).toBeNull(),
     );
   });
 
@@ -256,7 +258,7 @@ describe("live access token lifetime", () => {
     const u = user();
 
     await u.type(screen.getByLabelText("Issue Summary"), "Elevated error rate on billing");
-    await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await u.click(screen.getByRole("button", { name: "Start Investigation" }));
     await screen.findByText("The database is temporarily unavailable.");
 
     await u.click(screen.getByRole("button", { name: "Retry Run" }));
@@ -281,19 +283,19 @@ describe("live access token lifetime", () => {
     await u.type(screen.getByLabelText("Issue Summary"), "Elevated error rate on billing");
     await selectLive(u);
     await u.type(screen.getByLabelText("Live demo access token"), TOKEN);
-    await u.click(screen.getByRole("radio", { name: /Demo — FAKE/ }));
+    await u.click(screen.getByRole("radio", { name: /Demo/ }));
 
     // The field is gone from the DOM, and the value did not survive to be sent.
     expect(screen.queryByLabelText("Live demo access token")).toBeNull();
 
-    await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await u.click(screen.getByRole("button", { name: "Start Investigation" }));
     await waitFor(() => expect(runRequestCalls(fetchMock)).toHaveLength(1));
 
     expect(headerOf(runRequestCalls(fetchMock)[0]!)).toBeUndefined();
     expect(JSON.stringify(fetchMock.mock.calls)).not.toContain(TOKEN);
   });
 
-  it("re-selecting LIVE after a completed run starts from an empty token field", async () => {
+  it("a completed run leaves no token field behind — the composer is collapsed", async () => {
     const fetchMock = mockFetch(
       jsonResponse(201, { data: jobResponse() }),
       jsonResponse(201, { data: liveRunDetail() }),
@@ -304,11 +306,13 @@ describe("live access token lifetime", () => {
 
     await submitLive(u);
     await waitFor(() => expect(runRequestCalls(fetchMock)).toHaveLength(1));
-    await waitFor(() => expect(screen.getByLabelText("Live demo access token")).toHaveValue(""));
 
-    // With no token, the form refuses to submit rather than spending a round trip
-    // to be told 401 — which also proves nothing was silently kept to fall back on.
-    expect(screen.getByRole("button", { name: "Run Investigation" })).toBeDisabled();
+    // The composer collapses once a job exists, so there is not even a field
+    // left to hold the token — the strongest form of "no copy survives the
+    // run". There is no submit button either; a new run can only start from a
+    // fresh form, so nothing was silently kept to fall back on.
+    await waitFor(() => expect(screen.queryByLabelText("Live demo access token")).toBeNull());
+    expect(screen.queryByRole("button", { name: "Start Investigation" })).toBeNull();
   });
 
   it("never writes the token to storage, a URL, or a request body", async () => {

@@ -180,9 +180,9 @@ const user = () => userEvent.setup();
 /** Drives the form through a LIVE submission that will fail at run creation. */
 async function submitLive(u: ReturnType<typeof userEvent.setup>, token = TOKEN) {
   await u.type(screen.getByLabelText("Issue Summary"), SUMMARY);
-  await u.click(screen.getByRole("radio", { name: /Live Claude/ }));
+  await u.click(screen.getByRole("radio", { name: /Live/ }));
   await u.type(screen.getByLabelText("Live demo access token"), token);
-  await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+  await u.click(screen.getByRole("button", { name: "Start Investigation" }));
 }
 
 /** Re-enters a token in retry mode and submits. */
@@ -232,7 +232,7 @@ describe("LIVE partial failure — the retained job", () => {
     // ...and the form now offers the dedicated retry, not a new investigation.
     expect(screen.getByRole("heading", { name: "Recover Live Run" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Recover Live Run" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Run Investigation" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Start Investigation" })).toBeNull();
   });
 
   it("presents the retained ticket and summary as facts, not editable fields", async () => {
@@ -249,7 +249,7 @@ describe("LIVE partial failure — the retained job", () => {
     expect(screen.getAllByText(SUMMARY).length).toBeGreaterThan(0);
     expect(screen.getAllByText(`DEMO-${UUID_A}`).length).toBeGreaterThan(0);
     // The provider is fixed by the retained job — no radio group to change it.
-    expect(screen.queryByRole("radio", { name: /Demo — FAKE/ })).toBeNull();
+    expect(screen.queryByRole("radio", { name: /Demo/ })).toBeNull();
     // And the approval-workflow demo is unavailable, as it is for any live run.
     expect(screen.queryByLabelText("Approval workflow demo")).toBeNull();
   });
@@ -355,9 +355,11 @@ describe("LIVE retry — outcomes", () => {
     ).toBe(true);
     // The retained job id is unchanged — this is the same investigation.
     expect(screen.getAllByText(JOB_ID).length).toBeGreaterThan(0);
-    // Retry mode is gone, and with it the token field.
+    // Retry mode is gone. The composer collapses once a job exists, so the
+    // token field is removed entirely — an even stronger "no copy survives"
+    // guarantee than merely emptying the field.
     expect(screen.queryByRole("heading", { name: "Recover Live Run" })).toBeNull();
-    await waitFor(() => expect(screen.getByLabelText("Live demo access token")).toHaveValue(""));
+    await waitFor(() => expect(screen.queryByLabelText("Live demo access token")).toBeNull());
   });
 
   it("stays on the same job, retryable, after a SECOND failure", async () => {
@@ -480,9 +482,13 @@ describe("an in-flight first LIVE run is not treated as a failure", () => {
       timeout: 5_000,
     });
 
-    // The editable summary is still the summary field, not a read-only <dl>.
-    expect(screen.getByLabelText("Issue Summary")).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: /Live Claude/ })).toBeInTheDocument();
+    // The composer collapses once a job exists, so there are no form fields at
+    // all — the pending run shows the read-only "Current investigation" card
+    // instead, and nothing claims the run failed (no retry mode).
+    expect(screen.getByText("Current investigation")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: SUMMARY })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Recover Live Run" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Recover Live Run" })).toBeNull();
 
     pendingRun.resolve(jsonResponse(503, errorEnvelope("LIVE_RUNS_DISABLED", "disabled")));
   });
@@ -533,7 +539,7 @@ describe("an in-flight first LIVE run is not treated as a failure", () => {
     const u = user();
 
     await u.type(screen.getByLabelText("Issue Summary"), SUMMARY);
-    await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await u.click(screen.getByRole("button", { name: "Start Investigation" }));
     await screen.findByText("The database is temporarily unavailable.");
 
     expect(screen.queryByRole("heading", { name: "Recover Live Run" })).toBeNull();
@@ -592,16 +598,17 @@ describe("Start new investigation", () => {
     // Back to the ordinary creation form...
     expect(screen.queryByRole("heading", { name: "Recover Live Run" })).toBeNull();
     expect(screen.getByLabelText("Issue Summary")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Run Investigation" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start Investigation" })).toBeInTheDocument();
     // ...the retained job is gone from the page...
     expect(screen.queryByText(JOB_ID)).toBeNull();
     // ...the form's OWN state is reset, not just the parent's...
     expect(screen.getByLabelText("Issue Summary")).toHaveValue("");
-    expect(screen.getByRole("radio", { name: /Demo — FAKE/ })).toBeChecked();
-    expect(screen.getByRole("radio", { name: /Live Claude/ })).not.toBeChecked();
+    expect(screen.getByRole("radio", { name: /Demo/ })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /Live/ })).not.toBeChecked();
     // Provider is back to FAKE, so the token field is not even rendered.
     expect(screen.queryByLabelText("Live demo access token")).toBeNull();
-    expect(screen.getByLabelText("Approval workflow demo")).not.toBeChecked();
+    // The Approval workflow demo checkbox is gone entirely.
+    expect(screen.queryByLabelText("Approval workflow demo")).toBeNull();
     // ...and NOTHING was sent: no delete, no new job, no extra request at all.
     expect(jobCreateCalls(fetchMock)).toHaveLength(1);
     expect(fetchMock.mock.calls.filter((call) => (call[1] as RequestInit | undefined)?.method === "DELETE"))
@@ -628,7 +635,7 @@ describe("FAKE partial failure is unchanged", () => {
     const u = user();
 
     await u.type(screen.getByLabelText("Issue Summary"), SUMMARY);
-    await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await u.click(screen.getByRole("button", { name: "Start Investigation" }));
     await screen.findByText("The database is temporarily unavailable.");
 
     // The FAKE affordance is still a button, not a token form.

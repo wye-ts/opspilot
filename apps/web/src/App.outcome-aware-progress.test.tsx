@@ -110,7 +110,7 @@ function pollFallbackResponse(): Response {
 
 async function submit(user: ReturnType<typeof userEvent.setup>, summary = "Elevated error rate") {
   await user.type(screen.getByLabelText("Issue Summary"), summary);
-  await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+  await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 }
 
 function progressRegion() {
@@ -174,7 +174,7 @@ describe("Initial submission — outcome-aware progress", () => {
     expect(within(stageRow("Agent investigation in progress…")).getByText("In progress")).toBeInTheDocument();
     expect(within(stageRow("Loading approval state…")).getByText("Pending")).toBeInTheDocument();
     expect(statusRegion()).not.toHaveTextContent("Investigation complete");
-    expect(screen.queryByText("Generated report")).toBeNull();
+    expect(screen.queryByText("Resolution report")).toBeNull();
     expect(document.getElementById("report-heading")).toBeNull();
     assertNoDanglingJumpLinks();
 
@@ -195,7 +195,7 @@ describe("Initial submission — outcome-aware progress", () => {
 
     render(<App />);
     await submit(user);
-    await screen.findByText("Generated report");
+    await screen.findByText("Resolution report");
 
     expect(within(stageRow("Agent investigation in progress…")).getByText("Failed")).toBeInTheDocument();
     expectNoApprovalStage();
@@ -204,7 +204,9 @@ describe("Initial submission — outcome-aware progress", () => {
     expect(screen.getByText("RETRIEVAL_FAILED")).toBeInTheDocument();
     expect(screen.getByText("Runbook retrieval failed.")).toBeInTheDocument();
     assertNoDanglingJumpLinks();
-    expect(screen.getByRole("link", { name: "Jump to report" })).toBeInTheDocument();
+    // §12 removed the in-page jump links entirely — the flat flow is already
+    // in reading order, so the links would just duplicate DOM order.
+    expect(screen.queryByRole("link", { name: /jump to/i })).toBeNull();
     // The endpoint is never even reached for a permanently ineligible run —
     // the omitted Timeline row above is not merely cosmetic.
     expect(
@@ -229,13 +231,15 @@ describe("Initial submission — outcome-aware progress", () => {
 
     render(<App />);
     await submit(user);
-    await screen.findByText("Generated report");
+    await screen.findByText("Resolution report");
 
     expect(within(stageRow("Investigation created")).getByText("Done")).toBeInTheDocument();
     await waitFor(() => expect(within(stageRow("Approval state loaded")).getByText("Done")).toBeInTheDocument());
     expect(statusRegion()).toHaveTextContent("Investigation complete.");
     assertNoDanglingJumpLinks();
-    expect(screen.getByRole("link", { name: "Jump to report" })).toBeInTheDocument();
+    // §12 removed the in-page jump links entirely — the flat flow is already
+    // in reading order, so the links would just duplicate DOM order.
+    expect(screen.queryByRole("link", { name: /jump to/i })).toBeNull();
   });
 });
 
@@ -289,7 +293,7 @@ describe("Refresh transitions out of RUNNING", () => {
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
     await user.click(screen.getByRole("button", { name: "Refresh" }));
 
-    await screen.findByText("Generated report");
+    await screen.findByText("Resolution report");
     expect(within(stageRow("Investigation created")).getByText("Done")).toBeInTheDocument();
     await waitFor(() => expect(within(stageRow("Approval state loaded")).getByText("Done")).toBeInTheDocument());
     expect(statusRegion()).toHaveTextContent("Investigation complete. Human approval required.");
@@ -316,7 +320,7 @@ describe("Refresh transitions out of RUNNING", () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(200, { data: runDetail(FAILED) }));
     await user.click(screen.getByRole("button", { name: "Refresh" }));
 
-    await screen.findByText("Generated report");
+    await screen.findByText("Resolution report");
     expect(within(stageRow("Agent investigation in progress…")).getByText("Failed")).toBeInTheDocument();
     expectNoApprovalStage();
     expect(statusRegion()).toHaveTextContent("Investigation failed while running the agent investigation.");
@@ -327,7 +331,9 @@ describe("Refresh transitions out of RUNNING", () => {
     await vi.advanceTimersByTimeAsync(3000);
     expect(document.querySelector(".investigation-progress-elapsed")?.textContent).toBe(elapsedFrozen);
     assertNoDanglingJumpLinks();
-    expect(screen.getByRole("link", { name: "Jump to report" })).toBeInTheDocument();
+    // §12 removed the in-page jump links entirely — the flat flow is already
+    // in reading order, so the links would just duplicate DOM order.
+    expect(screen.queryByRole("link", { name: /jump to/i })).toBeNull();
   });
 });
 
@@ -351,8 +357,10 @@ describe("FAKE retry — outcome-aware, not converted to success", () => {
     await screen.findByText("Agent activity");
     // Wait for the workflow's RUNNING result to settle back to idle. Checking
     // only the first render with Agent activity could still observe the busy
-    // phase and miss a stale notice that reappears one render later.
-    await waitFor(() => expect(screen.getByRole("button", { name: "Run Investigation" })).toBeEnabled());
+    // phase and miss a stale notice that reappears one render later. (The
+    // composer is collapsed once a job exists, so the stable idle signal is an
+    // empty live region rather than an enabled submit button.)
+    await waitFor(() => expect(statusRegion()).toBeEmptyDOMElement());
 
     expect(within(stageRow("Agent investigation in progress…")).getByText("In progress")).toBeInTheDocument();
     expect(within(stageRow("Loading approval state…")).getByText("Pending")).toBeInTheDocument();
@@ -360,7 +368,7 @@ describe("FAKE retry — outcome-aware, not converted to success", () => {
     expect(statusRegion()).not.toHaveTextContent("Investigation failed while running the agent investigation.");
     expect(statusRegion()).not.toHaveTextContent("Investigation complete");
     expect(statusRegion()).toBeEmptyDOMElement();
-    expect(screen.queryByText("Generated report")).toBeNull();
+    expect(screen.queryByText("Resolution report")).toBeNull();
     expect(screen.queryByText("Suggested actions")).toBeNull();
     expect(screen.queryByRole("region", { name: "Approval" })).toBeNull();
     expect(document.getElementById("approval-heading")).toBeNull();
@@ -389,7 +397,7 @@ describe("FAKE retry — outcome-aware, not converted to success", () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(201, { data: runDetail(FAILED) }));
     await user.click(retryButton);
 
-    await screen.findByText("Generated report");
+    await screen.findByText("Resolution report");
     expect(within(stageRow("Agent investigation in progress…")).getByText("Failed")).toBeInTheDocument();
     expect(statusRegion()).toHaveTextContent("Investigation failed while running the agent investigation.");
   });
@@ -406,11 +414,15 @@ describe("Refresh of an already-FAILED run", () => {
 
     render(<App />);
     await submit(user);
-    await screen.findByText("Generated report");
+    await screen.findByText("Resolution report");
 
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(200, { data: runDetail(FAILED) }));
     await user.click(screen.getByRole("button", { name: "Refresh" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Run Investigation" })).toBeEnabled());
+    // The composer is collapsed once a job exists, so there is no submit
+    // button to wait on — the Refresh's run GET settling is the stable signal.
+    await waitFor(() =>
+      expect(vi.mocked(fetch).mock.calls.filter((call) => String(call[0]) === "/v1/agent-runs/run-1")).toHaveLength(1),
+    );
 
     const runGets = vi.mocked(fetch).mock.calls.filter((call) => String(call[0]) === "/v1/agent-runs/run-1");
     const approvalGets = vi.mocked(fetch).mock.calls.filter((call) => String(call[0]) === "/v1/agent-runs/run-1/approval");
@@ -437,9 +449,9 @@ describe("LIVE recovery — outcome-aware, not converted to success", () => {
       .mockResolvedValueOnce(jsonResponse(503, errorEnvelope("LIVE_RUNS_DISABLED", "Live agent runs are currently disabled.")));
     render(<App />);
     await user.type(screen.getByLabelText("Issue Summary"), "Elevated error rate on billing");
-    await user.click(screen.getByRole("radio", { name: /Live Claude/ }));
+    await user.click(screen.getByRole("radio", { name: /Live/ }));
     await user.type(screen.getByLabelText("Live demo access token"), TOKEN);
-    await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await user.click(screen.getByRole("button", { name: "Start Investigation" }));
     await screen.findByRole("heading", { name: "Recover Live Run" });
   }
 
@@ -455,7 +467,7 @@ describe("LIVE recovery — outcome-aware, not converted to success", () => {
     await user.type(screen.getByLabelText("Live demo access token"), TOKEN);
     await user.click(screen.getByRole("button", { name: "Recover Live Run" }));
 
-    await screen.findByText("Generated report");
+    await screen.findByText("Resolution report");
     expect(within(stageRow("Agent investigation in progress…")).getByText("Failed")).toBeInTheDocument();
     expect(statusRegion()).toHaveTextContent("Investigation failed while running the agent investigation.");
     expect(statusRegion()).not.toHaveTextContent("Recovered");

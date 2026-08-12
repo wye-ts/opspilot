@@ -10,6 +10,14 @@ const API_PROXY_TARGET = "http://127.0.0.1:3000";
 
 export default defineConfig({
   plugins: [react()],
+  optimizeDeps: {
+    // @opspilot/contracts is a workspace-linked package whose dist/ is CommonJS
+    // (a deliberate shape for Vitest's CJS interop). Without pre-bundling, Vite
+    // serves that raw CJS through /@fs/ and the browser's ESM loader cannot find
+    // its named exports (blank page, "does not provide an export named X").
+    // Pre-bundling it via esbuild converts CJS -> ESM with working named exports.
+    include: ["@opspilot/contracts"],
+  },
   server: {
     host: "127.0.0.1",
     port: 5173,

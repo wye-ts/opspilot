@@ -50,7 +50,7 @@ export interface InvestigationProgressStageViewModel {
  * status.
  */
 export const STAGE_LABELS: Record<InvestigationProgressStageKey, { readonly active: string; readonly completed: string }> = {
-  availability: { active: "Checking Live Claude availability…", completed: "Live Claude availability confirmed" },
+  availability: { active: "Checking Live availability…", completed: "Live availability confirmed" },
   job: { active: "Creating investigation…", completed: "Investigation created" },
   run: { active: "Agent investigation in progress…", completed: "Investigation complete" },
   approval: { active: "Loading approval state…", completed: "Approval state loaded" },
@@ -86,7 +86,7 @@ export function investigationCompleteAnnouncement(approvalPending: boolean): str
 export function stageFailureAnnouncement(key: "availability" | "job" | "run"): string {
   switch (key) {
     case "availability":
-      return "Investigation failed while checking Live Claude availability.";
+      return "Investigation failed while checking Live availability.";
     case "job":
       return "Investigation failed while creating the investigation.";
     case "run":

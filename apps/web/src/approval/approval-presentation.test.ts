@@ -3,14 +3,15 @@ import { describe, expect, it } from "vitest";
 import { presentApproval } from "./approval-presentation";
 
 describe("presentApproval", () => {
-  it("NOT_ELIGIBLE renders the neutral badge, explanatory copy, and the checkbox hint, with no form", () => {
+  it("NOT_ELIGIBLE renders the neutral badge, explanatory copy, and NO query-param hint (§10)", () => {
     const result = presentApproval("NOT_ELIGIBLE", 0);
     expect(result.tone).toBe("neutral");
     expect(result.glyph).toBe("—");
     expect(result.badgeLabel).toBe("Not eligible");
     expect(result.copy).toBe("This run has no suggested actions to approve.");
-    expect(result.hint).toContain("Approval workflow demo");
-    expect(result.hint).not.toMatch(/ticket/i);
+    // §10: the ?approval-demo=1 path stays a deterministic hidden/test entry
+    // point but is NEVER a user-facing instruction, so no hint is rendered.
+    expect(result.hint).toBeNull();
     expect(result.showsDecisionForm).toBe(false);
   });
 

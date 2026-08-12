@@ -24,6 +24,22 @@ export function ApprovalPanel({ approval, suggestedActionCount, decisionDisabled
   const presentation = presentApproval(approval.status, suggestedActionCount);
   const isTerminal = approval.status === "APPROVED" || approval.status === "REJECTED";
 
+  // Issue #41 polish §10 — a NOT_ELIGIBLE run has no actionable human decision,
+  // so it must not consume an entire large card. Render a very compact
+  // secondary status instead; approval semantics are unchanged (the region and
+  // its badge remain, and PENDING stays prominent and actionable below).
+  if (approval.status === "NOT_ELIGIBLE") {
+    return (
+      <section className="approval-panel approval-panel--not-eligible" aria-labelledby="approval-heading">
+        <h2 id="approval-heading" tabIndex={-1}>Approval</h2>
+        <p className="approval-not-eligible">
+          <StatusBadge tone={presentation.tone} glyph={presentation.glyph} label={presentation.badgeLabel} />
+          <span>Not eligible: this run produced no suggested actions.</span>
+        </p>
+      </section>
+    );
+  }
+
   return (
     <section className="approval-panel" aria-labelledby="approval-heading">
       <h2 id="approval-heading" tabIndex={-1}>Approval</h2>

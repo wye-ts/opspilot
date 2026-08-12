@@ -24,6 +24,20 @@ export function readJobParam(search: string): string | null {
   return new URLSearchParams(search).get("job");
 }
 
+/**
+ * Reads the `approval-demo` flag (`?approval-demo=1`) from a URL search
+ * string. The milestone-10 relocation keeps the deterministic approvable
+ * Demo reachable after the public `Approval workflow demo` checkbox is
+ * removed — this is its deep link, mirroring the `?job=` reading pattern.
+ * Only the literal value `1` (or the spelled-out `true`) enables it; anything
+ * else (including a bare `?approval-demo`) is ignored, so an accidental empty
+ * flag never flips a public visitor into the approval-demo path.
+ */
+export function readApprovalDemoParam(search: string): boolean {
+  const value = new URLSearchParams(search).get("approval-demo");
+  return value === "1" || value === "true";
+}
+
 /** Returns the search string with `job=<uuid>` set (adding or replacing). */
 export function withJobParam(jobId: string, currentSearch?: string): string {
   const params = new URLSearchParams(currentSearch ?? "");

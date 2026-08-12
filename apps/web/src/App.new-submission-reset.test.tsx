@@ -107,76 +107,99 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  window.history.replaceState(null, "", "/");
 });
 
 it("clears the previous investigation's visible result immediately on a second LIVE submission, before and after a refused preflight", async () => {
   const user = userEvent.setup();
-  vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
   vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(UUID_A);
 
-  vi.mocked(fetch)
-    .mockResolvedValueOnce(liveCapabilitiesResponse()) // mount
-    .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() })) // first job
-    .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() })) // first run
-    .mockResolvedValueOnce(pollFallbackResponse()) // Finding 1's authoritative final read
-    .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() })); // first approval, PENDING
+  // Capabilities are routed separately from investigation traffic: the
+  // popstate reset back to the fresh form refreshes capabilities, and the
+  // second submission's preflight is its own (held-open) capability read, so a
+  // strict FIFO queue can't predict their exact interleaving with the awaited
+  // investigation calls. See App.live-retry.test.tsx for the same pattern.
+  const investigationQueue: Response[] = [
+    jsonResponse(201, { data: jobResponse() }), // first job
+    jsonResponse(201, { data: runDetail() }), // first run
+    jsonResponse(200, { data: approvalView() }), // first approval, PENDING
+  ];
+  const deferredPreflight = deferredResponse();
+  const capabilityQueue: (Response | Promise<Response>)[] = [
+    liveCapabilitiesResponse(), // mount
+    liveCapabilitiesResponse(), // popstate reset back to the fresh form
+    deferredPreflight.promise, // second submission's preflight (held open)
+  ];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: unknown) => {
+      if (String(input) === "/v1/capabilities") {
+        return Promise.resolve(capabilityQueue.shift() ?? liveCapabilitiesResponse());
+      }
+      if (String(input).endsWith("/investigation")) return Promise.resolve(pollFallbackResponse());
+      const next = investigationQueue.shift();
+      if (next === undefined) throw new Error(`unexpected request: ${String(input)}`);
+      return Promise.resolve(next);
+    }),
+  );
 
+  // The Approval workflow demo checkbox is gone — approval-demo mode is a
+  // URL deep link read once at App mount.
+  window.history.replaceState({}, "", "/?approval-demo=1");
   render(<App />);
 
   // First investigation, FAKE, complete with a rich visible result.
   await user.type(screen.getByLabelText("Issue Summary"), "First investigation issue");
-  await user.click(screen.getByLabelText("Approval workflow demo"));
-  await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+  await user.click(screen.getByRole("button", { name: "Start Investigation" }));
   await screen.findByRole("button", { name: "Approve" });
   expect(screen.getByText("job-1")).toBeInTheDocument();
   expect(screen.getByText("First investigation summary")).toBeInTheDocument();
   expect(screen.getByText("Draft customer reply")).toBeInTheDocument();
 
+  // The composer collapses once a job exists — the only way back to a fresh
+  // form is to navigate away (popstate to a URL with no ?job=), which resets
+  // the display and refreshes capabilities.
+  window.history.pushState({}, "", "/");
+  window.dispatchEvent(new PopStateEvent("popstate"));
+  await screen.findByLabelText("Issue Summary");
+
   // Second investigation: LIVE, with the preflight held open.
-  const deferredPreflight = deferredResponse();
-  vi.mocked(fetch).mockImplementationOnce(() => deferredPreflight.promise);
-
-  await user.clear(screen.getByLabelText("Issue Summary"));
   await user.type(screen.getByLabelText("Issue Summary"), "Second investigation issue, live mode");
-  await user.click(screen.getByRole("radio", { name: /Live Claude/ }));
+  await user.click(screen.getByRole("radio", { name: /Live/ }));
   await user.type(screen.getByLabelText("Live demo access token"), TOKEN);
-  await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+  await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 
-  // While the preflight is still unresolved: the new snapshot/progress is
-  // visible, but every trace of the FIRST investigation is already gone.
-  expect(screen.getByText("Investigation progress")).toBeInTheDocument();
-  expect(
-    within(screen.getByRole("region", { name: "Investigation progress" })).getByText(/Checking Live Claude availability/),
-  ).toBeInTheDocument();
+  // While the preflight is still unresolved: the live region announces the
+  // availability check, but every trace of the FIRST investigation is already
+  // gone. (The Progress Timeline itself only mounts once a job exists, so it
+  // is absent during the preflight too.)
+  expect(screen.getByRole("status")).toHaveTextContent("Checking Live availability…");
+  expect(screen.queryByText("Investigation progress")).toBeNull();
   expect(screen.queryByText("job-1")).toBeNull();
   expect(screen.queryByText("First investigation summary")).toBeNull();
   expect(screen.queryByText("Draft customer reply")).toBeNull();
   expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
   expect(screen.queryByText("Agent activity")).toBeNull();
-  expect(screen.queryByText("Generated report")).toBeNull();
+  expect(screen.queryByText("Resolution report")).toBeNull();
 
-  // Now the preflight resolves as refused.
+  // Now the preflight resolves as refused. Refusal is NOT a failure: no failed
+  // stage, no failed-stage badge, and no Progress Timeline at all (job never
+  // created) — the composer stays visible with the user's draft intact.
   deferredPreflight.resolve(unavailableCapabilitiesResponse());
-  await screen.findByText("Live Claude is temporarily unavailable. No investigation job was created.");
+  await screen.findByText("Live is temporarily unavailable. No investigation job was created.");
 
-  // Everything from the first investigation remains absent; only the new
-  // failed availability stage and the new submitted summary are present.
+  // Everything from the first investigation remains absent.
   expect(screen.queryByText("job-1")).toBeNull();
   expect(screen.queryByText("First investigation summary")).toBeNull();
   expect(screen.queryByText("Draft customer reply")).toBeNull();
   expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
   expect(screen.queryByText("Agent activity")).toBeNull();
-  expect(screen.queryByText("Generated report")).toBeNull();
+  expect(screen.queryByText("Resolution report")).toBeNull();
+  expect(screen.queryByText("Investigation progress")).toBeNull();
 
-  const progressRegion = screen.getByRole("region", { name: "Investigation progress" });
-  const availabilityLabel = within(progressRegion).getByText(/Checking Live Claude availability/);
-  const availabilityRow = availabilityLabel.closest("li");
-  if (availabilityRow === null) throw new Error("no availability row");
-  expect(within(availabilityRow).getByText("Failed")).toBeInTheDocument();
-
-  const submittedSection = screen.getByText("Submitted issue").closest("section");
-  if (submittedSection === null) throw new Error("no submitted-summary section");
-  expect(within(submittedSection).getByText("Second investigation issue, live mode")).toBeInTheDocument();
+  // The composer is still present and the new summary draft is preserved.
+  expect(screen.getByLabelText("Issue Summary")).toHaveValue("Second investigation issue, live mode");
+  expect(screen.getByRole("button", { name: "Start Investigation" })).toBeInTheDocument();
 });
 
 // The new-submission reset must not disturb retained-job recovery, which
@@ -195,9 +218,9 @@ describe("retained-job recovery is unaffected by beginNewSubmissionDisplay", () 
 
     render(<App />);
     await user.type(screen.getByLabelText("Issue Summary"), "Needs recovery after refusal");
-    await user.click(screen.getByRole("radio", { name: /Live Claude/ }));
+    await user.click(screen.getByRole("radio", { name: /Live/ }));
     await user.type(screen.getByLabelText("Live demo access token"), TOKEN);
-    await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 
     await screen.findByText("Live agent runs are currently disabled.");
     expect(await screen.findByRole("heading", { name: "Recover Live Run" })).toBeInTheDocument();
@@ -234,9 +257,9 @@ describe("Start new investigation fully resets ownership, not just the visible j
 
     render(<App />);
     await user.type(screen.getByLabelText("Issue Summary"), "First investigation, LIVE, will fail ambiguously");
-    await user.click(screen.getByRole("radio", { name: /Live Claude/ }));
+    await user.click(screen.getByRole("radio", { name: /Live/ }));
     await user.type(screen.getByLabelText("Live demo access token"), TOKEN);
-    await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 
     // Ambiguous LIVE failure: error shown, elapsed frozen, recovery
     // affordance present, ownership (activeProviderMode=LIVE, liveRequestKey
@@ -261,7 +284,7 @@ describe("Start new investigation fully resets ownership, not just the visible j
       jsonResponse(503, { error: { code: "PERSISTENCE_UNAVAILABLE", message: "The database is temporarily unavailable.", requestId: "req-2" } }),
     );
     await user.type(screen.getByLabelText("Issue Summary"), "Second investigation, FAKE, also fails");
-    await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 
     await screen.findByText("The database is temporarily unavailable.");
 

@@ -8,7 +8,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildExecutionStageRows,
+  findFailedExecutionStageLabel,
   groupEventsByStage,
+  type ExecutionStageRowViewModel,
   type InvestigationEventViewModel,
 } from "./execution-stage-rows";
 
@@ -137,5 +139,70 @@ describe("buildExecutionStageRows", () => {
       "Diagnostic execution",
       "Report generation",
     ]);
+  });
+
+  // Issue #41 HQ polish §1 — "Not reached" (an earlier stage failed) vs
+  // "Not applicable" (this stage never applies to this kind of run) are
+  // both backed by the same `omitted` status; `notReached` is the frontend-
+  // only signal that tells them apart without touching the backend contract.
+  describe("notReached", () => {
+    it("marks an omitted stage that follows a failure", () => {
+      const stages: readonly ExecutionStageProgress[] = [
+        stage("INVESTIGATION_CREATED", "completed"),
+        stage("AGENT_ANALYSIS", "failed"),
+        stage("DIAGNOSTIC_EXECUTION", "omitted"),
+        stage("REPORT_GENERATION", "omitted"),
+      ];
+      const rows = buildExecutionStageRows(stages);
+      expect(rows.find((r) => r.key === "AGENT_ANALYSIS")?.notReached).toBeUndefined();
+      expect(rows.find((r) => r.key === "DIAGNOSTIC_EXECUTION")?.notReached).toBe(true);
+      expect(rows.find((r) => r.key === "REPORT_GENERATION")?.notReached).toBe(true);
+    });
+
+    it("leaves an omitted stage with no earlier failure unmarked (stays 'Not applicable')", () => {
+      const stages: readonly ExecutionStageProgress[] = [
+        stage("INVESTIGATION_CREATED", "completed"),
+        stage("AGENT_ANALYSIS", "completed"),
+        stage("DIAGNOSTIC_EXECUTION", "omitted"),
+        stage("REPORT_GENERATION", "completed"),
+      ];
+      const rows = buildExecutionStageRows(stages);
+      expect(rows.find((r) => r.key === "DIAGNOSTIC_EXECUTION")?.notReached).toBeUndefined();
+    });
+
+    it("never marks a completed/active/failed/pending row", () => {
+      const rows = buildExecutionStageRows(fourStages());
+      for (const row of rows) {
+        expect(row.notReached).toBeUndefined();
+      }
+    });
+  });
+});
+
+describe("findFailedExecutionStageLabel", () => {
+  function row(overrides: Partial<ExecutionStageRowViewModel> = {}): ExecutionStageRowViewModel {
+    return { key: "AGENT_ANALYSIS", status: "completed", label: "Agent analysis", ...overrides };
+  }
+
+  it("returns null when there are no children (legacy run)", () => {
+    expect(findFailedExecutionStageLabel(undefined)).toBeNull();
+  });
+
+  it("returns null when no child failed", () => {
+    const children = [row({ status: "completed" }), row({ key: "REPORT_GENERATION", status: "completed", label: "Report generation" })];
+    expect(findFailedExecutionStageLabel(children)).toBeNull();
+  });
+
+  it("returns the lowercase-first-letter label of the failed stage", () => {
+    const children = [
+      row({ key: "INVESTIGATION_CREATED", status: "completed", label: "Investigation created" }),
+      row({ key: "AGENT_ANALYSIS", status: "failed", label: "Agent analysis" }),
+    ];
+    expect(findFailedExecutionStageLabel(children)).toBe("agent analysis");
+  });
+
+  it("lowercases only the first letter, leaving the rest of the label untouched", () => {
+    const children = [row({ key: "DIAGNOSTIC_EXECUTION", status: "failed", label: "Diagnostic execution" })];
+    expect(findFailedExecutionStageLabel(children)).toBe("diagnostic execution");
   });
 });

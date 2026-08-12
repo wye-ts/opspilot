@@ -9,7 +9,7 @@ export interface SuggestedActionsPanelProps {
 // `outcome.type === "COMPLETED" && actions.length > 0` — this component is
 // never mounted for an empty array, so it never has to render an empty-state
 // placeholder. A top-level `<h2>` in its own required-order position
-// (Generated report → Suggested actions → Approval), not nested inside
+// (Resolution report → Suggested actions → Approval), not nested inside
 // ReportPanel.
 export function SuggestedActionsPanel({ actions }: SuggestedActionsPanelProps) {
   return (

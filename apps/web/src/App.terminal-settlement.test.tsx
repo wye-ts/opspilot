@@ -156,7 +156,7 @@ function approvalCallCount(fetchMock: ReturnType<typeof vi.fn>): number {
 
 async function submit(user: ReturnType<typeof userEvent.setup>, summary = "Elevated error rate") {
   await user.type(screen.getByLabelText("Issue Summary"), summary);
-  await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+  await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 }
 
 afterEach(() => {
@@ -197,7 +197,7 @@ describe("Terminal settlement coordinator (#38)", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(approvalCallCount(fetchMock)).toBe(1);
-    expect(screen.getByText("Generated report")).toBeInTheDocument();
+    expect(screen.getByText("Resolution report")).toBeInTheDocument();
   });
 
   it("POST observes COMPLETED first, poll observes COMPLETED second — side effects exactly once", async () => {
@@ -330,7 +330,7 @@ describe("Terminal settlement coordinator (#38)", () => {
     window.dispatchEvent(new PopStateEvent("popstate"));
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(screen.queryByText("Submitted issue")).toBeNull();
+    expect(screen.queryByText("Current investigation")).toBeNull();
     expect(screen.queryByText("job-a")).toBeNull();
 
     // job-a's run POST NOW resolves COMPLETED — a stale response from a
@@ -338,8 +338,8 @@ describe("Terminal settlement coordinator (#38)", () => {
     deferredRunA.resolve(jsonResponse(201, { data: { ...completedRunDetail(), job: jobResponse({ id: "job-a" }) } }));
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(screen.queryByText("Submitted issue")).toBeNull();
-    expect(screen.queryByText("Generated report")).toBeNull();
+    expect(screen.queryByText("Current investigation")).toBeNull();
+    expect(screen.queryByText("Resolution report")).toBeNull();
     expect(approvalCallCount(fetchMock)).toBe(0);
     expect(window.location.search).toBe("");
   });

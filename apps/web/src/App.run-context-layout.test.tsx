@@ -90,15 +90,23 @@ function errorEnvelope(code: string, message: string, requestId = "req-1") {
   return { error: { code, message, requestId } };
 }
 
+/**
+ * Milestone 10: the approval workflow is reached via `?approval-demo=1` (read
+ * at mount by `readApprovalDemoParam`), not a public checkbox. Each demo test
+ * opts in before rendering; afterEach restores the clean URL.
+ */
+function withApprovalDemoParam() {
+  window.history.replaceState({}, "", "/?approval-demo=1");
+}
+
 async function submitOrdinary(user: ReturnType<typeof userEvent.setup>, summary = "Elevated error rate") {
   await user.type(screen.getByLabelText("Issue Summary"), summary);
-  await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+  await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 }
 
 async function submitDemo(user: ReturnType<typeof userEvent.setup>, summary = "Approval demo issue") {
   await user.type(screen.getByLabelText("Issue Summary"), summary);
-  await user.click(screen.getByLabelText("Approval workflow demo"));
-  await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+  await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 }
 
 /**
@@ -125,19 +133,14 @@ function pollFallbackResponse(): Response {
   return jsonResponse(503, errorEnvelope("PERSISTENCE_UNAVAILABLE", "not tracked by this test"));
 }
 
-function apiCalls() {
-  return vi
-    .mocked(fetch)
-    .mock.calls.filter((call) => String(call[0]) !== "/v1/capabilities" && !String(call[0]).endsWith("/investigation"));
-}
-
 afterEach(() => {
   cleanup();
+  window.history.replaceState({}, "", "/");
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
-describe("Run Context Panel layout", () => {
+describe("Run context layout", () => {
   it("PENDING renders the Action required banner, linking to #approval-heading", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
@@ -148,6 +151,7 @@ describe("Run Context Panel layout", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    withApprovalDemoParam();
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");
@@ -156,9 +160,9 @@ describe("Run Context Panel layout", () => {
     expect(banner).toHaveAttribute("href", "#approval-heading");
   });
 
-  // Approval-related UI (the banner included) must follow Agent activity,
-  // Generated report, and Suggested actions in DOM order.
-  it("the banner follows the named Run detail region in DOM order", async () => {
+  // Flat flow (§15): banner (2) precedes the Human Approval panel (5), which
+  // precedes Run details (7).
+  it("the banner and Approval region precede the Run details region in DOM order", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
@@ -168,13 +172,16 @@ describe("Run Context Panel layout", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    withApprovalDemoParam();
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");
 
     const banner = screen.getByRole("link", { name: /action required/i });
-    const runDetailRegion = screen.getByRole("region", { name: /run detail/i });
-    expect(runDetailRegion.compareDocumentPosition(banner) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const approvalRegion = screen.getByRole("region", { name: "Approval" });
+    const runDetailsRegion = screen.getByRole("region", { name: "Run details" });
+    expect(banner.compareDocumentPosition(approvalRegion) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(approvalRegion.compareDocumentPosition(runDetailsRegion) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("NOT_ELIGIBLE does not render the Action required banner", async () => {
@@ -209,6 +216,7 @@ describe("Run Context Panel layout", () => {
         }),
       );
 
+    withApprovalDemoParam();
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Approved");
@@ -230,6 +238,7 @@ describe("Run Context Panel layout", () => {
         }),
       );
 
+    withApprovalDemoParam();
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Rejected");
@@ -247,6 +256,7 @@ describe("Run Context Panel layout", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    withApprovalDemoParam();
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");
@@ -270,14 +280,14 @@ describe("Run Context Panel layout", () => {
 
     render(<App />);
     await submitOrdinary(user);
-    await screen.findByText("Run overview");
+    await screen.findByText("Run details");
 
     expect(screen.queryByText("Not eligible")).toBeNull();
     expect(screen.queryByText("This run has no suggested actions to approve.")).toBeNull();
     expect(screen.queryByRole("link", { name: /action required/i })).toBeNull();
   });
 
-  it("NOT_ELIGIBLE renders run facts plus the reused eligibility copy/hint", async () => {
+  it("NOT_ELIGIBLE renders a compact status with no ?approval-demo=1 leak", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
@@ -290,19 +300,19 @@ describe("Run Context Panel layout", () => {
 
     render(<App />);
     await submitOrdinary(user);
-    await screen.findByText("Run overview");
+    await screen.findByText("Run details");
 
-    // The "Approval workflow demo" checkbox label is always present in
-    // InvestigationForm regardless of run state, so the reused hint text
-    // (which also names that checkbox) is asserted scoped to the Run
-    // overview region, not via a page-wide text query.
-    const overviewRegion = screen.getByRole("region", { name: "Run overview" });
-    expect(within(overviewRegion).getByText("Not eligible")).toBeInTheDocument();
-    expect(within(overviewRegion).getByText("This run has no suggested actions to approve.")).toBeInTheDocument();
-    expect(within(overviewRegion).getByText(/Approval workflow demo/)).toBeInTheDocument();
+    // Run details (item 7) and the eligibility surface (item 5) are separate
+    // flat-flow regions now. §10 renders a compact NOT_ELIGIBLE status — the
+    // query-param demo path stays a hidden entry point, never a user-facing
+    // instruction, so no ?approval-demo=1 copy leaks into normal UI.
+    const approvalRegion = screen.getByRole("region", { name: "Approval" });
+    expect(within(approvalRegion).getByText("Not eligible")).toBeInTheDocument();
+    expect(within(approvalRegion).getByText("Not eligible: this run produced no suggested actions.")).toBeInTheDocument();
+    expect(within(approvalRegion).queryByText(/approval-demo=1/)).toBeNull();
   });
 
-  it("PENDING renders ApprovalPanel, not RunOverviewPanel", async () => {
+  it("PENDING renders the Approval region with the decision form", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
@@ -312,12 +322,13 @@ describe("Run Context Panel layout", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    withApprovalDemoParam();
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");
 
-    expect(screen.queryByText("Run overview")).toBeNull();
     expect(screen.getByRole("region", { name: "Approval" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Reviewer name")).toBeInTheDocument();
   });
 
   it("APPROVED renders a read-only decision record with zero buttons", async () => {
@@ -334,11 +345,12 @@ describe("Run Context Panel layout", () => {
         }),
       );
 
+    withApprovalDemoParam();
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Approved");
 
-    expect(screen.queryByText("Run overview")).toBeNull();
+    expect(screen.getByRole("region", { name: "Approval" })).toBeInTheDocument();
     expect(screen.queryAllByRole("button", { name: /approve|reject/i })).toHaveLength(0);
   });
 
@@ -356,11 +368,12 @@ describe("Run Context Panel layout", () => {
         }),
       );
 
+    withApprovalDemoParam();
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Rejected");
 
-    expect(screen.queryByText("Run overview")).toBeNull();
+    expect(screen.getByRole("region", { name: "Approval" })).toBeInTheDocument();
     expect(screen.queryAllByRole("button", { name: /approve|reject/i })).toHaveLength(0);
   });
 
@@ -374,6 +387,7 @@ describe("Run Context Panel layout", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    withApprovalDemoParam();
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");
@@ -401,6 +415,7 @@ describe("Run Context Panel layout", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    withApprovalDemoParam();
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");
@@ -428,6 +443,7 @@ describe("Run Context Panel layout", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    withApprovalDemoParam();
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");
@@ -473,6 +489,7 @@ describe("Run Context Panel layout", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    withApprovalDemoParam();
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");
@@ -521,6 +538,7 @@ describe("Run Context Panel layout", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    withApprovalDemoParam();
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");
@@ -540,6 +558,7 @@ describe("Run Context Panel layout", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    withApprovalDemoParam();
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");

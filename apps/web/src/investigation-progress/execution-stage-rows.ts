@@ -22,6 +22,16 @@ export interface ExecutionStageRowViewModel {
   readonly status: InvestigationProgressStageStatus;
   readonly label: string;
   readonly events?: readonly InvestigationEventViewModel[];
+  /**
+   * True only for an `omitted` stage that follows another stage's `failed`
+   * status in canonical order — the truthful reason it never ran is that an
+   * earlier stage failed, not "this step never applies to this kind of run"
+   * (e.g. DIAGNOSTIC_EXECUTION omitted on a successful no-tool run). Drives
+   * the "Not reached" vs "Not applicable" badge text only — the underlying
+   * `status` stays the single backend-truthful `omitted` value either way
+   * (HQ review: copy-only distinction, no backend contract change).
+   */
+  readonly notReached?: boolean;
 }
 
 /** One nested event row under an execution-stage child row. */
@@ -78,15 +88,38 @@ export function buildExecutionStageRows(
     readonly InvestigationEventViewModel[]
   > = new Map(),
 ): readonly ExecutionStageRowViewModel[] {
+  // Tracked across the canonical-ordered array as we go: a `failed` stage
+  // can only precede the `omitted` stages after it (the reducer never
+  // resumes a stage once a later one has failed), so seeing one is enough to
+  // mark every subsequent `omitted` stage "Not reached" rather than
+  // "Not applicable".
+  let sawFailure = false;
   return stages.map((stage) => {
+    if (stage.status === "failed") sawFailure = true;
     const events = eventsByStage.get(stage.key);
+    const notReached = stage.status === "omitted" && sawFailure;
     return {
       key: stage.key,
       status: stage.status,
       label: EXECUTION_STAGE_LABELS[stage.key] ?? stage.key,
-      // `events` is absent (not `undefined`) when the stage has no nested
-      // events — exactOptionalPropertyTypes keeps the key off the row.
+      // `events`/`notReached` are absent (not `undefined`/`false`) when they
+      // don't apply — exactOptionalPropertyTypes keeps the key off the row.
       ...(events !== undefined ? { events } : {}),
+      ...(notReached ? { notReached: true } : {}),
     };
   });
+}
+
+/**
+ * The lowercase-first-letter label of the one canonical child row that is
+ * `failed`, or `null` when there is no canonical breakdown or none failed.
+ * The sole source ReportPanel's grounded failure summary reads from — never
+ * a separately-invented mapping (HQ review §3).
+ */
+export function findFailedExecutionStageLabel(
+  children: readonly ExecutionStageRowViewModel[] | undefined,
+): string | null {
+  const failed = children?.find((child) => child.status === "failed");
+  if (failed === undefined) return null;
+  return failed.label.charAt(0).toLowerCase() + failed.label.slice(1);
 }

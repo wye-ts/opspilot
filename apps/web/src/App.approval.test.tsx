@@ -92,13 +92,19 @@ function errorEnvelope(code: string, message: string, requestId = "req-1", runId
 
 async function submitOrdinary(user: ReturnType<typeof userEvent.setup>, summary = "Elevated error rate") {
   await user.type(screen.getByLabelText("Issue Summary"), summary);
-  await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+  await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 }
 
+/**
+ * Milestone-10: the "Approval workflow demo" checkbox is gone. Approval-demo
+ * mode is now activated by the `?approval-demo=1` URL query param, read once
+ * at App mount — so the caller must install the param via
+ * `window.history.replaceState({}, "", "/?approval-demo=1")` BEFORE
+ * `render(<App />)`. This helper only fills the summary and submits.
+ */
 async function submitDemo(user: ReturnType<typeof userEvent.setup>, summary = "Approval demo issue") {
   await user.type(screen.getByLabelText("Issue Summary"), summary);
-  await user.click(screen.getByLabelText("Approval workflow demo"));
-  await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+  await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 }
 
 /**
@@ -135,6 +141,7 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  window.history.replaceState(null, "", "/");
 });
 
 describe("App approval workflow", () => {
@@ -170,6 +177,7 @@ describe("App approval workflow", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    window.history.replaceState({}, "", "/?approval-demo=1");
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");
@@ -191,7 +199,7 @@ describe("App approval workflow", () => {
     render(<App />);
     await submitOrdinary(user);
     await screen.findByText("Agent activity");
-    expect(screen.getByText("Generated report")).toBeInTheDocument();
+    expect(screen.getByText("Resolution report")).toBeInTheDocument();
   });
 
   it("a 201 approve response shows the recorded notice and a terminal, form-free APPROVED panel", async () => {
@@ -208,6 +216,7 @@ describe("App approval workflow", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    window.history.replaceState({}, "", "/?approval-demo=1");
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");
@@ -240,6 +249,7 @@ describe("App approval workflow", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    window.history.replaceState({}, "", "/?approval-demo=1");
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");
@@ -269,6 +279,7 @@ describe("App approval workflow", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    window.history.replaceState({}, "", "/?approval-demo=1");
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");
@@ -301,6 +312,7 @@ describe("App approval workflow", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    window.history.replaceState({}, "", "/?approval-demo=1");
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");
@@ -350,6 +362,7 @@ describe("App approval workflow", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    window.history.replaceState({}, "", "/?approval-demo=1");
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");
@@ -425,6 +438,7 @@ describe("App approval workflow", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    window.history.replaceState({}, "", "/?approval-demo=1");
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");
@@ -474,6 +488,7 @@ describe("App approval workflow", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    window.history.replaceState({}, "", "/?approval-demo=1");
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");
@@ -508,6 +523,7 @@ describe("App approval workflow", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    window.history.replaceState({}, "", "/?approval-demo=1");
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");
@@ -537,6 +553,7 @@ describe("App approval workflow", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    window.history.replaceState({}, "", "/?approval-demo=1");
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");
@@ -567,7 +584,7 @@ describe("App approval workflow", () => {
     await screen.findByText("Agent activity");
 
     await screen.findByText("The database is temporarily unavailable.");
-    expect(screen.getByText("Generated report")).toBeInTheDocument();
+    expect(screen.getByText("Resolution report")).toBeInTheDocument();
     expect(screen.queryByText("Approval")).toBeNull();
   });
 
@@ -613,6 +630,7 @@ describe("App approval workflow", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    window.history.replaceState({}, "", "/?approval-demo=1");
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");
@@ -647,6 +665,7 @@ describe("App approval workflow", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    window.history.replaceState({}, "", "/?approval-demo=1");
     render(<App />);
     await submitDemo(user);
     await screen.findByText("Pending");

@@ -4,24 +4,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 
 /**
- * THE HEADER IS A CLAIM ABOUT WHAT THE APPLICATION CAN DO, and it used to say:
- *
- *     Local-only, deterministic provider — no live model calls.
- *
- * That was true until this branch added the protected LIVE Claude path. It is
- * now false in the only sense that matters to a visitor: the product CAN make
- * live model calls, and a visitor holding the demo token can cause one.
- *
- * The claim is untrue independently of whether LIVE is admissible right now.
- * `/v1/capabilities` answering UNAVAILABLE means the gate is shut today — the
- * kill switch, the daily budget, an unreconciled reservation — not that the
- * capability does not exist. So the header must NOT be conditioned on
- * capabilities: both cases below assert the same sentence.
- *
- * This is copy only. Nothing here touches admission, spend, or the kill switch.
+ * THE HEADER IS PRODUCT IDENTITY ONLY (§4). Milestone 10 replaced the old
+ * capabilities claim ("Run investigations with the deterministic demo or
+ * protected Live Claude.") with a brand + source link. Run state — including
+ * whether Live is admissible right now — belongs to the Current investigation
+ * / Progress surfaces once a job exists, never to the header. So the header
+ * copy is capability-independent: `/v1/capabilities` answering UNAVAILABLE
+ * changes the provider gate, not a single character of the header.
  */
-
-const HEADER_COPY = "Run investigations with the deterministic demo or protected Live Claude.";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -47,12 +37,6 @@ function mockCapabilities(capabilities: () => Response): void {
   );
 }
 
-function headerNote(): HTMLElement {
-  return within(screen.getByRole("banner")).getByText(HEADER_COPY);
-}
-
-const liveRadio = () => screen.getByLabelText(/Live Claude/);
-
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -61,31 +45,49 @@ afterEach(() => {
 
 describe("page header", () => {
   it.each([
-    ["LIVE is available", AVAILABLE, false],
-    ["LIVE is unavailable", UNAVAILABLE, true],
-  ])("describes both execution modes when %s", async (_label, capabilities, liveDisabled) => {
+    ["LIVE is available", AVAILABLE],
+    ["LIVE is unavailable", UNAVAILABLE],
+  ])("renders OpsPilot identity and the source link when %s", async (_label, capabilities) => {
     mockCapabilities(capabilities);
     render(<App />);
 
     // Present immediately, before capabilities are known.
-    expect(headerNote()).toBeInTheDocument();
+    const banner = screen.getByRole("banner");
+    expect(within(banner).getByText("OpsPilot")).toBeInTheDocument();
+    expect(within(banner).getByText("AI Operations Investigator")).toBeInTheDocument();
+
+    // The source link is the grounded portfolio link (§4), external and safe.
+    const sourceLink = within(banner).getByRole("link", { name: /View source/ });
+    expect(sourceLink).toHaveAttribute("href", "https://github.com/wye-ts/opspilot");
+    expect(sourceLink).toHaveAttribute("target", "_blank");
+    expect(sourceLink).toHaveAttribute("rel", "noopener noreferrer");
 
     // Settle the capability read, then assert the copy did not react to it.
-    await waitFor(() => {
-      expect(liveRadio()).toHaveProperty("disabled", liveDisabled);
-    });
-    expect(headerNote()).toBeInTheDocument();
+    await waitFor(() => expect(within(banner).getByText("OpsPilot")).toBeInTheDocument());
+    expect(within(banner).getByText("AI Operations Investigator")).toBeInTheDocument();
   });
 
-  it("no longer claims the provider is deterministic-only with no live model calls", async () => {
+  it("no longer claims the provider is deterministic-only, and names Live, never 'Live Claude'", async () => {
     mockCapabilities(AVAILABLE);
     render(<App />);
-    await waitFor(() => {
-      expect(liveRadio()).toBeEnabled();
-    });
 
-    expect(screen.queryByText(/Local-only/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/deterministic provider/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/no live model calls/)).not.toBeInTheDocument();
+    const banner = screen.getByRole("banner");
+    expect(within(banner).queryByText(/Local-only/)).not.toBeInTheDocument();
+    expect(within(banner).queryByText(/deterministic provider/)).not.toBeInTheDocument();
+    expect(within(banner).queryByText(/no live model calls/)).not.toBeInTheDocument();
+    expect(within(banner).queryByText(/Live Claude/)).not.toBeInTheDocument();
+  });
+});
+
+describe("app footer", () => {
+  it("renders the portfolio byline with the approved LinkedIn link", () => {
+    mockCapabilities(UNAVAILABLE);
+    render(<App />);
+
+    const footer = screen.getByRole("contentinfo");
+    const linkedIn = within(footer).getByRole("link", { name: /Wenjie Ye · LinkedIn/ });
+    expect(linkedIn).toHaveAttribute("href", "https://www.linkedin.com/in/wenjie-ye-33884b183/");
+    expect(linkedIn).toHaveAttribute("target", "_blank");
+    expect(linkedIn).toHaveAttribute("rel", "noopener noreferrer");
   });
 });

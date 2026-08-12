@@ -7,6 +7,7 @@ import type { AgentJobResponse, AgentRunDetail, ApprovalView } from "./api/types
 
 const UUID_A = "11111111-1111-1111-1111-111111111111";
 const UUID_B = "22222222-2222-2222-2222-222222222222";
+const RESUME_JOB_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -80,12 +81,9 @@ function errorEnvelope(code: string, message: string, requestId = "req-1") {
   return { error: { code, message, requestId } };
 }
 
-async function submit(user: ReturnType<typeof userEvent.setup>, summary: string, approvalDemo = false) {
+async function submit(user: ReturnType<typeof userEvent.setup>, summary: string) {
   await user.type(screen.getByLabelText("Issue Summary"), summary);
-  if (approvalDemo) {
-    await user.click(screen.getByLabelText("Approval workflow demo"));
-  }
-  await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+  await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 }
 
 /**
@@ -125,6 +123,7 @@ function apiCalls() {
 }
 
 afterEach(() => {
+  window.history.replaceState(null, "", "/");
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -173,9 +172,13 @@ describe("App investigation workflow", () => {
   });
 
   it("two ordinary submissions use two distinct deterministic UUIDs", async () => {
-    const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     const uuidSpy = vi.spyOn(globalThis.crypto, "randomUUID");
+
+    // Milestone-10 composer collapse: once a job exists the fresh-submission
+    // form is hidden, so a second ordinary submission is exercised as a second
+    // page-load/session — each still mints one deterministic UUID from
+    // `randomUUID`.
     uuidSpy.mockReturnValueOnce(UUID_A);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
@@ -185,20 +188,22 @@ describe("App investigation workflow", () => {
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
     render(<App />);
-    await submit(user, "First reported issue");
+    await submit(userEvent.setup(), "First reported issue");
     await screen.findByText("Agent activity");
     const firstTicketId = apiCalls()[0]?.[1]?.body as string;
 
+    cleanup();
     uuidSpy.mockReturnValueOnce(UUID_B);
     vi.mocked(fetch)
+      .mockResolvedValueOnce(capabilitiesResponse())
       .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ id: "job-2", ticketId: `DEMO-${UUID_B}` }) }))
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail({ job: jobResponse({ id: "job-2" }) }) }))
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
 
-    await user.clear(screen.getByLabelText("Issue Summary"));
-    await submit(user, "Second reported issue");
-    await waitFor(() => expect(apiCalls()).toHaveLength(6));
+    render(<App />);
+    await submit(userEvent.setup(), "Second reported issue");
+    await screen.findByText("Agent activity");
     const secondTicketId = apiCalls()[3]?.[1]?.body as string;
 
     expect(firstTicketId).toContain(UUID_A);
@@ -216,8 +221,9 @@ describe("App investigation workflow", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    window.history.replaceState({}, "", "/?approval-demo=1");
     render(<App />);
-    await submit(user, "Approval demo issue", true);
+    await submit(user, "Approval demo issue");
     await screen.findByText("Agent activity");
 
     const firstCallInit = apiCalls()[0]?.[1];
@@ -261,9 +267,9 @@ describe("App investigation workflow", () => {
     await screen.findByText("Agent activity");
 
     const items = screen.getAllByRole("listitem").filter((item) => item.className.includes("trace-timeline-item"));
-    expect(items[0]).toHaveTextContent("Tool requested");
-    expect(items[1]).toHaveTextContent("Tool completed");
-    expect(items[2]).toHaveTextContent("Report generated");
+    expect(items[0]).toHaveTextContent("Checking service status");
+    expect(items[1]).toHaveTextContent("Checked service status");
+    expect(items[2]).toHaveTextContent("Resolution report generated");
   });
 
   it("an ordinary run's report renders no Suggested actions section at all", async () => {
@@ -311,8 +317,9 @@ describe("App investigation workflow", () => {
       .mockResolvedValueOnce(jsonResponse(201, { data: demoRun }))
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    window.history.replaceState({}, "", "/?approval-demo=1");
     render(<App />);
-    await submit(user, "Approval demo issue", true);
+    await submit(user, "Approval demo issue");
     await screen.findByText("Agent activity");
 
     expect(screen.getAllByText("Draft customer reply")).toHaveLength(1);
@@ -370,18 +377,25 @@ describe("App investigation workflow", () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     const uuidSpy = vi.spyOn(globalThis.crypto, "randomUUID");
-    uuidSpy.mockReturnValueOnce(UUID_A);
+
+    // Milestone-10 composer collapse: the fresh form only coexists with an
+    // existing job in the job-only resume state (`resumedJobOnly`). Mount a
+    // job-only resume so the "start a new investigation" flow that clears the
+    // prior job is reachable.
+    window.history.pushState(null, "", `?job=${RESUME_JOB_ID}`);
     vi.mocked(fetch)
       .mockResolvedValueOnce(capabilitiesResponse())
-      .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse({ id: "job-1" }) }))
-      .mockResolvedValueOnce(jsonResponse(201, { data: runDetail({ job: jobResponse({ id: "job-1" }) }) }))
-      .mockResolvedValueOnce(pollFallbackResponse())
-      .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
+      .mockResolvedValueOnce(capabilitiesResponse())
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          data: { job: jobResponse({ id: RESUME_JOB_ID }), run: null, trace: [], outcome: null, events: [] },
+        }),
+      )
+      .mockResolvedValueOnce(pollFallbackResponse());
 
     render(<App />);
-    await submit(user, "First reported issue");
-    await screen.findByText("Agent activity");
-    expect(screen.getByText("job-1")).toBeInTheDocument();
+    await screen.findByText(RESUME_JOB_ID);
+    expect(screen.queryByText("Agent activity")).toBeNull();
 
     let resolveSecondJob!: (value: Response) => void;
     const pendingSecondJob = new Promise<Response>((resolve) => {
@@ -390,12 +404,10 @@ describe("App investigation workflow", () => {
     uuidSpy.mockReturnValueOnce(UUID_B);
     vi.mocked(fetch).mockImplementationOnce(() => pendingSecondJob);
 
-    await user.clear(screen.getByLabelText("Issue Summary"));
     await user.type(screen.getByLabelText("Issue Summary"), "Second reported issue");
-    await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 
-    await waitFor(() => expect(screen.queryByText("Agent activity")).toBeNull());
-    expect(screen.queryByText("job-1")).toBeNull();
+    await waitFor(() => expect(screen.queryByText(RESUME_JOB_ID)).toBeNull());
 
     resolveSecondJob(jsonResponse(201, { data: jobResponse({ id: "job-2", ticketId: `DEMO-${UUID_B}` }) }));
     vi.mocked(fetch)
@@ -461,7 +473,7 @@ describe("App investigation workflow", () => {
   // report panel. Agent activity still shows (trace data exists, even if
   // empty), and the pre-existing InvestigationSummary Refresh button — not a
   // second ReportPanel-owned one — is the only refresh affordance.
-  it("renders a RUNNING outcome with no Generated report panel, and a working Refresh", async () => {
+  it("renders a RUNNING outcome with no Resolution report panel, and a working Refresh", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValueOnce(UUID_A);
@@ -476,7 +488,7 @@ describe("App investigation workflow", () => {
     await submit(user, "Elevated error rate");
 
     await screen.findByText("Agent activity");
-    expect(screen.queryByText("Generated report")).toBeNull();
+    expect(screen.queryByText("Resolution report")).toBeNull();
     expect(screen.queryByText("This run has not produced a report yet.")).toBeNull();
     expect(screen.getAllByRole("button", { name: "Refresh" })).toHaveLength(1);
 
@@ -485,7 +497,7 @@ describe("App investigation workflow", () => {
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView() }));
     await user.click(screen.getByRole("button", { name: "Refresh" }));
 
-    await screen.findByText("Generated report");
+    await screen.findByText("Resolution report");
     expect(screen.queryByText("Suggested actions")).toBeNull();
   });
 
@@ -502,7 +514,7 @@ describe("App investigation workflow", () => {
 
     render(<App />);
     await user.type(screen.getByLabelText("Issue Summary"), "Elevated error rate");
-    await user.dblClick(screen.getByRole("button", { name: "Run Investigation" }));
+    await user.dblClick(screen.getByRole("button", { name: "Start Investigation" }));
 
     await screen.findByText("Agent activity");
     expect(apiCalls()).toHaveLength(3);

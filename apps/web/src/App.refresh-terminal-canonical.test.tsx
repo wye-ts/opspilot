@@ -201,7 +201,7 @@ function approvalCallCount(fetchMock: ReturnType<typeof vi.fn>): number {
 
 async function submit(user: ReturnType<typeof userEvent.setup>, summary = "Elevated error rate") {
   await user.type(screen.getByLabelText("Issue Summary"), summary);
-  await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+  await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 }
 
 function childList(): HTMLElement {
@@ -360,7 +360,7 @@ describe("Refresh's terminal authoritative final read enters the data-corrupt pa
 
     // Known terminal report/outcome remains visible — canonical-stream
     // trust and terminal settlement are independent facts.
-    expect(screen.getByText("Generated report")).toBeInTheDocument();
+    expect(screen.getByText("Resolution report")).toBeInTheDocument();
     expect(approvalCallCount(fetchMock)).toBe(1);
     // Same-run last-good stages are preserved (frozen at their
     // pre-corruption RUNNING values) rather than the null "detail

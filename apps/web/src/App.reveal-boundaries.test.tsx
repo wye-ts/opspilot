@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -10,7 +10,7 @@ import type { AgentJobResponse, AgentRunDetail, ApprovalView } from "./api/types
  *
  *   submission starts               -> submitted summary + Investigation progress
  *   run data exists                 -> Agent activity may render
- *   run is terminal and has report  -> Generated report may render
+ *   run is terminal and has report  -> Resolution report may render
  *   terminal + non-empty actions    -> Suggested actions may render
  *   initial approval load settled
  *     and approval is applicable    -> approval UI may render, after Suggested actions
@@ -101,7 +101,7 @@ function deferredResponse(): { promise: Promise<Response>; resolve: (value: Resp
 
 async function submit(user: ReturnType<typeof userEvent.setup>, summary = "Elevated error rate") {
   await user.type(screen.getByLabelText("Issue Summary"), summary);
-  await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+  await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 }
 
 function headingOrder(): string[] {
@@ -109,30 +109,34 @@ function headingOrder(): string[] {
 }
 
 afterEach(() => {
+  window.history.replaceState(null, "", "/");
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
 describe("Data-driven reveal boundaries", () => {
-  // Scenario 1: unresolved job/run.
-  it("shows only Progress while job/run are unresolved — Agent activity, Report, Actions, and Approval are absent", async () => {
+  // Scenario 1: unresolved run (job committed, run pending).
+  it("shows only Progress while the run is unresolved — Agent activity, Report, Actions, and Approval are absent", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
-    const deferredJob = deferredResponse();
-    vi.mocked(fetch).mockResolvedValueOnce(capabilitiesResponse()).mockImplementationOnce(() => deferredJob.promise);
+    const deferredRun = deferredResponse();
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(capabilitiesResponse())
+      .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
+      .mockImplementationOnce(() => deferredRun.promise);
 
     render(<App />);
     await submit(user);
 
     expect(screen.getByText("Investigation progress")).toBeInTheDocument();
     expect(screen.queryByText("Agent activity")).toBeNull();
-    expect(screen.queryByText("Generated report")).toBeNull();
+    expect(screen.queryByText("Resolution report")).toBeNull();
     expect(screen.queryByText("Suggested actions")).toBeNull();
     expect(screen.queryByRole("region", { name: "Approval" })).toBeNull();
     expect(screen.queryByRole("link", { name: /action required/i })).toBeNull();
 
-    deferredJob.resolve(jsonResponse(201, { data: jobResponse() }));
+    deferredRun.resolve(jsonResponse(201, { data: runDetail() }));
   });
 
   // Scenario 2: RUNNING run data.
@@ -159,14 +163,14 @@ describe("Data-driven reveal boundaries", () => {
     await submit(user);
 
     await screen.findByText("Agent activity");
-    expect(screen.getByText(/Tool requested/)).toBeInTheDocument();
-    expect(screen.queryByText("Generated report")).toBeNull();
+    expect(screen.getByText("Checking service status")).toBeInTheDocument();
+    expect(screen.queryByText("Resolution report")).toBeNull();
     expect(screen.queryByText("Suggested actions")).toBeNull();
     expect(screen.queryByRole("region", { name: "Approval" })).toBeNull();
   });
 
   // Scenario 3: terminal run with a report but empty actions.
-  it("terminal run with report but empty actions: Agent activity then Generated report; no Suggested actions; no approval unless applicable", async () => {
+  it("terminal run with report but empty actions: Agent activity then Resolution report; no Suggested actions; no approval unless applicable", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
@@ -178,18 +182,22 @@ describe("Data-driven reveal boundaries", () => {
 
     render(<App />);
     await submit(user);
-    await screen.findByText("Generated report");
+    await screen.findByText("Resolution report");
 
     const order = headingOrder();
-    expect(order.indexOf("Agent activity")).toBeLessThan(order.indexOf("Generated report"));
+    // Milestone-10 flat flow: the resolution row (Resolution report) precedes
+    // the Agent activity section.
+    expect(order.indexOf("Resolution report")).toBeLessThan(order.indexOf("Agent activity"));
     expect(screen.queryByText("Suggested actions")).toBeNull();
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
-    // NOT_ELIGIBLE is not "applicable" — no approval decision surface.
-    expect(screen.queryByRole("region", { name: "Approval" })).toBeNull();
+    // NOT_ELIGIBLE is not "applicable" — the panel mounts (§18) but exposes no
+    // decision surface.
+    const approvalRegion = screen.getByRole("region", { name: "Approval" });
+    expect(within(approvalRegion).queryByRole("button")).toBeNull();
   });
 
   // Scenario 4: terminal run with non-empty actions.
-  it("terminal run with non-empty actions: Agent activity -> Generated report -> Suggested actions, in DOM order", async () => {
+  it("terminal run with non-empty actions: Agent activity -> Resolution report -> Suggested actions, in DOM order", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
@@ -222,10 +230,11 @@ describe("Data-driven reveal boundaries", () => {
 
     const order = headingOrder();
     const activityIndex = order.indexOf("Agent activity");
-    const reportIndex = order.indexOf("Generated report");
+    const reportIndex = order.indexOf("Resolution report");
     const actionsIndex = order.indexOf("Suggested actions");
-    expect(activityIndex).toBeLessThan(reportIndex);
+    // Milestone-10 flat flow: Resolution report -> Suggested actions -> Agent activity.
     expect(reportIndex).toBeLessThan(actionsIndex);
+    expect(actionsIndex).toBeLessThan(activityIndex);
   });
 
   // Scenario 5: applicable approval after its initial load settles.
@@ -259,10 +268,10 @@ describe("Data-driven reveal boundaries", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockImplementationOnce(() => deferredApproval.promise);
 
+    window.history.replaceState({}, "", "/?approval-demo=1");
     render(<App />);
     await user.type(screen.getByLabelText("Issue Summary"), "Approval demo issue");
-    await user.click(screen.getByLabelText("Approval workflow demo"));
-    await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 
     await screen.findByText("Suggested actions");
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
@@ -274,14 +283,14 @@ describe("Data-driven reveal boundaries", () => {
     const approveButton = await screen.findByRole("button", { name: "Approve" });
     const banner = screen.getByRole("link", { name: /action required/i });
 
-    // Both the banner and the approval control follow Suggested actions in
-    // DOM order.
-    expect(suggestedActionsHeading.compareDocumentPosition(banner) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // In the Milestone-10 flat flow the banner precedes Suggested actions;
+    // the approval control still follows it.
+    expect(suggestedActionsHeading.compareDocumentPosition(banner) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
     expect(suggestedActionsHeading.compareDocumentPosition(approveButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   // Scenario 6: full final order with a non-empty-action approval fixture.
-  it("verifies the full final order end to end: summary -> progress -> activity -> report -> actions -> approval", async () => {
+  it("verifies the full final order end to end: summary -> progress -> report -> actions -> activity", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
@@ -310,24 +319,24 @@ describe("Data-driven reveal boundaries", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    window.history.replaceState({}, "", "/?approval-demo=1");
     render(<App />);
     await user.type(screen.getByLabelText("Issue Summary"), "Approval demo issue");
-    await user.click(screen.getByLabelText("Approval workflow demo"));
-    await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 
     const approveButton = await screen.findByRole("button", { name: "Approve" });
     const order = headingOrder();
-    const summaryIndex = order.indexOf("Submitted issue");
+    const summaryIndex = order.indexOf("Elevated error rate");
     const progressIndex = order.indexOf("Investigation progress");
-    const activityIndex = order.indexOf("Agent activity");
-    const reportIndex = order.indexOf("Generated report");
+    const reportIndex = order.indexOf("Resolution report");
     const actionsIndex = order.indexOf("Suggested actions");
+    const activityIndex = order.indexOf("Agent activity");
 
-    expect([summaryIndex, progressIndex, activityIndex, reportIndex, actionsIndex].every((i) => i !== -1)).toBe(true);
+    expect([summaryIndex, progressIndex, reportIndex, actionsIndex, activityIndex].every((i) => i !== -1)).toBe(true);
     expect(summaryIndex).toBeLessThan(progressIndex);
-    expect(progressIndex).toBeLessThan(activityIndex);
-    expect(activityIndex).toBeLessThan(reportIndex);
+    expect(progressIndex).toBeLessThan(reportIndex);
     expect(reportIndex).toBeLessThan(actionsIndex);
+    expect(actionsIndex).toBeLessThan(activityIndex);
 
     const suggestedActionsHeading = screen.getByRole("heading", { name: "Suggested actions" });
     expect(suggestedActionsHeading.compareDocumentPosition(approveButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

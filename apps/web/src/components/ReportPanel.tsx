@@ -7,27 +7,40 @@ export type ReportableOutcome = Exclude<AgentRunOutcomeView, { readonly type: "R
 
 export interface ReportPanelProps {
   readonly outcome: ReportableOutcome;
+  /**
+   * The lowercase-first-letter label of the canonical execution stage that
+   * failed (e.g. "agent analysis"), or `null` when that fact isn't grounded
+   * (a legacy run, or no canonical stage reached `failed`). Only ever read
+   * when `outcome.type === "FAILED"`; App.tsx derives it from the same
+   * canonical stage rows the Progress Timeline renders — never invented here
+   * (HQ review §3).
+   */
+  readonly failedStageLabel?: string | null;
 }
 
 // Renders the COMPLETED and FAILED outcome shapes only. RUNNING is handled
 // by the caller (App.tsx): a RUNNING outcome must never render an empty
-// "Generated report" panel at all, not even a placeholder — Phase A has no
+// "Resolution report" panel at all, not even a placeholder — Phase A has no
 // polling, so the report may legitimately not exist yet. (A RUNNING run can
 // still be refreshed via InvestigationSummary's always-present Refresh
 // button, so no affordance is lost.)
 //
 // Suggested actions are a SEPARATE component (SuggestedActionsPanel) with
 // its own gating — this panel never renders them.
-export function ReportPanel({ outcome }: ReportPanelProps) {
+export function ReportPanel({ outcome, failedStageLabel = null }: ReportPanelProps) {
   if (outcome.type === "FAILED") {
     return (
       <section className="report-panel" aria-labelledby="report-heading">
-        <h2 id="report-heading" tabIndex={-1}>Generated report</h2>
-        <p>The run failed before producing a report.</p>
-        <dl>
+        <h2 id="report-heading" tabIndex={-1}>Resolution report</h2>
+        <p>
+          {failedStageLabel !== null
+            ? `Investigation failed during ${failedStageLabel}.`
+            : "The run failed before producing a report."}
+        </p>
+        <dl className="report-panel-failure-fields">
           <div>
             <dt>Failure code</dt>
-            <dd className="mono">{outcome.code}</dd>
+            <dd className="mono report-panel-failure-code">{outcome.code}</dd>
           </div>
           <div>
             <dt>Message</dt>
@@ -42,30 +55,33 @@ export function ReportPanel({ outcome }: ReportPanelProps) {
 
   return (
     <section className="report-panel" aria-labelledby="report-heading">
-      <h2 id="report-heading" tabIndex={-1}>Generated report</h2>
+      <div className="report-panel-header">
+        <h2 id="report-heading" tabIndex={-1}>Resolution report</h2>
+        {/* Secondary metadata — Category/Confidence must not visually precede
+            the actual resolution (§9). Kept as real text, never hidden. */}
+        <p className="report-panel-meta">
+          <span>{report.category}</span>
+          <span>
+            Confidence{" "}
+            <span className="report-panel-confidence">{report.confidence.toFixed(2)}</span>
+          </span>
+        </p>
+      </div>
 
       <dl className="report-panel-fields">
-        <div>
-          <dt>Category</dt>
-          <dd>{report.category}</dd>
-        </div>
-        <div>
-          <dt>Confidence</dt>
-          <dd>{report.confidence.toFixed(2)}</dd>
-        </div>
-        <div>
+        <div className="report-panel-field report-panel-field--lead">
           <dt>Summary</dt>
           <dd>{report.summary}</dd>
         </div>
-        <div>
+        <div className="report-panel-field">
           <dt>Root cause</dt>
           <dd>{report.rootCause}</dd>
         </div>
-        <div>
+        <div className="report-panel-field">
           <dt>Customer impact</dt>
           <dd>{report.customerImpact}</dd>
         </div>
-        <div>
+        <div className="report-panel-field">
           <dt>Recommended resolution</dt>
           <dd>{report.recommendedResolution}</dd>
         </div>

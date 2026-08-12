@@ -140,7 +140,7 @@ function approvalCallCount(fetchMock: ReturnType<typeof vi.fn>): number {
 
 async function submit(user: ReturnType<typeof userEvent.setup>, summary = "Elevated error rate") {
   await user.type(screen.getByLabelText("Issue Summary"), summary);
-  await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+  await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 }
 
 function progressRegion() {

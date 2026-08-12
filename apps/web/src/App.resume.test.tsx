@@ -261,16 +261,18 @@ describe("Investigation resume (#38)", () => {
 
     // Exactly four canonical child rows appear, and the provisional
     // job-only FAKE guess is replaced by the persisted run's actual LIVE
-    // mode (RunContextPanel reads the real run object directly).
-    const runContextRegion = screen.getByRole("complementary", { name: "Run context" });
-    expect(within(runContextRegion).getByText("LIVE")).toBeInTheDocument();
+    // mode (Run details reads the real run object directly).
+    const runDetailsSection = screen.getByText("Run details").closest("section");
+    if (runDetailsSection === null) throw new Error("no run-details section");
+    // §12 user-facing labels: `Live`, never the raw `LIVE` enum.
+    expect(within(runDetailsSection).getByText("Live")).toBeInTheDocument();
     // Final Codex re-review Finding 5: the persisted LIVE mode must replace
     // the provisional FAKE guess EVERYWHERE it is read from, not only Run
-    // Context — the "Submitted issue" section (`submittedSummary`) and the
-    // Progress Timeline's stage composition (which only includes the
-    // "availability" stage for LIVE) must also agree.
-    expect(screen.getByText("Submitted issue").closest("section")).toHaveTextContent("LIVE");
-    expect(screen.getByText("Live Claude availability confirmed")).toBeInTheDocument();
+    // details — the "Current investigation" card (the milestone-10 successor
+    // to "Submitted issue") and the Progress Timeline's stage composition
+    // (which only includes the "availability" stage for LIVE) must also agree.
+    expect(screen.getByText("Current investigation").closest("section")).toHaveTextContent("Live");
+    expect(screen.getByText("Live availability confirmed")).toBeInTheDocument();
     // Scoped to the nested canonical child list specifically — the outer
     // "job" stage's own completed label is ALSO literally "Investigation
     // created", so querying the whole Timeline region would be ambiguous.
@@ -303,12 +305,14 @@ describe("Investigation resume (#38)", () => {
     await vi.advanceTimersByTimeAsync(0);
     await screen.findByText("Agent activity");
 
-    expect(screen.getByText("Submitted issue").closest("section")).toHaveTextContent("FAKE");
-    const runContextRegion = screen.getByRole("complementary", { name: "Run context" });
-    expect(within(runContextRegion).getByText("FAKE")).toBeInTheDocument();
+    expect(screen.getByText("Current investigation").closest("section")).toHaveTextContent("Demo");
+    const runDetailsSection = screen.getByText("Run details").closest("section");
+    if (runDetailsSection === null) throw new Error("no run-details section");
+    // §12 user-facing labels: `Demo`, never the raw `FAKE` enum.
+    expect(within(runDetailsSection).getByText("Demo")).toBeInTheDocument();
     // FAKE never gets an "availability" Timeline row.
-    expect(screen.queryByText("Live Claude availability confirmed")).toBeNull();
-    expect(screen.queryByText("Checking Live Claude availability…")).toBeNull();
+    expect(screen.queryByText("Live availability confirmed")).toBeNull();
+    expect(screen.queryByText("Checking Live availability…")).toBeNull();
   });
 
   it("a malformed ?job= makes no request, shows a notice, and strips the param", async () => {
@@ -415,7 +419,7 @@ describe("Investigation resume (#38)", () => {
       // A replacement capability read landed and populated state — LIVE
       // becomes selectable, which could only happen from the SECOND
       // (post-invalidation) response, never the first (UNAVAILABLE) one.
-      await waitFor(() => expect(screen.getByRole("radio", { name: /Live Claude/ })).toBeEnabled());
+      await waitFor(() => expect(screen.getByRole("radio", { name: /Live/ })).toBeEnabled());
       expect(capabilityCalls(fetchMock).length).toBeGreaterThanOrEqual(2);
     });
 
@@ -432,7 +436,7 @@ describe("Investigation resume (#38)", () => {
 
       render(<App />);
       await screen.findByText("Agent activity");
-      await waitFor(() => expect(screen.getByRole("radio", { name: /Live Claude/ })).toBeEnabled());
+      await waitFor(() => expect(screen.getByRole("radio", { name: /Live/ })).toBeEnabled());
 
       // The FIRST (mount-time) capability request — aborted by resume,
       // never actually cancelled at the fetch-mock level — resolves late
@@ -440,7 +444,7 @@ describe("Investigation resume (#38)", () => {
       // discarded.
       resolveFirstCapabilities(unavailableCapabilities());
       await new Promise((r) => setTimeout(r, 0));
-      expect(screen.getByRole("radio", { name: /Live Claude/ })).toBeEnabled();
+      expect(screen.getByRole("radio", { name: /Live/ })).toBeEnabled();
     });
 
     it("resume's 404/malformed/no-job paths do not create duplicate or unbounded capability loops", async () => {

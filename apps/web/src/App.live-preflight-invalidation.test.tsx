@@ -134,36 +134,45 @@ describe("LIVE preflight invalidates the previous poll session (Finding 2)", () 
     const deferredJobATick = deferredResponse();
     const deferredPreflight = deferredResponse();
     const fetchMock = mockFetch({
-      capabilities: [liveCapabilities(), deferredPreflight.promise],
+      // mount -> AVAILABLE; the popstate reset below re-reads capabilities
+      // (second AVAILABLE); job B's LIVE preflight is the deferred one.
+      capabilities: [liveCapabilities(), liveCapabilities(), deferredPreflight.promise],
       investigationJobA: [deferredJobATick.promise],
     });
 
     render(<App />);
     await user.type(screen.getByLabelText("Issue Summary"), "job A investigation, elevated error rate");
-    await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await user.click(screen.getByRole("button", { name: "Start Investigation" }));
     await screen.findByText("job-a");
 
     // job A's poll fires its first tick — leave it in flight (deferred).
     await vi.advanceTimersByTimeAsync(0);
     expect(investigationJobACalls(fetchMock)).toHaveLength(1);
 
+    // Milestone-10: the composer collapses once a real job exists, so there
+    // is no form to type job B into while job A runs. Leaving the resumed
+    // `?job=` view (popstate to "/") is how the fresh-submission form returns;
+    // that reset itself invalidates job A's poll before the new submission.
+    window.history.pushState(null, "", "/");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await waitFor(() => expect(screen.getByRole("radio", { name: /Live/ })).toBeEnabled());
+
     // Start a NEW LIVE submission while job A's tick is still in flight.
-    await user.clear(screen.getByLabelText("Issue Summary"));
     await user.type(screen.getByLabelText("Issue Summary"), "job B investigation, elevated error rate");
-    await user.click(screen.getByRole("radio", { name: /Live Claude/ }));
+    await user.click(screen.getByRole("radio", { name: /Live/ }));
     await user.type(screen.getByLabelText("Live demo access token"), TOKEN);
-    await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 
     // The display already shows job B's own workflow — job A is gone.
     expect(screen.queryByText("job-a")).toBeNull();
-    expect(screen.getByRole("status")).toHaveTextContent("Checking Live Claude availability…");
+    expect(screen.getByRole("status")).toHaveTextContent("Checking Live availability…");
 
     // job A's late poll tick now resolves — it must be silently discarded
     // by the poll hook itself (already stopped), never reaching App state.
     deferredJobATick.resolve(investigationStateResponse(JOB_A_ID, "job A investigation, elevated"));
     await vi.advanceTimersByTimeAsync(0);
     expect(screen.queryByText("job-a")).toBeNull();
-    expect(screen.getByRole("status")).toHaveTextContent("Checking Live Claude availability…");
+    expect(screen.getByRole("status")).toHaveTextContent("Checking Live availability…");
 
     // Now the LIVE preflight resolves AVAILABLE — job B proceeds normally.
     deferredPreflight.resolve(liveCapabilities());
@@ -177,28 +186,36 @@ describe("LIVE preflight invalidates the previous poll session (Finding 2)", () 
     const deferredJobATick = deferredResponse();
     const deferredPreflight = deferredResponse();
     const fetchMock = mockFetch({
-      capabilities: [liveCapabilities(), deferredPreflight.promise],
+      // mount -> AVAILABLE; the popstate reset below re-reads capabilities
+      // (second AVAILABLE); job B's LIVE preflight is the deferred one.
+      capabilities: [liveCapabilities(), liveCapabilities(), deferredPreflight.promise],
       investigationJobA: [deferredJobATick.promise],
     });
 
     render(<App />);
     await user.type(screen.getByLabelText("Issue Summary"), "job A investigation, elevated error rate");
-    await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await user.click(screen.getByRole("button", { name: "Start Investigation" }));
     await screen.findByText("job-a");
 
     await vi.advanceTimersByTimeAsync(0);
     expect(investigationJobACalls(fetchMock)).toHaveLength(1);
 
-    await user.clear(screen.getByLabelText("Issue Summary"));
+    // Milestone-10: the composer collapsed when job A's real job appeared.
+    // Leave the resumed `?job=` view so the fresh-submission form returns;
+    // that reset itself invalidates job A's poll before the new submission.
+    window.history.pushState(null, "", "/");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await waitFor(() => expect(screen.getByRole("radio", { name: /Live/ })).toBeEnabled());
+
     await user.type(screen.getByLabelText("Issue Summary"), "job B investigation, elevated error rate");
-    await user.click(screen.getByRole("radio", { name: /Live Claude/ }));
+    await user.click(screen.getByRole("radio", { name: /Live/ }));
     await user.type(screen.getByLabelText("Live demo access token"), TOKEN);
-    await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await user.click(screen.getByRole("button", { name: "Start Investigation" }));
     expect(screen.queryByText("job-a")).toBeNull();
 
     // The preflight refuses LIVE access.
     deferredPreflight.resolve(unavailableCapabilities());
-    await screen.findByText("Live Claude is temporarily unavailable. No investigation job was created.");
+    await screen.findByText("Live is temporarily unavailable. No investigation job was created.");
     expect(screen.queryByText("job-a")).toBeNull();
 
     // job A's poll remains stopped permanently — advancing time further

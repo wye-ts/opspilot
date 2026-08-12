@@ -16,7 +16,7 @@ function approval(overrides: Partial<ApprovalView> = {}): ApprovalView {
 }
 
 describe("ApprovalPanel", () => {
-  it("NOT_ELIGIBLE renders no button and names the Approval workflow demo checkbox", () => {
+  it("NOT_ELIGIBLE renders a compact secondary status with no buttons and no ?approval-demo=1 leak (§10)", () => {
     render(
       <ApprovalPanel
         approval={approval({ status: "NOT_ELIGIBLE" })}
@@ -27,7 +27,12 @@ describe("ApprovalPanel", () => {
       />,
     );
     expect(screen.queryAllByRole("button")).toHaveLength(0);
-    expect(screen.getByText(/Approval workflow demo/)).toBeInTheDocument();
+    expect(screen.getByText("Not eligible")).toBeInTheDocument();
+    expect(screen.getByText("Not eligible: this run produced no suggested actions.")).toBeInTheDocument();
+    // The query-param demo path is a deterministic hidden/test entry point,
+    // never a user-facing product instruction (§10).
+    expect(screen.queryByText(/approval-demo=1/)).toBeNull();
+    expect(screen.queryByText(/checkbox/i)).toBeNull();
     expect(screen.queryByText(/ticket/i)).toBeNull();
   });
 

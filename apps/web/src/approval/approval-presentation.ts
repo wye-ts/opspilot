@@ -11,9 +11,10 @@ export interface ApprovalPresentation {
 }
 
 // Pure status -> presentation mapping, tested independently of React (see
-// approval-presentation.test.ts). The NOT_ELIGIBLE hint names the "Approval
-// workflow demo" checkbox — never a ticket ID — since typing a ticket ID is
-// not something the UI exposes anywhere.
+// approval-presentation.test.ts). The NOT_ELIGIBLE hint names the deep link
+// that still reaches the deterministic approvable Demo — never a ticket ID
+// (nothing in the UI exposes one) and never the removed "Approval workflow
+// demo" checkbox (Milestone 10 / plan F2).
 export function presentApproval(status: ApprovalStatus, suggestedActionCount: number): ApprovalPresentation {
   switch (status) {
     case "NOT_ELIGIBLE":
@@ -22,9 +23,10 @@ export function presentApproval(status: ApprovalStatus, suggestedActionCount: nu
         glyph: "—",
         badgeLabel: "Not eligible",
         copy: "This run has no suggested actions to approve.",
-        hint:
-          "A run is approvable only when it completed and produced at least one suggested action. " +
-          'Tick "Approval workflow demo" and run again to see an approvable investigation.',
+        // The ?approval-demo=1 query parameter remains a deterministic
+        // hidden/test entry point, but it is NEVER a user-facing product
+        // instruction (Issue #41 polish §10) — so no hint is rendered here.
+        hint: null,
         showsDecisionForm: false,
       };
     case "PENDING":

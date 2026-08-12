@@ -1,6 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
 
 import type { CapabilitiesView } from "../api/types";
+import { presentProviders } from "../provider/provider-presentation";
+import { ProviderCard } from "./ProviderCard";
 import { TurnstileChallenge } from "./TurnstileChallenge";
 
 export type ProviderModeChoice = "FAKE" | "LIVE";
@@ -41,6 +43,13 @@ export interface InvestigationFormProps {
   readonly disabled: boolean;
   readonly submitLabel: string;
   readonly capabilities: CapabilitiesView | null;
+  /**
+   * Pre-selects the deterministic approval-demo scenario on the FAKE/Demo path
+   * when the page carries `?approval-demo=1` (read once at App mount). Only a
+   * default — the user can still switch to a non-demo run, and switching to
+   * LIVE clears it exactly as before.
+   */
+  readonly defaultApprovalDemo?: boolean;
   readonly onSubmit: (submission: InvestigationFormSubmission) => void;
   /**
    * Non-null puts the form in retry mode. `null` is the ordinary
@@ -69,12 +78,6 @@ export const SUMMARY_MAX_LENGTH = 2000;
 // shared with the private bound; only the ceiling tightens.
 export const PUBLIC_SUMMARY_MAX_LENGTH = 300;
 
-const LIVE_UNAVAILABLE_REASON =
-  "Live Claude is temporarily unavailable — the deterministic demo is always available.";
-
-const VISITOR_QUOTA_EXHAUSTED_REASON =
-  "You've already used today's live trial run — the deterministic demo is always available.";
-
 // Owns only `summary`, `approvalDemo`, the provider mode, and the live token —
 // no ticket-ID field exists here or anywhere in the app. The internal ticket ID
 // is derived by App at submit time (see App.tsx).
@@ -82,13 +85,14 @@ export function InvestigationForm({
   disabled,
   submitLabel,
   capabilities,
+  defaultApprovalDemo = false,
   onSubmit,
   liveRetryTarget,
   onRetryLiveRun,
   onStartNewInvestigation,
 }: InvestigationFormProps) {
   const [summary, setSummary] = useState("");
-  const [approvalDemo, setApprovalDemo] = useState(false);
+  const [approvalDemo, setApprovalDemo] = useState(defaultApprovalDemo);
   const [providerMode, setProviderMode] = useState<ProviderModeChoice>("FAKE");
   /**
    * MEMORY ONLY.
@@ -117,7 +121,6 @@ export function InvestigationForm({
   const [turnstileResetKey, setTurnstileResetKey] = useState(0);
 
   const summaryId = useId();
-  const approvalDemoId = useId();
   const tokenId = useId();
   const modeGroupId = useId();
   const retryHeadingId = useId();
@@ -160,13 +163,12 @@ export function InvestigationForm({
     isPublicTrial && liveSelected ? PUBLIC_SUMMARY_MAX_LENGTH : SUMMARY_MAX_LENGTH;
   const summaryShortEnough = trimmedSummary.length <= effectiveSummaryMaxLength;
 
-  const visitorRunsRemaining = publicTrialCapabilities?.visitorRunsRemaining ?? null;
-  // Unavailable OUTRIGHT (`liveAgentRuns !== "AVAILABLE"`) or available at the
-  // deployment level but THIS visitor's own trial is already used — both
-  // collapse to the same "LIVE cannot be offered right now" state, but with
-  // distinct help text (see the radio's option-help span below).
-  const liveAvailable =
-    capabilities?.liveAgentRuns === "AVAILABLE" && !(isPublicTrial && visitorRunsRemaining === 0);
+  // Single source of truth for both provider cards (labels, availability,
+  // pills, unavailable reasons) — the same pure mapping the card components
+  // render. `liveAvailable` is the card-level truth used by the retry banner
+  // below and the token-required gating.
+  const providers = presentProviders(capabilities);
+  const liveAvailable = !providers.live.disabled;
   // NOTE: `capabilities.liveAccess` is deliberately NOT consulted here beyond
   // the PUBLIC_TRIAL narrowing above. It once decided whether a token was
   // required at all, which is what allowed a tokenless LIVE submission — see
@@ -331,7 +333,7 @@ export function InvestigationForm({
           */}
           {!liveAvailable ? (
             <p className="form-help">
-              New Live Claude runs are currently unavailable. Recovery of an existing request is
+              New Live runs are currently unavailable. Recovery of an existing request is
               still allowed.
             </p>
           ) : null}
@@ -350,49 +352,47 @@ export function InvestigationForm({
             </div>
             <div>
               <dt>Provider</dt>
-              <dd>Live Claude</dd>
+              <dd>Live</dd>
             </div>
           </dl>
         </div>
       ) : null}
 
+      {/*
+        Issue #41 polish §6 — compact top availability notice. Rendered only
+        when a real, pre-job capability snapshot says LIVE is closed. It is a
+        one-line summary; the Live provider card beneath it carries the fuller
+        truthful reason. Never renders while a recovery banner is showing (in
+        retry mode the provider selector is gone and the notice would be
+        explaining a card that does not exist). Runtime truth wins: wording
+        follows the actual capability state (temporary vs. daily-quota).
+      */}
+      {!retrying && !liveAvailable && providers.live.pill !== null ? (
+        <p className="composer-availability-notice">
+          {providers.live.pill.text === "Daily trial used"
+            ? "Live unavailable for today — daily trial used"
+            : "Live is temporarily unavailable"}
+        </p>
+      ) : null}
+
       {!retrying ? (
       <fieldset className="form-field form-field-modes" disabled={disabled}>
         <legend id={modeGroupId}>Provider</legend>
-        <div className="mode-options" role="radiogroup" aria-labelledby={modeGroupId}>
-          <label className="mode-option">
-            <input
-              type="radio"
-              name="providerMode"
-              value="FAKE"
-              checked={providerMode === "FAKE"}
-              onChange={() => selectMode("FAKE")}
-            />
-            <span className="mode-option-label">Demo — FAKE</span>
-            <span className="mode-option-help">Deterministic, fast, no model cost.</span>
-          </label>
-
-          <label className="mode-option">
-            <input
-              type="radio"
-              name="providerMode"
-              value="LIVE"
-              checked={providerMode === "LIVE"}
-              // Rendered DISABLED with a visible reason rather than hidden: a
-              // hidden control makes the feature look absent rather than
-              // protected.
-              disabled={!liveAvailable}
-              onChange={() => selectMode("LIVE")}
-            />
-            <span className="mode-option-label">Live Claude</span>
-            <span className="mode-option-help">
-              {liveAvailable
-                ? "Real claude-sonnet-5. Protected by availability and usage limits."
-                : isPublicTrial && visitorRunsRemaining === 0
-                  ? VISITOR_QUOTA_EXHAUSTED_REASON
-                  : LIVE_UNAVAILABLE_REASON}
-            </span>
-          </label>
+        <div className="provider-cards" role="radiogroup" aria-labelledby={modeGroupId}>
+          <ProviderCard
+            presentation={providers.demo}
+            name="providerMode"
+            checked={providerMode === "FAKE"}
+            onChange={() => selectMode("FAKE")}
+            disabled={disabled}
+          />
+          <ProviderCard
+            presentation={providers.live}
+            name="providerMode"
+            checked={providerMode === "LIVE"}
+            onChange={() => selectMode("LIVE")}
+            disabled={disabled}
+          />
         </div>
       </fieldset>
       ) : null}
@@ -405,38 +405,31 @@ export function InvestigationForm({
           value={summary}
           onChange={(event) => setSummary(event.target.value)}
           disabled={disabled}
-          rows={4}
+          // Tightened from 4 → 3 (Issue #41 polish §3) so the Fresh composer
+          // reads as a focused operational tool, not a landing page. Still
+          // comfortably tappable on mobile.
+          rows={3}
           aria-describedby={`${summaryId}-help`}
           placeholder="Describe the issue — e.g. Elevated API error rate on billing-service"
         />
-        <p id={`${summaryId}-help`} className="form-help">
-          <span>Describe the issue in at least {SUMMARY_MIN_LENGTH} characters.</span>{" "}
-          <span className="form-counter">
-            {trimmedSummary.length} / {SUMMARY_MIN_LENGTH}
-          </span>
-          {!summaryShortEnough ? (
-            <span className="form-error"> Maximum {effectiveSummaryMaxLength} characters.</span>
-          ) : null}
-        </p>
+        {/*
+          Progressive validation (§8): empty = subtle helper, 1-14 trimmed chars
+          = amber add-more-detail warn, >=15 = helper/count disappears and the
+          CTA enables. No permanent "n / 15" counter.
+        */}
+        {trimmedSummary.length >= SUMMARY_MIN_LENGTH ? null : trimmedSummary.length === 0 ? (
+          <p id={`${summaryId}-help`} className="form-help form-help--subtle">
+            Describe the issue in at least {SUMMARY_MIN_LENGTH} characters.
+          </p>
+        ) : (
+          <p id={`${summaryId}-help`} className="form-help form-help--warn">
+            Add more detail — the issue summary needs at least {SUMMARY_MIN_LENGTH} characters.
+          </p>
+        )}
+        {!summaryShortEnough ? (
+          <p className="form-error">Maximum {effectiveSummaryMaxLength} characters.</p>
+        ) : null}
       </div>
-      ) : null}
-
-      {/*
-        Hidden entirely for LIVE. The approval-workflow demo is a property of the
-        deterministic scenario, so offering it beside a live run would promise
-        behaviour the live provider does not produce.
-      */}
-      {!liveSelected ? (
-        <div className="form-field form-field-checkbox">
-          <input
-            id={approvalDemoId}
-            type="checkbox"
-            checked={approvalDemo}
-            onChange={(event) => setApprovalDemo(event.target.checked)}
-            disabled={disabled}
-          />
-          <label htmlFor={approvalDemoId}>Approval workflow demo</label>
-        </div>
       ) : null}
 
       {/*

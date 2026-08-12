@@ -5,11 +5,11 @@ export interface RunStatusBadgePresentation {
   readonly glyph: string;
 }
 
-// Moved verbatim out of InvestigationSummary.tsx (same branches, same
-// tone/glyph values) so RunOverviewPanel can share it without duplicating the
-// mapping. run.status is a loosely-typed `string`, not a narrowed union — the
-// API mappers forward it as string (see api/types.ts's own comment on
-// AgentRunOutcomeView), so this stays a soft switch/default, never exhaustive.
+// Shared by CurrentInvestigation and InvestigationSummary (same branches,
+// same tone/glyph values) without duplicating the mapping. run.status is a
+// loosely-typed `string`, not a narrowed union — the API mappers forward it
+// as string (see api/types.ts's own comment on AgentRunOutcomeView), so this
+// stays a soft switch/default, never exhaustive.
 export function runStatusBadge(status: string): RunStatusBadgePresentation {
   switch (status) {
     case "COMPLETED":

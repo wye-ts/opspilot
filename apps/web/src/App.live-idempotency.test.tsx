@@ -161,9 +161,9 @@ const user = () => userEvent.setup();
 
 async function submitLive(u: ReturnType<typeof userEvent.setup>, token = TOKEN) {
   await u.type(screen.getByLabelText("Issue Summary"), SUMMARY);
-  await u.click(screen.getByRole("radio", { name: /Live Claude/ }));
+  await u.click(screen.getByRole("radio", { name: /Live/ }));
   await u.type(screen.getByLabelText("Live demo access token"), token);
-  await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+  await u.click(screen.getByRole("button", { name: "Start Investigation" }));
 }
 
 async function submitRecovery(u: ReturnType<typeof userEvent.setup>, token = RECOVERY_TOKEN) {
@@ -207,7 +207,7 @@ describe("the key on the wire", () => {
     const u = user();
 
     await u.type(screen.getByLabelText("Issue Summary"), SUMMARY);
-    await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await u.click(screen.getByRole("button", { name: "Start Investigation" }));
     await screen.findByRole("heading", { name: "Agent activity" });
 
     // A deterministic run spends nothing, so repeating one is harmless and a key
@@ -585,6 +585,14 @@ describe("the key's lifetime", () => {
 
     await submitLive(u);
     await screen.findByRole("heading", { name: "Agent activity" });
+    // Milestone-10: the composer collapses once a real job exists, so after
+    // the successful run the form is gone. Starting a fresh investigation
+    // means leaving the resumed `?job=` view — navigate to "/" and let the
+    // popstate handler reset to the ordinary fresh form.
+    window.history.pushState(null, "", "/");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await waitFor(() => expect(screen.getByRole("radio", { name: /Live/ })).toBeEnabled());
+
     await submitLive(u);
     await waitFor(() => expect(runCreateCalls(fetchMock)).toHaveLength(2));
 

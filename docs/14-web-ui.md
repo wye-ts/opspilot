@@ -1,11 +1,11 @@
-# OpsPilot — Web UI (Milestone 7)
+# OpsPilot — Web UI (Milestone 10)
 
 | Field | Value |
 |---|---|
 | Document | React Timeline UI — Implementation Record |
 | Status | Implemented |
 | Project | OpsPilot |
-| Purpose | Document the `apps/web` React UI — its scope, the one-action investigation workflow, the timeline/report rendering model, the two-column run-detail layout and approval interaction, and how to run it locally |
+| Purpose | Document the `apps/web` React UI — its scope, the one-action investigation workflow, the timeline/report rendering model, the flat 1→7 run-detail flow and approval interaction, the Milestone 10 visual system (product identity, provider cards, responsive layout), and how to run it locally |
 | Related documents | `docs/12-agent-run-api.md` (the HTTP API this UI consumes), `docs/13-approval-workflow.md` (the approval semantics this UI's approval panel renders) |
 
 ---
@@ -19,17 +19,25 @@
 ```text
 one-action investigation workflow (create job -> start run -> load approval)
 internally generated ticket IDs — no editable Ticket ID field
-read-only Investigation Timeline
+read-only Investigation progress + Agent activity timelines
 read-only Generated Report, including suggested-action cards
-the "Approval workflow demo" checkbox and its report-level effect
+the approval demo reached via ?approval-demo=1 (no public checkbox), and its
+  report-level effect
 partial-failure recovery via Retry Run (FAKE) and Recover Live Run mode (LIVE)
 the four-state approval panel (NOT_ELIGIBLE / PENDING / APPROVED / REJECTED)
 recording an approve/reject decision, with 201/200/409 handling
-a reusable two-column run-detail layout (PR 5C): a flexible main reading
-  surface (timeline + report) beside a constrained, sticky Run Context Panel
+a flat 1→7 run-detail flow (§15): Current investigation -> approval banner ->
+  Progress + Resolution -> Suggested Actions -> Human Approval -> Agent
+  Activity -> Run Details (replacing the two-column Run Context Panel layout)
 a top-of-page "Action required" banner, shown only while a decision is PENDING
 an accessible, wording-accurate notice for a pending decision, distinguishing
   a fresh completion/retry from an explicit refresh
+the Milestone 10 visual system: OpsPilot / AI Operations Investigator product
+  identity, GitHub/LinkedIn portfolio links, whole-card Demo/Live provider
+  selector, progressive 15-character CTA validation, composer collapse after
+  job creation, non-failure presentation of Live admission refusals, Agent
+  Activity product language with a Technical details disclosure, and a
+  responsive desktop (~1440px) / mobile (~390px) layout
 ```
 
 **Non-goals for this milestone:** authentication, RBAC, multi-user support, a job queue, SSE/WebSockets/live streaming, background polling, deployment/production observability, a design-system package, dark mode, internationalization, live LLM/embedding provider calls, editing or revoking a recorded approval decision, **executing an approved action**, routing, run deep links, and browser storage.
@@ -49,7 +57,7 @@ apps/web/
   src/
     main.tsx            createRoot bootstrap
     App.tsx              the only stateful component — owns the workflow (§4, §8)
-    styles.css            one hand-written stylesheet, no framework
+    styles.css            one hand-written stylesheet, no framework (§10)
     api/
       http-client.ts       the only fetch call site
       endpoints.ts          createAgentJob / startAgentRun / getAgentRun / getApproval / recordApproval
@@ -57,34 +65,44 @@ apps/web/
       http-client.test.ts
     format/
       datetime.ts, datetime.test.ts
+    url/
+      investigation-url.ts   readApprovalDemoParam — the ?approval-demo=1 mount read (§3)
+    provider/
+      provider-presentation.ts, provider-presentation.test.ts
+        (pure capabilities -> provider-card mapping for the Demo/Live selector —
+        §13.1, Milestone 10)
     trace/
-      trace-presentation.ts, trace-presentation.test.ts
+      trace-product-labels.ts, trace-product-labels.test.ts
+        (pure AgentTraceEvent -> product-language mapping + Technical details
+        rows — §6.2, Milestone 10)
     approval/
       approval-presentation.ts, approval-presentation.test.ts
     run/
       run-overview-presentation.ts, run-overview-presentation.test.ts
-        (shared run-status badge mapping — PR 5C, moved out of
-        InvestigationSummary so RunOverviewPanel can share it verbatim)
+        (shared run-status badge mapping)
     investigation-progress/
       investigation-progress-stages.ts, investigation-progress-stages.test.ts
         (pure stage derivation + presentation for the Progress Timeline — §6.1)
     hooks/
       useElapsedTime.ts, useElapsedTime.test.ts
     components/
-      InvestigationForm, InvestigationSummary, InvestigationProgressTimeline (§6.1),
-      TraceTimeline ("Agent activity" heading — §6.1), ReportPanel,
+      InvestigationForm (§3/§13.1), InvestigationSummary (item 7 — Run Details,
+        §19), InvestigationProgressTimeline (§6.1), CurrentInvestigation (item 1,
+        §12), TraceTimeline (item 6 — "Agent activity", §6.1/§6.2), ReportPanel,
       SuggestedActionCard, StatusBadge, ErrorBanner,
-      ApprovalPanel, ApprovalDecisionForm,
-      RunContextPanel, RunOverviewPanel, ActionRequiredBanner (PR 5C)
+      ApprovalPanel, ApprovalDecisionForm, ActionRequiredBanner,
+      ProductHeader (§4), AppFooter (§4), ProviderCard (§13.1),
+      TechnicalDetails (§6.2)
       (+ .test.tsx for most of the above)
     App.run-workflow.test.tsx
     App.approval.test.tsx
-    App.run-context-layout.test.tsx (PR 5C)
+    App.run-context-layout.test.tsx (flat-flow ordering, Milestone 10)
     App.progress-timeline.test.tsx (§6.1)
     App.reveal-boundaries.test.tsx (§6.3)
     App.new-submission-reset.test.tsx (§6.1)
     App.live-region-text.test.tsx (§9)
     App.outcome-aware-progress.test.tsx (§6.4)
+    App.header-copy.test.tsx (product identity + portfolio links, §4)
     test/setup.ts
 ```
 
@@ -92,7 +110,18 @@ apps/web/
 
 ## 3. Issue-Summary-first UX and internal ticket-ID derivation
 
-The visible form contains only an **Issue Summary** textarea, an **Approval workflow demo** checkbox, and a **Run Investigation** button. There is no editable Ticket ID field anywhere in the UI.
+The visible form (the "composer") contains an **Issue Summary** textarea, a
+whole-card **Demo / Live** provider selector (§13.1), and a **Start
+Investigation** button. There is no editable Ticket ID field anywhere in the UI,
+and — since Milestone 10 — **no public "Approval workflow demo" checkbox**.
+
+The approval demo is reached by loading the app with the query parameter
+`?approval-demo=1`. `readApprovalDemoParam(window.location.search)`
+(`url/investigation-url.ts`) is read **once at mount** and passed to the form as
+`defaultApprovalDemo`, preselecting the demo ticket for a Demo (FAKE) run. It is
+not a toggle the visitor can flip mid-session — the checkbox was removed because
+a permanent demo affordance on every ordinary run misread as a product feature
+rather than a reviewer-protocol test scaffold (§13.1).
 
 `App.tsx` derives the ticket ID at submit time:
 
@@ -106,7 +135,7 @@ This is safe against the backend's actual constraints: `TicketContextSchema` pla
 
 ## 4. One-action chained workflow
 
-The user clicks **Run Investigation** once. `App.tsx` performs the chained request sequence:
+The user clicks **Start Investigation** once. `App.tsx` performs the chained request sequence:
 
 ```text
 1. POST /v1/agent-jobs                        { ticketId, summary }
@@ -130,7 +159,7 @@ An explicit `phase` state (`idle | checking-availability | creating-job | runnin
 | Job creation succeeds, run creation fails (**FAKE**) | The created job's metadata (Ticket ID, Job ID) is retained and displayed. The safe API error is shown. A **Retry Run** button appears and, when clicked, calls **only** `POST /v1/agent-jobs/:jobId/runs` for the same job, followed by the same approval fetch — a second job is never created automatically. |
 | Job creation succeeds, run creation fails (**LIVE**) | Same retention, but recovery needs a credential the app deliberately no longer holds (§13.2), so there is no Retry Run button. The **form itself switches into "Recover Live Run" mode** against the retained job: the ticket, summary, and provider are shown read-only, the token field starts empty, and submitting calls `retryLiveRunWithToken`, which issues **only** `POST /v1/agent-jobs/:retainedJobId/runs` — carrying the same `Idempotency-Key` as the failed attempt, so a run the first request may already have created is returned rather than duplicated (§7.2). See §7.1. |
 | Run created, approval fetch fails | The safe API error is shown, but **the run, timeline, and report stay rendered.** The run projection is the primary artifact; approval is an annotation on it (§8). |
-| A new investigation starts | The prior job, run, approval, timeline, report, error, and notice state are all cleared before the new request is issued. A fresh internal ticket ID is generated unless **Approval workflow demo** is checked. |
+| A new investigation starts | The prior job, run, approval, timeline, report, error, and notice state are all cleared before the new request is issued. A fresh internal ticket ID is generated unless the `?approval-demo=1` default was active at mount. |
 
 Retry Run is offered only while a job exists with no run (i.e., only after a run-creation failure) — it is never offered after a successful run.
 
@@ -271,7 +300,9 @@ Milestone 9 Phase A (#34/#35) introduced a SECOND timeline-shaped surface, and t
 
 \* `availability` only appears for a LIVE submission.
 
-Why two components rather than one: `TraceTimeline` already existed, tested and shipped, rendering exactly `run.trace` — a POST-HOC, backend-authored list with no notion of "pending" or "in progress" (the whole array arrives already-complete, in one response). Retrofitting frontend-known PRE-run stages into it would have meant teaching one component two unrelated data shapes and two unrelated timing models. `InvestigationProgressTimeline` sits above it in the render order instead. `App.tsx`'s render order is, top to bottom: submitted-issue summary → Investigation progress → (once `run` exists) Agent activity → Generated report → Suggested actions (§6.3, §7) → Approval (§6.3, §8.3/§8.4) — and the two timelines never claim to be the same list.
+Why two components rather than one: `TraceTimeline` already existed, tested and shipped, rendering exactly `run.trace` — a POST-HOC, backend-authored list with no notion of "pending" or "in progress" (the whole array arrives already-complete, in one response). Retrofitting frontend-known PRE-run stages into it would have meant teaching one component two unrelated data shapes and two unrelated timing models. `InvestigationProgressTimeline` sits above it in the render order instead.
+
+Milestone 10 replaces the old two-column render order with a **flat 1→7 flow** (§15): Current investigation → (PENDING-only) approval banner → a shared row holding Progress + Resolution → Suggested actions → Human Approval → Agent Activity → Run Details. The two timelines never claim to be the same list, and the Progress Timeline's `approval` stage is what states "approval not yet loaded" while the approval fetch is still settling (§8.2).
 
 **Why `approval` is driven by `approvalLoadStatus`, not `phase`.** The `loading-approval` phase is reused by five different code paths in `App.tsx` (`runInvestigation`, `retryRun`, `retryLiveRunWithToken`, `refreshRun`, and the approval-decision 409-conflict re-fetch), so `phase` alone cannot tell "this investigation's approval fetch" apart from "a much later manual Refresh click or decision-conflict reload". `approvalLoadStatus` (`idle`/`loading`/`loaded`/`failed`) is set exclusively by `loadApproval()` when the caller marks that request as part of the tracked workflow.
 
@@ -290,35 +321,48 @@ Why two components rather than one: `TraceTimeline` already existed, tested and 
 - **Ordering source:** array order of `trace`, exactly as the API returns it (`sequence_number ASC`, never re-sorted by the UI).
 - **No per-event timestamps.** `AgentTraceEventSchema` carries no time field — `sequence_number`/`created_at` exist in the database but are never mapped into the response. The timeline therefore uses 1-based step ordinals only. Real timestamps (`startedAt`/`finishedAt`/duration) appear only in the Investigation summary panel, where they are genuine.
 - **All four contract variants render:** `TOOL_REQUESTED`, `TOOL_COMPLETED`, `REPORT_GENERATED`, `RETRIEVAL_COMPLETED` (the last is currently unreachable through `apps/api`, since no retriever is wired into its tool registry — it is implemented because an exhaustive switch over the contract union requires it).
-- **Unknown-event fallback:** an event type outside the current union renders its `type` string only, never a raw payload dump.
+- **Unknown-event fallback:** an event type outside the current union renders the generic product phrase "Agent activity recorded" with the raw `type` string as supporting detail only, never a raw payload dump.
+- **Product language, not raw event types (Milestone 10, §14).** `presentTraceProductLabel` (`trace/trace-product-labels.ts`) maps each event to readable copy deterministically: `TOOL_REQUESTED` for the grounded `get_service_status` tool renders **"Checking service status"**, `TOOL_COMPLETED` renders **"Checked service status"**, `REPORT_GENERATED` renders **"Resolution report generated"**, and `RETRIEVAL_COMPLETED` renders **"Runbook retrieval completed"** with a grounded chunk-count detail line. Only tools whose semantics are grounded in this repository have entries in the map; anything else degrades to the generic phrases above.
+- **Raw identifiers live behind Technical details.** `traceTechnicalEntries` collects one sanitized row per `TOOL_REQUESTED` (tool name + call id), rendered in a `TechnicalDetails` disclosure under the timeline — never secrets, tokens, prompts, payloads, or stack traces. The primary copy stays product language.
 
 ### 6.3 Data-driven reveal boundaries
 
-Every surface below `Investigation progress` reveals strictly on real data becoming available — never on a timer, an animation delay, or a fixed pacing. `App.tsx`'s exact rules:
+Every surface reveals strictly on real data becoming available — never on a timer, an animation delay, or a fixed pacing. `App.tsx`'s exact rules, in the flat 1→7 order (§15):
 
 ```text
-submission starts
-  -> submitted summary + Investigation progress render immediately
+job exists (job !== null)                       // item 1
+  -> Current investigation renders; the composer collapses (it is only
+     shown again for a new investigation, a Live retry, or a job-only resume)
 
-run data exists (run !== null)
-  -> Agent activity renders (TraceTimeline over run.trace, whatever it contains)
+approval is PENDING                             // item 2
+  -> the Action required banner renders
 
-run is terminal (outcome.type !== "RUNNING") and has a report/failure to show
-  -> Generated report renders (ReportPanel — COMPLETED or FAILED; never RUNNING)
+job/run data exists                              // item 3
+  -> Investigation progress renders (progressStages, derived)
+run is terminal (outcome.type !== "RUNNING")
+  -> Resolution report renders (ReportPanel — COMPLETED or FAILED; never RUNNING)
 
-run is terminal, outcome is COMPLETED, and suggestedActions is non-empty
+run is terminal, outcome is COMPLETED, and suggestedActions is non-empty  // item 4
   -> Suggested actions renders (SuggestedActionsPanel, a separate component)
 
-the initial approval load has settled (approvalLoadStatus is "loaded" or "failed")
-  and the result is applicable (status is PENDING/APPROVED/REJECTED, not NOT_ELIGIBLE)
-  -> the ActionRequiredBanner and ApprovalPanel render, positioned after Suggested actions
+approval data exists (approval !== null)         // item 5
+  -> ApprovalPanel renders DIRECTLY for all four statuses (NOT_ELIGIBLE /
+     PENDING / APPROVED / REJECTED). When approval is null (still loading, or
+     the fetch failed) no decision surface mounts — the Progress Timeline's
+     approval stage already states that truthfully.
+
+run data exists (run !== null)                   // item 6
+  -> Agent activity renders (TraceTimeline over run.trace, whatever it contains)
+
+job exists (job !== null)                        // item 7
+  -> Run details renders (InvestigationSummary)
 ```
 
-**A `RUNNING` outcome never renders an empty Generated report panel.** `ReportPanel`'s prop type is `ReportableOutcome = Exclude<AgentRunOutcomeView, { type: "RUNNING" }>` — `App.tsx` only mounts it when `run.outcome.type !== "RUNNING"`, so the invariant is checked by the type system, not merely by convention. A RUNNING run can still be refreshed via `InvestigationSummary`'s always-present Refresh button (unconditional on outcome type) — no affordance was lost by removing `ReportPanel`'s own former RUNNING-only Refresh button.
+**A `RUNNING` outcome never renders an empty Resolution report panel.** `ReportPanel`'s prop type is `ReportableOutcome = Exclude<AgentRunOutcomeView, { type: "RUNNING" }>` — `App.tsx` only mounts it when `run.outcome.type !== "RUNNING"`, so the invariant is checked by the type system, not merely by convention. A RUNNING run can still be refreshed via `InvestigationSummary`'s always-present Refresh button (unconditional on outcome type) — no affordance was lost by removing `ReportPanel`'s own former RUNNING-only Refresh button.
 
 **Suggested actions is a separate, independently-gated component**, not a `<h3>` nested inside `ReportPanel`. An EMPTY `suggestedActions` array renders nothing at all — no heading, no "this run produced no suggested actions" placeholder — because `App.tsx` only mounts `SuggestedActionsPanel` when the array's length is greater than zero; there is nothing to hide with an empty-state message.
 
-**Approval-related UI moved after Suggested actions in DOM order.** `ActionRequiredBanner` used to render before the whole run-detail grid — before Agent activity, Report, and Actions. It now renders as the first child of the `<aside aria-label="Run context">` column, immediately before `RunContextPanel` — still visually adjacent to the Approve/Reject controls, but after the main column's Agent activity/Report/Suggested actions in DOM order (the aside is already a later sibling of the main column). `RunOverviewPanel` (shown while `approval` is `null` or `NOT_ELIGIBLE`) is NOT considered "approval-related" by this rule — it is general run context (status, duration, cost), always available once `run !== null`, and continues to render immediately.
+**Lifecycle surfaces are gated on `job !== null`, never on `isBusy` or `submittedSummary`.** The composer, Current investigation, and Progress Timeline all derive from `job` — the same grounded stance the other lifecycle surfaces use — so a busy spinner is never mistaken for a committed investigation and vice versa (§15).
 
 Proven end to end by `App.reveal-boundaries.test.tsx` (six scenarios: unresolved job/run; RUNNING with real trace data; terminal with an empty-actions report; terminal with non-empty actions; an applicable approval appearing only after its load settles, positioned after Suggested actions; the full final order with a non-empty-action, approval-applicable fixture) using controlled/deferred promises throughout — never a `setTimeout` or a snapshot of only the final state.
 
@@ -342,28 +386,29 @@ Proven by `App.outcome-aware-progress.test.tsx` (initial RUNNING/FAILED/COMPLETE
 
 ### 6.5 Live investigation timeline with canonical execution stages (#38)
 
-As of #38, the investigation progress Timeline reflects persisted server facts rather than frontend request boundaries alone. The existing run row expands with four child rows derived from the canonical event ledger:
+As of #38, the investigation progress Timeline reflects persisted server facts rather than frontend request boundaries alone. As of the Issue #41 vertical-stepper polish, the four canonical stages are not a nested breakdown under a run row — they render directly as the primary stepper, with the job/run request-lifecycle rows omitted entirely (they would otherwise just restate the first canonical stage and the run's own status):
 
 ```text
-Agent investigation / Investigation run     Running | Completed | Failed
-  ├─ Investigation created
-  ├─ Agent analysis
-  ├─ Diagnostic execution
-  └─ Report generation
+Investigation created                        Completed
+Agent analysis                                Completed
+  ├─ event label
+  └─ event label
+Diagnostic execution                          Running
+Report generation                             Pending
 ```
 
 **Data flow.** The shared `deriveExecutionStageProgress` reducer in `@opspilot/contracts` is the single place stage transitions are decided — React never re-derives them. The frontend wraps its output in an explicit `ExecutionStageDerivation` tri-state:
 
-| Derivation | Run row | Child rows |
+| Derivation | Job/run system rows | Primary stepper (four canonical stages) |
 | --- | --- | --- |
-| `legacy` | Today's rendering, unchanged | None |
-| `canonical` | Today's status logic (unchanged) | Four reducer stages, 1:1, with observed events nested beneath them |
-| `canonical-invalid`, `lastGoodStages` present | Same | Frozen last-good stages, WITHOUT nested events |
-| `canonical-invalid`, `lastGoodStages` null | Same | None + "detail unavailable" note |
+| `legacy` | Render — today's job/run/approval stepper, unchanged | Omitted entirely |
+| `canonical` | Omitted | Four reducer stages, 1:1, render directly, with observed events nested beneath each |
+| `canonical-invalid`, `lastGoodStages` present | Omitted | Frozen last-good stages render directly, WITHOUT nested events |
+| `canonical-invalid`, `lastGoodStages` null | Render (fallback) | Omitted; a "detail unavailable" note renders instead |
 
 Nested event rows are attached **only** from a trusted `canonical` stream. A `canonical-invalid` stream is the very stream whose reduction just failed, so its events are never grouped beneath the frozen last-good rows — the frozen stage statuses are preserved and the invalid stream's events are simply not shown (#40 fail-closed; a corrupt stream cannot make newly-invalid detail look trustworthy). No branch infers stage status from a timer or percentage. Corrupt canonical data can never fall through to legacy rendering because `canonical-invalid` is structurally distinct from `legacy`.
 
-**Run-expansion identity.** The Timeline component receives a `runExpansionKey` prop (`${jobId}:${runId}:${attemptNumber}`). A local `collapsed` boolean resets only when this identity changes — never on a poll tick or re-render for the same run. While the run is RUNNING (`status === "active"`), the disclosure control is omitted entirely and child rows always render. Once terminal, a collapse toggle appears (default expanded). This guarantees a live run cannot be collapsed and a collapsed terminal run's choice never leaks onto the next run, attempt, or job.
+**No expand/collapse state.** The four canonical stages are never collapsible — there is no disclosure control, no `runExpansionKey`, and no local "collapsed" state to reset on a new run/attempt/job. Whenever canonical children exist (`canonical`, or `canonical-invalid` with `lastGoodStages`), all four stages and any nested events they carry render in full, for the whole lifetime of the run, RUNNING or terminal alike.
 
 **Polling.** A single `setTimeout` chain (never `setInterval`) polls `GET /v1/agent-jobs/:jobId/investigation` concurrently with the blocking run POST. Overlap is structurally impossible — the next tick is scheduled only after the previous response settles. The cadence is bounded (1s/2s/5s), transient failures use a fixed backoff (2s→4s→8s→15s→15s), and polling stops at the first terminal observation, after 6 consecutive transient failures, or after 5 minutes of continuous polling. A "Check again" button starts a fresh bounded session with all counters reset. Error classification is centralized in `poll-error-classification.ts`: `INTERNAL_DATA_INVALID` pauses immediately with zero automatic retries; `AGENT_JOB_NOT_FOUND` stops and strips `?job=`; transient 5xx/network errors retry with backoff.
 
@@ -393,45 +438,52 @@ Nested event rows are attached **only** from a trusted `canonical` stream. A `ca
 
 `SuggestedActionsPanel` (a sibling component, not nested in `ReportPanel`) renders the suggested-actions list via `SuggestedActionCard`, which renders all three currently defined variants (`UPDATE_TICKET_STATUS`, `CREATE_ESCALATION`, `DRAFT_CUSTOMER_REPLY`) exhaustively. A `DRAFT_CUSTOMER_REPLY` body (up to 4000 characters) is rendered in full — `white-space: pre-wrap`, a bounded `max-height`, and vertical scrolling — never truncated.
 
-**Verified:** an ordinary investigation (unchecked demo checkbox) produces no Suggested actions section at all and an always-`NOT_ELIGIBLE` approval panel; checking **Approval workflow demo** (ticket `TICKET-APPROVAL-DEMO`) produces a Suggested actions section with exactly one `DRAFT_CUSTOMER_REPLY` card and a `PENDING` approval panel with a decision form.
+**Verified:** an ordinary investigation (no `?approval-demo=1`) produces no Suggested actions section at all and an always-`NOT_ELIGIBLE` approval panel; loading the app with `?approval-demo=1` (ticket `TICKET-APPROVAL-DEMO`) produces a Suggested actions section with exactly one `DRAFT_CUSTOMER_REPLY` card and a `PENDING` approval panel with a decision form.
 
 ---
 
-## 8. Run-detail layout and approval UX
+## 8. Run-detail flow and approval UX
 
-### 8.1 The problem this layout solves
+### 8.1 The problem the flat flow solves
 
-Before PR 5C, `ApprovalPanel` was the literal last DOM node on the run-detail page, stacked below the entire report in a 50/50-width column. A completed run looked finished — full report, status badge — even when it was only *execution*-complete and still needed a human decision (`PENDING`). Discovering that a decision was outstanding meant scrolling past the whole report. PR 5C fixes this without touching the backend contract at all: `ApprovalStatus`, `ApprovalView`, `presentApproval`'s inputs/outputs, and the `201`/`200`/`409`×2 handling described below are all unchanged from Milestone 7.
+Milestone 10 replaces the two-column layout with a single **flat 1→7 flow** (§15), because a decision outstanding at the very bottom of a tall report read as "done". Every item is a full-width section in one predictable top-to-bottom order:
 
-### 8.2 Two-column run-detail layout
-
-At the existing `64rem` (1024px) breakpoint, `.investigation-content` becomes a 2-column grid:
-
-```css
-grid-template-columns: minmax(0, 1fr) minmax(18rem, 22rem);
+```text
+1  Current investigation     — the compact post-job card (§12)
+2  approval banner           — only while approval is PENDING
+3  Progress + Resolution     — share a row on desktop; Resolution is the wider
+                               column, and Progress collapses to full width when
+                               it is the only child
+4  Suggested actions         — only when the COMPLETED report has any
+5  Human Approval            — ApprovalPanel, rendered directly for all four
+                               statuses; NOTHING renders while approval is null
+6  Agent Activity            — TraceTimeline with product-language labels (§6.2)
+7  Run Details               — InvestigationSummary, which absorbed
+                               RunOverviewPanel's unique facts (§19)
 ```
 
-- **Main reading surface** (`role="region" aria-label="Run detail"`, a `<div>` — not a `<section>`, so it does not itself pick up the `.investigation-content section` card-styling rule that its nested timeline/report sections already use) — flexible, visually dominant, holds the unchanged `TraceTimeline` and `ReportPanel`.
-- **Run Context Panel** (`<aside aria-label="Run context">`) — constrained to 18–22rem so it never competes with the report for width, and `position: sticky; top: var(--space-5)` on desktop so it stays visible while the reviewer scrolls a long report. Below `64rem` it returns to plain document flow (no sticky, single column).
+The backend contract is untouched: `ApprovalStatus`, `ApprovalView`, `presentApproval`'s inputs/outputs, and the `201`/`200`/`409`×2 handling are all unchanged.
 
-### 8.3 The reusable Run Context Panel
+### 8.2 The Progress + Resolution row and the approval gap
 
-`RunContextPanel` is a thin, stateless switch — not an approval-only component — so it can host a future historical-run detail view unmodified:
+`.resolution-row` is a CSS grid at `64rem` (1024px) and up:
 
-| Input | Rendered |
-|---|---|
-| `approval === null` | `RunOverviewPanel` — run facts only (status, started/finished, duration, trace-event count, suggested-action count, a jump link to the Agent activity section, and a **conditional** jump link to the Generated report section). **No eligibility claim of any kind** — `null` means "no approval data yet" (still loading, or the last fetch failed), never "not eligible," and conflating the two would misinform a reviewer. |
-| `approval.status === "NOT_ELIGIBLE"` | The same `RunOverviewPanel` run facts, **plus** the reused `presentApproval("NOT_ELIGIBLE", …)` badge/copy/hint — the exact same "Approval workflow demo" hint text as before, not a duplicated string. |
-| `approval.status === "PENDING"` | `ApprovalPanel`, whose decision semantics remain unchanged, showing the one active decision form. |
-| `approval.status === "APPROVED"` / `"REJECTED"` | `ApprovalPanel`, whose decision semantics remain unchanged, showing the read-only terminal record. |
+```css
+grid-template-columns: minmax(15rem, 20rem) minmax(0, 1fr);
+```
 
-`ApprovalPanel` itself needed only two small additions for this PR — `tabIndex={-1}` on its heading (§8.5) and a `className` on the terminal note `<dd>` for safe wrapping (§8.6) — its decision semantics, `201`/`200`/`409` handling, and double-submit guard are exactly as documented below, unchanged.
+- **Progress** (narrow column) — `InvestigationProgressTimeline`, including the four canonical execution stages rendered directly as the primary stepper (§6.5). It is gated on `job !== null` and always renders when the composer is gone, so the reviewer always sees *something* from the moment the investigation commits.
+- **Resolution** (wide column) — `ReportPanel`, gated on `run.outcome.type !== "RUNNING"`. A `RUNNING` outcome renders no placeholder — the row collapses to Progress alone via `> :only-child { grid-column: 1 / -1 }`.
 
-**The "Jump to report" link is conditional** (§6.3, §6.4): `RunOverviewPanel` takes a `showReportLink: boolean` prop, passed down from `App.tsx` as `run.outcome.type !== "RUNNING"` — the exact same condition that gates `ReportPanel` itself. A jump link must never target a heading that was not rendered; for a `RUNNING` outcome (no Generated report panel at all), the link is omitted entirely rather than pointing at nothing. The "Jump to activity" link has no such condition — Agent activity is unconditional on `run !== null`.
+Below `64rem` the row stacks to one column. **The approval gap:** while `approval === null` (loading, or the fetch failed), no decision surface mounts — the Progress Timeline's own `approval` stage already states truthfully that the approval state is pending/unknown, and no empty panel or eligibility claim is invented.
+
+### 8.3 Item 7 — Run Details (InvestigationSummary)
+
+`RunContextPanel` and `RunOverviewPanel` are **deleted**. `InvestigationSummary` becomes item 7. The Issue #41 polish pass (§12) matched it to the approved compact reference: four primary fields — **Provider / Model / Duration / Attempt** — with user-facing values (`Demo` for `FAKE`, `Live` for `LIVE`, never the raw enums), and **everything long/internal behind a `Technical details` disclosure**: Started, Finished, Trace-event count, Suggested-action count, Estimated cost (row hidden entirely when null — never `$0.00`, which would assert a measured free run), and the Ticket/Job/Run IDs as a read-only `<dl>` (never a disabled input). Refresh and Retry Run remain real controls but are de-emphasized as secondary actions; the "Jump to activity" / "Jump to report" links are **removed** — the flat flow is already in reading order, so in-page jumps would just duplicate the DOM order.
 
 ### 8.4 The pending-decision banner
 
-A stateless `ActionRequiredBanner`, rendered by `App.tsx` only when `approval?.status === "PENDING"` (a condition derived from existing state — no new `useState`). **Position:** it used to render between the Investigation summary and the run-detail grid — i.e. before Agent activity/Report — which put approval-related UI ahead of the reveal-order it now enforces (§6.3). It now renders as the first child of the `<aside aria-label="Run context">` column, immediately before `RunContextPanel` — after Agent activity, Generated report, and Suggested actions in DOM order, still visually adjacent to the Approve/Reject controls:
+A stateless `ActionRequiredBanner`, rendered by `App.tsx` only when `approval?.status === "PENDING"` (a condition derived from existing state — no new `useState`). **Position (§15):** item 2 of the flat flow, directly after Current investigation and before Progress + Resolution — approval-related UI stays ahead of the report reading surfaces, never buried at the bottom. It is an informational jump to the item-5 decision surface — the panel, not the banner, decides:
 
 ```tsx
 <a className="action-required-banner" href="#approval-heading">
@@ -461,13 +513,13 @@ The existing `role="status" aria-live="polite"` notice region (§4, §9) is the 
 
 ### 8.6 Long content
 
-A long terminal reviewer note (up to 1000 characters) is allowed to make the read-only terminal panel taller and rely on ordinary page scrolling — `white-space: pre-wrap; overflow-wrap: anywhere;` on the note `<dd>`, deliberately **not** a nested `overflow-y: auto` scroll region, since a decision is read-only once terminal and a second, internally-scrollable region inside an already-sticky column would need its own focus/keyboard handling to stay accessible for no real benefit. The Approve/Reject button row (`.approval-decision-actions`) gains `flex-wrap: wrap` so it never overflows the panel's 18–22rem width.
+A long terminal reviewer note (up to 1000 characters) is allowed to make the read-only terminal panel taller and rely on ordinary page scrolling — `white-space: pre-wrap; overflow-wrap: anywhere;` on the note `<dd>`, deliberately **not** a nested `overflow-y: auto` scroll region. The Approve/Reject button row (`.approval-decision-actions`) gains `flex-wrap: wrap` so it never overflows a narrow (mobile) panel width.
 
 ### The four statuses
 
 | Status | Rendered | Controls |
 |---|---|---|
-| `NOT_ELIGIBLE` | Badge + "This run has no suggested actions to approve." + the eligibility rule + a hint naming the **Approval workflow demo** checkbox (never a ticket ID) | None |
+| `NOT_ELIGIBLE` | A compact secondary status (Issue #41 polish §10) — badge + "Not eligible: this run produced no suggested actions." The panel no longer consumes a full large card for a no-op state, and no `?approval-demo=1` copy leaks into product UI: the query param remains a deterministic hidden/test entry point, never a user-facing instruction. | None |
 | `PENDING` | Badge + "This run has N suggested action(s) awaiting a decision." (N is `report.suggestedActions.length`, since the approval read model itself carries no count) + `ApprovalDecisionForm` | Approve / Reject |
 | `APPROVED` | Badge + reviewer name + note (or "No note provided") + formatted `decidedAt` | None |
 | `REJECTED` | Identical shape with the rejected badge | None |
@@ -492,11 +544,11 @@ A required **Reviewer name** input (`maxLength 100`) and an optional **Note** te
 
 ### Approval-fetch failure
 
-If `GET .../approval` fails — after a run completes, after Retry Run, or after Refresh — the safe error is shown, but the run, timeline, report, evidence, and suggested actions **stay exactly as rendered**. Approval is an annotation on an already-successful run, not a precondition for showing one. In the run-detail layout, this is also the case where `RunContextPanel` falls back to `RunOverviewPanel` with `eligibilityNote={null}` (§8.3) — the reviewer still gets useful run context even when the approval fetch itself failed.
+If `GET .../approval` fails — after a run completes, after Retry Run, or after Refresh — the safe error is shown, but the run, timeline, report, evidence, and suggested actions **stay exactly as rendered**. Approval is an annotation on an already-successful run, not a precondition for showing one. In the flat flow this is the `approval === null` case (§8.2): no decision surface mounts and the Progress Timeline's approval stage carries the truthful "unknown yet" state — the reviewer still gets the full run, report, and activity surfaces.
 
 ### 8.7 Test coverage
 
-Structural/DOM-order regressions are covered in `apps/web/src/App.run-context-layout.test.tsx` (banner presence per status, a banner-follows-Run-detail-region source-order check, exactly one Approve/one Reject button while `PENDING`, the `RunContextPanel` three-way switch, all three notice-wording variants, `tabindex="-1"` on the timeline/report/approval headings, and that a long reviewer note stays a single, non-duplicated `<dd>`); `apps/web/src/run/run-overview-presentation.test.ts` covers the extracted `runStatusBadge` helper's four branches. The one `compareDocumentPosition()` assertion in that file is a structural DOM-order regression check on two elements otherwise located by `getByRole` — not a simulation of user-perceived visual order, since jsdom has no real layout engine. Real `position: sticky` behavior, no-scroll initial visibility on a real viewport, real fragment scrolling/focus, and `prefers-reduced-motion` are exactly the things jsdom cannot prove; they remain open manual-verification items (§11), not yet performed as of this implementation session, and are recorded here as such rather than assumed or claimed as done. All pre-existing suites (`App.approval.test.tsx`, `App.run-workflow.test.tsx`, `components/ApprovalPanel.test.tsx`, `components/ApprovalDecisionForm.test.tsx`, `approval/approval-presentation.test.ts`) pass unmodified — none of their assertions depend on `ApprovalPanel`'s DOM ancestry, any CSS class name, or the notice-region's exact text.
+Structural/DOM-order regressions are covered in `apps/web/src/App.run-context-layout.test.tsx` (banner presence per status, a flat-flow source-order check — banner precedes the Approval region, which precedes Run details, exactly one Approve/one Reject button while `PENDING`, `approval === null` rendering no eligibility claim, all three notice-wording variants, `tabindex="-1"` on the timeline/report/approval headings, and that a long reviewer note stays a single, non-duplicated `<dd>`); `apps/web/src/run/run-overview-presentation.test.ts` covers the extracted `runStatusBadge` helper's four branches. The `compareDocumentPosition()` assertions in that file are structural DOM-order regression checks on elements otherwise located by `getByRole` — not a simulation of user-perceived visual order, since jsdom has no real layout engine. Real sticky/grid behavior, real fragment scrolling/focus, and `prefers-reduced-motion` are exactly the things jsdom cannot prove; they remain open manual-verification items (§11).
 
 **Milestone 9 Phase A (§6.1)** adds `App.progress-timeline.test.tsx` (immediate mount, job/run/approval stage transitions via deferred-promise fixtures, a failed stage surviving `phase` returning to idle, later stages staying Pending, the four `approvalLoadStatus` states, reveal order, approval-load failure not hiding a completed report, LIVE-only availability stage, single `aria-live` region, no percentage ever rendered, Retry Run resetting stage/elapsed state, and the elapsed timer stopping on both success and failure and cleaning up on unmount — `vi.useFakeTimers()` scoped to only those three tests), plus unit-level `investigation-progress/investigation-progress-stages.test.ts` and `hooks/useElapsedTime.test.ts` for the underlying pure derivation and timer hook. The five existing suites containing "Investigation timeline" text assertions (`App.live-idempotency.test.tsx`, `App.approval.test.tsx`, `App.live-retry.test.tsx`, `App.capabilities-refresh.test.tsx`, `App.run-workflow.test.tsx`) were mechanically updated to "Agent activity" — a pure text-synchronization-point rename, no behavioral assertion changed.
 
@@ -504,20 +556,20 @@ Structural/DOM-order regressions are covered in `apps/web/src/App.run-context-la
 
 ### 8.8 Future historical-run compatibility
 
-`RunContextPanel` and `RunOverviewPanel` take only `run`/`trace`/`approval`/decision-callback props — nothing about them depends on the current single-page, no-router architecture. A future historical-run list's "open a run" action can render the same `.investigation-content` grid (main region + Run Context Panel) per selected run, unmodified. This PR does not implement that list (out of scope), but does not foreclose it either.
+Milestone 10 deleted the `RunContextPanel`/`RunOverviewPanel` wrapper, but `InvestigationSummary` (item 7 — Run Details) still renders the same run facts from `run`-scoped props and takes no router or page-level dependency. A future historical-run list's "open a run" action can re-render the flat flow for a selected run without another layout redesign. This milestone does not implement that list (out of scope), but does not foreclose it either.
 
 ---
 
 ## 9. Accessibility baseline
 
-One `<h1>`; ordered heading levels per section, including the "Approval" `<h2>` at the same level as "Generated report". Every control has a real, associated `<label>` — no placeholder-as-label, including the reviewer-name and note fields. Native `<button>`/`<textarea>`/`<input>` only, so keyboard operation works without a key handler. `role="alert"` for the error banner; a persistent `aria-live="polite"` region for workflow progress and notices, including the replay/decision-recorded notices and, since PR 5C, the pending-decision announcement (§8.5). `aria-busy` on both the investigation form and the decision form while their respective workflow is active. A visible `:focus-visible` outline. Status is never color-only — `StatusBadge` always renders a text label plus a glyph (`✓` approved/done, `✕` rejected/failed, `●` pending/active/in progress, `—` not eligible/pending), reused unchanged from run status and, since Milestone 9 Phase A, by the Investigation Progress stage rows (§6.1). WCAG-AA-readable contrast. No horizontal page scroll at 360px width. The timeline is `<ol>`; evidence and suggested actions are `<ul>`; identifiers, report fields, and the terminal approval record are `<dl>`. Terminal approval states are visually and structurally read-only — no button is rendered at all, so there is nothing for a screen reader to announce as an editable control.
+One `<h1>`; ordered heading levels per section, including the "Approval" `<h2>` at the same level as "Resolution report". Every control has a real, associated `<label>` — no placeholder-as-label, including the reviewer-name and note fields. Native `<button>`/`<textarea>`/`<input>` only, so keyboard operation works without a key handler. `role="alert"` for the error banner; a persistent `aria-live="polite"` region for workflow progress and notices, including the replay/decision-recorded notices and, since PR 5C, the pending-decision announcement (§8.5). `aria-busy` on both the investigation form and the decision form while their respective workflow is active. A visible `:focus-visible` outline. Status is never color-only — `StatusBadge` always renders a text label plus a glyph (`✓` approved/done, `✕` rejected/failed, `●` pending/active/in progress, `—` not eligible/pending), reused unchanged from run status and, since Milestone 9 Phase A, by the Investigation Progress stage rows (§6.1). WCAG-AA-readable contrast. No horizontal page scroll at 360px width. The timeline is `<ol>`; evidence and suggested actions are `<ul>`; identifiers, report fields, and the terminal approval record are `<dl>`. Terminal approval states are visually and structurally read-only — no button is rendered at all, so there is nothing for a screen reader to announce as an editable control.
 
 **Still exactly one `aria-live` region.** `InvestigationProgressTimeline` deliberately does NOT add a second one. Stage transitions ride the same shared `role="status"` notice region that already exists — this preserves the pre-existing, tested invariant (`App.live-idempotency.test.tsx`, `App.progress-timeline.test.tsx`, and `App.live-region-text.test.tsx` each assert `document.querySelectorAll("[aria-live]")` has length 1, the last with the Progress Timeline actually mounted and mid-stage).
 
 **What the live region actually announces.** It announces the CURRENT active stage and the terminal outcome — it does NOT announce every visual Completed-checkmark transition individually as its own event. Concretely, while `phase` is one of `checking-availability`/`creating-job`/`running-agent`/`loading-approval`, the region's text is exactly that stage's active label, sourced from `STAGE_LABELS` (`investigation-progress/investigation-progress-stages.ts` — the SAME source the visual Progress Timeline rows read, so the two can no longer drift the way they once did: the live region used to say "Running agent…" while the visual row said "Agent investigation in progress…"):
 
 ```text
-Checking Live Claude availability…
+Checking Live availability…
 Creating investigation…
 Agent investigation in progress…
 Loading approval state…
@@ -530,7 +582,7 @@ Investigation failed while creating the investigation.
 Investigation failed while running the agent investigation.
 ```
 
-(The LIVE-availability-refusal case keeps its existing, already-specific notice — "Live Claude is temporarily unavailable. No investigation job was created." — rather than a second, more generic phrase.) An approval-load failure does not stop the workflow (the report/trace stay visible, §6.3) and is announced only via the existing `ErrorBanner`, not a stage-specific live-region phrase. All of the above is asserted verbatim, per stage, in `App.live-region-text.test.tsx`.
+(The LIVE-availability-refusal case keeps its existing, already-specific notice — "Live is temporarily unavailable. No investigation job was created." — rather than a second, more generic phrase. Milestone 10 presents it as a **non-failure**: the phase returns to idle, no `failedStage` is set, and the composer stays visible — §9.1.) An approval-load failure does not stop the workflow (the report/trace stay visible, §6.3) and is announced only via the existing `ErrorBanner`, not a stage-specific live-region phrase. All of the above is asserted verbatim, per stage, in `App.live-region-text.test.tsx`.
 
 **The elapsed-time counter is deliberately NOT live-announced.** It renders as plain visible text (`.investigation-progress-elapsed`) outside the `aria-live` region, updating roughly once a second. A live region re-announcing a changing number every second would be unusable with a screen reader; only the discrete stage-label text changes (already covered by the existing notice region) are announced, not the ticking clock. No CSS transition or animation runs on the numeric value itself.
 
@@ -538,7 +590,27 @@ Investigation failed while running the agent investigation.
 
 **No stolen focus.** Mounting the Progress Timeline immediately on submit does not move focus away from the control the user just activated, consistent with the pre-existing "no focus is ever forced automatically" rule.
 
-**Since PR 5C:** two named landmarks structure the run-detail page — `role="region" aria-label="Run detail"` (main reading surface) and `<aside aria-label="Run context">` (the Run Context Panel), giving screen-reader users a second, independent path to the decision beyond the visual banner. The timeline, report, and approval headings all carry `tabIndex={-1}`, making them valid native fragment-navigation targets. `html { scroll-behavior: smooth; }` is disabled under `@media (prefers-reduced-motion: reduce)`. No focus is ever forced automatically on page load or run completion — the only new focus behavior is native fragment-navigation focus triggered by an explicit click on the `Action required` banner.
+**Since PR 5C:** the timeline, report, and approval headings all carry `tabIndex={-1}`, making them valid native fragment-navigation targets. `html { scroll-behavior: smooth; }` is disabled under `@media (prefers-reduced-motion: reduce)`. No focus is ever forced automatically on page load or run completion — the only focus behavior is native fragment-navigation focus triggered by an explicit click on the `Action required` banner. Milestone 10 keeps the ProductHeader (`<header>`) and AppFooter (`<footer>`) as the two page landmarks, with each named card section exposing an accessible name via its labelled heading — a screen-reader user gets an independent path to the decision beyond the visual banner.
+
+### 9.1 Non-failure presentation of a Live admission refusal
+
+When a new LIVE submission is refused before any job exists — the capabilities
+preflight declines (§13.1.1), the server rejects with 401/429/503 (§13.2), or a
+public-trial visitor has no runs left (§13.1) — the refusal is a **non-failure**,
+never one of the workflow-stopping `failedStage`s:
+
+| Behavior | Rule |
+| --- | --- |
+| `failedStage` | **never set** — the refusal did not start a workflow, so there is nothing to fail (§9) |
+| Phase | returns to `idle` |
+| Composer | stays visible — the visitor can correct the Live selection or token and try again |
+| Notice | the fixed string "Live is temporarily unavailable. No investigation job was created." |
+| Prior investigation | untouched — an existing job's Current investigation / Progress / report stay on screen |
+| LIVE selection | preserved — the Live card stays selected, so the visitor knows what was refused |
+
+Nothing about the refusal implies the workflow failed, because nothing started.
+This mirrors §6.3's reveal-on-data rule: surfaces appear only on real state, and
+a refusal creates no state.
 
 ---
 
@@ -578,33 +650,36 @@ pnpm --filter @opspilot/web run dev       # Terminal B — blocks; http://127.0.
 In the browser:
 
 ```text
-1. Type an Issue Summary and click Run Investigation (checkbox unchecked)
-   -> the Run Context Panel renders NOT_ELIGIBLE, with no controls
+0. Load http://localhost:5173
+   -> ProductHeader shows "OpsPilot / AI Operations Investigator" and
+      "View source ↗" (https://github.com/wye-ts/opspilot); AppFooter shows
+      "Built by Wenjie Ye · LinkedIn ↗"
+1. Type an Issue Summary and click Start Investigation (Demo card selected)
+   -> the composer collapses; Current investigation renders; the Progress
+      Timeline advances; the Approval region renders NOT_ELIGIBLE with no
+      controls; Run details (item 7) shows Ticket/Job/Run IDs
    -> no "Action required" banner appears
-2. Check "Approval workflow demo" and click Run Investigation again
+2. Reload with ?approval-demo=1 and run a Demo investigation
    -> the report shows exactly one DRAFT_CUSTOMER_REPLY suggested action
-   -> the "Action required" banner appears in the Run context column, above the
-      approval decision form (after Agent activity/Report/Suggested actions
-      in DOM order — §6.3/§8.4)
+   -> the "Action required" banner appears as item 2, above Progress + Resolution
    -> the notice region reads "Investigation complete. Human approval required."
-   -> the Run Context Panel renders PENDING with the decision form, sticky on
-      a desktop-width viewport
+   -> the Approval region (item 5) renders PENDING with the decision form
    -> clicking the banner should scroll to and focus the Approval heading — the
       target heading is programmatically focusable (`tabIndex={-1}`) and this is
       the native fragment-link baseline; confirm the actual scroll/focus result
       in your browser, since it was not verified in this implementation session
 3. Enter a reviewer name (and, optionally, a note), click Approve
-   -> "Decision recorded."; the panel becomes the read-only APPROVED record
-   -> the banner disappears; no edit or revoke control exists
-4. Run a fresh "Approval workflow demo" investigation and click Reject instead
+   -> "Decision recorded."; the Approval region becomes the read-only APPROVED
+      record; the banner disappears; no edit or revoke control exists
+4. Run a fresh ?approval-demo=1 investigation and click Reject instead
    -> the symmetric terminal REJECTED state
 5. Click Refresh on a PENDING run
    -> the notice region reads "Run refreshed. Human approval required." —
       never the fresh-completion wording, since the run itself was not new
-6. Resize the browser below 1024px width
-   -> the layout collapses to a single column; the banner still appears near
-      the top when PENDING, but no raw Approve/Reject button is ever pinned
-      before the full decision card
+6. Resize the browser between ~1440px and ~390px
+   -> the Progress + Resolution row stacks below 1024px; the CTA goes full-width
+      on mobile; the whole flat flow stays a single column with no horizontal
+      page scroll
 ```
 
 ```bash
@@ -620,37 +695,42 @@ pnpm --filter @opspilot/web run preview  # serves the production build at http:/
 
 **Executing an approved action** — actually performing `UPDATE_TICKET_STATUS`, `CREATE_ESCALATION`, or `DRAFT_CUSTOMER_REPLY` against a real downstream system once a decision is `APPROVED` — is unbuilt anywhere in OpsPilot, not only in `apps/web`. It would need its own design: target systems, credentials, retry/idempotency semantics, and an audit trail distinct from the approval record itself, none of which this milestone specifies. Editing or revoking a terminal decision remains an explicit non-goal (§1) for the same reason `docs/13-approval-workflow.md` §5 gives: there is no product requirement motivating it yet, and adding one silently would let a "decision" stop meaning what an auditor expects it to mean.
 
-**A historical-run list** (browse past investigations, reopen an old run's report and decision) is not implemented in PR 5C. §8.8 documents why the Run Context Panel's props were deliberately kept generic (`run`/`trace`/`approval`/decision-callback only) so this future list can reuse the same run-detail grid per selected row without another layout redesign. Live-deployment evidence, screenshots, and cold-start observations for this milestone are tracked separately (PR 5D), not in this document.
+**A historical-run list** (browse past investigations, reopen an old run's report and decision) is not implemented in this milestone. §8.8 documents why the flat-flow surfaces are `run`-scoped so this future list can re-render the same flow per selected row without another layout redesign. Live-deployment evidence, screenshots, and cold-start observations for this milestone are tracked separately, not in this document.
 
 
 ---
 
 ## 13. PR 6B2 — provider selector, access token, and run cost
 
-Deliberately minimal and additive. The approval UI, trace timeline, report
-panel, and layout are untouched.
+Milestone 10 re-presented the provider selector as **whole-card radios**
+(`ProviderCard`) with the product identity "Demo / Live" — never "Live Claude" —
+and moved the approval-demo checkbox out of the form entirely (§3).
 
 ### 13.1 Mode selector
 
-A two-option radio group in `InvestigationForm`, defaulting to **FAKE**.
+A two-card radio group in `InvestigationForm`, defaulting to **FAKE**, built
+from the pure `presentProviders(capabilities)` mapping
+(`provider/provider-presentation.ts`). Each card wraps its radio input, so the
+whole card is the hit target and keyboard/radio semantics come from the native
+input.
 
-| | Demo — FAKE | Live Claude |
+| | Demo | Live |
 | --- | --- | --- |
-| Copy | "Deterministic, fast, no model cost." | "Real `claude-sonnet-5`. Protected by availability and usage limits." |
-| Approval-demo checkbox | shown | **hidden**, and `approvalDemo` is cleared on switching |
+| Label | "Demo" | "Live" |
+| Supporting copy | "Deterministic · Fast · No model cost" | "Real model execution" |
+| Availability pill | Always "Available" (success) | "Available" / "Daily trial available" / "Daily trial used" / "Temporarily unavailable", per capabilities |
+| Current-model metadata | none | `claude-sonnet-5 · Current model`, only while LIVE is genuinely available — a claim that this is the configured model, never that a model executed |
+| Approval demo | chosen via `?approval-demo=1` at mount (§3) | **never** — `approvalDemo` is cleared on switching to LIVE and again at submit; a live run never uses `TICKET-APPROVAL-DEMO` |
 | Access-token field | hidden | shown when the server says a token is required |
 | Request body | `{"providerMode":"FAKE"}` | `{"providerMode":"LIVE"}` |
 
-When `GET /v1/capabilities` reports `UNAVAILABLE`, the LIVE option renders
-**disabled with a visible reason** — "Live Claude is temporarily unavailable —
-the deterministic demo is always available" — rather than hidden. A hidden
-control makes the feature look absent rather than protected. Capabilities that
-have not loaded yet are treated as unavailable, so the option is never briefly
-offered before the server has said it is available.
-
-A live run never uses `TICKET-APPROVAL-DEMO`: the deterministic approval
-scenario has no meaning for a live provider, so `approvalDemo` is cleared both
-on switching to LIVE and again at submit.
+When `GET /v1/capabilities` reports `UNAVAILABLE` (or a public-trial visitor has
+used their daily run), the LIVE card renders **disabled with a visible reason** —
+"Temporarily unavailable — the deterministic demo is always available." (or the
+trial-exhausted reason) — rather than hidden. A hidden control makes the feature
+look absent rather than protected. Capabilities that have not loaded yet are
+treated as unavailable, so the option is never briefly offered before the server
+has said it is available.
 
 #### 13.1.1 Capabilities are a dynamic, fail-closed hint
 
@@ -707,7 +787,8 @@ result or the error already on screen, and nothing about the response is logged.
 | `createAgentJob` sent | **no** |
 | `startAgentRun` sent | **no** |
 | Silent FAKE fallback | **never** |
-| Notice | "Live Claude is temporarily unavailable. No investigation job was created." |
+| Notice | "Live is temporarily unavailable. No investigation job was created." |
+| Presentation | **Non-failure (§9.1)** — the phase returns to idle, no `failedStage` is set, the composer stays visible, and the visitor's Live selection is preserved; nothing about the previous investigation (if any) is cleared |
 
 **The preflight is advisory, not atomic.** The **backend admission path remains
 authoritative** — the token check, rate limit, budget gate, concurrency lease,
@@ -768,7 +849,7 @@ disabled until the field is non-empty regardless of the snapshot.
 **When new runs are closed, the recovery banner says so** rather than leaving the
 user to reconcile a live button with a disabled LIVE option elsewhere:
 
-> New Live Claude runs are currently unavailable. Recovery of an existing request
+> New Live runs are currently unavailable. Recovery of an existing request
 > is still allowed.
 
 It promises nothing about the outcome, deliberately. The server may still refuse
@@ -803,17 +884,24 @@ silent retry and no fallback to FAKE** — a refused live run stays refused.
 
 ### 13.3 Summary affordance
 
-```text
-Describe the issue in at least 15 characters.
-8 / 15
-```
+Progressive validation guides toward the 15-character minimum without a hard
+counter (Milestone 10 removed the `8 / 15` readout). The CTA stays disabled
+until the **trimmed** length reaches 15; the backend remains authoritative:
 
-The counter measures the **trimmed** length, and submit is disabled outside
-15–2000 trimmed characters. Affordance only: the backend remains authoritative.
+| State | Helper text |
+| --- | --- |
+| Empty | subtle — "Describe the issue in at least 15 characters." |
+| 1–14 trimmed characters | amber — "Add more detail — the issue summary needs at least 15 characters." |
+| ≥ 15 trimmed characters | helper cleared; CTA enabled |
+
+The **trimmed** length is what is measured, and submit is disabled outside
+15–2000 trimmed characters.
 
 ### 13.4 Run display
 
-`RunOverviewPanel` gains three rows, all from data the API already returns:
+Milestone 10 deleted `RunContextPanel`/`RunOverviewPanel`. `InvestigationSummary`
+(item 7 — Run Details) absorbs their facts and gains three rows, all from data
+the API already returns:
 
 | Row | Source | When absent |
 | --- | --- | --- |
@@ -825,3 +913,32 @@ The badge renders the persisted mode verbatim; the *requested* mode is never
 displayed, so a run requested as LIVE but persisted as FAKE reads FAKE. A null
 cost renders nothing at all — never `$0.00`, which would assert a measured free
 run.
+
+---
+
+## 15. Flat 1→7 run-detail flow (canonical order)
+
+The flat 1→7 run-detail flow is the single canonical render order for every
+surface beneath the composer once a job exists (`job !== null`). Milestone 10
+introduced it to replace the two-column Run Context / Run Overview layout
+(`RunContextPanel` / `RunOverviewPanel` deleted). `App.tsx` renders exactly
+these items, top to bottom:
+
+```text
+1. Current investigation   CurrentInvestigation — eyebrow + job summary + provider
+2. Action required banner  ActionRequiredBanner — ONLY while approval?.status === "PENDING" (§8.4)
+3. Progress + Resolution   the shared row: Progress Timeline (narrow) | Resolution (wide)
+4. Suggested actions       suggested-action cards from the report (§7)
+5. Human Approval          ApprovalPanel — all four statuses (§8.5)
+6. Agent Activity          TraceTimeline product language + Technical details disclosure (§6.2)
+7. Run Details             InvestigationSummary — Provider/Model/Duration/Attempt + Technical details disclosure, Refresh, Retry Run (§8.3)
+```
+
+Two rendering invariants:
+
+- **Every item is full-width, one column** at all breakpoints, except the
+  item-3 Progress/Resolution row, which stacks below 1024px (§8.2). There are
+  no side-by-side panels and no horizontal page scroll.
+- **Items 1–7 appear only on real state** (`job !== null`), never on `isBusy`
+  or `submittedSummary` (§6.3). A busy spinner is never mistaken for a
+  committed investigation and vice versa.

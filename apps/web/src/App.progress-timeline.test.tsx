@@ -105,14 +105,14 @@ function apiCalls() {
 
 async function submit(user: ReturnType<typeof userEvent.setup>, summary = "Elevated error rate") {
   await user.type(screen.getByLabelText("Issue Summary"), summary);
-  await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+  await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 }
 
 async function submitLive(user: ReturnType<typeof userEvent.setup>, summary = "Elevated error rate", token = TOKEN) {
   await user.type(screen.getByLabelText("Issue Summary"), summary);
-  await user.click(screen.getByRole("radio", { name: /Live Claude/ }));
+  await user.click(screen.getByRole("radio", { name: /Live/ }));
   await user.type(screen.getByLabelText("Live demo access token"), token);
-  await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+  await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 }
 
 /** A response that only resolves once the test explicitly resolves it. */
@@ -141,6 +141,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
+  window.history.replaceState(null, "", "/");
 });
 
 describe("Investigation progress timeline (#34/#35)", () => {
@@ -151,32 +152,33 @@ describe("Investigation progress timeline (#34/#35)", () => {
 
     render(<App />);
 
-    expect(screen.queryByText("Submitted issue")).toBeNull();
+    expect(screen.queryByText("Current investigation")).toBeNull();
     expect(screen.queryByText("Investigation progress")).toBeNull();
     expect(screen.queryByText("Agent activity")).toBeNull();
-    expect(screen.queryByText("Generated report")).toBeNull();
+    expect(screen.queryByText("Resolution report")).toBeNull();
     expect(screen.queryByRole("region", { name: "Approval" })).toBeNull();
   });
 
-  // Requirements 2 and 3: submitted summary + Progress Timeline appear
-  // immediately while job creation is unresolved, and the Run button stays
-  // disabled (duplicate submission remains prevented).
-  it("shows the submitted summary and Progress Timeline immediately, with the button disabled, while job creation is unresolved", async () => {
+  // Requirements 2 and 3: the busy CTA stays disabled while job creation is
+  // unresolved (duplicate submission remains prevented). The Progress Timeline
+  // and "Current investigation" card are grounded on a committed job, so they
+  // only mount once the deferred POST resolves (Milestone-10 composer
+  // collapse), after which the summary is shown in the Current investigation
+  // card.
+  it("locks the CTA while job creation is unresolved and reveals the Current investigation card once the job commits", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     const deferredJob = deferredResponse();
     vi.mocked(fetch).mockResolvedValueOnce(fakeCapabilitiesResponse()).mockImplementationOnce(() => deferredJob.promise);
 
     render(<App />);
-    await submit(user, "Elevated error rate on billing");
+    await submit(user);
 
-    const submittedSection = screen.getByText("Submitted issue").closest("section");
-    if (submittedSection === null) throw new Error("no submitted-summary section");
-    expect(within(submittedSection).getByText("Elevated error rate on billing")).toBeInTheDocument();
-    expect(screen.getByText("Investigation progress")).toBeInTheDocument();
-    expect(within(stageRow("Creating investigation…")).getByText("In progress")).toBeInTheDocument();
-
+    // No grounded surfaces while job creation is unresolved — the composer is
+    // still visible and locked.
     expect(screen.getByRole("button", { name: "Creating investigation…" })).toBeDisabled();
+    expect(screen.queryByText("Current investigation")).toBeNull();
+    expect(screen.queryByText("Investigation progress")).toBeNull();
 
     // A second click while pending must not issue a second job POST.
     await user.click(screen.getByRole("button", { name: "Creating investigation…" }));
@@ -184,9 +186,15 @@ describe("Investigation progress timeline (#34/#35)", () => {
 
     deferredJob.resolve(jsonResponse(201, { data: jobResponse() }));
     await screen.findByText("Investigation created");
+
+    const currentSection = screen.getByText("Current investigation").closest("section");
+    if (currentSection === null) throw new Error("no current-investigation section");
+    expect(within(currentSection).getByText("Elevated error rate")).toBeInTheDocument();
   });
 
-  // Requirement 4: job stage Active -> Completed.
+  // Requirement 4: job stage Active -> Completed. The Active boundary is only
+  // observable as the busy CTA (the Timeline is grounded on a committed job);
+  // once job creation resolves the stage reads Done.
   it("moves the job stage from Active to Completed once job creation resolves", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
@@ -195,7 +203,7 @@ describe("Investigation progress timeline (#34/#35)", () => {
 
     render(<App />);
     await submit(user);
-    expect(within(stageRow("Creating investigation…")).getByText("In progress")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Creating investigation…" })).toBeDisabled();
 
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(201, { data: runDetail() }))
@@ -232,8 +240,11 @@ describe("Investigation progress timeline (#34/#35)", () => {
   });
 
   // Requirements 8 and 9: a failed stage remains visible after `phase`
-  // returns to idle, and every later stage remains Pending.
-  it("keeps the failed stage visible and later stages Pending after a job-creation failure", async () => {
+  // returns to idle, and every later stage remains Pending. Milestone 10
+  // grounds the whole Timeline on a committed job, so a job-creation failure
+  // (no job ever committed) mounts NO Timeline and no Current investigation
+  // card — the stopped submission is never painted as a fake Pending stage.
+  it("a job-creation failure shows the error and leaves no grounded progress timeline behind", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
@@ -244,15 +255,14 @@ describe("Investigation progress timeline (#34/#35)", () => {
     await submit(user);
     await screen.findByText("The request body failed validation.");
 
-    // `phase` is back to idle here (the error resolved it), yet the stage
-    // list must still show WHERE it stopped, not silently reset to Pending.
-    expect(within(stageRow("Creating investigation…")).getByText("Failed")).toBeInTheDocument();
-    expect(within(stageRow("Agent investigation in progress…")).getByText("Pending")).toBeInTheDocument();
-    // `run` stays listed as Pending — it is a real stage of this workflow that
-    // was never reached. `approval` is dropped instead: the submission is over,
-    // so a row reading "Pending — Loading approval state…" would describe a
-    // fetch that can never happen.
-    expect(within(progressRegion()).queryByText("Loading approval state…")).toBeNull();
+    // No job exists, so no Timeline / Current investigation card is grounded —
+    // in particular nothing reads "Pending — Loading approval state…", a fetch
+    // that can never happen.
+    expect(screen.queryByText("Investigation progress")).toBeNull();
+    expect(screen.queryByText("Current investigation")).toBeNull();
+    expect(screen.queryByText("Loading approval state…")).toBeNull();
+    // The composer stays visible for a fresh submission.
+    expect(screen.getByRole("button", { name: "Start Investigation" })).toBeEnabled();
   });
 
   // Requirement 10: approval idle/loading/loaded/failed are distinguishable.
@@ -300,12 +310,12 @@ describe("Investigation progress timeline (#34/#35)", () => {
     // Requirement 13: an approval-load failure must not hide the completed
     // run/report that already succeeded.
     expect(screen.getByText("Agent activity")).toBeInTheDocument();
-    expect(screen.getByText("Generated report")).toBeInTheDocument();
+    expect(screen.getByText("Resolution report")).toBeInTheDocument();
   });
 
   // Requirement 11: report/activity/actions appear only when run data exists,
   // and in the required DOM order.
-  it("reveals Agent activity, Generated report, and Suggested actions only once run data exists, in order", async () => {
+  it("reveals Agent activity, Resolution report, and Suggested actions only once run data exists, in order", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
@@ -317,17 +327,20 @@ describe("Investigation progress timeline (#34/#35)", () => {
 
     render(<App />);
     expect(screen.queryByText("Agent activity")).toBeNull();
-    expect(screen.queryByText("Generated report")).toBeNull();
+    expect(screen.queryByText("Resolution report")).toBeNull();
 
     await submit(user);
     await screen.findByText("Agent activity");
 
     const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
+    // The Current investigation card's h2 is the issue summary itself.
+    // Milestone-10 flat flow: the resolution row (Progress + Report) precedes
+    // the Agent activity section.
     const order = [
-      "Submitted issue",
+      "Elevated error rate",
       "Investigation progress",
+      "Resolution report",
       "Agent activity",
-      "Generated report",
     ].map((label) => headings.indexOf(label));
     expect(order.every((index) => index !== -1)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
@@ -338,7 +351,8 @@ describe("Investigation progress timeline (#34/#35)", () => {
   });
 
   // Requirement 12: Approval appears only when applicable and after its load
-  // settles.
+  // settles. Approval-demo mode is activated by ?approval-demo=1 at mount
+  // (the checkbox is removed in Milestone 10).
   it("does not render the Approval decision form until the approval fetch settles as PENDING", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
@@ -367,18 +381,18 @@ describe("Investigation progress timeline (#34/#35)", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockImplementationOnce(() => deferredApproval.promise);
 
+    window.history.replaceState({}, "", "/?approval-demo=1");
     render(<App />);
     await user.type(screen.getByLabelText("Issue Summary"), "Approval demo issue");
-    await user.click(screen.getByLabelText("Approval workflow demo"));
-    await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 
-    await screen.findByText("Generated report");
+    await screen.findByText("Resolution report");
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
-    expect(screen.getByText("Run overview")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Approval" })).toBeNull();
 
     deferredApproval.resolve(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
     await screen.findByRole("button", { name: "Approve" });
-    expect(screen.queryByText("Run overview")).toBeNull();
+    expect(screen.getByRole("region", { name: "Approval" })).toBeInTheDocument();
   });
 
   // Requirement 15: the LIVE-only availability stage is absent in FAKE mode
@@ -396,10 +410,10 @@ describe("Investigation progress timeline (#34/#35)", () => {
     render(<App />);
     await submit(user);
     await screen.findByText("Agent activity");
-    expect(within(progressRegion()).queryByText(/Live Claude availability/)).toBeNull();
+    expect(within(progressRegion()).queryByText(/Live availability/)).toBeNull();
   });
 
-  it("includes the availability stage first, in LIVE mode", async () => {
+  it("includes availability as lightweight preflight metadata, in LIVE mode (HQ polish §1)", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
@@ -417,10 +431,11 @@ describe("Investigation progress timeline (#34/#35)", () => {
     await submitLive(user);
     await screen.findByText("Agent activity");
 
-    const stages = within(progressRegion())
-      .getAllByRole("listitem")
-      .map((li) => li.textContent);
-    expect(stages[0]).toContain("Live Claude availability");
+    // Live availability renders, but as a plain metadata line above the
+    // stepper — never a dominant stepper row/listitem of its own.
+    const availability = within(progressRegion()).getByText(/Live availability/);
+    expect(availability.closest(".investigation-progress-preflight")).not.toBeNull();
+    expect(availability.closest("li")).toBeNull();
   });
 
   // Requirement 16: exactly one aria-live region remains.
@@ -432,9 +447,10 @@ describe("Investigation progress timeline (#34/#35)", () => {
 
     render(<App />);
     await submit(user);
+    deferredJob.resolve(jsonResponse(201, { data: jobResponse() }));
+    await screen.findByText("Investigation created");
     expect(screen.getByText("Investigation progress")).toBeInTheDocument();
     expect(document.querySelectorAll("[aria-live]")).toHaveLength(1);
-    deferredJob.resolve(jsonResponse(201, { data: jobResponse() }));
   });
 
   // Requirement 17: no percentage is ever rendered.
@@ -446,9 +462,11 @@ describe("Investigation progress timeline (#34/#35)", () => {
 
     render(<App />);
     await submit(user);
-    expect(screen.getByText("Investigation progress")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Creating investigation…" })).toBeDisabled();
     expect(document.body.textContent).not.toContain("%");
     deferredJob.resolve(jsonResponse(201, { data: jobResponse() }));
+    await screen.findByText("Investigation created");
+    expect(document.body.textContent).not.toContain("%");
   });
 
   // Requirement 14: retry resets transient progress state (elapsed clock and
@@ -500,7 +518,7 @@ describe("Investigation progress timeline (#34/#35)", () => {
     await user.click(screen.getByRole("button", { name: "Start new investigation" }));
 
     expect(screen.queryByText("Investigation progress")).toBeNull();
-    expect(screen.queryByText("Submitted issue")).toBeNull();
+    expect(screen.queryByText("Current investigation")).toBeNull();
   });
 
   // Requirements 6 and 7: the elapsed timer stops on terminal success and on
@@ -532,11 +550,12 @@ describe("Investigation progress timeline (#34/#35)", () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(pollFallbackResponse())));
     vi.mocked(fetch)
       .mockResolvedValueOnce(fakeCapabilitiesResponse())
-      .mockResolvedValueOnce(jsonResponse(400, errorEnvelope("REQUEST_BODY_INVALID", "The request body failed validation.")));
+      .mockResolvedValueOnce(jsonResponse(201, { data: jobResponse() }))
+      .mockResolvedValueOnce(jsonResponse(503, errorEnvelope("PERSISTENCE_UNAVAILABLE", "The database is temporarily unavailable.")));
 
     render(<App />);
     await submit(user);
-    await screen.findByText("The request body failed validation.");
+    await screen.findByText("The database is temporarily unavailable.");
 
     const elapsedAfterFailure = document.querySelector(".investigation-progress-elapsed")?.textContent;
     await vi.advanceTimersByTimeAsync(5000);
@@ -556,7 +575,6 @@ describe("Investigation progress timeline (#34/#35)", () => {
 
     const { unmount } = render(<App />);
     await submit(user);
-    expect(screen.getByText("Investigation progress")).toBeInTheDocument();
 
     unmount();
     await vi.advanceTimersByTimeAsync(5000);
@@ -625,10 +643,10 @@ describe("Investigation progress timeline (#34/#35)", () => {
         .mockResolvedValueOnce(pollFallbackResponse())
         .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+      window.history.replaceState({}, "", "/?approval-demo=1");
       render(<App />);
       await user.type(screen.getByLabelText("Issue Summary"), "Approval demo issue");
-      await user.click(screen.getByLabelText("Approval workflow demo"));
-      await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+      await user.click(screen.getByRole("button", { name: "Start Investigation" }));
       await screen.findByRole("button", { name: "Approve" });
       await waitFor(() => expect(within(stageRow("Approval state loaded")).getByText("Done")).toBeInTheDocument());
 
@@ -790,5 +808,28 @@ describe("Investigation progress timeline — incremental poll observations neve
     expect(within(childrenList).getByText("Diagnostic execution").closest("li")).toHaveClass(
       "investigation-progress-item--active",
     );
+  });
+});
+
+describe("Investigation progress timeline — HQ review polish (Issue #41 §1)", () => {
+  it("once canonical stages exist, 'Investigation created' renders exactly once and there is no separate 'Agent investigation in progress…' row", async () => {
+    const user = userEvent.setup();
+    mockPollFetch([
+      jsonResponse(200, {
+        data: pollRunningSnapshot([pollMakeEvent(1, { type: "RUN_CREATED" }), pollMakeEvent(2, { type: "AGENT_STARTED" })]),
+      }),
+    ]);
+
+    render(<App />);
+    await submit(user);
+    await waitFor(() => expect(progressRegion().querySelector(".investigation-progress-children-list")).not.toBeNull());
+
+    // "Investigation created" is the first canonical row's own label — it
+    // must not ALSO appear as a separate "job" system row.
+    expect(within(progressRegion()).getAllByText("Investigation created")).toHaveLength(1);
+    // The run's own aggregate label never renders as a row alongside its
+    // four canonical children — that information now lives in the four rows
+    // themselves.
+    expect(within(progressRegion()).queryByText("Agent investigation in progress…")).toBeNull();
   });
 });

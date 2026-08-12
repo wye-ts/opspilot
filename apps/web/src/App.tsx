@@ -23,9 +23,13 @@ import type {
 } from "./api/types";
 import type { InvestigationEventRecord, InvestigationRunStatus } from "@opspilot/contracts";
 import { ActionRequiredBanner } from "./components/ActionRequiredBanner";
+import { AppFooter } from "./components/AppFooter";
+import { ApprovalPanel } from "./components/ApprovalPanel";
+import { CurrentInvestigation } from "./components/CurrentInvestigation";
 import { ErrorBanner, type DisplayableError } from "./components/ErrorBanner";
 import { InvestigationForm, type InvestigationFormSubmission } from "./components/InvestigationForm";
 import { InvestigationProgressTimeline } from "./components/InvestigationProgressTimeline";
+import { ProductHeader } from "./components/ProductHeader";
 import { useInvestigationPoll, type PollCallbacks, type PollStopReason } from "./hooks/useInvestigationPoll";
 import {
   applyAcceptedSnapshotDerivation,
@@ -40,13 +44,19 @@ import {
   type TerminalSettlementClaim,
   type TerminalSettlementIdentity,
 } from "./investigation-progress/terminal-settlement";
-import { isUuid, readJobParam, withJobParam, withoutJobParam } from "./url/investigation-url";
+import {
+  isUuid,
+  readApprovalDemoParam,
+  readJobParam,
+  withJobParam,
+  withoutJobParam,
+} from "./url/investigation-url";
 import { InvestigationSummary } from "./components/InvestigationSummary";
 import { ReportPanel } from "./components/ReportPanel";
-import { RunContextPanel } from "./components/RunContextPanel";
 import { SuggestedActionsPanel } from "./components/SuggestedActionsPanel";
 import { TraceTimeline } from "./components/TraceTimeline";
 import { useElapsedTime, formatElapsed } from "./hooks/useElapsedTime";
+import { findFailedExecutionStageLabel } from "./investigation-progress/execution-stage-rows";
 import {
   deriveInvestigationProgressStages,
   stageFailureAnnouncement,
@@ -75,7 +85,7 @@ type Phase =
  * independently-worded copies of the same idea that could drift apart.
  */
 const PHASE_LABELS: Record<Phase, string> = {
-  idle: "Run Investigation",
+  idle: "Start Investigation",
   /**
    * The LIVE preflight.
    *
@@ -237,6 +247,15 @@ export function App() {
    */
   const [formResetKey, setFormResetKey] = useState(0);
   /**
+   * Mount-time read of `?approval-demo=1` (§7 / plan F2). With the public
+   * `Approval workflow demo` checkbox removed, this is the deterministic,
+   * bookmarkable deep link that keeps the approvable Demo reachable on the
+   * FAKE path. Read once, lazily, exactly like `?job=` is read on mount; the
+   * LIVE path still clears the selection at submit/switch, so a Live run never
+   * uses the approval-demo ticket.
+   */
+  const [defaultApprovalDemo] = useState<boolean>(() => readApprovalDemoParam(window.location.search));
+  /**
    * The submitted issue/provider snapshot — captured once, before the first
    * request of a submission, and kept until the user explicitly starts a new
    * investigation. Distinct from `job`/`run`: this exists to satisfy "the
@@ -362,13 +381,14 @@ export function App() {
    * alone. A job-only resume has no persisted mode yet, so `submittedSummary`
    * is provisionally seeded with a guess; once a run-bearing snapshot
    * arrives (from any ingestion path), its ACTUAL persisted mode must
-   * replace that guess everywhere it is read from, not only
-   * `activeProviderMode` — `submittedSummary.providerMode` drives both the
-   * "Submitted issue" section and the Progress Timeline's stage composition
-   * (`deriveInvestigationProgressStages` takes `providerMode` from
-   * `submittedSummary`, not from `activeProviderMode`). `RunContextPanel`
-   * already reads the mode directly off the persisted `run`, so it needs no
-   * separate synchronization here.
+   * replace that guess everywhere it is read from: `activeProviderMode` is
+   * read directly by the "Current investigation" card and by
+   * `deriveInvestigationProgressStages`' stage composition, so both of those
+   * must move together with `submittedSummary.providerMode` — the captured-
+   * submission snapshot — or the page would show contradictory persisted
+   * facts. `InvestigationSummary`'s Run details already reads the mode
+   * directly off the persisted `run`, so it needs no separate synchronization
+   * here.
    */
   function applyPersistedProviderMode(providerMode: "FAKE" | "LIVE") {
     setActiveProviderMode(providerMode);
@@ -807,9 +827,10 @@ export function App() {
       //
       // Finding 5 (final Codex re-review): synchronized via
       // `applyPersistedProviderMode`, not `setActiveProviderMode` alone — the
-      // Submitted-issue display and the Timeline's stage composition both
-      // read `submittedSummary.providerMode`, which must move together with
-      // `activeProviderMode` or the page shows contradictory persisted facts.
+      // "Current investigation" card and the Timeline's stage composition
+      // both read `activeProviderMode`, which must move together with
+      // `submittedSummary.providerMode` or the page shows contradictory
+      // persisted facts.
       applyPersistedProviderMode(candidateRun.providerMode === "LIVE" ? "LIVE" : "FAKE");
       setResumedJobOnly(false);
       const derivation = applyDerivationForCandidate(candidateJob, candidateRun, candidateEvents);
@@ -1396,9 +1417,11 @@ export function App() {
         // fail-closed state by refreshCapabilities. The previous
         // investigation's poll session, invalidated above, stays stopped —
         // there is nothing left for it to repopulate.
-        setNotice("Live Claude is temporarily unavailable. No investigation job was created.");
-        setFailedStage("availability");
-        setSubmittedFinishedAt(Date.now());
+        // Admission refusal is NOT a failure: no failed stage, no lifecycle
+        // mutation, no elapsed-freeze. The lifecycle surfaces are hidden by the
+        // `job !== null` gates (job was never created), and the composer stays
+        // visible with the user's Live selection intact — see §11.
+        setNotice("Live is temporarily unavailable. No investigation job was created.");
         // Back to idle, completing the busy edge: the form unlocks and the token
         // clears, exactly as it does after any other terminal outcome.
         setPhase("idle");
@@ -1413,8 +1436,8 @@ export function App() {
         setNotice(
           "Your live trial run for today has already been used. The deterministic demo remains available.",
         );
-        setFailedStage("availability");
-        setSubmittedFinishedAt(Date.now());
+        // Same non-failure presentation as the unavailable branch: no failed
+        // stage, no lifecycle mutation, composer stays visible.
         setPhase("idle");
         return;
       }
@@ -2063,6 +2086,23 @@ export function App() {
       : null;
   const progressText = isBusy ? PHASE_LABELS[phase] : (notice ?? "");
   const showActionRequiredBanner = approval?.status === "PENDING";
+  /**
+   * Milestone-10 composer collapse (§14 / plan phase 6). The fresh-submission
+   * form is the PRIMARY surface until a real job exists, and reappears for the
+   * two job-resident recovery modes (a LIVE run refused mid-run, and a job-only
+   * resume). Deliberately NOT gated on `isBusy`: preflight/job-creation are
+   * busy before any job exists and must keep the composer visible.
+   */
+  const showComposer = job === null || liveRetryTarget !== null || resumedJobOnly;
+  /**
+   * Both lifecycle surfaces (Current investigation, Progress Timeline) require
+   * grounded evidence of a real job — never `isBusy` (true during preflight/
+   * job-creation before any job exists) and never `submittedSummary !== null`
+   * (set before the job, so a refused admission would paint a fake Submitted
+   * issue / Progress Timeline). §11, plan phase 6.
+   */
+  const showCurrentInvestigation = job !== null;
+  const showProgressTimeline = job !== null;
 
   // The stage the CURRENT phase maps to for the Progress Timeline — "approval"
   // is deliberately excluded here (see investigation-progress-stages.ts):
@@ -2071,9 +2111,9 @@ export function App() {
   const activeProgressStageKey: "availability" | "job" | "run" | null =
     phase === "checking-availability" ? "availability" : phase === "creating-job" ? "job" : phase === "running-agent" ? "run" : null;
   const progressStagesResult =
-    submittedSummary !== null
+    job !== null
       ? deriveInvestigationProgressStages({
-          providerMode: submittedSummary.providerMode,
+          providerMode: activeProviderMode,
           activeStageKey: activeProgressStageKey,
           failedStage,
           jobCreated: job !== null,
@@ -2089,56 +2129,93 @@ export function App() {
       : null;
   const progressStages = progressStagesResult?.stages ?? [];
   const executionDetailNote = progressStagesResult?.executionDetailNote ?? null;
-  // A cheap derived value — no memoization needed for a string template.
-  // Resets the Timeline's collapse state on a genuine run/attempt/job change
-  // without requiring a second piece of React state.
-  const runExpansionKey =
-    job !== null && run !== null ? `${job.id}:${run.run.id}:${run.run.attemptNumber}` : null;
+  // Grounds ReportPanel's FAILED summary in the same canonical stage rows
+  // the Progress Timeline renders — never a separately-invented mapping
+  // (HQ review §3).
+  const failedStageLabel = findFailedExecutionStageLabel(progressStages.find((s) => s.key === "run")?.children);
   const elapsedMs = useElapsedTime(submittedAt, submittedFinishedAt);
   const elapsedLabel = formatElapsed(elapsedMs);
   // "Check again" is offered ONLY for the three pausable poll reasons —
   // never for terminal/not-found/permanent-invalid/aborted, none of which
   // ever set `pausedReason` (see createPollCallbacks's onStop).
   const showCheckAgain = pausedReason !== null;
+  // Flat-flow derived gates (§15 / plan phase 7). Same `job !== null` stance
+  // as the other lifecycle surfaces — no `isBusy`, no `submittedSummary`.
+  // "Resolution" (ReportPanel) only ever mounts for a non-RUNNING outcome; a
+  // RUNNING outcome renders nothing, not a placeholder (Phase A has no
+  // polling). Suggested actions is separately gated and never mounts empty.
+  const showResolution = run !== null && run.outcome.type !== "RUNNING";
+  const suggestedActionCount =
+    run?.outcome.type === "COMPLETED" ? run.outcome.report.suggestedActions.length : 0;
+  // Issue #41 polish §8 — the page-level terminal "Start new investigation"
+  // CTA (after Run Details, above the footer). Shown only once the run is
+  // terminal AND any required human approval has reached a decided state (or
+  // never applied, e.g. FAILED / NOT_ELIGIBLE). Never during preflight,
+  // creation, running, or an unresolved/pending approval. Reuses the existing
+  // reset/new-submission path (startNewInvestigation) — no job is created
+  // until the user submits again.
+  const showNewInvestigation =
+    run !== null &&
+    run.outcome.type !== "RUNNING" &&
+    (run.outcome.type === "FAILED" || (approval !== null && approval.status !== "PENDING"));
 
   return (
     <div className="app-shell">
-      <header className="app-header">
-        <h1>OpsPilot — Agent Investigation Console</h1>
-        <p className="app-header-note">Run investigations with the deterministic demo or protected Live Claude.</p>
-      </header>
+      <ProductHeader />
 
       {error !== null ? <ErrorBanner error={error} onDismiss={() => setError(null)} /> : null}
       <p className="notice-region" role="status" aria-live="polite">
         {progressText}
       </p>
 
-      <InvestigationForm
-        key={formResetKey}
-        disabled={isBusy}
-        submitLabel={PHASE_LABELS[phase]}
-        capabilities={capabilities}
-        onSubmit={runInvestigation}
-        liveRetryTarget={liveRetryTarget}
-        onRetryLiveRun={retryLiveRunWithToken}
-        onStartNewInvestigation={startNewInvestigation}
-      />
-
-      {submittedSummary !== null ? (
-        <section className="submitted-summary" aria-labelledby="submitted-summary-heading">
-          <h2 id="submitted-summary-heading">Submitted issue</h2>
-          <dl className="submitted-summary-details">
-            <div>
-              <dt>Provider mode</dt>
-              <dd>{submittedSummary.providerMode}</dd>
-            </div>
-          </dl>
-          <p className="submitted-summary-text">{submittedSummary.summary}</p>
+      {showComposer ? (
+        <section className="composer" aria-label="Start an investigation">
+          <div className="composer-intro">
+            <h2 className="composer-title">Start an investigation</h2>
+            <p className="composer-value">
+              Investigate issues with an AI agent that runs diagnostics, generates a resolution, and
+              proposes actions for human approval.
+            </p>
+          </div>
+          <InvestigationForm
+            key={formResetKey}
+            disabled={isBusy}
+            submitLabel={PHASE_LABELS[phase]}
+            capabilities={capabilities}
+            onSubmit={runInvestigation}
+            liveRetryTarget={liveRetryTarget}
+            onRetryLiveRun={retryLiveRunWithToken}
+            onStartNewInvestigation={startNewInvestigation}
+            defaultApprovalDemo={defaultApprovalDemo}
+          />
         </section>
       ) : null}
 
-      {submittedSummary !== null ? (
-        <InvestigationProgressTimeline stages={progressStages} elapsedLabel={elapsedLabel} runExpansionKey={runExpansionKey} executionDetailNote={executionDetailNote} />
+      {showCurrentInvestigation ? (
+        <CurrentInvestigation
+          summary={job !== null ? job.summary : ""}
+          providerMode={activeProviderMode}
+          run={run?.run ?? null}
+          outcome={run?.outcome ?? null}
+        />
+      ) : null}
+
+      {/* 2. Human approval required banner when applicable. Informational jump
+          to the item-5 decision surface — the panel, not the banner, decides. */}
+      {showActionRequiredBanner ? <ActionRequiredBanner /> : null}
+
+      {/* 3. Progress + Resolution — share a row on desktop; Resolution gets the
+          wider column (§15). Both stay gated on grounded truth; a RUNNING
+          outcome renders no report placeholder. */}
+      {showProgressTimeline || showResolution ? (
+        <div className="resolution-row">
+          {showProgressTimeline ? (
+            <InvestigationProgressTimeline stages={progressStages} elapsedLabel={elapsedLabel} executionDetailNote={executionDetailNote} />
+          ) : null}
+          {run !== null && run.outcome.type !== "RUNNING" ? (
+            <ReportPanel outcome={run.outcome} failedStageLabel={failedStageLabel} />
+          ) : null}
+        </div>
       ) : null}
 
       {showCheckAgain ? (
@@ -2150,11 +2227,45 @@ export function App() {
         </p>
       ) : null}
 
+      {/* 4. Suggested Actions — separately gated, never mounted empty. */}
+      {run !== null && run.outcome.type === "COMPLETED" && run.outcome.report.suggestedActions.length > 0 ? (
+        <SuggestedActionsPanel actions={run.outcome.report.suggestedActions} />
+      ) : null}
+
+      {/* 5. Human Approval — rendered DIRECTLY for all four statuses including
+          NOT_ELIGIBLE (§18). When `approval === null` (still loading, or the
+          fetch failed) no decision surface mounts — the Progress Timeline's
+          approval stage already states that truthfully. */}
+      {approval !== null ? (
+        <ApprovalPanel
+          approval={approval}
+          suggestedActionCount={suggestedActionCount}
+          decisionDisabled={isBusy}
+          submittingDecision={phase === "submitting-approval"}
+          onDecide={recordDecision}
+        />
+      ) : null}
+
+      {/* 6. Agent Activity — product-language labels, raw identifiers behind
+          Technical details (§14). */}
+      {run !== null ? (
+        <section className="trace-section" aria-labelledby="timeline-heading">
+          <h2 id="timeline-heading" tabIndex={-1}>
+            Agent activity
+          </h2>
+          <TraceTimeline trace={run.trace} />
+        </section>
+      ) : null}
+
+      {/* 7. Run Details — compact primary fields + Technical details
+          disclosure (§12); absorbed RunOverviewPanel's unique facts. */}
       {job !== null ? (
         <InvestigationSummary
           ticketId={ticketId ?? ""}
           job={job}
           run={run?.run ?? null}
+          traceEventCount={run?.trace.length ?? 0}
+          suggestedActionCount={suggestedActionCount}
           showRetryRun={showRetryRun}
           showLiveRetryTokenNotice={showLiveRetryTokenNotice}
           retryDisabled={isBusy}
@@ -2164,47 +2275,25 @@ export function App() {
         />
       ) : null}
 
-      {run !== null ? (
-        <div className="investigation-content">
-          <div role="region" aria-label="Run detail" className="investigation-main-column">
-            <section aria-labelledby="timeline-heading">
-              <h2 id="timeline-heading" tabIndex={-1}>
-                Agent activity
-              </h2>
-              <TraceTimeline trace={run.trace} />
-            </section>
-            {/*
-              Data-driven reveal, not timer/animation choreography. A RUNNING
-              outcome renders no Generated report panel at all (not even a
-              placeholder) — Phase A has no polling, so the report may
-              legitimately not exist yet, and claiming otherwise would be
-              dishonest. Suggested actions is a separately gated surface that
-              never mounts for an empty array, so there is nothing to hide
-              with an empty-state message.
-            */}
-            {run.outcome.type !== "RUNNING" ? <ReportPanel outcome={run.outcome} /> : null}
-            {run.outcome.type === "COMPLETED" && run.outcome.report.suggestedActions.length > 0 ? (
-              <SuggestedActionsPanel actions={run.outcome.report.suggestedActions} />
-            ) : null}
-          </div>
-          <aside className="run-context-column" aria-label="Run context">
-            {/* Follows Agent activity/Report/Suggested actions in DOM order — approval-related UI is never the first thing a reviewer encounters. */}
-            {showActionRequiredBanner ? <ActionRequiredBanner /> : null}
-            <RunContextPanel
-              run={run.run}
-              trace={run.trace}
-              approval={approval}
-              suggestedActionCount={run.outcome.type === "COMPLETED" ? run.outcome.report.suggestedActions.length : 0}
-              // Same condition as the Generated report panel above — a jump
-              // link must never target a heading that was not rendered.
-              showReportLink={run.outcome.type !== "RUNNING"}
-              decisionDisabled={isBusy}
-              submittingDecision={phase === "submitting-approval"}
-              onDecide={recordDecision}
-            />
-          </aside>
-        </div>
+      {/* 8. Page-level terminal CTA (§8) — AFTER Run Details, BEFORE the
+          footer. Reuses the existing reset path: returns to the Fresh
+          composer, never creates a backend job. Desktop: right-aligned
+          secondary action with a low-emphasis cue. Mobile: full-width above
+          the footer. Never mounts during running or unresolved approval. */}
+      {showNewInvestigation ? (
+        <section className="terminal-new-investigation" aria-label="Start another investigation">
+          <p className="terminal-new-investigation-cue">Ready to investigate another issue?</p>
+          <button
+            type="button"
+            className="form-secondary-action terminal-new-investigation-action"
+            onClick={startNewInvestigation}
+          >
+            Start new investigation
+          </button>
+        </section>
       ) : null}
+
+      <AppFooter />
     </div>
   );
 }

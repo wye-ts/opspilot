@@ -144,7 +144,7 @@ function investigationCalls(fetchMock: ReturnType<typeof vi.fn>) {
 
 async function submit(user: ReturnType<typeof userEvent.setup>, summary = "Elevated error rate") {
   await user.type(screen.getByLabelText("Issue Summary"), summary);
-  await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+  await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 }
 
 function progressRegion() {
@@ -407,7 +407,13 @@ describe("Investigation polling (#38)", () => {
       if (url.endsWith("/investigation")) return Promise.resolve(jsonResponse(200, { data: runningSnapshot([], { job: jobResponse({ id: "job-b" }) }) }));
       return Promise.resolve(jsonResponse(404, errorEnvelope("AGENT_JOB_NOT_FOUND", "n/a")));
     });
-    await user.clear(screen.getByLabelText("Issue Summary"));
+    // The composer collapses once a job exists — return to the fresh form
+    // (popstate to a URL with no ?job=) before starting investigation B. This
+    // navigation itself invalidates job-a's poll (invalidateInFlightWorkflows),
+    // exactly like the second submission's own beginWorkflow does.
+    window.history.pushState({}, "", "/");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await screen.findByLabelText("Issue Summary");
     await submit(user, "Second issue elevated error rate");
     await vi.advanceTimersByTimeAsync(0);
 
@@ -512,7 +518,7 @@ describe("Investigation polling (#38)", () => {
         expect(screen.getByRole("status")).toHaveTextContent("This investigation is no longer available."),
       );
       expect(window.location.search).toBe("?debug=1");
-      expect(screen.queryByText("Submitted issue")).toBeNull();
+      expect(screen.queryByText("Current investigation")).toBeNull();
       expect(screen.queryByText("Agent activity")).toBeNull();
       expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
 
@@ -579,7 +585,11 @@ describe("Investigation polling (#38)", () => {
         if (url.endsWith("/investigation")) return Promise.resolve(jsonResponse(200, { data: runningSnapshot([], { job: jobResponse({ id: "job-b" }) }) }));
         return Promise.resolve(jsonResponse(404, errorEnvelope("AGENT_JOB_NOT_FOUND", "n/a")));
       });
-      await user.clear(screen.getByLabelText("Issue Summary"));
+      // The composer collapses once a job exists — return to the fresh form
+      // (popstate to a URL with no ?job=) before starting investigation B.
+      window.history.pushState({}, "", "/");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+      await screen.findByLabelText("Issue Summary");
       await submit(user, "Second issue elevated error rate");
       await vi.advanceTimersByTimeAsync(0);
       expect(window.location.search).toBe("?job=job-b");

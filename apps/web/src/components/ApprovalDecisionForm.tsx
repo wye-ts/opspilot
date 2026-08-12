@@ -103,7 +103,7 @@ export function ApprovalDecisionForm({ disabled, submitting, onSubmit }: Approva
         <button type="button" onClick={() => handleDecision("APPROVED")} disabled={!canSubmit}>
           {submitting && pendingDecision === "APPROVED" ? "Approving…" : "Approve"}
         </button>
-        <button type="button" onClick={() => handleDecision("REJECTED")} disabled={!canSubmit}>
+        <button type="button" data-kind="reject" onClick={() => handleDecision("REJECTED")} disabled={!canSubmit}>
           {submitting && pendingDecision === "REJECTED" ? "Rejecting…" : "Reject"}
         </button>
       </div>

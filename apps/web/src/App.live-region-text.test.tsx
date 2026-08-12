@@ -106,7 +106,7 @@ function deferredResponse(): { promise: Promise<Response>; resolve: (value: Resp
 
 async function submit(user: ReturnType<typeof userEvent.setup>, summary = "Elevated error rate") {
   await user.type(screen.getByLabelText("Issue Summary"), summary);
-  await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+  await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 }
 
 function statusRegion(): HTMLElement {
@@ -118,6 +118,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
+  window.history.replaceState(null, "", "/");
 });
 
 describe("Sole live-region text uses the canonical stage-label source", () => {
@@ -129,11 +130,11 @@ describe("Sole live-region text uses the canonical stage-label source", () => {
 
     render(<App />);
     await user.type(screen.getByLabelText("Issue Summary"), "Elevated error rate on billing");
-    await user.click(screen.getByRole("radio", { name: /Live Claude/ }));
+    await user.click(screen.getByRole("radio", { name: /Live/ }));
     await user.type(screen.getByLabelText("Live demo access token"), TOKEN);
-    await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 
-    expect(statusRegion()).toHaveTextContent("Checking Live Claude availability…");
+    expect(statusRegion()).toHaveTextContent("Checking Live availability…");
     expect(document.querySelectorAll("[aria-live]")).toHaveLength(1);
 
     deferredPreflight.resolve(liveCapabilitiesResponse());
@@ -216,10 +217,12 @@ describe("Sole live-region text uses the canonical stage-label source", () => {
       .mockResolvedValueOnce(pollFallbackResponse())
       .mockResolvedValueOnce(jsonResponse(200, { data: approvalView({ status: "PENDING" }) }));
 
+    // The Approval workflow demo checkbox is gone — approval-demo mode is a
+    // URL deep link read once at App mount.
+    window.history.replaceState({}, "", "/?approval-demo=1");
     render(<App />);
     await user.type(screen.getByLabelText("Issue Summary"), "Approval demo issue");
-    await user.click(screen.getByLabelText("Approval workflow demo"));
-    await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 
     await waitFor(() => expect(statusRegion()).toHaveTextContent("Investigation complete. Human approval required."));
   });
@@ -261,11 +264,11 @@ describe("Sole live-region text uses the canonical stage-label source", () => {
 
     render(<App />);
     await user.type(screen.getByLabelText("Issue Summary"), "Elevated error rate on billing");
-    await user.click(screen.getByRole("radio", { name: /Live Claude/ }));
+    await user.click(screen.getByRole("radio", { name: /Live/ }));
     await user.type(screen.getByLabelText("Live demo access token"), TOKEN);
-    await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 
-    await waitFor(() => expect(statusRegion()).toHaveTextContent("Live Claude is temporarily unavailable. No investigation job was created."));
+    await waitFor(() => expect(statusRegion()).toHaveTextContent("Live is temporarily unavailable. No investigation job was created."));
   });
 
   it("elapsed-timer ticks never alter the live-region text", async () => {

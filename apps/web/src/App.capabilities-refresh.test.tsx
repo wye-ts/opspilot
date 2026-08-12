@@ -138,14 +138,14 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 }
 
 const user = () => userEvent.setup();
-const liveRadio = () => screen.getByRole("radio", { name: /Live Claude/ });
+const liveRadio = () => screen.getByRole("radio", { name: /Live/ });
 
 /**
  * In retry mode there is no provider radio group to observe, so this simply
  * lets the focus refresh's state update flush before the assertions below.
  */
 function liveRadioIsIrrelevantHere(): boolean {
-  return screen.queryByRole("radio", { name: /Live Claude/ }) === null;
+  return screen.queryByRole("radio", { name: /Live/ }) === null;
 }
 
 afterEach(() => {
@@ -185,7 +185,9 @@ describe("mount", () => {
     render(<App />);
 
     await waitFor(() => expect(liveRadio()).toBeDisabled());
-    expect(screen.getByText(/temporarily unavailable/i)).toBeInTheDocument();
+    expect(
+      screen.getByText("Temporarily unavailable — the deterministic demo is always available."),
+    ).toBeInTheDocument();
   });
 });
 
@@ -204,9 +206,9 @@ describe("a stale AVAILABLE is caught by the preflight", () => {
     await u.type(screen.getByLabelText("Issue Summary"), SUMMARY);
     await u.click(liveRadio());
     await u.type(screen.getByLabelText("Live demo access token"), TOKEN);
-    await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await u.click(screen.getByRole("button", { name: "Start Investigation" }));
 
-    await screen.findByText("Live Claude is temporarily unavailable. No investigation job was created.");
+    await screen.findByText("Live is temporarily unavailable. No investigation job was created.");
 
     // The decisive assertions: nothing was created, and nothing was sent.
     expect(investigationCalls(fetchMock)).toHaveLength(0);
@@ -226,7 +228,7 @@ describe("a stale AVAILABLE is caught by the preflight", () => {
     await u.type(screen.getByLabelText("Issue Summary"), SUMMARY);
     await u.click(liveRadio());
     await u.type(screen.getByLabelText("Live demo access token"), TOKEN);
-    await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await u.click(screen.getByRole("button", { name: "Start Investigation" }));
 
     await waitFor(() => expect(liveRadio()).toBeDisabled());
   });
@@ -242,7 +244,7 @@ describe("a stale AVAILABLE is caught by the preflight", () => {
     const u = user();
 
     await u.type(screen.getByLabelText("Issue Summary"), SUMMARY);
-    await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await u.click(screen.getByRole("button", { name: "Start Investigation" }));
     await screen.findByRole("heading", { name: "Agent activity" });
 
     // The deterministic demo runs whatever LIVE availability says, and it does
@@ -316,11 +318,15 @@ describe("a completed LIVE run refreshes availability", () => {
     await u.type(screen.getByLabelText("Issue Summary"), SUMMARY);
     await u.click(liveRadio());
     await u.type(screen.getByLabelText("Live demo access token"), TOKEN);
-    await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await u.click(screen.getByRole("button", { name: "Start Investigation" }));
 
     await screen.findByRole("heading", { name: "Agent activity" });
-    // The post-terminal refresh reports the day is now closed.
-    await waitFor(() => expect(liveRadio()).toBeDisabled());
+    // The post-terminal refresh reports the day is now closed. The composer
+    // has collapsed (a real job exists), so the LIVE card is gone from the
+    // DOM — the refresh itself is what we observe: a third capability read
+    // after mount and the submission preflight, answered by the UNAVAILABLE
+    // fallback.
+    await waitFor(() => expect(capabilityCalls(fetchMock)).toHaveLength(3));
     // The run itself is untouched by that refresh.
     expect(investigationCalls(fetchMock)).toHaveLength(3);
   });
@@ -349,7 +355,7 @@ describe("retained-job recovery ignores the capability snapshot", () => {
     await u.type(screen.getByLabelText("Issue Summary"), SUMMARY);
     await u.click(liveRadio());
     await u.type(screen.getByLabelText("Live demo access token"), TOKEN);
-    await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await u.click(screen.getByRole("button", { name: "Start Investigation" }));
     await screen.findByRole("heading", { name: "Recover Live Run" });
   }
 
@@ -435,7 +441,7 @@ describe("retained-job recovery ignores the capability snapshot", () => {
     // The button being live while the LIVE option elsewhere is closed would
     // otherwise read as an inconsistency rather than a deliberate distinction.
     await screen.findByText(
-      /New Live Claude runs are currently unavailable\. Recovery of an existing request is still allowed\./,
+      /New Live runs are currently unavailable\. Recovery of an existing request is still allowed\./,
     );
   });
 
@@ -586,9 +592,9 @@ describe("the new-investigation preflight is unchanged", () => {
     await u.type(screen.getByLabelText("Issue Summary"), SUMMARY);
     await u.click(liveRadio());
     await u.type(screen.getByLabelText("Live demo access token"), TOKEN);
-    await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await u.click(screen.getByRole("button", { name: "Start Investigation" }));
 
-    await screen.findByText("Live Claude is temporarily unavailable. No investigation job was created.");
+    await screen.findByText("Live is temporarily unavailable. No investigation job was created.");
     expect(investigationCalls(fetchMock)).toHaveLength(0);
     expect(randomUUID).not.toHaveBeenCalled();
   });
@@ -613,11 +619,12 @@ describe("a refresh failure never disturbs the primary result", () => {
     await u.type(screen.getByLabelText("Issue Summary"), SUMMARY);
     await u.click(liveRadio());
     await u.type(screen.getByLabelText("Live demo access token"), TOKEN);
-    await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await u.click(screen.getByRole("button", { name: "Start Investigation" }));
 
-    // The run is rendered and STAYS rendered...
+    // The run is rendered and STAYS rendered... The composer has collapsed
+    // (a real job exists), so there is no LIVE card to read availability
+    // from; the run surface is what must survive the refresh failure.
     await screen.findByRole("heading", { name: "Agent activity" });
-    await waitFor(() => expect(liveRadio()).toBeDisabled());
     expect(screen.getByRole("heading", { name: "Agent activity" })).toBeInTheDocument();
 
     // ...and the failure is not narrated to the user.
@@ -681,7 +688,7 @@ describe("every LIVE request requires a token", () => {
 
     // The field is STILL rendered, and submission is still blocked.
     expect(screen.getByLabelText("Live demo access token")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Run Investigation" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Start Investigation" })).toBeDisabled();
 
     // Nothing left the browser.
     expect(investigationCalls(fetchMock)).toHaveLength(0);
@@ -702,7 +709,7 @@ describe("every LIVE request requires a token", () => {
 
     // The form itself already refuses whitespace, so the button stays disabled
     // and the guard behind it is never reached in normal use.
-    expect(screen.getByRole("button", { name: "Run Investigation" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Start Investigation" })).toBeDisabled();
     expect(investigationCalls(fetchMock)).toHaveLength(0);
     expect(capabilityCalls(fetchMock)).toHaveLength(1);
   });
@@ -720,7 +727,7 @@ describe("every LIVE request requires a token", () => {
     await u.type(screen.getByLabelText("Issue Summary"), SUMMARY);
     await u.click(liveRadio());
     await u.type(screen.getByLabelText("Live demo access token"), TOKEN);
-    await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await u.click(screen.getByRole("button", { name: "Start Investigation" }));
     await screen.findByRole("heading", { name: "Recover Live Run" });
 
     // The token was cleared on the failure, so the retry cannot be submitted.
@@ -751,7 +758,7 @@ describe("a failed LIVE retry refreshes availability", () => {
     await u.type(screen.getByLabelText("Issue Summary"), SUMMARY);
     await u.click(liveRadio());
     await u.type(screen.getByLabelText("Live demo access token"), TOKEN);
-    await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await u.click(screen.getByRole("button", { name: "Start Investigation" }));
     await screen.findByRole("heading", { name: "Recover Live Run" });
 
     await u.type(screen.getByLabelText("Live demo access token"), "second-entry");
@@ -807,7 +814,7 @@ describe("cleanup", () => {
     const u = user();
 
     await u.type(screen.getByLabelText("Issue Summary"), SUMMARY);
-    await u.click(screen.getByRole("button", { name: "Run Investigation" }));
+    await u.click(screen.getByRole("button", { name: "Start Investigation" }));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Agent investigation in progress…"));
 
     window.dispatchEvent(new Event("focus"));

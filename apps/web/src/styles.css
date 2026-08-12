@@ -1,7 +1,9 @@
 :root {
-  --color-bg: #f7f8fa;
+  --color-bg: #f6f7f9;
   --color-surface: #ffffff;
-  --color-border: #d7dbe0;
+  --color-surface-muted: #fafbfc;
+  --color-border: #e2e5e9;
+  --color-border-strong: #d7dbe0;
   --color-text: #1a1d21;
   --color-text-muted: #565c66;
   --color-accent: #1857b8;
@@ -9,6 +11,8 @@
 
   --color-success-bg: #e3f5e9;
   --color-success-text: #0f6b3a;
+  --color-warning-bg: #fdf1dd;
+  --color-warning-text: #7a5200;
   --color-danger-bg: #fbe6e6;
   --color-danger-text: #9a2323;
   --color-info-bg: #e6eefc;
@@ -23,7 +27,30 @@
   --space-5: 1.5rem;
   --space-6: 2rem;
 
+  --radius-sm: 0.375rem;
   --radius: 0.5rem;
+  --radius-lg: 0.75rem;
+
+  /* Very light shadows (Milestone-10 refresh) — never a strong drop. */
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-card: 0 1px 3px rgba(16, 24, 40, 0.06), 0 1px 2px rgba(16, 24, 40, 0.04);
+
+  /* Inter/Geist first, system-ui fallback — no webfont/dependency is loaded
+     (docs/14-web-ui.md non-goal), so this is purely a preference order. */
+  --font-sans: "Inter", "Geist", -apple-system, "Segoe UI", Roboto, system-ui, sans-serif;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-md: 1.0625rem;
+  --text-lg: 1.25rem;
+
+  /* Vertical lifecycle stepper (Issue #41 polish §2) — shared geometry so the
+     node rail, the connector spine, and the child-list pull-back all agree. */
+  --step-node: 1.5rem;
+  --step-gap: 1rem;
+  --step-line: 2px;
+  --step-track: calc(var(--step-node) + var(--step-gap));
 }
 
 /* Dark mode is an explicit non-goal for this milestone (docs/14-web-ui.md).
@@ -38,13 +65,9 @@ body {
   margin: 0;
   background: var(--color-bg);
   color: var(--color-text);
-  font-family:
-    system-ui,
-    -apple-system,
-    "Segoe UI",
-    Roboto,
-    sans-serif;
+  font-family: var(--font-sans);
   line-height: 1.5;
+  font-size: var(--text-base);
 }
 
 .mono {
@@ -65,8 +88,10 @@ button {
   color: white;
   border: none;
   border-radius: var(--radius);
-  padding: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-5);
   cursor: pointer;
+  font-weight: 600;
+  font-size: var(--text-sm);
 }
 
 button:disabled {
@@ -92,28 +117,126 @@ html {
 .app-shell {
   max-width: 84rem;
   margin: 0 auto;
-  padding: var(--space-6) var(--space-5);
+  /* Slightly less top whitespace under the header (Issue #41 polish §3) so
+     the Fresh composer reads like a focused operational tool, not a landing
+     page. */
+  padding: var(--space-3) var(--space-5) var(--space-6);
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-4);
 }
 
-.app-header h1 {
-  margin: 0;
-  font-size: 1.5rem;
+/* ── Product identity header (§4) — identity-only, never run state. ────── */
+.product-header {
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: var(--space-3);
 }
 
-.app-header-note {
-  margin: var(--space-1) 0 0;
+.product-header-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  min-height: 2.5rem;
+}
+
+.product-header-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.product-header-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: #ffffff;
+  flex: none;
+}
+
+.product-header-title {
+  font-weight: 700;
+  font-size: var(--text-md);
+}
+
+.product-header-divider {
+  width: 1px;
+  height: 1rem;
+  background: var(--color-border-strong);
+}
+
+.product-header-tagline {
   color: var(--color-text-muted);
-  font-size: 0.9rem;
+  font-size: var(--text-sm);
+  white-space: nowrap;
 }
 
+.product-header-source {
+  color: var(--color-accent);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.product-header-source:hover,
+.product-header-source:focus-visible {
+  text-decoration: underline;
+}
+
+/* Mobile header (§13) — the tagline is desktop-only polish; on a phone it
+   crowds the source link against the product title. Brand mark + "OpsPilot"
+   is identity enough, and "View source" stays compact but present. */
+@media (max-width: 47.99rem) {
+  .product-header-divider,
+  .product-header-tagline {
+    display: none;
+  }
+
+  .product-header-source {
+    font-size: var(--text-xs);
+  }
+}
+
+/* ── Portfolio footer (identity link, not app chrome). ────────────────── */
+.app-footer {
+  margin-top: var(--space-2);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.app-footer p {
+  margin: 0;
+}
+
+.app-footer a {
+  color: var(--color-text-muted);
+}
+
+.app-footer a:hover,
+.app-footer a:focus-visible {
+  color: var(--color-text);
+}
+
+/* ── Global live region / error banner. ───────────────────────────────── */
 .notice-region {
   min-height: 1.25rem;
   margin: 0;
   color: var(--color-text-muted);
-  font-size: 0.9rem;
+  font-size: var(--text-sm);
+}
+
+.investigation-poll-paused {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
 }
 
 .error-banner {
@@ -146,23 +269,307 @@ html {
   padding: var(--space-1) var(--space-2);
 }
 
+/* ── The centered composer (§8) — the primary surface until a job exists. ─ */
+.composer {
+  /* ≈896px effective width — in the approved 880–920px range; never stretched
+     across most of a wide viewport (§3). */
+  max-width: 56rem;
+  width: 100%;
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.composer-intro {
+  text-align: center;
+}
+
+.composer-title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 700;
+}
+
+.composer-value {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+/* ── Card surface system (Milestone-10). ──────────────────────────────── */
 .investigation-form,
-.investigation-summary,
-.submitted-summary,
+.current-investigation,
 .investigation-progress,
-.investigation-content section {
+.investigation-summary,
+.report-panel,
+.approval-panel,
+.trace-section {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
   padding: var(--space-5);
 }
 
 .investigation-form {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
+/* Compact pre-job Live availability summary (Issue #41 polish §6) — reads as
+   a small status notice, not a heading inside the form: very light amber
+   surface, subtle border, compact one-line truth. The Live provider card
+   beneath it carries the fuller reason, so nothing is repeated. */
+.composer-availability-notice {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid #f0ddb4;
+  border-radius: var(--radius);
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+  font-size: var(--text-xs);
+}
+
+/* ── Provider cards (§6) — whole-card radios, side-by-side on desktop. ── */
+.provider-cards {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-3);
+}
+
+@media (min-width: 64rem) {
+  .provider-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.form-field-modes {
+  border: none;
+  margin: 0;
+  padding: 0;
+}
+
+.form-field-modes legend {
+  padding: 0;
+  font-weight: 600;
+  margin-bottom: var(--space-2);
+}
+
+.provider-card {
+  display: flex;
+  /* Tightened from --space-3 (§3): compact card density like the approved
+     reference. */
+  gap: var(--space-2);
+  align-items: flex-start;
+  /* Tighter than the original --space-4: the approved reference's p-4 plus
+     no extra chrome, so the Fresh surface reads like a focused tool. */
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  cursor: pointer;
+  min-width: 0;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.provider-card:hover {
+  border-color: var(--color-border-strong);
+}
+
+.provider-card--selected {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px rgba(24, 87, 184, 0.08);
+  background: var(--color-surface-muted);
+}
+
+.provider-card[aria-disabled="true"] {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.provider-card-radio {
+  margin-top: 0.2rem;
+  flex: none;
+}
+
+.provider-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.provider-card-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.provider-card-label {
+  font-weight: 600;
+  font-size: var(--text-base);
+}
+
+.provider-card-copy {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.provider-card-model {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.provider-card-unavailable {
+  color: var(--color-warning-text);
+  font-size: var(--text-xs);
+}
+
+/* Availability pills — compact rounded-full, status dot, no color alone. */
+.availability-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border-radius: 999px;
+  padding: 0.125rem 0.5rem;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.availability-pill-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.availability-pill--success {
+  background: var(--color-success-bg);
+  color: var(--color-success-text);
+}
+
+.availability-pill--warning {
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+}
+
+.availability-pill--neutral {
+  background: var(--color-neutral-bg);
+  color: var(--color-neutral-text);
+}
+
+/* ── Compact Current investigation (Issue #41 polish §7). ──────────────── */
+.current-investigation {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  /* Tighter than the generic card padding — a summary strip, not a panel. */
+  padding: var(--space-3) var(--space-4);
+}
+
+.current-investigation-eyebrow {
+  margin: 0;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+}
+
+.current-investigation-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+@media (min-width: 48rem) {
+  .current-investigation-body {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+}
+
+.current-investigation-title {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.current-investigation-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.current-investigation-provider {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-text-muted);
+}
+
+/* Issue #41 polish §8 — the page-level terminal CTA, placed AFTER Run Details
+   and BEFORE the footer. Desktop: right-aligned secondary/outline action with
+   a low-emphasis cue. Mobile: full-width button above the footer. Deliberately
+   never stronger than an unresolved approval action. */
+.terminal-new-investigation {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+
+.terminal-new-investigation-cue {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.terminal-new-investigation-action {
+  white-space: nowrap;
+}
+
+@media (min-width: 48rem) {
+  .terminal-new-investigation {
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-4);
+  }
+}
+
+/* ── Flat-flow row: Progress (narrow) + Resolution (wide) on desktop. ──── */
+.resolution-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-5);
+  align-items: start;
+}
+
+@media (min-width: 64rem) {
+  .resolution-row {
+    /* Progress narrow / Resolution wide — §15. */
+    grid-template-columns: minmax(15rem, 20rem) minmax(0, 1fr);
+  }
+
+  /* A run without a report (RUNNING, or job-created-but-run-pending) renders
+     only the Progress card; give it the full row rather than stranding it in
+     the narrow column beside an empty track. */
+  .resolution-row > :only-child {
+    grid-column: 1 / -1;
+  }
+}
+
+/* ── Form internals. ──────────────────────────────────────────────────── */
 .form-field {
   display: flex;
   flex-direction: column;
@@ -173,175 +580,69 @@ html {
   font-weight: 600;
 }
 
-.form-field textarea {
-  padding: var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  background: var(--color-bg);
-  color: var(--color-text);
-  resize: vertical;
-}
-
-.form-field-checkbox {
-  flex-direction: row;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.form-field-checkbox label {
-  font-weight: 400;
-}
-
-.investigation-form button[type="submit"] {
-  align-self: flex-start;
-}
-
-.investigation-summary h2,
-.submitted-summary h2,
-.investigation-progress h2 {
-  margin: 0 0 var(--space-3);
-  font-size: 1.1rem;
-}
-
-.submitted-summary-details {
-  margin-bottom: var(--space-3);
-}
-
-.submitted-summary-text {
-  margin: 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.investigation-progress-elapsed {
-  margin: 0 0 var(--space-4);
-  color: var(--color-text-muted);
-  font-size: 0.9rem;
-}
-
-.investigation-progress-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.investigation-progress-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
+.form-field textarea,
+.form-field input[type="password"] {
+  /* Tighter vertical padding (--space-2) keeps the empty-state textarea
+     shorter on desktop; horizontal stays --space-3 for comfortable typing. */
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
-  /* Only the border color changes between statuses — never a layout shift —
-     and this transition is disabled below for prefers-reduced-motion. */
-  transition: border-color 0.2s ease;
-}
-
-.investigation-progress-item--active {
-  border-color: var(--color-accent);
-}
-
-.investigation-progress-item--failed {
-  border-color: var(--color-danger-text);
-}
-
-.investigation-progress-item--child {
-  margin-left: 1.5rem;
-}
-
-.investigation-progress-children-list {
-  list-style: none;
-  margin: var(--space-2) 0 0 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  /* Spans the full width of the parent li, after the badge+label content */
-  flex-basis: 100%;
-}
-
-.investigation-progress-collapse-toggle {
-  margin-left: auto;
-  font-size: 0.85rem;
-  background: none;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  padding: 0 var(--space-2);
-  cursor: pointer;
-  color: var(--color-text-muted);
-  line-height: 1.6;
-}
-
-.investigation-progress-collapse-toggle:hover {
-  color: var(--color-text);
-  border-color: var(--color-text-muted);
-}
-
-.investigation-progress-note {
-  margin: var(--space-2) 0 0 0;
-  color: var(--color-text-muted);
-  font-size: 0.9rem;
-  font-style: italic;
-}
-
-.investigation-progress-label {
+  background: var(--color-surface-muted);
   color: var(--color-text);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .investigation-progress-item {
-    transition: none;
+.form-field textarea {
+  resize: vertical;
+}
+
+.form-help {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+/* Progressive validation (§8): subtle helper while empty, amber warn 1-14,
+   and neither once 15+ — the CTA enabling is the positive signal. */
+.form-help--subtle {
+  color: var(--color-text-muted);
+}
+
+.form-help--warn {
+  color: var(--color-warning-text);
+}
+
+.form-error {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-danger-text);
+}
+
+.investigation-form button[type="submit"] {
+  width: 100%;
+  min-height: 2.75rem;
+  border-radius: var(--radius-lg);
+  font-size: var(--text-sm);
+}
+
+@media (min-width: 64rem) {
+  .investigation-form button[type="submit"] {
+    width: auto;
+    min-width: 12rem;
+  }
+
+  /* Issue #41 polish §5 — the CTA lives at the composer's lower-right
+     completion point on desktop; the row is left for a security area. */
+  .form-actions {
+    justify-content: flex-end;
   }
 }
 
-.investigation-summary-status {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin-bottom: var(--space-4);
-  flex-wrap: wrap;
-}
-
-/* Stands in for the Retry Run button when the failed run was LIVE — the token
-   is not retained, so the retry has to start from the form's retry mode. */
-.investigation-summary-retry-note {
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: 0.9rem;
-}
-
-/* The form's "Retry Live Run" mode. Reads as a distinct state rather than as
-   the ordinary creation form with fields missing. */
-.form-retry-banner {
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  padding: var(--space-3);
-  background: var(--color-surface-muted, transparent);
-}
-
-.form-retry-heading {
-  margin: 0 0 var(--space-2);
-  font-size: 1rem;
-}
-
-/* Read-only facts about the retained job — a <dl>, never disabled inputs, which
-   would be announced as form fields the user cannot edit. */
-.form-retry-details {
-  display: grid;
-  gap: var(--space-2);
-  margin: var(--space-3) 0 0;
-}
-
-.form-retry-details dt {
-  color: var(--color-text-muted);
-  font-size: 0.8rem;
-}
-
-.form-retry-details dd {
-  margin: 0;
+@media (max-width: 63.99rem) {
+  /* Mobile: keep the CTA full-width / near-full-width, stacked. */
+  .form-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 
 .form-actions {
@@ -357,36 +658,43 @@ html {
   color: var(--color-text-muted);
 }
 
-.status-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  border-radius: 999px;
-  padding: var(--space-1) var(--space-3);
-  font-weight: 600;
-  font-size: 0.85rem;
+.form-secondary-action:hover:not(:disabled) {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
 }
 
-.status-badge-success {
-  background: var(--color-success-bg);
-  color: var(--color-success-text);
+/* The form's "Recover Live Run" mode. Reads as a distinct state rather than
+   as the ordinary creation form with fields missing. */
+.form-retry-banner {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  background: var(--color-surface-muted);
 }
 
-.status-badge-danger {
-  background: var(--color-danger-bg);
-  color: var(--color-danger-text);
+.form-retry-heading {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-base);
 }
 
-.status-badge-info {
-  background: var(--color-info-bg);
-  color: var(--color-info-text);
+/* Read-only facts about the retained job — a <dl>, never disabled inputs,
+   which would be announced as form fields the user cannot edit. */
+.form-retry-details {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-3) 0 0;
 }
 
-.status-badge-neutral {
-  background: var(--color-neutral-bg);
-  color: var(--color-neutral-text);
+.form-retry-details dt {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
 }
 
+.form-retry-details dd {
+  margin: 0;
+}
+
+/* ── Shared <dl> conventions. ─────────────────────────────────────────── */
 dl {
   margin: 0;
   display: grid;
@@ -411,132 +719,369 @@ dd {
   margin: 0;
 }
 
-.investigation-summary-details {
-  margin-bottom: var(--space-4);
+/* ── Status badges — compact, never color alone. ──────────────────────── */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  border-radius: 999px;
+  padding: var(--space-1) var(--space-3);
+  font-weight: 600;
+  font-size: var(--text-xs);
 }
 
-.investigation-summary-ids {
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--color-border);
+.status-badge-success {
+  background: var(--color-success-bg);
+  color: var(--color-success-text);
 }
 
-.investigation-content {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: var(--space-5);
+.status-badge-danger {
+  background: var(--color-danger-bg);
+  color: var(--color-danger-text);
 }
 
-@media (min-width: 64rem) {
-  .investigation-content {
-    /* The main reading surface (timeline + report) stays flexible and
-       visually dominant; the Run Context Panel is constrained to a readable
-       18-22rem so it never grows to compete with the report for width. */
-    grid-template-columns: minmax(0, 1fr) minmax(18rem, 22rem);
-    align-items: start;
-  }
-
-  .run-context-column {
-    position: sticky;
-    top: var(--space-5);
-  }
+.status-badge-info {
+  background: var(--color-info-bg);
+  color: var(--color-info-text);
 }
 
-/* Grid/flex items default to min-width: auto (their content's intrinsic
-   minimum), which lets the nowrap tool-call-id text (below) force these
-   ancestors wider than their track/row at narrow viewports and cause real
-   page overflow. min-width: 0 lets them shrink to the track/row width
-   instead — the id itself still ellipsizes and its full value stays
-   available via its title attribute. */
-.investigation-main-column,
-.run-context-column {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-5);
-  min-width: 0;
+.status-badge-neutral {
+  background: var(--color-neutral-bg);
+  color: var(--color-neutral-text);
 }
 
-/* Inside the narrower context column, a two-per-row <dl> (the global default)
-   cramps a "Decided at" timestamp or a multi-word reviewer name; one pair per
-   row reads more comfortably at 18-22rem without touching the shared `dl`
-   rule used elsewhere (report fields, investigation summary). */
-.run-context-column dl {
-  grid-template-columns: 1fr;
-}
-
-.trace-timeline-content {
-  min-width: 0;
-}
-
-.investigation-content h2,
-.report-panel h2 {
+/* ── Section headings (flat-flow cards). ──────────────────────────────── */
+.investigation-progress h2,
+.report-panel h2,
+.approval-panel h2,
+.trace-section h2,
+.investigation-summary h2 {
   margin: 0 0 var(--space-3);
-  font-size: 1.1rem;
+  font-size: 1.05rem;
 }
 
 .report-panel h3 {
   margin: var(--space-4) 0 var(--space-2);
-  font-size: 0.95rem;
+  font-size: var(--text-sm);
 }
 
-.trace-timeline {
+/* ── Progress — vertical lifecycle stepper (Issue #41 polish §2). ─────────
+   One vertical axis: a small status node per authoritative stage, a subtle
+   connector spine running down the left rail, stage title beside the node,
+   and the canonical nested events directly underneath their parent stage.
+   No per-stage bordered cards, no collapse toggle, no horizontal overflow. */
+.investigation-progress-elapsed {
+  margin: 0 0 var(--space-4);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+/* Live availability is setup/preflight metadata, never a stepper row (Issue
+   #41 HQ polish §1) — a single quiet line above the stepper, not a node on
+   the vertical axis. Status still never rides on color alone: the glyph is
+   decorative (aria-hidden) and the visible badge text carries the state. */
+.investigation-progress-preflight {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.investigation-progress-preflight-glyph {
+  flex: none;
+}
+
+.investigation-progress-preflight-glyph--failed {
+  color: var(--color-danger-text);
+}
+
+.investigation-progress-preflight-glyph--active {
+  color: var(--color-info-text);
+}
+
+.investigation-progress-list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: 0;
 }
 
-.trace-timeline-item {
+/* Every stage row — request-lifecycle top-level AND the run's canonical
+   execution stages — shares the same two-column grid: node rail + content.
+   The connector spine lives in the rail (marker::after) and stretches with
+   the row, so stacked rows join into a single continuous line. */
+.investigation-progress-item {
+  display: grid;
+  grid-template-columns: var(--step-node) minmax(0, 1fr);
+  column-gap: var(--step-gap);
+}
+
+.investigation-progress-marker {
   display: flex;
-  gap: var(--space-3);
+  flex-direction: column;
+  align-items: center;
 }
 
-.trace-timeline-step {
+/* The connector line below the node, filling the row's breathing room
+   (content padding-bottom) so consecutive nodes are joined by a spine. */
+.investigation-progress-marker::after {
+  content: "";
+  width: var(--step-line);
+  flex: 1;
+  margin-top: 3px;
+  border-radius: 1px;
+  background: var(--color-border-strong);
+}
+
+/* The final stage in each stepper list has nothing below it — no trailing
+   spine. Both lists are top-level (the canonical stages are promoted out of
+   any nested wrapper — HQ review §1), so each needs its own rule. */
+.investigation-progress-list > .investigation-progress-item:last-child > .investigation-progress-marker::after,
+.investigation-progress-children-list > .investigation-progress-item:last-child > .investigation-progress-marker::after {
+  display: none;
+}
+
+.investigation-progress-node {
+  position: relative;
+  z-index: 1;
+  width: var(--step-node);
+  height: var(--step-node);
   flex: none;
-  width: 1.75rem;
-  height: 1.75rem;
   border-radius: 50%;
-  background: var(--color-info-bg);
-  color: var(--color-info-text);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-weight: 600;
-  font-size: 0.85rem;
+  font-size: 0.7rem;
+  line-height: 1;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-neutral-bg);
+  color: var(--color-neutral-text);
 }
 
-.trace-timeline-label {
+/* Status never communicated by color alone — the glyph sits inside the node
+   and the text status label sits beside the stage title (a11y contract). */
+.investigation-progress-node--completed {
+  background: var(--color-success-bg);
+  color: var(--color-success-text);
+  border-color: #bfe8cc;
+}
+
+.investigation-progress-node--active {
+  background: var(--color-info-bg);
+  color: var(--color-info-text);
+  border-color: var(--color-info-text);
+  border-width: 2px;
+}
+
+.investigation-progress-node--failed {
+  background: var(--color-danger-bg);
+  color: var(--color-danger-text);
+  border-color: #f0c4c4;
+}
+
+.investigation-progress-content {
+  min-width: 0;
+  padding-bottom: var(--space-4);
+}
+
+.investigation-progress-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.investigation-progress-label {
+  color: var(--color-text);
+  font-size: var(--text-sm);
+}
+
+.investigation-progress-status {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+/* Status emphasis: active strongest/blue, failed clear/red, rest subdued. */
+.investigation-progress-item--active .investigation-progress-label,
+.investigation-progress-item--active .investigation-progress-status {
+  color: var(--color-info-text);
+  font-weight: 600;
+}
+
+.investigation-progress-item--failed .investigation-progress-label,
+.investigation-progress-item--failed .investigation-progress-status {
+  color: var(--color-danger-text);
+}
+
+/* Hierarchy correction (Issue #41 HQ polish §1) — the four canonical
+   execution stages (Investigation created / Agent analysis / Diagnostic
+   execution / Report generation) are the ONLY visually dominant stepper
+   rows; when they exist, "job" and "run" are not rendered at all (see
+   InvestigationProgressTimeline.tsx), not merely dimmed. What remains as a
+   `--system` row — Approval state loaded, or job/run in the legacy fallback
+   with no canonical breakdown — is a secondary lifecycle annotation: smaller,
+   muted, never bold, with a quieter node. Live availability never renders as
+   a stepper row at all (see .investigation-progress-preflight below). Real
+   status color (active blue / failed red) still surfaces via the
+   higher-specificity overrides below. */
+.investigation-progress-item--system .investigation-progress-label,
+.investigation-progress-item--system .investigation-progress-status {
+  font-size: var(--text-xs);
+  font-weight: 400;
+  color: var(--color-text-muted);
+}
+
+.investigation-progress-item--system .investigation-progress-node {
+  width: 1.125rem;
+  height: 1.125rem;
+  font-size: 0.6rem;
+}
+
+.investigation-progress-item--system.investigation-progress-item--active .investigation-progress-label,
+.investigation-progress-item--system.investigation-progress-item--active .investigation-progress-status {
+  color: var(--color-info-text);
+  font-weight: 600;
+}
+
+.investigation-progress-item--system.investigation-progress-item--failed .investigation-progress-label,
+.investigation-progress-item--system.investigation-progress-item--failed .investigation-progress-status {
+  color: var(--color-danger-text);
+}
+
+/* The four canonical execution stages carry the primary weight. */
+.investigation-progress-item--primary .investigation-progress-label {
+  font-weight: 600;
+}
+
+/* The four canonical execution stages render as their own top-level stepper
+   list — the primary content of the section, promoted out of any nested
+   wrapper so nothing here visually subordinates them to a system row
+   (Issue #41 HQ polish §1). Always rendered in full — never collapsed. */
+.investigation-progress-children-list {
+  list-style: none;
+  margin: 0 0 var(--space-2);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.investigation-progress-item--primary .investigation-progress-content {
+  padding-bottom: var(--space-3);
+}
+
+/* Nested events hang directly underneath their parent stage's title, still
+   inside the content column — small muted lines, never floating boxes. */
+.investigation-progress-event-list {
+  list-style: none;
+  margin: var(--space-1) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.investigation-progress-event-item {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.investigation-progress-note {
+  margin: var(--space-2) 0 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-style: italic;
+}
+
+@keyframes step-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(24, 87, 184, 0.18);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(24, 87, 184, 0);
+  }
+}
+
+.investigation-progress-node--active {
+  animation: step-pulse 2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .investigation-progress-node--active {
+    animation: none;
+  }
+}
+
+/* ── Resolution / report panel (§16, Issue #41 polish §9). ─────────────── */
+.report-panel-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+
+.report-panel-header h2 {
   margin: 0;
-  font-weight: 600;
+  font-size: var(--text-md);
 }
 
-.trace-timeline-detail {
-  margin: var(--space-1) 0 0;
+/* Secondary metadata — Category/Confidence sit quietly beside the heading and
+   never visually precede the actual resolution. */
+.report-panel-meta {
+  margin: 0;
+  font-size: var(--text-xs);
   color: var(--color-text-muted);
-}
-
-.trace-timeline-tool-call-id {
-  margin: var(--space-1) 0 0;
-  color: var(--color-text-muted);
-  max-width: 28rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.trace-timeline-chunks {
-  margin: var(--space-2) 0 0;
-  padding-left: var(--space-4);
-  color: var(--color-text-muted);
-}
-
-.trace-timeline-empty {
-  color: var(--color-text-muted);
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
 }
 
 .report-panel-fields {
   grid-template-columns: 1fr;
+  gap: var(--space-4);
+}
+
+/* Failed-outcome fields (Issue #41 HQ polish §2) — Failure code / Message
+   always stack vertically, never the cramped default two-column <dl>, so
+   neither column is squeezed narrow enough to force an awkward wrap. */
+.report-panel-failure-fields {
+  grid-template-columns: 1fr;
+  gap: var(--space-3);
+}
+
+/* PROVIDER_UNAVAILABLE and friends stay one unbroken token — the generic
+   `.mono` rule's `overflow-wrap: anywhere` exists for much longer identifiers
+   (job/run/ticket IDs) and is exactly what let a failure code break
+   mid-identifier; the single-column field above is always wide enough for
+   the longest failure code without it. */
+.report-panel-failure-code {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+/* The resolution itself is dominant: readable body text that wraps on mobile
+   rather than clipping long identifiers or code-like runs. */
+.report-panel-field dd {
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.report-panel-field--lead dd {
+  font-size: var(--text-base);
+  /* §9: Summary is the primary field but is long report content — normal
+     weight (never heading-weight). The uppercase small dt labels carry the
+     emphasis instead, so the whole paragraph does not read too heavy. */
+  font-weight: 400;
 }
 
 .report-panel-evidence,
@@ -564,9 +1109,29 @@ dd {
   max-height: 12rem;
   overflow-y: auto;
   white-space: pre-wrap;
-  background: var(--color-bg);
+  background: var(--color-surface-muted);
   border-radius: var(--radius);
   padding: var(--space-3);
+}
+
+/* ── Human Approval (§18, Issue #41 polish §10). ──────────────────────── */
+/* NOT_ELIGIBLE is a no-op state — a compact secondary status, not a card. */
+.approval-panel--not-eligible {
+  padding: var(--space-3) var(--space-4);
+}
+
+.approval-panel--not-eligible h2 {
+  margin-bottom: var(--space-2);
+}
+
+.approval-not-eligible {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
 }
 
 .approval-panel-status {
@@ -581,6 +1146,7 @@ dd {
   margin-top: var(--space-4);
   padding-top: var(--space-3);
   border-top: 1px solid var(--color-border);
+  grid-template-columns: 1fr;
 }
 
 /* Terminal reviewer note: a decision is read-only once terminal, so an
@@ -604,7 +1170,7 @@ dd {
   padding: var(--space-3);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
-  background: var(--color-bg);
+  background: var(--color-surface-muted);
   color: var(--color-text);
 }
 
@@ -618,6 +1184,18 @@ dd {
   flex-wrap: wrap;
 }
 
+.approval-decision-actions button:first-child {
+  /* "Approve actions" is primary; Reject is secondary (§18). */
+  background: var(--color-accent);
+}
+
+.approval-decision-actions button[data-kind="reject"] {
+  background: none;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+}
+
+/* The item-2 banner: informational jump to the item-5 decision surface. */
 .action-required-banner {
   display: block;
   background: var(--color-info-bg);
@@ -634,23 +1212,166 @@ dd {
   text-decoration: underline;
 }
 
-.run-overview-status {
-  margin: 0 0 var(--space-3);
+/* ── Agent Activity (§14) — product labels, identifiers behind disclosure. ─ */
+.trace-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  /* §11: compact log rows — tighter than the standard card spacing. */
+  gap: 0.375rem;
 }
 
-.run-overview-details {
-  margin-bottom: var(--space-4);
+.trace-timeline-item {
+  display: flex;
+  gap: var(--space-2);
 }
 
-.run-overview-eligibility {
+.trace-timeline-content {
+  min-width: 0;
+}
+
+/* Agent Activity (§11) — a lightweight checklist/event-list, NEVER a numbered
+   second timeline. Compact glyphs: green check = completed, small blue dot =
+   running (a tool request whose completion hasn't arrived), restrained dot =
+   neutral. Smaller type than primary Progress stage titles, normal weight,
+   tight rows. */
+.trace-timeline-step {
+  flex: none;
+  width: 1.125rem;
+  height: 1.125rem;
+  margin-top: 0.125rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.trace-timeline-step--completed {
+  background: var(--color-success-bg);
+  color: var(--color-success-text);
+}
+
+.trace-timeline-step--running {
+  background: var(--color-info-bg);
+  color: var(--color-info-text);
+}
+
+.trace-timeline-step--neutral {
+  background: var(--color-neutral-bg);
+  color: var(--color-neutral-text);
+}
+
+.trace-timeline-label {
+  margin: 0;
+  /* §11: normal/medium weight, smaller than Progress stage titles. */
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+.trace-timeline-detail {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+}
+
+.trace-timeline-empty {
+  color: var(--color-text-muted);
+}
+
+/* Raw tool identifiers live ONLY behind this disclosure — never in the
+   primary Agent Activity copy (§14). Sanitized values only. */
+.technical-details {
   margin-top: var(--space-4);
   padding-top: var(--space-3);
   border-top: 1px solid var(--color-border);
 }
 
-.run-overview-nav {
+.technical-details summary {
+  cursor: pointer;
+  font-size: var(--text-xs);
+  /* §11: the disclosure label is sentence-case "Technical details" — no
+     visual uppercase anywhere (matches the Run Details disclosure). */
+  color: var(--color-text-muted);
+  user-select: none;
+}
+
+.technical-details-list {
+  margin-top: var(--space-3);
+  grid-template-columns: 1fr;
+  gap: var(--space-2);
+}
+
+.technical-details dt {
+  text-transform: none;
+  font-size: var(--text-xs);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.technical-details dd {
+  font-size: var(--text-xs);
+}
+
+/* ── Run Details (item 7, §12) — compact primary row + disclosure. ─────── */
+.investigation-summary-status {
   display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
   flex-wrap: wrap;
+}
+
+/* Refresh/Retry sit quietly on the right edge — secondary actions that never
+   compete with the status/result (§12). */
+.investigation-summary-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.investigation-summary-actions .form-secondary-action {
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-3);
+}
+
+/* Compact four-field row: Provider | Model | Duration | Attempt. */
+.investigation-summary-primary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--space-4);
-  margin-top: var(--space-4);
+  margin: 0 0 var(--space-3);
+}
+
+.investigation-summary-primary div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.investigation-summary-primary dd {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 40rem) {
+  .investigation-summary-primary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-3);
+  }
+}
+
+/* Stands in for the Retry Run button when the failed run was LIVE — the
+   token is not retained, so the retry has to start from the form's retry
+   mode. */
+.investigation-summary-retry-note {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  flex-basis: 100%;
 }

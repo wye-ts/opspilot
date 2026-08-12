@@ -2,11 +2,16 @@ import type { AgentJobResponse, AgentRunRecordView } from "../api/types";
 import { formatDateTime, formatDuration } from "../format/datetime";
 import { runStatusBadge } from "../run/run-overview-presentation";
 import { StatusBadge } from "./StatusBadge";
+import { TechnicalDetails } from "./TechnicalDetails";
 
 export interface InvestigationSummaryProps {
   readonly ticketId: string;
   readonly job: AgentJobResponse;
   readonly run: AgentRunRecordView | null;
+  /** Count of trace events recorded for the current run (0 before a run exists). */
+  readonly traceEventCount: number;
+  /** Count of suggested actions on the current run's completed report (0 otherwise). */
+  readonly suggestedActionCount: number;
   readonly showRetryRun: boolean;
   /**
    * Shown INSTEAD of the Retry Run button when the failed run was LIVE.
@@ -23,14 +28,18 @@ export interface InvestigationSummaryProps {
   readonly onRefresh: () => void;
 }
 
-// Secondary detail — the timeline and report are the primary surfaces (§6 of
-// the plan). Renders whenever a job exists, even if run creation failed.
-// Identifiers use <dl>, never disabled <input> elements, which would be
-// announced as form fields the user cannot edit.
+// Item 7 of the flat flow — Run Details (§12). The approved compact reference
+// is four primary fields (Provider / Model / Duration / Attempt) plus a
+// `Technical details` disclosure for everything long/internal (start/finish
+// timestamps, counts, cost, and all IDs). The old "Jump to activity" /
+// "Jump to report" links are gone: the flat flow is already in reading order,
+// so in-page jumps just duplicated the DOM order (Issue #41 polish §12).
 export function InvestigationSummary({
   ticketId,
   job,
   run,
+  traceEventCount,
+  suggestedActionCount,
   showRetryRun,
   showLiveRetryTokenNotice,
   retryDisabled,
@@ -40,9 +49,35 @@ export function InvestigationSummary({
 }: InvestigationSummaryProps) {
   const presentation = run !== null ? runStatusBadge(run.status) : null;
 
+  // User-facing provider labels: `Demo` for FAKE, `Live` for LIVE (§12) —
+  // raw enum values never appear as primary copy.
+  const providerLabel = run !== null ? (run.providerMode === "LIVE" ? "Live" : "Demo") : null;
+
+  // Everything long or internal goes behind the disclosure. Only grounded
+  // identifiers reach here — never secrets, tokens, prompts, or payloads.
+  const technicalRows: { readonly label: string; readonly value: string }[] = [];
+  if (run !== null) {
+    technicalRows.push({ label: "Started", value: formatDateTime(run.startedAt) });
+    technicalRows.push({ label: "Finished", value: formatDateTime(run.finishedAt) });
+    technicalRows.push({ label: "Trace events", value: String(traceEventCount) });
+    technicalRows.push({ label: "Suggested action count", value: String(suggestedActionCount) });
+    // Hidden ENTIRELY when the cost is unknown. Rendering "$0.00" would
+    // assert a measured free run, which is a different claim from "we did
+    // not measure this" — and for a FAKE run there was never a provider
+    // call to measure. (Relocated from RunOverviewPanel.)
+    if (run.estimatedCostUsd !== null) {
+      technicalRows.push({ label: "Estimated cost", value: `$${run.estimatedCostUsd}` });
+    }
+  }
+  technicalRows.push({ label: "Ticket ID", value: ticketId });
+  technicalRows.push({ label: "Job ID", value: job.id });
+  if (run !== null) {
+    technicalRows.push({ label: "Run ID", value: run.id });
+  }
+
   return (
     <section className="investigation-summary" aria-labelledby="investigation-summary-heading">
-      <h2 id="investigation-summary-heading">Investigation</h2>
+      <h2 id="investigation-summary-heading">Run details</h2>
 
       <div className="investigation-summary-status">
         {presentation !== null && run !== null ? (
@@ -51,17 +86,21 @@ export function InvestigationSummary({
           <StatusBadge tone="danger" glyph="✕" label="Run not started" />
         )}
 
-        {run !== null ? (
-          <button type="button" onClick={onRefresh} disabled={refreshDisabled}>
-            Refresh
-          </button>
-        ) : null}
+        {/* Refresh/Retry are secondary actions that must not compete with the
+            status/result (§12) — quiet text buttons on the right edge. */}
+        <div className="investigation-summary-actions">
+          {run !== null ? (
+            <button type="button" className="form-secondary-action" onClick={onRefresh} disabled={refreshDisabled}>
+              Refresh
+            </button>
+          ) : null}
 
-        {showRetryRun ? (
-          <button type="button" onClick={onRetryRun} disabled={retryDisabled}>
-            Retry Run
-          </button>
-        ) : null}
+          {showRetryRun ? (
+            <button type="button" className="form-secondary-action" onClick={onRetryRun} disabled={retryDisabled}>
+              Retry Run
+            </button>
+          ) : null}
+        </div>
 
         {showLiveRetryTokenNotice ? (
           <p className="investigation-summary-retry-note">
@@ -72,50 +111,27 @@ export function InvestigationSummary({
       </div>
 
       {run !== null ? (
-        <dl className="investigation-summary-details">
+        <dl className="investigation-summary-primary">
           <div>
-            <dt>Attempt</dt>
-            <dd>{run.attemptNumber}</dd>
-          </div>
-          <div>
-            <dt>Provider mode</dt>
-            <dd>{run.providerMode}</dd>
+            <dt>Provider</dt>
+            <dd>{providerLabel}</dd>
           </div>
           <div>
             <dt>Model</dt>
             <dd>{run.modelIdentifier ?? "—"}</dd>
           </div>
           <div>
-            <dt>Started</dt>
-            <dd>{formatDateTime(run.startedAt)}</dd>
-          </div>
-          <div>
-            <dt>Finished</dt>
-            <dd>{formatDateTime(run.finishedAt)}</dd>
-          </div>
-          <div>
             <dt>Duration</dt>
             <dd>{formatDuration(run.startedAt, run.finishedAt)}</dd>
+          </div>
+          <div>
+            <dt>Attempt</dt>
+            <dd>{run.attemptNumber}</dd>
           </div>
         </dl>
       ) : null}
 
-      <dl className="investigation-summary-ids">
-        <div>
-          <dt>Ticket ID</dt>
-          <dd className="mono">{ticketId}</dd>
-        </div>
-        <div>
-          <dt>Job ID</dt>
-          <dd className="mono">{job.id}</dd>
-        </div>
-        {run !== null ? (
-          <div>
-            <dt>Run ID</dt>
-            <dd className="mono">{run.id}</dd>
-          </div>
-        ) : null}
-      </dl>
+      <TechnicalDetails rows={technicalRows} />
     </section>
   );
 }

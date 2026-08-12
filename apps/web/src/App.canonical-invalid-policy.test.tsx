@@ -143,7 +143,7 @@ function elapsedText(): string | null {
 
 async function submit(user: ReturnType<typeof userEvent.setup>, summary = "Elevated error rate") {
   await user.type(screen.getByLabelText("Issue Summary"), summary);
-  await user.click(screen.getByRole("button", { name: "Run Investigation" }));
+  await user.click(screen.getByRole("button", { name: "Start Investigation" }));
 }
 
 afterEach(() => {
@@ -401,6 +401,11 @@ describe("Resumed FAILED canonical-invalid — Check again terminal settlement (
     await waitFor(() => expect(screen.queryByText(NOTE_TEXT)).toBeNull());
     expect(document.querySelector(".investigation-progress-children-list")).not.toBeNull();
     expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
+
+    // Issue #41 HQ polish §3 — recovered canonical detail names DIAGNOSTIC_
+    // EXECUTION as the failed stage, so the Resolution report's summary is
+    // now grounded in that real fact rather than the generic fallback.
+    expect(screen.getByText("Investigation failed during diagnostic execution.")).toBeInTheDocument();
 
     // FAILED remains, treated as a harmless DUPLICATE — not a fresh owner:
     // no approval request (FAILED never loads approval), and the frozen
