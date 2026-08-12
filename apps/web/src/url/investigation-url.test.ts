@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { isUuid, readJobParam, withJobParam, withoutJobParam } from "./investigation-url";
+import {
+  isUuid,
+  readJobParam,
+  urlWithTransientParamsRemoved,
+  withJobParam,
+  withoutJobParam,
+} from "./investigation-url";
 
 const VALID_UUID = "0313ac34-6394-4f6d-9be1-ec277daa69dd";
 
@@ -83,5 +89,39 @@ describe("withoutJobParam", () => {
     const result = withoutJobParam(`?job=${VALID_UUID}&other=1`);
     expect(result).toBe("other=1");
     expect(result).not.toContain("job");
+  });
+});
+
+describe("urlWithTransientParamsRemoved", () => {
+  // Fix: the previous `?${withoutJobParam(...)}` pattern serialized an empty
+  // search as a bare `/?`. The canonical URL carries NO `?` at all when the
+  // resulting search is empty.
+  it("produces the bare pathname — no `?` — when nothing remains", () => {
+    expect(urlWithTransientParamsRemoved("/", `?job=${VALID_UUID}`)).toBe("/");
+  });
+
+  it("also strips the app-owned approval-demo flag, leaving no bare `?`", () => {
+    expect(urlWithTransientParamsRemoved("/", "?approval-demo=1")).toBe("/");
+    expect(urlWithTransientParamsRemoved("/", `?approval-demo=1&job=${VALID_UUID}`)).toBe("/");
+  });
+
+  it("preserves unrelated query parameters", () => {
+    const result = urlWithTransientParamsRemoved("/", `?job=${VALID_UUID}&debug=1`);
+    expect(result).toBe("/?debug=1");
+    expect(result).not.toContain("job");
+  });
+
+  it("preserves the pathname for non-root routes", () => {
+    expect(urlWithTransientParamsRemoved("/investigations", `?job=${VALID_UUID}`)).toBe("/investigations");
+  });
+
+  it("is a no-op when the search is already empty", () => {
+    expect(urlWithTransientParamsRemoved("/", "")).toBe("/");
+    expect(urlWithTransientParamsRemoved("/", undefined)).toBe("/");
+  });
+
+  it("keeps unrelated params alongside the pathname", () => {
+    const result = urlWithTransientParamsRemoved("/investigations", "?job=1&utm=x&approval-demo=1");
+    expect(result).toBe("/investigations?utm=x");
   });
 });

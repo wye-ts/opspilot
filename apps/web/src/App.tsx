@@ -48,8 +48,8 @@ import {
   isUuid,
   readApprovalDemoParam,
   readJobParam,
+  urlWithTransientParamsRemoved,
   withJobParam,
-  withoutJobParam,
 } from "./url/investigation-url";
 import { InvestigationSummary } from "./components/InvestigationSummary";
 import { ReportPanel } from "./components/ReportPanel";
@@ -509,7 +509,7 @@ export function App() {
       // No job param on initial load — nothing to resume, ordinary fresh form.
     } else if (!isUuid(jobParam)) {
       setNotice("That investigation link isn't valid.");
-      window.history.replaceState(null, "", `?${withoutJobParam(window.location.search)}`);
+      window.history.replaceState(null, "", urlWithTransientParamsRemoved(window.location.pathname, window.location.search));
     } else {
       void resumeInvestigationFromJobParam(jobParam);
     }
@@ -539,7 +539,7 @@ export function App() {
         invalidateInFlightWorkflows();
         resetToFreshFormState();
         setNotice("That investigation link isn't valid.");
-        window.history.replaceState(null, "", `?${withoutJobParam(window.location.search)}`);
+        window.history.replaceState(null, "", urlWithTransientParamsRemoved(window.location.pathname, window.location.search));
         void refreshCapabilities();
       }
     };
@@ -1102,7 +1102,7 @@ export function App() {
           invalidateInFlightWorkflows();
           resetToFreshFormState();
           setNotice(INVESTIGATION_NOT_FOUND_NOTICE);
-          window.history.replaceState(null, "", `?${withoutJobParam(window.location.search)}`);
+          window.history.replaceState(null, "", urlWithTransientParamsRemoved(window.location.pathname, window.location.search));
         } else if (reason === "permanent-invalid") {
           // The investigation itself is untouched — only live progress
           // tracking stopped. Never raw server/persistence/provider text,
@@ -1185,7 +1185,7 @@ export function App() {
       if (thrown instanceof ApiRequestError && thrown.code === "AGENT_JOB_NOT_FOUND") {
         resetToFreshFormState();
         setNotice(INVESTIGATION_NOT_FOUND_NOTICE);
-        window.history.replaceState(null, "", `?${withoutJobParam(window.location.search)}`);
+        window.history.replaceState(null, "", urlWithTransientParamsRemoved(window.location.pathname, window.location.search));
         return;
       }
       // INTERNAL_DATA_INVALID, a network failure, or PERSISTENCE_UNAVAILABLE:
@@ -1918,8 +1918,10 @@ export function App() {
   function startNewInvestigation() {
     invalidateInFlightWorkflows();
     resetToFreshFormState();
-    // Strip the ?job= param — this is a fresh investigation.
-    window.history.replaceState(null, "", `?${withoutJobParam(window.location.search)}`);
+    // Strip the app-owned transient params (?job=, ?approval-demo=1) — this
+    // is a fresh investigation. A canonical empty search produces `/`, never
+    // a bare `/?`.
+    window.history.replaceState(null, "", urlWithTransientParamsRemoved(window.location.pathname, window.location.search));
     void refreshCapabilities();
   }
 
@@ -2163,15 +2165,22 @@ export function App() {
     run?.outcome.type === "COMPLETED" ? run.outcome.report.suggestedActions.length : 0;
   // Issue #41 polish §8 — the page-level terminal "Start new investigation"
   // CTA (after Run Details, above the footer). Shown only once the run is
-  // terminal AND any required human approval has reached a decided state (or
-  // never applied, e.g. FAILED / NOT_ELIGIBLE). Never during preflight,
-  // creation, running, or an unresolved/pending approval. Reuses the existing
-  // reset/new-submission path (startNewInvestigation) — no job is created
-  // until the user submits again.
+  // terminal AND there is no KNOWN pending human approval. Provider-agnostic:
+  // Demo vs Live must never change whether it renders — it derives purely from
+  // the persisted run outcome + approval state. Hidden during preflight,
+  // creation, running, or an unresolved/pending approval; shown for FAILED and
+  // for COMPLETED with no pending approval (NOT_ELIGIBLE, APPROVED, REJECTED,
+  // or a terminal run whose approval could not be loaded — a null approval is
+  // "no known pending approval", exactly as the action-required banner treats
+  // it). `approvalLoadStatus !== "loading"` keeps the CTA from flashing during
+  // the brief window where a genuinely-pending approval is still being fetched.
+  // Reuses the existing reset/new-submission path (startNewInvestigation) — no
+  // job is created until the user submits again.
   const showNewInvestigation =
     run !== null &&
     run.outcome.type !== "RUNNING" &&
-    (run.outcome.type === "FAILED" || (approval !== null && approval.status !== "PENDING"));
+    approvalLoadStatus !== "loading" &&
+    (run.outcome.type === "FAILED" || approval?.status !== "PENDING");
   // Final UX Pilot fidelity pass — Current Investigation/Progress already show
   // completion via badges, so the redundant visible "Investigation complete."
   // sentence is visually suppressed (kept in the DOM/aria-live tree for

@@ -51,3 +51,19 @@ export function withoutJobParam(currentSearch?: string): string {
   params.delete("job");
   return params.toString();
 }
+
+/**
+ * Returns a canonical full URL (`pathname` + optional search) after removing
+ * the app-owned transient investigation parameters — `job` and the hidden
+ * `approval-demo` flag. When no query parameters remain, the URL carries NO
+ * `?` at all: a reset produces `/`, never a bare `/?` (Fix: the previous
+ * `` `?${withoutJobParam(...)}` `` pattern serialized an empty search as a
+ * dangling question mark). Unrelated query parameters are preserved.
+ */
+export function urlWithTransientParamsRemoved(pathname: string, currentSearch?: string): string {
+  const params = new URLSearchParams(currentSearch ?? "");
+  params.delete("job");
+  params.delete("approval-demo");
+  const search = params.toString();
+  return search ? `${pathname}?${search}` : pathname;
+}
