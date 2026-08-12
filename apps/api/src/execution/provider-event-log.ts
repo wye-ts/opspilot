@@ -26,6 +26,12 @@ export function logProviderEvent(event: ClaudeProviderLogEvent): void {
         provider: event.provider,
         model: event.model,
         terminalErrorCategory: event.terminalErrorCategory,
+        // errorSource/errorClass/errorStatus are the adapter's own sanitized
+        // diagnostic fields (class name + numeric status, never a message or
+        // response body) — see ClaudeProviderLogEvent's "error" variant.
+        errorSource: event.errorSource,
+        errorClass: event.errorClass,
+        errorStatus: event.errorStatus,
         latencyMs: Math.round(event.latencyMs),
         configuredMaxRetries: event.configuredMaxRetries,
       }),

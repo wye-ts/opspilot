@@ -96,9 +96,39 @@ export type ClaudeProviderLogEvent =
       readonly provider: "anthropic";
       readonly model: string;
       readonly terminalErrorCategory: LlmProviderErrorCategory;
+      /**
+       * Distinguishes the two paths that both currently terminate as
+       * `terminalErrorCategory: "UNKNOWN"` and were, before this field
+       * existed, indistinguishable in the log: an SDK exception that fell
+       * through `classifyError()` unclassified, vs. an HTTP 200 response
+       * that parsed successfully but omitted `_request_id`. Every other
+       * category is always `sdk_exception` — `missing_request_id` is only
+       * ever paired with `UNKNOWN`.
+       */
+      readonly errorSource: ClaudeProviderErrorSource;
+      /**
+       * The caught exception's constructor name (e.g. "AuthenticationError",
+       * "TypeError") — a class name only, never `error.message` or any part
+       * of the exception's own text, which for an Anthropic `APIError` can
+       * embed the raw provider response body. `null` for
+       * `missing_request_id`, where there is no caught exception.
+       */
+      readonly errorClass: string | null;
+      /**
+       * The HTTP status, when the caught exception is an Anthropic
+       * `APIError` that carries one. `null` for `missing_request_id` and for
+       * any non-`APIError`/statusless exception (e.g. `APIConnectionError`).
+       */
+      readonly errorStatus: number | null;
       readonly latencyMs: number;
       readonly configuredMaxRetries: number;
     };
+
+/**
+ * See `errorSource` above — internal-only, never surfaced on any public
+ * failure code or AgentOrchestratorErrorCode.
+ */
+export type ClaudeProviderErrorSource = "sdk_exception" | "missing_request_id";
 
 export interface ClaudeLlmProviderOptions {
   readonly client: AnthropicMessagesClient;
@@ -132,7 +162,7 @@ const SANITIZED_MESSAGE_BY_CATEGORY: Record<LlmProviderErrorCategory, string> = 
 };
 
 /**
- * Ordering is load-bearing, in three places:
+ * Ordering is load-bearing, in four places:
  *
  *  1. APIUserAbortError extends APIError directly, so it must be matched
  *     before any generic APIError handling or a deliberate cancellation would
@@ -142,6 +172,11 @@ const SANITIZED_MESSAGE_BY_CATEGORY: Record<LlmProviderErrorCategory, string> = 
  *  3. Numeric status is checked before the >=500 instanceof, because the SDK
  *     maps *every* 5xx to InternalServerError — a 504 gateway timeout would
  *     otherwise be reported as a generic server error rather than a timeout.
+ *  4. The generic 5xx fallback at the end is checked only after every named
+ *     class and numeric override above, so it can never override a more
+ *     specific classification — it only catches an unmapped 5xx that nothing
+ *     above matched. There is no equivalent generic 4xx fallback — see the
+ *     comment on that fallback for why.
  */
 function classifyError(error: unknown): LlmProviderErrorCategory {
   if (error instanceof APIUserAbortError) return "CANCELLED";
@@ -175,7 +210,46 @@ function classifyError(error: unknown): LlmProviderErrorCategory {
   ) {
     return "REQUEST_INVALID";
   }
+
+  // Generic-status fallback — 5xx only. A 5xx status the SDK does not map to
+  // InternalServerError or the 504 override above is still a real server-side
+  // failure (possibly after partial generation), so it is classified
+  // SERVER_ERROR rather than collapsed to UNKNOWN.
+  //
+  // A generic/unmapped 4xx (e.g. 405, 406, 451 — or any future status
+  // Anthropic's edge starts returning before this adapter is updated for it)
+  // is deliberately left to fall through to UNKNOWN below, not classified as
+  // REQUEST_INVALID: REQUEST_INVALID is one of
+  // run-provider-usage-collector.ts's PROVABLY_UNBILLED_CATEGORIES, and an
+  // unrecognized 4xx has not been confirmed to mean "rejected before
+  // dispatch" the way the named 400/404/409/413/422 classes above have.
+  // Guessing REQUEST_INVALID here would silently relax the possible-
+  // unobserved-cost accounting's fail-closed guarantee for a status this
+  // adapter has never actually validated. UNKNOWN keeps that guarantee
+  // intact; errorSource/errorClass/errorStatus on the logged event (see
+  // describeSdkException below) still make the failure fully diagnosable
+  // without weakening the accounting policy.
+  if (error instanceof APIError && typeof error.status === "number" && error.status >= 500) {
+    return "SERVER_ERROR";
+  }
+
   return "UNKNOWN";
+}
+
+/**
+ * Safe-to-log diagnostic metadata for a caught SDK exception: a class name
+ * and, when available, an HTTP status — never `error.message` (an Anthropic
+ * `APIError`'s message can embed the raw provider response body) and never
+ * headers, payloads, or the error's own `error`/`cause` fields.
+ */
+function describeSdkException(error: unknown): {
+  readonly errorClass: string | null;
+  readonly errorStatus: number | null;
+} {
+  return {
+    errorClass: error instanceof Error ? error.constructor.name : null,
+    errorStatus: error instanceof APIError && typeof error.status === "number" ? error.status : null,
+  };
 }
 
 /**
@@ -230,7 +304,7 @@ export class ClaudeLlmProvider implements LlmProvider {
       );
     } catch (error) {
       const category = classifyError(error);
-      this.logError(category, performance.now() - startedAt);
+      this.logError(category, performance.now() - startedAt, "sdk_exception", describeSdkException(error));
       // Transport/auth/rate-limit/server failures never produced a
       // parseable model response, so they must never be laundered into a
       // protocol_error AgentTurnResult — they throw instead.
@@ -240,7 +314,7 @@ export class ClaudeLlmProvider implements LlmProvider {
     const latencyMs = performance.now() - startedAt;
     const providerRequestId = message._request_id;
     if (!providerRequestId) {
-      this.logError("UNKNOWN", latencyMs);
+      this.logError("UNKNOWN", latencyMs, "missing_request_id", { errorClass: null, errorStatus: null });
       throw new LlmProviderError("UNKNOWN", "Anthropic response was missing a request id.");
     }
 
@@ -292,12 +366,20 @@ export class ClaudeLlmProvider implements LlmProvider {
     return normalizedResult;
   }
 
-  private logError(category: LlmProviderErrorCategory, latencyMs: number): void {
+  private logError(
+    category: LlmProviderErrorCategory,
+    latencyMs: number,
+    errorSource: ClaudeProviderErrorSource,
+    diagnostics: { readonly errorClass: string | null; readonly errorStatus: number | null },
+  ): void {
     this.options.logger?.({
       outcome: "error",
       provider: "anthropic",
       model: this.options.model,
       terminalErrorCategory: category,
+      errorSource,
+      errorClass: diagnostics.errorClass,
+      errorStatus: diagnostics.errorStatus,
       latencyMs,
       configuredMaxRetries: this.options.configuredMaxRetries,
     });

@@ -43,6 +43,9 @@ function errorEvent(category: LlmProviderErrorCategory): ClaudeProviderLogEvent 
     provider: "anthropic",
     model: "claude-sonnet-5",
     terminalErrorCategory: category,
+    errorSource: "sdk_exception",
+    errorClass: "APIError",
+    errorStatus: null,
     latencyMs: 120,
     configuredMaxRetries: 0,
   };

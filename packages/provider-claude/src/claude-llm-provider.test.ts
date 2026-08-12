@@ -744,6 +744,126 @@ describe("ClaudeLlmProvider — error classification ordering", () => {
 
     expect((thrown as InstanceType<typeof LlmProviderError>).category).toBe("UNKNOWN");
   });
+
+  it.each([503, 511, 599] as const)(
+    "classifies a generic/unmapped APIError 5xx status %i as SERVER_ERROR instead of collapsing to UNKNOWN",
+    async (status) => {
+      // A 5xx status with no dedicated SDK class and no numeric override in
+      // classifyError — this is the fallback path that used to fall all the
+      // way through to UNKNOWN. SERVER_ERROR is not in
+      // run-provider-usage-collector.ts's PROVABLY_UNBILLED_CATEGORIES, so
+      // this stays fail-closed for cost accounting exactly like UNKNOWN did.
+      const error = new APIError(status, { message: "sensitive-fallback-body-2b7e" }, "m", new Headers());
+      const provider = buildProvider(vi.fn().mockRejectedValue(error));
+
+      const thrown = await provider.runAgentTurn(buildInput()).catch((e: unknown) => e);
+      const providerError = thrown as InstanceType<typeof LlmProviderError>;
+
+      expect(providerError.category).toBe("SERVER_ERROR");
+      expect(providerError.category).not.toBe("UNKNOWN");
+      expect(providerError.message).not.toContain("sensitive-fallback-body-2b7e");
+    },
+  );
+
+  it.each([405, 406, 451] as const)(
+    "classifies a generic/unmapped APIError 4xx status %i as UNKNOWN, not REQUEST_INVALID — REQUEST_INVALID is provably-unbilled and an unrecognized 4xx has not earned that claim",
+    async (status) => {
+      // Unlike the 5xx fallback above, an unmapped 4xx deliberately stays
+      // UNKNOWN: REQUEST_INVALID is one of
+      // run-provider-usage-collector.ts's PROVABLY_UNBILLED_CATEGORIES, and
+      // guessing it here would silently relax the possible-unobserved-cost
+      // accounting's fail-closed guarantee for a status this adapter has
+      // never actually validated as "rejected before dispatch".
+      const error = new APIError(status, { message: "sensitive-fallback-body-2b7e" }, "m", new Headers());
+      const provider = buildProvider(vi.fn().mockRejectedValue(error));
+
+      const thrown = await provider.runAgentTurn(buildInput()).catch((e: unknown) => e);
+      const providerError = thrown as InstanceType<typeof LlmProviderError>;
+
+      expect(providerError.category).toBe("UNKNOWN");
+      expect(providerError.message).not.toContain("sensitive-fallback-body-2b7e");
+    },
+  );
+
+  it("still logs errorSource/errorClass/errorStatus for an unmapped 4xx, so an UNKNOWN caused by it stays fully diagnosable internally despite the conservative public category", async () => {
+    const error = new APIError(451, { message: "sensitive-fallback-body-2b7e" }, "m", new Headers());
+    const logger = vi.fn();
+    const provider = buildProvider(vi.fn().mockRejectedValue(error), { logger });
+
+    await provider.runAgentTurn(buildInput()).catch(() => undefined);
+
+    expect(logger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "error",
+        terminalErrorCategory: "UNKNOWN",
+        errorSource: "sdk_exception",
+        errorClass: "APIError",
+        errorStatus: 451,
+      }),
+    );
+    const serialized = JSON.stringify(logger.mock.calls[0]?.[0]);
+    expect(serialized).not.toContain("sensitive-fallback-body-2b7e");
+  });
+});
+
+describe("ClaudeLlmProvider — errorSource / diagnostic metadata", () => {
+  it("tags a caught SDK exception as errorSource=sdk_exception, with the exception's class name and HTTP status", async () => {
+    const error = new AuthenticationError(401, { message: "bad key" }, "bad key", new Headers());
+    const logger = vi.fn();
+    const provider = buildProvider(vi.fn().mockRejectedValue(error), { logger });
+
+    await provider.runAgentTurn(buildInput()).catch(() => undefined);
+
+    expect(logger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "error",
+        terminalErrorCategory: "AUTHENTICATION",
+        errorSource: "sdk_exception",
+        errorClass: "AuthenticationError",
+        errorStatus: 401,
+      }),
+    );
+  });
+
+  it("classifies a true unknown SDK exception (not an Anthropic APIError) as UNKNOWN, tagged sdk_exception with its own class name and no status", async () => {
+    const error = new TypeError("boom-detail-8f21");
+    const logger = vi.fn();
+    const provider = buildProvider(vi.fn().mockRejectedValue(error), { logger });
+
+    const thrown = await provider.runAgentTurn(buildInput()).catch((e: unknown) => e);
+
+    expect((thrown as InstanceType<typeof LlmProviderError>).category).toBe("UNKNOWN");
+    expect(logger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "error",
+        terminalErrorCategory: "UNKNOWN",
+        errorSource: "sdk_exception",
+        errorClass: "TypeError",
+        errorStatus: null,
+      }),
+    );
+    const serialized = JSON.stringify(logger.mock.calls[0]?.[0]);
+    expect(serialized).not.toContain("boom-detail-8f21");
+  });
+
+  it("tags a response missing _request_id as errorSource=missing_request_id, distinct from a thrown sdk_exception, with no class or status", async () => {
+    const message = buildFakeMessage({ _request_id: null, content: [] });
+    const logger = vi.fn();
+    const provider = buildProvider(vi.fn().mockResolvedValue(message), { logger });
+
+    const thrown = await provider.runAgentTurn(buildInput()).catch((e: unknown) => e);
+
+    expect((thrown as InstanceType<typeof LlmProviderError>).category).toBe("UNKNOWN");
+    expect(logger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "error",
+        terminalErrorCategory: "UNKNOWN",
+        errorSource: "missing_request_id",
+        errorClass: null,
+        errorStatus: null,
+      }),
+    );
+  });
 });
 
 describe("ClaudeLlmProvider — cancellation seam", () => {
