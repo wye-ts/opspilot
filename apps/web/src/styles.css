@@ -168,14 +168,15 @@ html {
 }
 
 .product-header-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.75rem;
-  height: 1.75rem;
-  border-radius: var(--radius-sm);
-  background: var(--color-accent);
-  color: #ffffff;
+  /* Approved compass mark served from /brand/opspilot-mark.svg — drawn for
+     light surfaces, so no chip/background of its own. Brand polish pass:
+     2.25rem (36px) on desktop, 2rem (32px) on mobile (media query below) so
+     the compass has real presence beside the wordmark. The header-inner
+     min-height already clears 2.25rem, so the header does not grow. The
+     flex gap (.product-header-brand) keeps an 8px mark/wordmark space. */
+  display: block;
+  width: 2.25rem;
+  height: 2.25rem;
   flex: none;
 }
 
@@ -213,6 +214,13 @@ html {
    crowds the source link against the product title. Brand mark + "OpsPilot"
    is identity enough, and "View source" stays compact but present. */
 @media (max-width: 47.99rem) {
+  /* Brand polish pass: a slightly smaller but still prominent mark (2rem /
+     32px) on phones, where the divider/tagline are already hidden. */
+  .product-header-mark {
+    width: 2rem;
+    height: 2rem;
+  }
+
   .product-header-divider,
   .product-header-tagline {
     display: none;

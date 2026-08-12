@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">OpsPilot app icon</title>
+  <desc id="desc">OpsPilot compass mark on a navy rounded-square background.</desc>
+  <rect width="512" height="512" rx="112" fill="#0B132B"/>
+  <g transform="translate(64 64) scale(1.5)">
+    <g fill="none" stroke="#F8FAFC" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="128" cy="128" r="82" stroke-width="10" stroke-dasharray="190 30 62 34" transform="rotate(-18 128 128)"/>
+      <path d="M128 30v16M128 210v16M30 128h16M210 128h16" stroke-width="7" opacity="0.92"/>
+    </g>
+    <g transform="rotate(-43 128 128)">
+      <path d="M128 44 L154 128 L128 212 L114 128 Z" fill="#2563EB"/>
+      <path d="M128 44 L142 128 L128 212 L154 128 Z" fill="#00CFE8"/>
+      <path d="M128 44 L128 212" stroke="#FFFFFF" stroke-opacity="0.82" stroke-width="3"/>
+    </g>
+    <circle cx="128" cy="128" r="17" fill="#0B132B" stroke="#F8FAFC" stroke-width="8"/>
+    <circle cx="128" cy="128" r="5" fill="#00CFE8"/>
+  </g>
+</svg>

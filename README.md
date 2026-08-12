@@ -1,5 +1,17 @@
 # OpsPilot
 
+<picture>
+  <source
+    media="(prefers-color-scheme: dark)"
+    srcset="apps/web/public/brand/opspilot-lockup-dark.png"
+  />
+  <img
+    alt="OpsPilot — AI Operations Investigator"
+    src="apps/web/public/brand/opspilot-lockup.png"
+    width="420"
+  />
+</picture>
+
 [![CI](https://github.com/wye-ts/opspilot/actions/workflows/ci.yml/badge.svg)](https://github.com/wye-ts/opspilot/actions/workflows/ci.yml)
 [![Live Demo](https://img.shields.io/badge/Live_Demo-Render-46E3B7)](https://opspilot-bkdf.onrender.com)
 
