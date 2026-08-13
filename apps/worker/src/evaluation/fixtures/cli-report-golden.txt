@@ -1,0 +1,30 @@
+OpsPilot Evaluation
+
+PASS notification-service-degradation
+PASS notification-queue-backlog
+PASS authentication-failure
+PASS database-connection-saturation
+PASS billing-invoice-formatting
+PASS irrelevant-no-match-query
+PASS fabricated-rag-evidence
+PASS fabricated-tool-evidence
+PASS unknown-tool-request
+PASS invalid-tool-input
+PASS provider-protocol-error
+PASS missing-final-report
+PASS tool-execution-failure
+PASS malformed-report-submission
+PASS injection-probe-structural
+
+Summary
+Cases: 15
+Passed: 15
+Failed: 0
+Pass rate: 100.0%
+
+Retrieval top-1: 6/6
+Retrieval hit@3: 2/2
+Schema handling: 10/10
+Evidence grounding: 9/9
+Tool correctness: 11/11
+Expected status: 15/15

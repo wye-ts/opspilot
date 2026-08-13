@@ -1,4 +1,6 @@
-import type { EvaluationCaseResult, EvaluationMetrics } from "./types";
+import { resolveCheckReasonMessage } from "./check-reason-codes";
+import type { EvaluationMetrics } from "./types";
+import type { EvaluationCaseResultV1 } from "./v1-types";
 
 function formatRatio(ratio: { readonly numerator: number; readonly denominator: number }): string {
   return `${ratio.numerator}/${ratio.denominator}`;
@@ -8,12 +10,17 @@ function formatPercent(rate: number): string {
   return `${(rate * 100).toFixed(1)}%`;
 }
 
-// Prints only the case id, PASS/FAIL, the fixed check name, and the check's
-// own already-sanitized reason string — never EvaluationCheckResult.expected
-// or .observed, which may carry arbitrary internal values not meant for
-// display (see docs/07-evaluation-plan.md).
+// Prints only the case id, PASS/FAIL, the fixed check name, and the fixed
+// message resolved from the check's reasonCode. Operates on the wire-safe
+// EvaluationCaseResultV1 shape — there is no expected/observed field to
+// accidentally read here even in principle (see v1-types.ts, correction 3).
+// EvaluationCheckV1 is a discriminated union: a failing check is
+// type-guaranteed to carry a non-null reasonCode, so there is no
+// "check failed" fallback to author here — that state is unrepresentable
+// (see independent-review finding "EvaluationCheckV1 does not enforce the
+// frozen reason-code invariant").
 export function formatEvaluationReport(
-  results: readonly EvaluationCaseResult[],
+  results: readonly EvaluationCaseResultV1[],
   metrics: EvaluationMetrics,
 ): string {
   const lines: string[] = ["OpsPilot Evaluation", ""];
@@ -23,7 +30,7 @@ export function formatEvaluationReport(
     if (!result.passed) {
       for (const check of result.checks) {
         if (!check.passed) {
-          lines.push(`  - ${check.name}: ${check.reason ?? "check failed"}`);
+          lines.push(`  - ${check.name}: ${resolveCheckReasonMessage(check.reasonCode)}`);
         }
       }
     }

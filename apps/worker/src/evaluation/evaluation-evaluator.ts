@@ -1,46 +1,16 @@
-import type { AgentOrchestratorResult } from "@opspilot/agent-runtime";
-import type { RecordedToolExecution } from "./recording-tool-registry";
-import type {
-  EvaluationCase,
-  EvaluationCaseResult,
-  EvaluationCheckResult,
-  EvaluationExpectations,
-} from "./types";
+import type { CheckReasonCode } from "./check-reason-codes";
+import type { ObservedFacts } from "./observed-facts";
+import type { EvaluationCaseInputV1 } from "./v1-types";
+import type { EvaluationCaseResult, EvaluationCheckResult, EvaluationExpectations } from "./types";
 
-// Every reason string below is a fixed, application-authored template. None
-// ever interpolates a chunk id, tool name, toolCallId, evidence id, or error
-// code from expectations/observations — those richer values are kept only in
-// EvaluationCheckResult.expected/observed for programmatic inspection, never
-// copied into printable text (see docs/07-evaluation-plan.md).
-const RETRIEVAL_NOT_OBSERVED_REASON = "No retrieval result was observed for this case.";
-const RETRIEVAL_TOP1_MISMATCH_REASON = "The expected top-ranked chunk was not observed.";
-const RETRIEVAL_HIT3_MISMATCH_REASON = "One or more expected chunks were absent from the top three results.";
-const RETRIEVAL_NO_RESULTS_MISMATCH_REASON = "Retrieval returned results when none were expected.";
-const RETRIEVAL_FORBIDDEN_MISMATCH_REASON = "A forbidden chunk id was observed in the retrieval results.";
-
-const TOOL_REQUESTED_MISMATCH_REASON = "The expected tool request was not observed.";
-const TOOL_EXECUTED_MISMATCH_REASON = "The expected tool execution attempt was not observed.";
-const TOOL_COMPLETED_MISMATCH_REASON = "The expected tool execution did not complete.";
-const TOOL_FORBIDDEN_EXECUTED_MISMATCH_REASON = "A forbidden tool was executed in this run.";
-const TOOL_FORBIDDEN_COMPLETED_MISMATCH_REASON = "A forbidden tool call was observed as completed.";
-
-const SCHEMA_HANDLING_MISMATCH_REASON =
-  "The report's schema-validation outcome did not match the expected outcome.";
-const EVIDENCE_GROUNDING_MISMATCH_REASON =
-  "The report's evidence-grounding outcome did not match the expected outcome.";
-
-const PAYLOAD_NOT_AVAILABLE_REASON = "The run did not complete, so no report was available to check.";
-const EVIDENCE_TYPES_MISMATCH_REASON = "The submitted report did not contain all required evidence types.";
-const EVIDENCE_IDS_MISMATCH_REASON =
-  "The submitted report did not satisfy the required or forbidden evidence id expectations.";
-const ACTION_TYPES_MISMATCH_REASON =
-  "The submitted report did not contain all required suggested-action types.";
-
-const FAILURE_CODE_RUN_COMPLETED_REASON = "The run completed, but a failure was expected.";
-const FAILURE_CODE_MISMATCH_REASON = "The observed failure code did not match the expected failure code.";
-
-const STATUS_MISMATCH_REASON = "The observed run status did not match the expected run status.";
-
+// Every evaluate* function below operates ONLY on EvaluationExpectations and
+// ObservedFacts (or a narrow slice of it) — never on a raw
+// AgentOrchestratorResult, trace event, or ResolutionReport, and never on
+// anything but the exact nested v1 shape ObservedFacts now is (see
+// observed-facts.ts, HQ final contract-shape correction). Scoring cannot
+// tell whether `observed` came from the agent runtime, JSON loaded from the
+// parity fixture, or a future HTTP request — that is the whole point of
+// freezing this boundary.
 function passCheck(name: string, expected: unknown, observed: unknown): EvaluationCheckResult {
   return { name, passed: true, expected, observed };
 }
@@ -49,9 +19,9 @@ function failCheck(
   name: string,
   expected: unknown,
   observed: unknown,
-  reason: string,
+  reasonCode: CheckReasonCode,
 ): EvaluationCheckResult {
-  return { name, passed: false, expected, observed, reason };
+  return { name, passed: false, expected, observed, reasonCode };
 }
 
 function deepEqual(a: unknown, b: unknown): boolean {
@@ -73,10 +43,7 @@ function deepEqual(a: unknown, b: unknown): boolean {
   );
 }
 
-interface RetrievalObservation {
-  readonly retrievalCompletedObserved: boolean;
-  readonly retrievedChunkIds: readonly string[];
-}
+type RetrievalObservation = ObservedFacts["retrieval"];
 
 export function evaluateRetrieval(
   expectations: EvaluationExpectations["retrieval"],
@@ -85,57 +52,57 @@ export function evaluateRetrieval(
   if (!expectations) return [];
 
   const checks: EvaluationCheckResult[] = [];
-  const { retrievalCompletedObserved, retrievedChunkIds } = observed;
+  const { completed: retrievalCompleted, chunkIds: retrievedChunkIds } = observed;
 
   if (expectations.expectedTop1 !== undefined) {
     const expected = expectations.expectedTop1;
-    if (!retrievalCompletedObserved) {
-      checks.push(failCheck("retrieval-top1", expected, null, RETRIEVAL_NOT_OBSERVED_REASON));
+    if (!retrievalCompleted) {
+      checks.push(failCheck("retrieval-top1", expected, null, "RETRIEVAL_NOT_OBSERVED"));
     } else if (retrievedChunkIds[0] === expected) {
       checks.push(passCheck("retrieval-top1", expected, retrievedChunkIds[0]));
     } else {
       checks.push(
-        failCheck("retrieval-top1", expected, retrievedChunkIds[0] ?? null, RETRIEVAL_TOP1_MISMATCH_REASON),
+        failCheck("retrieval-top1", expected, retrievedChunkIds[0] ?? null, "RETRIEVAL_TOP1_MISMATCH"),
       );
     }
   }
 
   if (expectations.expectedInTopK !== undefined) {
     const expected = expectations.expectedInTopK;
-    if (!retrievalCompletedObserved) {
-      checks.push(failCheck("retrieval-hit3", expected, [], RETRIEVAL_NOT_OBSERVED_REASON));
+    if (!retrievalCompleted) {
+      checks.push(failCheck("retrieval-hit3", expected, [], "RETRIEVAL_NOT_OBSERVED"));
     } else {
       const missing = expected.filter((id) => !retrievedChunkIds.includes(id));
       checks.push(
         missing.length === 0
           ? passCheck("retrieval-hit3", expected, retrievedChunkIds)
-          : failCheck("retrieval-hit3", expected, retrievedChunkIds, RETRIEVAL_HIT3_MISMATCH_REASON),
+          : failCheck("retrieval-hit3", expected, retrievedChunkIds, "RETRIEVAL_HIT3_MISMATCH"),
       );
     }
   }
 
   if (expectations.expectedNoResults) {
-    if (!retrievalCompletedObserved) {
-      checks.push(failCheck("retrieval-no-results", "no results", null, RETRIEVAL_NOT_OBSERVED_REASON));
+    if (!retrievalCompleted) {
+      checks.push(failCheck("retrieval-no-results", "no results", null, "RETRIEVAL_NOT_OBSERVED"));
     } else if (retrievedChunkIds.length === 0) {
       checks.push(passCheck("retrieval-no-results", "no results", []));
     } else {
       checks.push(
-        failCheck("retrieval-no-results", "no results", retrievedChunkIds, RETRIEVAL_NO_RESULTS_MISMATCH_REASON),
+        failCheck("retrieval-no-results", "no results", retrievedChunkIds, "RETRIEVAL_NO_RESULTS_MISMATCH"),
       );
     }
   }
 
   if (expectations.forbiddenChunkIds !== undefined && expectations.forbiddenChunkIds.length > 0) {
     const forbidden = expectations.forbiddenChunkIds;
-    if (!retrievalCompletedObserved) {
-      checks.push(failCheck("retrieval-forbidden", forbidden, [], RETRIEVAL_NOT_OBSERVED_REASON));
+    if (!retrievalCompleted) {
+      checks.push(failCheck("retrieval-forbidden", forbidden, [], "RETRIEVAL_NOT_OBSERVED"));
     } else {
       const present = forbidden.filter((id) => retrievedChunkIds.includes(id));
       checks.push(
         present.length === 0
           ? passCheck("retrieval-forbidden", forbidden, retrievedChunkIds)
-          : failCheck("retrieval-forbidden", forbidden, retrievedChunkIds, RETRIEVAL_FORBIDDEN_MISMATCH_REASON),
+          : failCheck("retrieval-forbidden", forbidden, retrievedChunkIds, "RETRIEVAL_FORBIDDEN_MISMATCH"),
       );
     }
   }
@@ -143,12 +110,7 @@ export function evaluateRetrieval(
   return checks;
 }
 
-interface ToolObservation {
-  readonly requestedTools: readonly { readonly toolName: string; readonly toolCallId: string }[];
-  readonly executedTools: readonly RecordedToolExecution[];
-  readonly completedToolCallIds: readonly string[];
-  readonly completedTools: readonly { readonly toolName: string; readonly toolCallId: string }[];
-}
+type ToolObservation = ObservedFacts["tools"];
 
 export function evaluateTool(
   expectations: EvaluationExpectations["tool"],
@@ -162,14 +124,14 @@ export function evaluateTool(
     const expected = expectations.expectedRequested;
     const missing = expected.filter(
       (entry) =>
-        !observed.requestedTools.some(
+        !observed.requested.some(
           (req) => req.toolName === entry.toolName && req.toolCallId === entry.toolCallId,
         ),
     );
     checks.push(
       missing.length === 0
-        ? passCheck("tool-requested", expected, observed.requestedTools)
-        : failCheck("tool-requested", expected, observed.requestedTools, TOOL_REQUESTED_MISMATCH_REASON),
+        ? passCheck("tool-requested", expected, observed.requested)
+        : failCheck("tool-requested", expected, observed.requested, "TOOL_REQUESTED_MISMATCH"),
     );
   }
 
@@ -177,14 +139,14 @@ export function evaluateTool(
     const expected = expectations.expectedExecuted;
     const missing = expected.filter(
       (entry) =>
-        !observed.executedTools.some(
+        !observed.executed.some(
           (exec) => exec.toolName === entry.toolName && deepEqual(exec.input, entry.input),
         ),
     );
     checks.push(
       missing.length === 0
-        ? passCheck("tool-executed", expected, observed.executedTools)
-        : failCheck("tool-executed", expected, observed.executedTools, TOOL_EXECUTED_MISMATCH_REASON),
+        ? passCheck("tool-executed", expected, observed.executed)
+        : failCheck("tool-executed", expected, observed.executed, "TOOL_EXECUTED_MISMATCH"),
     );
   }
 
@@ -192,14 +154,14 @@ export function evaluateTool(
     const expected = expectations.expectedCompleted;
     const missing = expected.filter(
       (entry) =>
-        !observed.completedTools.some(
+        !observed.completed.some(
           (completed) => completed.toolName === entry.toolName && completed.toolCallId === entry.toolCallId,
         ),
     );
     checks.push(
       missing.length === 0
-        ? passCheck("tool-completed", expected, observed.completedTools)
-        : failCheck("tool-completed", expected, observed.completedTools, TOOL_COMPLETED_MISMATCH_REASON),
+        ? passCheck("tool-completed", expected, observed.completed)
+        : failCheck("tool-completed", expected, observed.completed, "TOOL_COMPLETED_MISMATCH"),
     );
   }
 
@@ -208,12 +170,12 @@ export function evaluateTool(
     expectations.forbiddenExecutedToolNames.length > 0
   ) {
     const forbidden = expectations.forbiddenExecutedToolNames;
-    const executedNames = observed.executedTools.map((exec) => exec.toolName);
+    const executedNames = observed.executed.map((exec) => exec.toolName);
     const present = forbidden.filter((name) => executedNames.includes(name));
     checks.push(
       present.length === 0
         ? passCheck("tool-forbidden-executed", forbidden, executedNames)
-        : failCheck("tool-forbidden-executed", forbidden, executedNames, TOOL_FORBIDDEN_EXECUTED_MISMATCH_REASON),
+        : failCheck("tool-forbidden-executed", forbidden, executedNames, "TOOL_FORBIDDEN_EXECUTED_MISMATCH"),
     );
   }
 
@@ -222,15 +184,18 @@ export function evaluateTool(
     expectations.forbiddenCompletedToolCallIds.length > 0
   ) {
     const forbidden = expectations.forbiddenCompletedToolCallIds;
-    const present = forbidden.filter((id) => observed.completedToolCallIds.includes(id));
+    // Derived at point of use — a completedToolCallIds list is not stored on
+    // ObservedFacts because it is fully redundant with tools.completed.
+    const completedToolCallIds = observed.completed.map((entry) => entry.toolCallId);
+    const present = forbidden.filter((id) => completedToolCallIds.includes(id));
     checks.push(
       present.length === 0
-        ? passCheck("tool-forbidden-completed", forbidden, observed.completedToolCallIds)
+        ? passCheck("tool-forbidden-completed", forbidden, completedToolCallIds)
         : failCheck(
             "tool-forbidden-completed",
             forbidden,
-            observed.completedToolCallIds,
-            TOOL_FORBIDDEN_COMPLETED_MISMATCH_REASON,
+            completedToolCallIds,
+            "TOOL_FORBIDDEN_COMPLETED_MISMATCH",
           ),
     );
   }
@@ -240,25 +205,25 @@ export function evaluateTool(
 
 export function evaluateReport(
   expectations: EvaluationExpectations["report"],
-  agentResult: AgentOrchestratorResult,
+  observed: ObservedFacts,
 ): EvaluationCheckResult[] {
   if (!expectations) return [];
 
   const checks: EvaluationCheckResult[] = [];
   const observedStatusAndCode =
-    agentResult.status === "completed" ? "completed" : `failed:${agentResult.code}`;
+    observed.report !== null ? "completed" : `failed:${observed.errorCode}`;
 
   if (expectations.schemaExpectation !== undefined) {
     const expected = expectations.schemaExpectation;
     const passed =
       expected === "INVALID"
-        ? agentResult.status === "failed" && agentResult.code === "REPORT_SCHEMA_INVALID"
-        : agentResult.status === "completed" ||
-          (agentResult.status === "failed" && agentResult.code === "REPORT_EVIDENCE_INVALID");
+        ? observed.runStatus === "failed" && observed.errorCode === "REPORT_SCHEMA_INVALID"
+        : observed.runStatus === "completed" ||
+          (observed.runStatus === "failed" && observed.errorCode === "REPORT_EVIDENCE_INVALID");
     checks.push(
       passed
         ? passCheck("schema-handling", expected, observedStatusAndCode)
-        : failCheck("schema-handling", expected, observedStatusAndCode, SCHEMA_HANDLING_MISMATCH_REASON),
+        : failCheck("schema-handling", expected, observedStatusAndCode, "SCHEMA_HANDLING_MISMATCH"),
     );
   }
 
@@ -266,26 +231,26 @@ export function evaluateReport(
     const expected = expectations.groundingExpectation;
     const passed =
       expected === "INVALID"
-        ? agentResult.status === "failed" && agentResult.code === "REPORT_EVIDENCE_INVALID"
-        : agentResult.status === "completed";
+        ? observed.runStatus === "failed" && observed.errorCode === "REPORT_EVIDENCE_INVALID"
+        : observed.runStatus === "completed";
     checks.push(
       passed
         ? passCheck("evidence-grounding", expected, observedStatusAndCode)
-        : failCheck("evidence-grounding", expected, observedStatusAndCode, EVIDENCE_GROUNDING_MISMATCH_REASON),
+        : failCheck("evidence-grounding", expected, observedStatusAndCode, "EVIDENCE_GROUNDING_MISMATCH"),
     );
   }
 
   if (expectations.requiredEvidenceTypes !== undefined) {
     const expected = expectations.requiredEvidenceTypes;
-    if (agentResult.status !== "completed") {
-      checks.push(failCheck("evidence-types", expected, observedStatusAndCode, PAYLOAD_NOT_AVAILABLE_REASON));
+    if (observed.report === null) {
+      checks.push(failCheck("evidence-types", expected, observedStatusAndCode, "PAYLOAD_NOT_AVAILABLE"));
     } else {
-      const observedTypes = agentResult.report.evidence.map((entry) => entry.sourceType);
+      const observedTypes = observed.report.evidence.map((entry) => entry.sourceType);
       const missing = expected.filter((type) => !observedTypes.includes(type));
       checks.push(
         missing.length === 0
           ? passCheck("evidence-types", expected, observedTypes)
-          : failCheck("evidence-types", expected, observedTypes, EVIDENCE_TYPES_MISMATCH_REASON),
+          : failCheck("evidence-types", expected, observedTypes, "EVIDENCE_TYPES_MISMATCH"),
       );
     }
   }
@@ -296,17 +261,17 @@ export function evaluateReport(
   ) {
     const requiredIds = expectations.requiredEvidenceIds ?? [];
     const forbiddenIds = expectations.forbiddenEvidenceIds ?? [];
-    if (agentResult.status !== "completed") {
+    if (observed.report === null) {
       checks.push(
         failCheck(
           "evidence-ids",
           { requiredIds, forbiddenIds },
           observedStatusAndCode,
-          PAYLOAD_NOT_AVAILABLE_REASON,
+          "PAYLOAD_NOT_AVAILABLE",
         ),
       );
     } else {
-      const observedIds = agentResult.report.evidence.map((entry) => entry.evidenceId);
+      const observedIds = observed.report.evidence.map((entry) => entry.evidenceId);
       const missing = requiredIds.filter((id) => !observedIds.includes(id));
       const forbiddenPresent = forbiddenIds.filter((id) => observedIds.includes(id));
       checks.push(
@@ -316,7 +281,7 @@ export function evaluateReport(
               "evidence-ids",
               { requiredIds, forbiddenIds },
               observedIds,
-              EVIDENCE_IDS_MISMATCH_REASON,
+              "EVIDENCE_IDS_MISMATCH",
             ),
       );
     }
@@ -324,15 +289,15 @@ export function evaluateReport(
 
   if (expectations.requiredActionTypes !== undefined) {
     const expected = expectations.requiredActionTypes;
-    if (agentResult.status !== "completed") {
-      checks.push(failCheck("action-types", expected, observedStatusAndCode, PAYLOAD_NOT_AVAILABLE_REASON));
+    if (observed.report === null) {
+      checks.push(failCheck("action-types", expected, observedStatusAndCode, "PAYLOAD_NOT_AVAILABLE"));
     } else {
-      const observedTypes = agentResult.report.suggestedActions.map((action) => action.type);
+      const observedTypes = observed.report.suggestedActionTypes;
       const missing = expected.filter((type) => !observedTypes.includes(type));
       checks.push(
         missing.length === 0
           ? passCheck("action-types", expected, observedTypes)
-          : failCheck("action-types", expected, observedTypes, ACTION_TYPES_MISMATCH_REASON),
+          : failCheck("action-types", expected, observedTypes, "ACTION_TYPES_MISMATCH"),
       );
     }
   }
@@ -342,85 +307,53 @@ export function evaluateReport(
 
 export function evaluateFailure(
   expectations: EvaluationExpectations["failure"],
-  agentResult: AgentOrchestratorResult,
+  observed: ObservedFacts,
 ): EvaluationCheckResult[] {
   if (!expectations) return [];
 
   const expected = expectations.expectedCode;
-  if (agentResult.status !== "failed") {
-    return [failCheck("failure-code", expected, "completed", FAILURE_CODE_RUN_COMPLETED_REASON)];
+  if (observed.runStatus !== "failed") {
+    return [failCheck("failure-code", expected, "completed", "FAILURE_CODE_RUN_COMPLETED")];
   }
 
   return [
-    agentResult.code === expected
-      ? passCheck("failure-code", expected, agentResult.code)
-      : failCheck("failure-code", expected, agentResult.code, FAILURE_CODE_MISMATCH_REASON),
+    observed.errorCode === expected
+      ? passCheck("failure-code", expected, observed.errorCode)
+      : failCheck("failure-code", expected, observed.errorCode, "FAILURE_CODE_MISMATCH"),
   ];
 }
 
 export function evaluateStatus(
   expectations: EvaluationExpectations,
-  agentResult: AgentOrchestratorResult,
+  observed: ObservedFacts,
 ): EvaluationCheckResult[] {
   const expected = expectations.runStatus;
   return [
-    agentResult.status === expected
-      ? passCheck("status", expected, agentResult.status)
-      : failCheck("status", expected, agentResult.status, STATUS_MISMATCH_REASON),
+    observed.runStatus === expected
+      ? passCheck("status", expected, observed.runStatus)
+      : failCheck("status", expected, observed.runStatus, "STATUS_MISMATCH"),
   ];
 }
 
-export function evaluateCase(
-  evaluationCase: EvaluationCase,
-  agentResult: AgentOrchestratorResult,
-  executedTools: readonly RecordedToolExecution[],
-): EvaluationCaseResult {
-  const retrievalEvent = agentResult.trace.find((event) => event.type === "RETRIEVAL_COMPLETED");
-  const retrievalCompletedObserved = retrievalEvent !== undefined;
-  const retrievedChunkIds =
-    retrievalEvent?.type === "RETRIEVAL_COMPLETED" ? retrievalEvent.chunks.map((chunk) => chunk.chunkId) : [];
-
-  const requestedTools = agentResult.trace
-    .filter((event): event is Extract<typeof event, { type: "TOOL_REQUESTED" }> => event.type === "TOOL_REQUESTED")
-    .map((event) => ({ toolName: event.toolName, toolCallId: event.toolCallId }));
-
-  const completedTools = agentResult.trace
-    .filter((event): event is Extract<typeof event, { type: "TOOL_COMPLETED" }> => event.type === "TOOL_COMPLETED")
-    .map((event) => ({ toolName: event.toolName, toolCallId: event.toolCallId }));
-
-  const completedToolCallIds = completedTools.map((entry) => entry.toolCallId);
-
-  const evidenceIds = agentResult.status === "completed" ? agentResult.report.evidence.map((e) => e.evidenceId) : [];
+// The v1-native scorer entry point: operates only on the normalized
+// EvaluationCaseInputV1 (expectations + ObservedFacts) — no raw
+// AgentOrchestratorResult, executedTools recorder, or trace ever reaches
+// this function or anything it calls.
+export function evaluateCase(caseInput: EvaluationCaseInputV1): EvaluationCaseResult {
+  const { caseId, expectations, observed } = caseInput;
 
   const checks: EvaluationCheckResult[] = [
-    ...evaluateStatus(evaluationCase.expectations, agentResult),
-    ...evaluateRetrieval(evaluationCase.expectations.retrieval, {
-      retrievalCompletedObserved,
-      retrievedChunkIds,
-    }),
-    ...evaluateTool(evaluationCase.expectations.tool, {
-      requestedTools,
-      executedTools,
-      completedToolCallIds,
-      completedTools,
-    }),
-    ...evaluateReport(evaluationCase.expectations.report, agentResult),
-    ...evaluateFailure(evaluationCase.expectations.failure, agentResult),
+    ...evaluateStatus(expectations, observed),
+    ...evaluateRetrieval(expectations.retrieval, observed.retrieval),
+    ...evaluateTool(expectations.tool, observed.tools),
+    ...evaluateReport(expectations.report, observed),
+    ...evaluateFailure(expectations.failure, observed),
   ];
 
   return {
-    caseId: evaluationCase.id,
+    caseId,
     passed: checks.every((check) => check.passed),
     checks,
-    observed: {
-      runStatus: agentResult.status,
-      retrievalCompletedObserved,
-      retrievedChunkIds,
-      requestedTools,
-      executedTools,
-      completedToolCallIds,
-      evidenceIds,
-      ...(agentResult.status === "failed" ? { errorCode: agentResult.code } : {}),
-    },
+    observed,
   };
 }

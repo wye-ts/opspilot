@@ -7,15 +7,21 @@ import type { RunbookCorpusLoadResult, RunbookLoadErrorCategory } from "../rag/m
 import { validateEvaluationDataset } from "./dataset-validation";
 import { EVALUATION_CASES } from "./evaluation-dataset";
 import { formatEvaluationReport } from "./evaluation-formatter";
-import { aggregateMetrics } from "./evaluation-metrics";
 import { runEvaluationSuite } from "./evaluation-runner";
-import type { EvaluationCase, EvaluationCaseResult, EvaluationMetrics } from "./types";
+import {
+  createEvaluationScorer,
+  DEFAULT_EVALUATION_SCORER_SELECTION,
+  type EvaluationScorer,
+  type EvaluationScorerSelection,
+} from "./evaluation-scorer";
+import type { EvaluationCase, EvaluationMetrics } from "./types";
+import { buildEvaluationSuiteInputV1, EVALUATION_DATASET_ID, type EvaluationCaseResultV1 } from "./v1-types";
 
 const UNEXPECTED_FAILURE_MESSAGE = "OpsPilot Evaluation\n\nEvaluation failed unexpectedly.";
 
 export interface EvaluationRunOutcome {
   readonly kind: "executed";
-  readonly results: readonly EvaluationCaseResult[];
+  readonly results: readonly EvaluationCaseResultV1[];
   readonly metrics: EvaluationMetrics;
 }
 
@@ -31,6 +37,14 @@ export interface EvaluationDependencies {
   readonly cases: readonly EvaluationCase[];
   readonly injectionProbeChunk: StoredRunbookChunk;
   readonly runSuite: typeof runEvaluationSuite;
+  // Phase 1 default and only supported value is local (see
+  // evaluation-scorer.ts) — kept configurable here so a future scorer mode
+  // can be selected without another CLI/composition-root change.
+  readonly scorerSelection: EvaluationScorerSelection;
+  // Test-only escape hatch: inject a scorer instance directly (e.g. a stub)
+  // instead of resolving one from scorerSelection. Undefined in real use —
+  // createEvaluationScorer(scorerSelection) is the only production path.
+  readonly scorer?: EvaluationScorer;
 }
 
 const DEFAULT_DEPENDENCIES: EvaluationDependencies = {
@@ -38,10 +52,15 @@ const DEFAULT_DEPENDENCIES: EvaluationDependencies = {
   cases: EVALUATION_CASES,
   injectionProbeChunk: INJECTION_PROBE_CHUNK,
   runSuite: runEvaluationSuite,
+  scorerSelection: DEFAULT_EVALUATION_SCORER_SELECTION,
 };
 
 // Composition root: loads the real Markdown corpus once, validates the
-// dataset before any case executes, then runs the suite. Dependencies are
+// dataset before any case executes, runs the suite to get normalized
+// per-case inputs, wraps them into the v1 suite input, and hands that whole
+// suite to an EvaluationScorer — the only place in the CLI path that builds
+// the cross-language contract or selects/invokes a scorer (see the OpsPilot
+// #61 Phase 1 HQ targeted corrections, correction 5). Dependencies are
 // injectable so tests can exercise every branch (validation failure, a
 // failing case, a simulated corpus-load error) without a real orchestrator
 // run (see docs/07-evaluation-plan.md). May reject with a RunbookLoadError
@@ -65,14 +84,17 @@ export async function runEvaluation(
     return { kind: "configuration-error", message: validationMessages[0]! };
   }
 
-  const results = await deps.runSuite({
+  const caseInputs = await deps.runSuite({
     cases: deps.cases,
     defaultCorpus,
     injectionProbeChunk: deps.injectionProbeChunk,
   });
-  const metrics = aggregateMetrics(results);
+  const suiteInput = buildEvaluationSuiteInputV1(EVALUATION_DATASET_ID, caseInputs);
 
-  return { kind: "executed", results, metrics };
+  const scorer = deps.scorer ?? createEvaluationScorer(deps.scorerSelection);
+  const suiteResult = await scorer.score(suiteInput);
+
+  return { kind: "executed", results: suiteResult.cases, metrics: suiteResult.metrics };
 }
 
 // Three, and only three, distinct fatal-resolution categories — kept

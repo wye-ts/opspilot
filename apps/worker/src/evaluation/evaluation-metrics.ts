@@ -1,4 +1,5 @@
-import type { EvaluationCaseResult, EvaluationMetrics } from "./types";
+import type { EvaluationMetrics } from "./types";
+import type { EvaluationCaseResultV1 } from "./v1-types";
 
 const TOOL_CHECK_NAMES = [
   "tool-requested",
@@ -8,16 +9,16 @@ const TOOL_CHECK_NAMES = [
   "tool-forbidden-completed",
 ] as const;
 
-function hasCheck(result: EvaluationCaseResult, name: string): boolean {
+function hasCheck(result: EvaluationCaseResultV1, name: string): boolean {
   return result.checks.some((check) => check.name === name);
 }
 
-function checkPassed(result: EvaluationCaseResult, name: string): boolean {
+function checkPassed(result: EvaluationCaseResultV1, name: string): boolean {
   return result.checks.find((check) => check.name === name)?.passed === true;
 }
 
 function simpleRatio(
-  results: readonly EvaluationCaseResult[],
+  results: readonly EvaluationCaseResultV1[],
   checkName: string,
 ): { readonly numerator: number; readonly denominator: number } {
   const declaring = results.filter((result) => hasCheck(result, checkName));
@@ -26,7 +27,7 @@ function simpleRatio(
 }
 
 function toolCorrectnessRatio(
-  results: readonly EvaluationCaseResult[],
+  results: readonly EvaluationCaseResultV1[],
 ): { readonly numerator: number; readonly denominator: number } {
   const declaring = results.filter((result) =>
     result.checks.some((check) => (TOOL_CHECK_NAMES as readonly string[]).includes(check.name)),
@@ -39,7 +40,7 @@ function toolCorrectnessRatio(
   return { numerator: passing.length, denominator: declaring.length };
 }
 
-export function aggregateMetrics(results: readonly EvaluationCaseResult[]): EvaluationMetrics {
+export function aggregateMetrics(results: readonly EvaluationCaseResultV1[]): EvaluationMetrics {
   const totalCases = results.length;
   const passedCases = results.filter((result) => result.passed).length;
   const failedCases = totalCases - passedCases;

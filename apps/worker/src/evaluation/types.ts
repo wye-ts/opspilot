@@ -1,5 +1,8 @@
 import type { FakeAgentScenario } from "@opspilot/agent-runtime";
 import type { AgentOrchestratorErrorCode, SuggestedAction } from "@opspilot/contracts";
+import type { CheckReasonCode } from "./check-reason-codes";
+import type { JsonValue } from "./json-value";
+import type { ObservedFacts } from "./observed-facts";
 
 // The runner is the single place that builds a RetrievalInput from a case's
 // retrievalQuery; no case may override topK (see docs/07-evaluation-plan.md).
@@ -38,8 +41,9 @@ export interface EvaluationExpectations {
 
     // Observed via the per-case recording ToolRegistry wrapper, independent of
     // the trace. "Executed" = the wrapped execute() was reached, whether it
-    // then succeeded or threw.
-    readonly expectedExecuted?: readonly { readonly toolName: string; readonly input: unknown }[];
+    // then succeeded or threw. `input` must be JSON-safe — this crosses the
+    // v1 cross-language contract (see json-value.ts).
+    readonly expectedExecuted?: readonly { readonly toolName: string; readonly input: JsonValue }[];
 
     // Observed via the TOOL_COMPLETED trace event, which carries both
     // toolCallId and toolName (confirmed against AgentTraceEvent).
@@ -74,23 +78,20 @@ export interface EvaluationCheckResult {
   readonly passed: boolean;
   readonly expected: unknown;
   readonly observed: unknown;
-  readonly reason?: string;
+  // A closed application-authored reason code, never raw prose (see
+  // check-reason-codes.ts). Present iff passed === false.
+  readonly reasonCode?: CheckReasonCode;
 }
 
+// TS-internal only: retains ObservedFacts and each check's expected/observed
+// for local debugging/tests. The cross-language wire result
+// (EvaluationCaseResultV1 in v1-types.ts) is derived from this but strips
+// both (see toEvaluationCaseResultV1).
 export interface EvaluationCaseResult {
   readonly caseId: string;
   readonly passed: boolean;
   readonly checks: readonly EvaluationCheckResult[];
-  readonly observed: {
-    readonly runStatus: "completed" | "failed";
-    readonly retrievalCompletedObserved: boolean;
-    readonly retrievedChunkIds: readonly string[];
-    readonly requestedTools: readonly { readonly toolName: string; readonly toolCallId: string }[];
-    readonly executedTools: readonly { readonly toolName: string; readonly input: unknown }[];
-    readonly completedToolCallIds: readonly string[];
-    readonly evidenceIds: readonly string[];
-    readonly errorCode?: AgentOrchestratorErrorCode;
-  };
+  readonly observed: ObservedFacts;
 }
 
 export interface EvaluationMetrics {

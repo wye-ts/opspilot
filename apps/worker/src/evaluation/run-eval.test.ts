@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { StoredRunbookChunk } from "@opspilot/agent-runtime";
 
 import { RunbookLoadError } from "../rag/markdown-runbook-loader";
+import { aggregateMetrics } from "./evaluation-metrics";
+import type { EvaluationScorer } from "./evaluation-scorer";
 import {
   getExitCode,
   renderEvaluationOutput,
@@ -12,7 +14,8 @@ import {
   type EvaluationOutcome,
   type EvaluationRunResolution,
 } from "./run-eval";
-import type { EvaluationCase, EvaluationCaseResult } from "./types";
+import type { EvaluationCase } from "./types";
+import type { EvaluationCaseInputV1, EvaluationCaseResultV1 } from "./v1-types";
 
 const FIXTURE_CORPUS: readonly StoredRunbookChunk[] = [
   { chunkId: "fixture-chunk-1", runbookId: "fixture-runbook", title: "Fixture", content: "fixture content" },
@@ -38,52 +41,54 @@ function validCase(id: string): EvaluationCase {
   };
 }
 
-function passingResult(caseId: string): EvaluationCaseResult {
+// The content of the normalized case input doesn't matter for the
+// runEvaluation-level tests below — scoring is stubbed separately via
+// stubScorer(), which ignores its input and returns a canned suite result.
+// This is only here so deps.runSuite has something type-correct to resolve
+// to.
+function dummyCaseInput(id: string): EvaluationCaseInputV1 {
   return {
-    caseId,
-    passed: true,
-    checks: [{ name: "status", passed: true, expected: "failed", observed: "failed" }],
+    caseId: id,
+    expectations: { runStatus: "failed", failure: { expectedCode: "TOOL_NOT_FOUND" } },
     observed: {
       runStatus: "failed",
-      retrievalCompletedObserved: false,
-      retrievedChunkIds: [],
-      requestedTools: [],
-      executedTools: [],
-      completedToolCallIds: [],
-      evidenceIds: [],
       errorCode: "TOOL_NOT_FOUND",
+      retrieval: { completed: false, chunkIds: [] },
+      tools: { requested: [], executed: [], completed: [] },
+      report: null,
     },
   };
 }
 
-function failingResult(caseId: string): EvaluationCaseResult {
+function stubScorer(cases: readonly EvaluationCaseResultV1[]): EvaluationScorer {
   return {
-    caseId,
-    passed: false,
-    checks: [
-      { name: "status", passed: false, expected: "failed", observed: "completed", reason: "mismatch" },
-    ],
-    observed: {
-      runStatus: "completed",
-      retrievalCompletedObserved: false,
-      retrievedChunkIds: [],
-      requestedTools: [],
-      executedTools: [],
-      completedToolCallIds: [],
-      evidenceIds: [],
-    },
+    score: (input) => ({
+      contractVersion: input.contractVersion,
+      datasetId: input.datasetId,
+      cases,
+      metrics: aggregateMetrics(cases),
+    }),
   };
+}
+
+function passingResult(caseId: string): EvaluationCaseResultV1 {
+  return { caseId, passed: true, checks: [{ name: "status", passed: true, reasonCode: null }] };
+}
+
+function failingResult(caseId: string): EvaluationCaseResultV1 {
+  return { caseId, passed: false, checks: [{ name: "status", passed: false, reasonCode: "STATUS_MISMATCH" }] };
 }
 
 describe("runEvaluation", () => {
-  it("returns an 'executed' outcome with zero failed cases when the injected runSuite stub reports all cases passing", async () => {
-    const runSuite = vi.fn().mockResolvedValue([passingResult("synthetic-1")]);
+  it("returns an 'executed' outcome with zero failed cases when the injected scorer reports all cases passing", async () => {
+    const runSuite = vi.fn().mockResolvedValue([dummyCaseInput("synthetic-1")]);
 
     const outcome = await runEvaluation({
       loadCorpus: async () => ({ chunks: FIXTURE_CORPUS, sourceFileCount: 1 }),
       cases: [validCase("synthetic-1")],
       injectionProbeChunk: FIXTURE_INJECTION_PROBE_CHUNK,
       runSuite,
+      scorer: stubScorer([passingResult("synthetic-1")]),
     });
 
     expect(outcome.kind).toBe("executed");
@@ -93,14 +98,15 @@ describe("runEvaluation", () => {
     expect(runSuite).toHaveBeenCalledTimes(1);
   });
 
-  it("returns an 'executed' outcome with a nonzero exit code when the injected runSuite stub reports a failing case", async () => {
-    const runSuite = vi.fn().mockResolvedValue([failingResult("synthetic-1")]);
+  it("returns an 'executed' outcome with a nonzero exit code when the injected scorer reports a failing case", async () => {
+    const runSuite = vi.fn().mockResolvedValue([dummyCaseInput("synthetic-1")]);
 
     const outcome = await runEvaluation({
       loadCorpus: async () => ({ chunks: FIXTURE_CORPUS, sourceFileCount: 1 }),
       cases: [validCase("synthetic-1")],
       injectionProbeChunk: FIXTURE_INJECTION_PROBE_CHUNK,
       runSuite,
+      scorer: stubScorer([failingResult("synthetic-1")]),
     });
 
     expect(outcome.kind).toBe("executed");
@@ -139,6 +145,23 @@ describe("runEvaluation", () => {
       runEvaluation({ loadCorpus, cases: [validCase("synthetic-1")], injectionProbeChunk: FIXTURE_INJECTION_PROBE_CHUNK }),
     ).rejects.toBeInstanceOf(RunbookLoadError);
   });
+
+  it("uses the real LocalEvaluationScorer (default scorerSelection) end-to-end when no scorer override is given", async () => {
+    const runSuite = vi.fn().mockResolvedValue([dummyCaseInput("synthetic-1")]);
+
+    const outcome = await runEvaluation({
+      loadCorpus: async () => ({ chunks: FIXTURE_CORPUS, sourceFileCount: 1 }),
+      cases: [validCase("synthetic-1")],
+      injectionProbeChunk: FIXTURE_INJECTION_PROBE_CHUNK,
+      runSuite,
+    });
+
+    expect(outcome.kind).toBe("executed");
+    if (outcome.kind !== "executed") throw new Error("unreachable");
+    // dummyCaseInput's expectations/observed agree (failed/TOOL_NOT_FOUND),
+    // so the real local scorer marks it passed.
+    expect(outcome.results).toEqual([{ caseId: "synthetic-1", passed: true, checks: expect.any(Array) }]);
+  });
 });
 
 describe("resolveEvaluationRun", () => {
@@ -166,12 +189,13 @@ describe("resolveEvaluationRun", () => {
   });
 
   it("passes through an 'outcome' resolution for a normal run", async () => {
-    const runSuite = vi.fn().mockResolvedValue([passingResult("synthetic-1")]);
+    const runSuite = vi.fn().mockResolvedValue([dummyCaseInput("synthetic-1")]);
     const resolution = await resolveEvaluationRun({
       loadCorpus: async () => ({ chunks: FIXTURE_CORPUS, sourceFileCount: 1 }),
       cases: [validCase("synthetic-1")],
       injectionProbeChunk: FIXTURE_INJECTION_PROBE_CHUNK,
       runSuite,
+      scorer: stubScorer([passingResult("synthetic-1")]),
     });
 
     expect(resolution.kind).toBe("outcome");
