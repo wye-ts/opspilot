@@ -1,7 +1,7 @@
 """create evaluation tables
 
 Revision ID: 01d97cae4df6
-Revises: 
+Revises:
 Create Date: 2026-08-13 11:46:00.630494
 
 """
