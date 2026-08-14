@@ -45,9 +45,11 @@ export interface EvaluationDependencies {
   readonly cases: readonly EvaluationCase[];
   readonly injectionProbeChunk: StoredRunbookChunk;
   readonly runSuite: typeof runEvaluationSuite;
-  // Phase 1 default and only supported value is local (see
-  // evaluation-scorer.ts) — kept configurable here so a future scorer mode
-  // can be selected without another CLI/composition-root change.
+  // Defaults to DEFAULT_EVALUATION_SCORER_SELECTION (LOCAL) when not
+  // overridden — see evaluation-scorer.ts for why that differs from the
+  // real CLI's env-resolved default. main() below always overrides this
+  // with resolveScorerSelectionFromEnv(process.env) (SERVICE by default as
+  // of Phase 4), so production runs never rely on this fallback.
   readonly scorerSelection: EvaluationScorerSelection;
   // Test-only escape hatch: inject a scorer instance directly (e.g. a stub)
   // instead of resolving one from scorerSelection. Undefined in real use —

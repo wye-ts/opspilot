@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -12,13 +16,36 @@ function env(overrides: Readonly<Record<string, string | undefined>> = {}): EnvR
 }
 
 describe("resolveScorerSelectionFromEnv — fail-closed scorer configuration", () => {
-  it("defaults to the local scorer when EVALUATION_SCORER is unset or empty", () => {
-    expect(resolveScorerSelectionFromEnv(env())).toEqual({ scorerMode: "LOCAL" });
-    expect(resolveScorerSelectionFromEnv(env({ EVALUATION_SCORER: "" }))).toEqual({ scorerMode: "LOCAL" });
-    expect(resolveScorerSelectionFromEnv(env({ EVALUATION_SCORER: "   " }))).toEqual({ scorerMode: "LOCAL" });
+  // OpsPilot #61 Phase 4 default cutover: EVALUATION_SCORER unset/empty now
+  // resolves to SERVICE, not LOCAL. It still goes through the exact same
+  // required-EVALUATION_SERVICE_URL check as an explicit
+  // EVALUATION_SCORER=service (see the "fails closed" test below) — the
+  // default never silently falls back to local just because the URL is
+  // absent.
+  it("defaults to the service scorer when EVALUATION_SCORER is unset or empty", () => {
+    const withUrl = { EVALUATION_SERVICE_URL: "http://127.0.0.1:8001" };
+    const expected = {
+      scorerMode: "SERVICE",
+      serviceUrl: "http://127.0.0.1:8001",
+      timeoutMs: DEFAULT_EVALUATION_SERVICE_TIMEOUT_MS,
+    };
+    expect(resolveScorerSelectionFromEnv(env(withUrl))).toEqual(expected);
+    expect(resolveScorerSelectionFromEnv(env({ EVALUATION_SCORER: "", ...withUrl }))).toEqual(expected);
+    expect(resolveScorerSelectionFromEnv(env({ EVALUATION_SCORER: "   ", ...withUrl }))).toEqual(expected);
   });
 
-  it("accepts an explicit local scorer", () => {
+  // The default/service mode is still subject to the exact same fail-closed
+  // required-URL rule as an explicit EVALUATION_SCORER=service — it must
+  // never silently resolve to local just because EVALUATION_SERVICE_URL is
+  // missing.
+  it("fails closed with the existing sanitized config error when EVALUATION_SCORER is omitted and EVALUATION_SERVICE_URL is missing", () => {
+    expect(() => resolveScorerSelectionFromEnv(env())).toThrow(EvaluationScorerConfigError);
+    expect(() => resolveScorerSelectionFromEnv(env())).toThrowError(
+      "EVALUATION_SERVICE_URL is required when EVALUATION_SCORER=service.",
+    );
+  });
+
+  it("accepts an explicit local scorer (the frozen v1 parity/regression oracle) — works without any service configuration", () => {
     expect(resolveScorerSelectionFromEnv(env({ EVALUATION_SCORER: "local" }))).toEqual({ scorerMode: "LOCAL" });
   });
 
@@ -93,5 +120,20 @@ describe("resolveScorerSelectionFromEnv — fail-closed scorer configuration", (
     expect(() => resolveScorerSelectionFromEnv(env({ EVALUATION_SCORER: "bogus" }))).toThrowError(
       "EVALUATION_SCORER must be exactly 'local' or 'service'.",
     );
+  });
+
+  // Structural proof, not just a behavioral one: this module resolves the
+  // scorer selection purely from the three EVALUATION_SCORER*/EVALUATION_SERVICE_*
+  // env values it is handed — it contains no network/HTTP call surface at all,
+  // so there is no code path here (or anywhere reachable from it) that could
+  // probe the service's reachability and dynamically switch modes based on
+  // the result.
+  it("contains no network/HTTP call surface — selection can never depend on service reachability", () => {
+    const configSourcePath = join(dirname(fileURLToPath(import.meta.url)), "evaluation-scorer-config.ts");
+    const source = readFileSync(configSourcePath, "utf8");
+
+    for (const forbidden of ["fetch(", "http.request", "https.request", "XMLHttpRequest", "node-fetch", "axios"]) {
+      expect(source).not.toContain(forbidden);
+    }
   });
 });

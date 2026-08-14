@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { StoredRunbookChunk } from "@opspilot/agent-runtime";
 
 import { renderEvaluationResolution, resolveEvaluationRun } from "./run-eval";
+import { resolveScorerSelectionFromEnv } from "./evaluation-scorer-config";
 import type { EvaluationCase } from "./types";
 import type { EvaluationCaseInputV1 } from "./v1-types";
 
@@ -103,6 +104,40 @@ const CONTRADICTORY_RESOURCE = {
     expectedStatusCorrectness: { numerator: 1, denominator: 1 },
   },
 };
+
+// OpsPilot #61 Phase 4 default cutover: proves the whole real boundary, from
+// an OMITTED EVALUATION_SCORER (not an explicit scorerSelection object)
+// through to the rendered CLI output — the default mode resolves to SERVICE
+// via resolveScorerSelectionFromEnv, and an unreachable service under that
+// default still fails closed with no local fallback and no fabricated
+// PASS/Summary.
+describe("EVALUATION_SCORER omitted (default cutover) with an unreachable service", () => {
+  it("resolves the default to SERVICE, then fails the evaluation with a scoring-error and no local fallback", async () => {
+    const serviceUrl = await closedPortUrl();
+    const runSuite = vi.fn().mockResolvedValue([dummyCaseInput("synthetic-1")]);
+
+    const scorerSelection = resolveScorerSelectionFromEnv({ EVALUATION_SERVICE_URL: serviceUrl });
+    expect(scorerSelection.scorerMode).toBe("SERVICE");
+
+    const resolution = await resolveEvaluationRun({
+      loadCorpus: async () => ({ chunks: FIXTURE_CORPUS, sourceFileCount: 1 }),
+      cases: [validCase("synthetic-1")],
+      injectionProbeChunk: FIXTURE_INJECTION_PROBE_CHUNK,
+      runSuite,
+      scorerSelection,
+    });
+
+    expect(resolution).toEqual({ kind: "scoring-error", category: "SERVICE_UNAVAILABLE" });
+
+    const rendered = renderEvaluationResolution(resolution);
+    expect(rendered.isError).toBe(true);
+    expect(rendered.exitCode).toBe(1);
+    expect(rendered.output).toContain("No local scorer fallback; exiting without a result.");
+    expect(rendered.output).not.toContain("PASS");
+    expect(rendered.output).not.toContain("Summary");
+    expect(runSuite).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("EVALUATION_SCORER=service with an unreachable service", () => {
   it("fails the evaluation with a scoring-error and renders no local fallback and no fabricated result", async () => {

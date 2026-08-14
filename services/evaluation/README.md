@@ -75,13 +75,21 @@ uv run mypy
 uv run uvicorn opspilot_evaluation.main:app --reload --port 8001
 ```
 
-## TypeScript worker integration (Phase 3)
+## TypeScript worker integration (Phases 3–4)
 
-The worker evaluation CLI (`apps/worker/src/evaluation/run-eval.ts`) can score
-the normalized v1 suite against this service instead of the in-process local
-scorer. Selection is explicit and fail-closed via `EVALUATION_SCORER`; there is
-**no automatic remote→local fallback** (see
+The worker evaluation CLI (`apps/worker/src/evaluation/run-eval.ts`) scores
+the normalized v1 suite against this service by default. Selection is
+explicit and fail-closed via `EVALUATION_SCORER`; there is **no automatic
+fallback in either direction** between the service and the local oracle (see
 `apps/worker/src/evaluation/service-unavailable.test.ts`).
+
+As of Phase 4 (OpsPilot #61 default cutover), this Python service is the
+**default, authoritative scorer** — `EVALUATION_SCORER` unset/empty resolves
+to `service`, exactly like an explicit `EVALUATION_SCORER=service`, including
+the same fail-closed requirement that `EVALUATION_SERVICE_URL` be set to an
+absolute http(s) URL. There is no loopback URL default; the CLI fails clearly
+with a configuration error if the URL is missing, rather than silently
+running the local oracle instead.
 
 Smallest reliable local flow — two terminals:
 
@@ -91,22 +99,24 @@ cd services/evaluation
 make migrate     # EVALUATION_DATABASE_URL defaults to the local dev DB
 make run         # uvicorn --reload on :8001
 
-# terminal 2: run the worker evaluation against the service
+# terminal 2: run the worker evaluation (default: service scorer)
 cd apps/worker
-EVALUATION_SCORER=service \
-EVALUATION_SERVICE_URL=http://127.0.0.1:8001 \
-pnpm run eval
+EVALUATION_SERVICE_URL=http://127.0.0.1:8001 pnpm run eval
 ```
 
-- `EVALUATION_SCORER=local` (the default) runs the in-process
-  `LocalEvaluationScorer` — the explicit parity oracle. Use it to confirm the
-  service is not masking a scorer regression:
-  `pnpm --filter @opspilot/worker run eval` (no env needed).
-- `EVALUATION_SCORER=service` posts the exact same normalized
+- **Default / `EVALUATION_SCORER=service`** posts the exact same normalized
   `EvaluationSuiteInputV1` to `POST /evaluations`, validates the persisted
-  response strictly, and renders the same CLI semantics. `EVALUATION_SERVICE_URL`
-  is required and must be an absolute http(s) URL; `EVALUATION_SERVICE_TIMEOUT_MS`
-  (default 15000, bounds [1000, 600000]) is the single bounded request timeout.
+  response strictly, and renders the same CLI semantics.
+  `EVALUATION_SERVICE_URL` is required and must be an absolute http(s) URL;
+  `EVALUATION_SERVICE_TIMEOUT_MS` (default 15000, bounds [1000, 600000]) is
+  the single bounded request timeout. If the service is unreachable, times
+  out, or returns a malformed/semantically inconsistent response, the CLI
+  fails (non-zero exit) with no local fallback and no fabricated PASS.
+- **`EVALUATION_SCORER=local`** runs the in-process `LocalEvaluationScorer` —
+  the frozen v1 migration/parity/regression oracle, explicit opt-in only as
+  of Phase 4. Works without the Python service running at all:
+  `EVALUATION_SCORER=local pnpm --filter @opspilot/worker run eval`. Use it
+  to confirm the service is not masking a scorer regression.
 - Cross-service parity is proven by
   `apps/worker/src/evaluation/cross-service-parity.test.ts` against this real
   service (it skips itself when no service is reachable), and CI runs it for

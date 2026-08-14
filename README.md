@@ -283,6 +283,13 @@ pnpm --filter @opspilot/worker run eval
 These commands use deterministic providers. The RAG demo and the 15-case evaluation exercise the
 repository/offline retrieval path, not the public browser path.
 
+`run eval` scores the 15-case suite against the Python/FastAPI evaluation service by default
+(`EVALUATION_SERVICE_URL`, e.g. from `services/evaluation`: `make migrate; make run`) — there is no
+automatic fallback if it's unreachable. Set `EVALUATION_SCORER=local` to run the frozen,
+network-free TypeScript v1 oracle instead. See
+[Deterministic Evaluation Harness](docs/07-evaluation-plan.md#10-scorer-selection-and-the-python-evaluation-service-opspilot-61-phases-1-4)
+and [`services/evaluation/README.md`](services/evaluation/README.md).
+
 ### Optional paid live smoke
 
 With `ANTHROPIC_API_KEY` supplied in the worker environment:

@@ -7,7 +7,7 @@
 | Status | Implemented |
 | Project | OpsPilot |
 | Purpose | Describe the fully offline, deterministic evaluation harness that regression-tests the RAG + agent vertical slice: the fixed 15-case dataset, the stage-aware evaluator, the aggregate metrics, and the CLI report |
-| Related Documents | `docs/04-agent-design.md`, `docs/05-rag-design.md` §10, `docs/10-engineering-challenges.md` §4 (Challenge 2) |
+| Related Documents | `docs/04-agent-design.md`, `docs/05-rag-design.md` §10, `docs/10-engineering-challenges.md` §4 (Challenge 2), `services/evaluation/README.md` (Python evaluation service, §10 below) |
 
 ---
 
@@ -225,7 +225,8 @@ is ever interpolated into anything the CLI prints.
 
 ## 8. Safety and Isolation
 
-The harness makes no network call and reads no `.env` file — every
+The case-execution harness described in §1–§7 (corpus load through
+`runEvaluationSuite`) makes no network call and reads no `.env` file — every
 component it exercises is either already-deterministic production code or a
 thin observer/wrapper around it (`docs/10-engineering-challenges.md` §4
 documents the underlying evidence-grounding mechanism this harness
@@ -233,6 +234,11 @@ exercises). The runner constructs a fresh retriever, tool registry,
 recorder, and provider for every case, sharing only the read-only loaded
 corpus array; cases never leak state into one another regardless of run
 order, and the runner never reorders the supplied case list.
+
+This guarantee is about case execution, not scoring — §10 describes the
+scorer boundary, where the default `SERVICE` mode does make one bounded HTTP
+call per run to the configured evaluation service (never to a live
+LLM/embedding provider).
 
 ## 9. Explicitly Deferred
 
@@ -243,5 +249,88 @@ order, and the runner never reorders the supplied case list.
   always schema-valid.
 - This is a fixed, ~15-case regression harness, not a statistical quality
   benchmark, an LLM-as-a-judge system, or a large-scale evaluation corpus.
-- No live Claude or Voyage evaluation, no persistence, and no dashboard are
-  part of this slice.
+- No live Claude or Voyage evaluation and no dashboard are part of this
+  slice. Persistence is no longer deferred — see §10: the default `SERVICE`
+  scorer persists every run through the Python/FastAPI evaluation service.
+
+## 10. Scorer Selection and the Python Evaluation Service (OpsPilot #61, Phases 1–4)
+
+`run-eval.ts` (§7) normalizes each case's expectations and observed facts
+into `EvaluationSuiteInputV1` (see `apps/worker/src/evaluation/v1-types.ts`)
+and hands the whole suite to exactly one `EvaluationScorer`. Scoring and
+persistence are deliberately outside the case-execution harness in §1–§8 —
+this section is the authoritative description of that boundary and its
+Phase 4 default cutover.
+
+```text
+TypeScript (this harness, §1–§8)
+  deterministic case setup, agent execution, observed-fact normalization
+        ↓
+EvaluationSuiteInputV1
+        ↓
+DEFAULT: Python/FastAPI evaluation service (services/evaluation/)
+  deterministic scoring + persistence
+        ↓
+validated persisted resource
+        ↓
+existing CLI rendering (§7)
+
+EXPLICIT MIGRATION ORACLE: EVALUATION_SCORER=local
+        ↓
+frozen TypeScript v1 scorer (LocalEvaluationScorer)
+```
+
+**Default (as of Phase 4):** the Python/FastAPI evaluation service is the
+default, authoritative scorer. `EVALUATION_SCORER` unset/empty resolves to
+`service`, exactly like an explicit `EVALUATION_SCORER=service` — including
+the same fail-closed requirement that `EVALUATION_SERVICE_URL` be an
+absolute `http(s)` URL (see `apps/worker/src/evaluation/evaluation-scorer-config.ts`).
+
+**Explicit local oracle:** `EVALUATION_SCORER=local` runs
+`LocalEvaluationScorer` in-process — the frozen v1 migration/parity/
+regression oracle. It is explicit-only, never the default, and is not
+deleted by #61; when the evaluation contract advances beyond v1 it must be
+explicitly revisited/removed/upgraded rather than silently continuing to
+stand in as a second authoritative scorer.
+
+**No fallback:** neither mode ever falls back to the other. An unreachable,
+timed-out, or malformed-response service under `service` mode fails the
+evaluation (non-zero exit, a fixed `Evaluation scoring error:` category, zero
+cases rendered as passing) — it never silently scores locally instead. See
+`apps/worker/src/evaluation/service-unavailable.test.ts` and
+`cross-service-parity.test.ts`.
+
+**Ownership:**
+
+```text
+TypeScript:
+- executes cases
+- normalizes observations
+
+Python (services/evaluation/):
+- authoritative deterministic scoring
+- persistence
+```
+
+The Python service owns its own tables via SQLAlchemy/Alembic
+(`services/evaluation/alembic/`), entirely separate from the Prisma-owned
+schema at the repo root; Prisma does not read or migrate them. Dev/test
+database separation (`opspilot_evaluation` / `opspilot_evaluation_test`) is
+described in `services/evaluation/README.md`.
+
+**Local workflow** — see `services/evaluation/README.md` for the full setup;
+smallest reliable flow, two terminals:
+
+```sh
+# terminal 1 — provision/migrate and run the service (dev DB, :8001)
+cd services/evaluation
+make migrate
+make run
+
+# terminal 2 — run the evaluation CLI (default: service scorer)
+cd apps/worker
+EVALUATION_SERVICE_URL=http://127.0.0.1:8001 pnpm run eval
+
+# explicit frozen v1 oracle, no service required
+EVALUATION_SCORER=local pnpm run eval
+```

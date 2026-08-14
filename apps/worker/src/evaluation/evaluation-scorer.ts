@@ -18,15 +18,31 @@ import {
 // AgentOrchestratorResult, a trace event, or the tool recorder — the remote
 // scorer serializes `input` to JSON, POSTs it to FastAPI, and returns the
 // parsed JSON response (see the OpsPilot #61 Phase 1 HQ targeted
-// corrections, correction 5). Phase 3 (OpsPilot #61) has two
-// implementations: LocalEvaluationScorer, the deterministic in-process
-// parity oracle, and HttpEvaluationScorer, the Python/FastAPI service
-// client. There is deliberately no automatic fallback between them (see
+// corrections, correction 5). Two implementations: LocalEvaluationScorer,
+// the frozen v1 migration/parity oracle, and HttpEvaluationScorer, the
+// Python/FastAPI service client and default, authoritative scorer as of
+// Phase 4 (see DEFAULT_EVALUATION_SCORER_SELECTION and
+// resolveScorerSelectionFromEnv). There is deliberately no automatic
+// fallback between them, in either direction (see
 // service-unavailable.test.ts).
 export interface EvaluationScorer {
   score(input: EvaluationSuiteInputV1): EvaluationSuiteResultV1 | Promise<EvaluationSuiteResultV1>;
 }
 
+// LocalEvaluationScorer = frozen v1 migration/parity oracle.
+//
+// As of OpsPilot #61 Phase 4, the Python/FastAPI evaluation service is the
+// default, authoritative scorer (HttpEvaluationScorer, selected via
+// EVALUATION_SCORER=service or the unset/empty default). This class is kept
+// only as an explicit EVALUATION_SCORER=local opt-in: a deterministic,
+// in-process v1 regression/parity oracle for post-merge comparison against
+// the service, not a second authoritative scoring path. Its v1 scoring
+// semantics are frozen and must not change.
+//
+// Revisit trigger: when the evaluation contract advances beyond v1, this
+// oracle must be explicitly revisited/removed/upgraded as part of that
+// change — it must never silently continue to stand in as a second
+// authoritative scorer for a newer contract version.
 export class LocalEvaluationScorer implements EvaluationScorer {
   score(input: EvaluationSuiteInputV1): EvaluationSuiteResultV1 {
     const results = input.cases.map((caseInput) => evaluateCase(caseInput));
@@ -43,15 +59,25 @@ export class LocalEvaluationScorer implements EvaluationScorer {
 }
 
 // Selection discriminated union, mirroring LlmProviderSelection. "LOCAL" runs
-// LocalEvaluationScorer in-process; "SERVICE" posts the same normalized v1
-// suite to the Python/FastAPI evaluation service over HTTP. There is no
-// silent service→local fallback for any mode — an unreachable service fails
-// the evaluation, and an unrecognized mode is a configuration error (see
-// resolveEvaluationScorerSelection below and CLAUDE.md).
+// LocalEvaluationScorer in-process (the frozen v1 oracle, explicit opt-in
+// only as of Phase 4); "SERVICE" posts the same normalized v1 suite to the
+// Python/FastAPI evaluation service over HTTP (the default, authoritative
+// scorer as of Phase 4 — see resolveScorerSelectionFromEnv). There is no
+// silent fallback between the two modes in either direction — an unreachable
+// service fails the evaluation, and an unrecognized mode is a configuration
+// error (see resolveEvaluationScorerSelection below and CLAUDE.md).
 export type EvaluationScorerSelection =
   | { readonly scorerMode: "LOCAL" }
   | { readonly scorerMode: "SERVICE"; readonly serviceUrl: string; readonly timeoutMs: number };
 
+// The bare LOCAL selection, used only as run-eval.ts's DEFAULT_DEPENDENCIES
+// fallback for direct/test callers of runEvaluation() that supply no
+// scorerSelection and no scorer at all. This is NOT the CLI's real default —
+// the CLI entry point always resolves EvaluationScorerSelection from the
+// environment via resolveScorerSelectionFromEnv (default: SERVICE as of
+// Phase 4) and passes it in explicitly. A SERVICE constant can't play this
+// same role without inventing a serviceUrl default, which is deliberately
+// not done (see evaluation-scorer-config.ts).
 export const DEFAULT_EVALUATION_SCORER_SELECTION: EvaluationScorerSelection = { scorerMode: "LOCAL" };
 
 export class UnknownEvaluationScorerModeError extends Error {
