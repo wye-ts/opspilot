@@ -387,3 +387,65 @@ jobs:
         run: |
           docker rm -f opspilot opspilot-migration-failure \
             opspilot-skip-migrations opspilot-invalid-run-migrations || true
+
+  evaluation-service:
+    name: Evaluation service (Python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Phase 2 only (OpsPilot #61): this job is Python-only — no Node/pnpm
+    # setup, no worker->HTTP integration, no LIVE/paid-provider calls. It
+    # runs independently of the Node jobs above and does not weaken them.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: opspilot
+          POSTGRES_PASSWORD: opspilot_ci_only
+          POSTGRES_DB: opspilot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U opspilot -d opspilot"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      # The evaluation service owns a separate logical database from the
+      # Prisma-owned `opspilot`/`opspilot_test` used by the jobs above (see
+      # services/evaluation/README.md, "Persistence").
+      EVALUATION_DATABASE_URL: postgres://opspilot:opspilot_ci_only@localhost:5432/opspilot_evaluation_test
+
+    defaults:
+      run:
+        working-directory: services/evaluation
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv (and pin Python 3.13)
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.16"
+          python-version: "3.13"
+
+      - name: Install service dependencies
+        run: uv sync --locked
+
+      - name: Create the evaluation test database
+        run: |
+          docker exec "${{ job.services.postgres.id }}" \
+            psql -U opspilot -d opspilot -c 'CREATE DATABASE opspilot_evaluation_test OWNER opspilot;'
+
+      - name: Lint (ruff)
+        run: uv run ruff check src tests
+
+      - name: Type check (mypy)
+        run: uv run mypy
+
+      - name: Apply Alembic migrations
+        run: uv run alembic upgrade head
+
+      - name: Run pytest
+        run: uv run pytest -q
