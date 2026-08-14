@@ -12,9 +12,9 @@
 
 ## 0. What v1 models
 
-**Issue #36 v1 modeled the current OpsPilot runtime exactly: two provider turns maximum, zero or one tool call, optional retrieval.** Since issue #57 Checkpoint A, the canonical **contract** additionally accepts a bounded serial multi-step diagnostic loop: up to `MAX_DIAGNOSTIC_TOOL_CALLS` distinct `TOOL_REQUESTED` events per run (`packages/contracts/src/agent-run-bounds.ts`), one open at a time, serialized against `DIAGNOSTIC_EXECUTION`. That is a contract capability, not a runtime claim: the **current production runtime after Checkpoint A still emits the existing one-tool shape**, and adopts the bounded loop only in Checkpoint B. A contract that accepts histories the runtime cannot yet produce is only valid because every such history is still a legal reducer state (and the runtime's v1 streams remain valid under it). The contract still does not model speculative multi-tool or generic workflow execution beyond the bounded loop.
+**Issue #36 v1 modeled the current OpsPilot runtime exactly: two provider turns maximum, zero or one tool call, optional retrieval.** Since issue #57 Checkpoint A, the canonical **contract** additionally accepts a bounded serial multi-step diagnostic loop: up to `MAX_DIAGNOSTIC_TOOL_CALLS` distinct `TOOL_REQUESTED` events per run (`packages/contracts/src/agent-run-bounds.ts`), one open at a time, serialized against `DIAGNOSTIC_EXECUTION`. Since issue #57 Checkpoint B, the **production runtime actually emits** that bounded loop (see `docs/04-agent-design.md` §7): a run may take up to `MAX_PROVIDER_TURNS` provider turns, with at most one diagnostic request per investigation turn, a voluntary report on any earlier turn, and forced finalization on the reserved final turn. Checkpoint A's v1-shaped streams remain valid, and the contract still does not model speculative multi-tool or generic workflow execution beyond the bounded loop.
 
-The two supported successful paths:
+The two v1-shaped successful paths:
 
 ```text
 Direct no-tool report          One-tool finalization
@@ -30,7 +30,30 @@ RUN_COMPLETED                  REPORT_GENERATION_STARTED
                                RUN_COMPLETED
 ```
 
-Not supported in v1, and rejected: concurrent tools, provider reasoning between tools, and generic multi-turn workflow execution. Since issue #57 Checkpoint A, a **bounded serial multi-step diagnostic loop** is a contract capability: up to `MAX_DIAGNOSTIC_TOOL_CALLS` distinct tool requests per run, one open at a time, serialized against `DIAGNOSTIC_EXECUTION` (a 4th request while the loop is full is rejected with `TOOL_LIMIT_EXCEEDED`). The current production runtime still emits the single-tool shape above until Checkpoint B adopts the loop.
+Since Checkpoint B the runtime also emits the bounded multi-step loop. Each
+investigation turn carries at most one diagnostic request; the provider may
+submit a voluntary report on any turn before the bound, otherwise the reserved
+final turn forces finalization:
+
+```text
+Bounded multi-step loop (issue #57 Checkpoint B)
+───────────────────────────────────────────────
+RUN_CREATED
+AGENT_STARTED
+[RETRIEVAL_COMPLETED]
+TOOL_REQUESTED / TOOL_COMPLETED        up to MAX_DIAGNOSTIC_TOOL_CALLS pairs,
+TOOL_REQUESTED / TOOL_COMPLETED        one open at a time, serial against
+TOOL_REQUESTED / TOOL_COMPLETED        DIAGNOSTIC_EXECUTION; may stop early
+REPORT_GENERATION_STARTED              ONLY on the forced-finalization turn
+REPORT_SUBMITTED
+REPORT_VALIDATED
+RUN_COMPLETED
+```
+
+A voluntary early report (fewer than `MAX_DIAGNOSTIC_TOOL_CALLS` tools closed)
+skips `REPORT_GENERATION_STARTED` — see §4.
+
+Not supported in v1, and rejected: concurrent tools, provider reasoning between tools, and generic multi-turn workflow execution. Since issue #57 Checkpoint A, a **bounded serial multi-step diagnostic loop** is a contract capability: up to `MAX_DIAGNOSTIC_TOOL_CALLS` distinct tool requests per run, one open at a time, serialized against `DIAGNOSTIC_EXECUTION` (a 4th request while the loop is full is rejected with `TOOL_LIMIT_EXCEEDED`). Since Checkpoint B the **runtime emits** exactly that loop: up to `MAX_DIAGNOSTIC_TOOL_CALLS` diagnostic tool calls across up to `MAX_PROVIDER_TURNS` provider turns, one tool per investigation turn, forced finalization on the reserved final turn.
 
 ---
 

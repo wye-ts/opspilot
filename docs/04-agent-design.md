@@ -289,6 +289,24 @@ The agent uses separate, non-overlapping budgets:
 | Same diagnostic tool calls | Internal/configured limit | 2 |
 | Total run deadline | `AGENT_TIMEOUT_MS` | 90000 ms |
 
+The `AGENT_MAX_*` rows above are the **aspirational, unwired** budget settings
+from the design target — the orchestrator does not read any of them yet. What
+the runtime actually enforces today (issue #57 Checkpoint B) is the reviewed
+source bound:
+
+| Implemented source bound | Value |
+|---|---:|
+| Provider turns per run | `4` (`MAX_PROVIDER_TURNS`) |
+| Diagnostic tool calls per run | `3` (`MAX_DIAGNOSTIC_TOOL_CALLS`) |
+| Reserved finalization turn | `1` (the final turn is forced FINALIZATION) |
+
+with `MAX_DIAGNOSTIC_TOOL_CALLS <= MAX_PROVIDER_TURNS - 1` (equality holds
+today): turns 0–2 each accept at most one diagnostic request, and turn 3 is
+forced finalization. A voluntary report may be submitted earlier, on any
+investigation turn. There is no evidence-sufficiency policy yet (that is #58):
+the provider's own continue/stop choice is the only gate on how many diagnostic
+steps a run takes before reporting.
+
 Rules:
 
 - Every logical model call is charged to exactly one phase budget, determined by the agent phase at the start of the call.
@@ -1122,6 +1140,13 @@ Required scenarios:
 - cancellation before model call;
 - ownership loss after provider response;
 - ownership loss after tool execution but before persistence.
+
+Issue #57 Checkpoint B implements the bounded multi-step loop behind the
+scenarios above: the orchestrator accepts one diagnostic request per
+investigation turn, up to `MAX_DIAGNOSTIC_TOOL_CALLS` calls, and forces
+finalization on the reserved final turn. The `agent-orchestrator.test.ts`
+suite pins the multi-step shapes (two-tool voluntary report, three-tool forced
+finalization, per-stage failure attribution) with deterministic fake providers.
 
 ### 25.3 PostgreSQL Integration Dependencies
 

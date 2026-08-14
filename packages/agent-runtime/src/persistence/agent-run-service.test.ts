@@ -2333,7 +2333,12 @@ describe("executeAndPersist — event-emission persistence failure", () => {
     ["before any provider call (AGENT_STARTED)", 0, "AGENT_STARTED", 0],
     ["after the investigation provider call (TOOL_REQUESTED)", 1, "TOOL_REQUESTED", 1],
     ["after the tool completed (TOOL_COMPLETED)", 2, "TOOL_COMPLETED", 1],
-    ["after the finalization provider returned (REPORT_SUBMITTED)", 4, "REPORT_SUBMITTED", 2],
+    // Checkpoint B (#57): with MAX_PROVIDER_TURNS = 4, toolThenReportScenario's
+    // report lands on an INVESTIGATION turn as a voluntary early report — no
+    // REPORT_GENERATION_STARTED — so REPORT_SUBMITTED is index 3 and
+    // REPORT_VALIDATED index 4 on this two-turn path.
+    ["after a voluntary report was submitted (REPORT_SUBMITTED)", 3, "REPORT_SUBMITTED", 2],
+    ["after the report was validated (REPORT_VALIDATED)", 4, "REPORT_VALIDATED", 2],
   ])(
     "aborts %s, leaving the run RUNNING with no terminal call",
     async (_label, failIndex, attemptedEventType, expectedProviderCalls) => {
