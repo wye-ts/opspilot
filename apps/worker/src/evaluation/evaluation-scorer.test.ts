@@ -10,11 +10,13 @@ import { evaluateCase } from "./evaluation-evaluator";
 import {
   createEvaluationScorer,
   DEFAULT_EVALUATION_SCORER_SELECTION,
+  InvalidEvaluationScorerSelectionError,
   LocalEvaluationScorer,
   resolveEvaluationScorerSelection,
   UnknownEvaluationScorerModeError,
   type EvaluationScorer,
 } from "./evaluation-scorer";
+import { HttpEvaluationScorer } from "./evaluation-service-client";
 import { aggregateMetrics } from "./evaluation-metrics";
 import { buildObservedFacts } from "./observed-facts";
 import type { EvaluationCase } from "./types";
@@ -163,6 +165,52 @@ describe("a future HTTP scorer can implement EvaluationScorer using only normali
 describe("createEvaluationScorer", () => {
   it("returns a LocalEvaluationScorer for scorerMode LOCAL", () => {
     expect(createEvaluationScorer({ scorerMode: "LOCAL" })).toBeInstanceOf(LocalEvaluationScorer);
+  });
+
+  it("returns an HttpEvaluationScorer for a valid SERVICE selection — and never a LocalEvaluationScorer", () => {
+    const scorer = createEvaluationScorer({
+      scorerMode: "SERVICE",
+      serviceUrl: "http://127.0.0.1:8001",
+      timeoutMs: 20_000,
+    });
+    expect(scorer).toBeInstanceOf(HttpEvaluationScorer);
+    expect(scorer).not.toBeInstanceOf(LocalEvaluationScorer);
+  });
+});
+
+describe("resolveEvaluationScorerSelection — SERVICE mode fail closed", () => {
+  it("accepts a valid SERVICE selection with a bounded timeout", () => {
+    expect(
+      resolveEvaluationScorerSelection({
+        scorerMode: "SERVICE",
+        serviceUrl: "http://127.0.0.1:8001",
+        timeoutMs: 20_000,
+      }),
+    ).toEqual({ scorerMode: "SERVICE", serviceUrl: "http://127.0.0.1:8001", timeoutMs: 20_000 });
+  });
+
+  it("rejects a SERVICE selection missing its serviceUrl", () => {
+    expect(() =>
+      resolveEvaluationScorerSelection({ scorerMode: "SERVICE", timeoutMs: 20_000 }),
+    ).toThrow(InvalidEvaluationScorerSelectionError);
+  });
+
+  it("rejects a SERVICE selection with an empty serviceUrl", () => {
+    expect(() =>
+      resolveEvaluationScorerSelection({ scorerMode: "SERVICE", serviceUrl: "", timeoutMs: 20_000 }),
+    ).toThrow(InvalidEvaluationScorerSelectionError);
+  });
+
+  it("rejects a SERVICE selection with a non-integer or out-of-bounds timeout", () => {
+    for (const timeoutMs of [500, 999_999, 1.5, Number.NaN]) {
+      expect(() =>
+        resolveEvaluationScorerSelection({
+          scorerMode: "SERVICE",
+          serviceUrl: "http://127.0.0.1:8001",
+          timeoutMs,
+        }),
+      ).toThrow(InvalidEvaluationScorerSelectionError);
+    }
   });
 });
 

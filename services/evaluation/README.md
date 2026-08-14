@@ -1,10 +1,12 @@
 # opspilot-evaluation
 
-Phase 2 (OpsPilot #61) Python/FastAPI evaluation service: authoritative
-deterministic scoring and persistence for the frozen v1 evaluation contract
-(`EvaluationSuiteInputV1` / `EvaluationSuiteResultV1`, see
-`apps/worker/src/evaluation/v1-types.ts`). Standalone from the TypeScript
-worker/API — no HTTP integration between them yet (that is Phase 3).
+Python/FastAPI evaluation service: authoritative deterministic scoring and
+persistence for the frozen v1 evaluation contract (`EvaluationSuiteInputV1` /
+`EvaluationSuiteResultV1`, see `apps/worker/src/evaluation/v1-types.ts`).
+Phase 2 (OpsPilot #61) built the service standalone; Phase 3 wired it to the
+TypeScript worker over HTTP (`POST /evaluations`, `GET /evaluations/{id}`),
+with the worker's local TypeScript scorer retained as an explicit parity
+oracle — see "TypeScript worker integration (Phase 3)" below.
 
 ## Setup
 
@@ -72,6 +74,47 @@ uv run ruff check src tests
 uv run mypy
 uv run uvicorn opspilot_evaluation.main:app --reload --port 8001
 ```
+
+## TypeScript worker integration (Phase 3)
+
+The worker evaluation CLI (`apps/worker/src/evaluation/run-eval.ts`) can score
+the normalized v1 suite against this service instead of the in-process local
+scorer. Selection is explicit and fail-closed via `EVALUATION_SCORER`; there is
+**no automatic remote→local fallback** (see
+`apps/worker/src/evaluation/service-unavailable.test.ts`).
+
+Smallest reliable local flow — two terminals:
+
+```sh
+# terminal 1: run the service (dev DB, :8001)
+cd services/evaluation
+make migrate     # EVALUATION_DATABASE_URL defaults to the local dev DB
+make run         # uvicorn --reload on :8001
+
+# terminal 2: run the worker evaluation against the service
+cd apps/worker
+EVALUATION_SCORER=service \
+EVALUATION_SERVICE_URL=http://127.0.0.1:8001 \
+pnpm run eval
+```
+
+- `EVALUATION_SCORER=local` (the default) runs the in-process
+  `LocalEvaluationScorer` — the explicit parity oracle. Use it to confirm the
+  service is not masking a scorer regression:
+  `pnpm --filter @opspilot/worker run eval` (no env needed).
+- `EVALUATION_SCORER=service` posts the exact same normalized
+  `EvaluationSuiteInputV1` to `POST /evaluations`, validates the persisted
+  response strictly, and renders the same CLI semantics. `EVALUATION_SERVICE_URL`
+  is required and must be an absolute http(s) URL; `EVALUATION_SERVICE_TIMEOUT_MS`
+  (default 15000, bounds [1000, 600000]) is the single bounded request timeout.
+- Cross-service parity is proven by
+  `apps/worker/src/evaluation/cross-service-parity.test.ts` against this real
+  service (it skips itself when no service is reachable), and CI runs it for
+  real in the `cross-service-parity` job. Locally, with the service running
+  and `EVALUATION_SERVICE_URL` exported, run
+  `pnpm --filter @opspilot/worker run test:eval:cross-service` — that script
+  sets `EVALUATION_SERVICE_REQUIRED=1`, so it FAILS if the service is not
+  reachable rather than silently skipping.
 
 ## Notes
 

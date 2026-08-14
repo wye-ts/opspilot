@@ -6,9 +6,15 @@ import { RunbookLoadError } from "../rag/markdown-runbook-loader";
 import { aggregateMetrics } from "./evaluation-metrics";
 import type { EvaluationScorer } from "./evaluation-scorer";
 import {
+  EvaluationServiceUnavailableError,
+  EvaluationServiceTimeoutError,
+  type EvaluationServiceErrorCategory,
+} from "./evaluation-service-errors";
+import {
   getExitCode,
   renderEvaluationOutput,
   renderEvaluationResolution,
+  renderScorerConfigError,
   resolveEvaluationRun,
   runEvaluation,
   type EvaluationOutcome,
@@ -200,6 +206,64 @@ describe("resolveEvaluationRun", () => {
 
     expect(resolution.kind).toBe("outcome");
   });
+
+  it("maps an EvaluationServiceError from the scorer into a 'scoring-error' resolution carrying only the category", async () => {
+    const runSuite = vi.fn().mockResolvedValue([dummyCaseInput("synthetic-1")]);
+    const failingScorer: EvaluationScorer = {
+      score: async () => {
+        throw new EvaluationServiceUnavailableError();
+      },
+    };
+
+    const resolution = await resolveEvaluationRun({
+      loadCorpus: async () => ({ chunks: FIXTURE_CORPUS, sourceFileCount: 1 }),
+      cases: [validCase("synthetic-1")],
+      injectionProbeChunk: FIXTURE_INJECTION_PROBE_CHUNK,
+      runSuite,
+      scorer: failingScorer,
+    });
+
+    expect(resolution).toEqual({ kind: "scoring-error", category: "SERVICE_UNAVAILABLE" });
+  });
+
+  it("maps a timeout to the TIMEOUT scoring-error category, distinct from SERVICE_UNAVAILABLE", async () => {
+    const runSuite = vi.fn().mockResolvedValue([dummyCaseInput("synthetic-1")]);
+    const failingScorer: EvaluationScorer = {
+      score: async () => {
+        throw new EvaluationServiceTimeoutError();
+      },
+    };
+
+    const resolution = await resolveEvaluationRun({
+      loadCorpus: async () => ({ chunks: FIXTURE_CORPUS, sourceFileCount: 1 }),
+      cases: [validCase("synthetic-1")],
+      injectionProbeChunk: FIXTURE_INJECTION_PROBE_CHUNK,
+      runSuite,
+      scorer: failingScorer,
+    });
+
+    expect(resolution).toEqual({ kind: "scoring-error", category: "TIMEOUT" });
+  });
+
+  it("never leaks the raw EvaluationServiceError message into the scoring-error resolution", async () => {
+    const runSuite = vi.fn().mockResolvedValue([dummyCaseInput("synthetic-1")]);
+    const failingScorer: EvaluationScorer = {
+      score: async () => {
+        throw new EvaluationServiceUnavailableError("secret postgres password in the error message");
+      },
+    };
+
+    const resolution = await resolveEvaluationRun({
+      loadCorpus: async () => ({ chunks: FIXTURE_CORPUS, sourceFileCount: 1 }),
+      cases: [validCase("synthetic-1")],
+      injectionProbeChunk: FIXTURE_INJECTION_PROBE_CHUNK,
+      runSuite,
+      scorer: failingScorer,
+    });
+
+    expect(resolution).toEqual({ kind: "scoring-error", category: "SERVICE_UNAVAILABLE" });
+    expect(JSON.stringify(resolution)).not.toContain("password");
+  });
 });
 
 describe("renderEvaluationResolution — three distinct CLI error categories", () => {
@@ -296,6 +360,63 @@ describe("renderEvaluationResolution — three distinct CLI error categories", (
     const rendered = renderEvaluationResolution(resolution);
 
     expect(rendered.output).toContain("FAIL synthetic-1");
+    expect(rendered.exitCode).toBe(1);
+  });
+});
+
+describe("renderEvaluationResolution — remote scoring failures", () => {
+  it("renders a scoring-error as 'Evaluation scoring error:', with no local fallback, zero executed cases, and exit code 1", () => {
+    const resolution: EvaluationRunResolution = { kind: "scoring-error", category: "SERVICE_UNAVAILABLE" };
+
+    const rendered = renderEvaluationResolution(resolution);
+
+    expect(rendered.output).toContain(
+      "Evaluation scoring error: the evaluation service is unreachable.",
+    );
+    expect(rendered.output).toContain("No local scorer fallback; exiting without a result.");
+    expect(rendered.output).toContain("Cases executed: 0");
+    expect(rendered.output).not.toContain("Dataset configuration error");
+    expect(rendered.output).not.toContain("Evaluation setup error");
+    expect(rendered.output).not.toContain("Evaluation failed unexpectedly");
+    expect(rendered.isError).toBe(true);
+    expect(rendered.exitCode).toBe(1);
+  });
+
+  it("renders each remote-scoring failure category with its fixed safe copy", () => {
+    const expectations: Record<EvaluationServiceErrorCategory, string> = {
+      SERVICE_UNAVAILABLE: "the evaluation service is unreachable",
+      TIMEOUT: "the evaluation service request timed out",
+      HTTP_ERROR: "the evaluation service returned an error status",
+      MALFORMED_RESPONSE: "the evaluation service returned a malformed response",
+      UNSUPPORTED_VERSION: "the evaluation service returned an unsupported contract version",
+    };
+
+    for (const [category, copy] of Object.entries(expectations)) {
+      const resolution: EvaluationRunResolution = {
+        kind: "scoring-error",
+        category: category as EvaluationServiceErrorCategory,
+      };
+      const rendered = renderEvaluationResolution(resolution);
+      expect(rendered.output).toContain(`Evaluation scoring error: ${copy}.`);
+      expect(rendered.output).toContain("No local scorer fallback; exiting without a result.");
+      expect(rendered.isError).toBe(true);
+      expect(rendered.exitCode).toBe(1);
+    }
+  });
+});
+
+describe("renderScorerConfigError — fail-closed scorer configuration", () => {
+  it("renders an invalid scorer configuration as an 'Evaluation configuration error:', zero executed cases, exit code 1", () => {
+    const rendered = renderScorerConfigError(
+      "EVALUATION_SERVICE_URL is required when EVALUATION_SCORER=service.",
+    );
+
+    expect(rendered.output).toContain(
+      "Evaluation configuration error: EVALUATION_SERVICE_URL is required when EVALUATION_SCORER=service.",
+    );
+    expect(rendered.output).toContain("Cases executed: 0");
+    expect(rendered.output).not.toContain("Evaluation failed unexpectedly");
+    expect(rendered.isError).toBe(true);
     expect(rendered.exitCode).toBe(1);
   });
 });
