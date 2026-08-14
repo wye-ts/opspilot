@@ -1,32 +1,20 @@
 import { describe, expect, it } from "vitest";
 
+import { CHECK_REASON_MESSAGES, type CheckReasonCode } from "./check-reason-codes";
 import { formatEvaluationReport } from "./evaluation-formatter";
 import { aggregateMetrics } from "./evaluation-metrics";
-import type { EvaluationCaseResult, EvaluationCheckResult } from "./types";
+import type { EvaluationCaseResultV1, EvaluationCheckV1 } from "./v1-types";
 
-function passingCheck(name: string): EvaluationCheckResult {
-  return { name, passed: true, expected: null, observed: null };
+function passingCheck(name: string): EvaluationCheckV1 {
+  return { name, passed: true, reasonCode: null };
 }
 
-function failingCheck(name: string, reason: string, expected: unknown = null, observed: unknown = null): EvaluationCheckResult {
-  return { name, passed: false, expected, observed, reason };
+function failingCheck(name: string, reasonCode: CheckReasonCode): EvaluationCheckV1 {
+  return { name, passed: false, reasonCode };
 }
 
-function makeResult(caseId: string, checks: readonly EvaluationCheckResult[]): EvaluationCaseResult {
-  return {
-    caseId,
-    passed: checks.every((check) => check.passed),
-    checks,
-    observed: {
-      runStatus: checks.every((check) => check.passed) ? "completed" : "failed",
-      retrievalCompletedObserved: false,
-      retrievedChunkIds: [],
-      requestedTools: [],
-      executedTools: [],
-      completedToolCallIds: [],
-      evidenceIds: [],
-    },
-  };
+function makeResult(caseId: string, checks: readonly EvaluationCheckV1[]): EvaluationCaseResultV1 {
+  return { caseId, passed: checks.every((check) => check.passed), checks };
 }
 
 describe("formatEvaluationReport", () => {
@@ -49,7 +37,7 @@ describe("formatEvaluationReport", () => {
     const results = [
       makeResult("case-c", [
         passingCheck("status"),
-        failingCheck("retrieval-top1", 'expected top-ranked chunk "x", observed "y"'),
+        failingCheck("retrieval-top1", "RETRIEVAL_TOP1_MISMATCH"),
       ]),
     ];
     const metrics = aggregateMetrics(results);
@@ -57,8 +45,23 @@ describe("formatEvaluationReport", () => {
     const output = formatEvaluationReport(results, metrics);
 
     expect(output).toContain("FAIL case-c");
-    expect(output).toContain("retrieval-top1: expected top-ranked chunk \"x\", observed \"y\"");
+    expect(output).toContain("retrieval-top1: The expected top-ranked chunk was not observed.");
     expect(output).not.toContain("  - status:");
+  });
+
+  it("a failing check with a null reasonCode is a compile-time error — there is no 'check failed' fallback to test", () => {
+    // @ts-expect-error — EvaluationCheckV1 is a discriminated union; a
+    // failing check (passed: false) must carry a real CheckReasonCode.
+    // This exact shape is the one the independent review found the
+    // formatter silently rendering as the generic "check failed" fallback.
+    const invalid: EvaluationCheckV1 = { name: "status", passed: false, reasonCode: null };
+    expect(invalid.passed).toBe(false);
+  });
+
+  it("a passing check with a non-null reasonCode is also a compile-time error", () => {
+    // @ts-expect-error — a passing check must carry reasonCode: null.
+    const invalid: EvaluationCheckV1 = { name: "status", passed: true, reasonCode: "STATUS_MISMATCH" };
+    expect(invalid.passed).toBe(true);
   });
 
   it("formats zero-denominator metrics deterministically without NaN", () => {
@@ -72,59 +75,24 @@ describe("formatEvaluationReport", () => {
   });
 
   describe("sanitization", () => {
-    const ABSOLUTE_PATH_SENTINEL = "/private/tmp/eval-sentinel-path/should-not-appear";
-    const RAW_PROMPT_SENTINEL = "RAW_PROMPT_SENTINEL_TEXT";
-    const RAW_ERROR_SENTINEL = "RAW_ERROR_SENTINEL_MESSAGE";
+    // EvaluationCaseResultV1/EvaluationCheckV1 have no expected/observed
+    // fields at all (see v1-types.ts, correction 3) — formatEvaluationReport
+    // therefore cannot leak them even in principle; there is no way to even
+    // construct a fixture that plants a sentinel there. What remains
+    // checkable at this layer is that every fixed reason-code message is
+    // itself free of stack-trace-shaped content, checked exhaustively below.
+    // The "no expected/observed keys survive serialization" proof lives in
+    // v1-types.test.ts, at the actual internal→wire conversion boundary.
+    it("every fixed reason-code message renders verbatim, none of them stack-trace-shaped", () => {
+      for (const [code, message] of Object.entries(CHECK_REASON_MESSAGES) as [CheckReasonCode, string][]) {
+        const results = [makeResult("case-d", [failingCheck("some-check", code)])];
+        const output = formatEvaluationReport(results, aggregateMetrics(results));
 
-    function buildSentinelResults(): readonly EvaluationCaseResult[] {
-      return [
-        makeResult("sentinel-case", [
-          failingCheck(
-            "evidence-ids",
-            "required evidence ids missing: [e1]; forbidden evidence ids present: []",
-            { requiredIds: [ABSOLUTE_PATH_SENTINEL], forbiddenIds: [] },
-            { rawPrompt: RAW_PROMPT_SENTINEL, rawError: RAW_ERROR_SENTINEL, path: ABSOLUTE_PATH_SENTINEL },
-          ),
-        ]),
-      ];
-    }
-
-    it("never surfaces a planted absolute-path sentinel embedded only in expected/observed", () => {
-      const results = buildSentinelResults();
-      const output = formatEvaluationReport(results, aggregateMetrics(results));
-      expect(output).not.toContain(ABSOLUTE_PATH_SENTINEL);
-    });
-
-    it("never surfaces a planted raw-prompt sentinel embedded only in observed", () => {
-      const results = buildSentinelResults();
-      const output = formatEvaluationReport(results, aggregateMetrics(results));
-      expect(output).not.toContain(RAW_PROMPT_SENTINEL);
-    });
-
-    it("never surfaces a planted raw-error-message sentinel embedded only in observed", () => {
-      const results = buildSentinelResults();
-      const output = formatEvaluationReport(results, aggregateMetrics(results));
-      expect(output).not.toContain(RAW_ERROR_SENTINEL);
-    });
-
-    it("never contains a stack-trace-shaped line, node_modules, or a file:// URL", () => {
-      const results = buildSentinelResults();
-      const output = formatEvaluationReport(results, aggregateMetrics(results));
-
-      expect(output).not.toMatch(/\n\s+at\s+/);
-      expect(output).not.toContain("node_modules");
-      expect(output).not.toContain("file://");
-    });
-
-    it("still permits the harness's own fixed reason text containing the substring 'at '", () => {
-      const results = [
-        makeResult("case-d", [
-          passingCheck("status"),
-          failingCheck("failure-code", 'run terminated at TOOL_NOT_FOUND'),
-        ]),
-      ];
-      const output = formatEvaluationReport(results, aggregateMetrics(results));
-      expect(output).toContain("run terminated at TOOL_NOT_FOUND");
+        expect(output).toContain(`some-check: ${message}`);
+        expect(output).not.toMatch(/\n\s+at\s+/);
+        expect(output).not.toContain("node_modules");
+        expect(output).not.toContain("file://");
+      }
     });
   });
 });

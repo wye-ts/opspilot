@@ -7,7 +7,8 @@ import { FABRICATED_TOOL_EVIDENCE_CASE } from "./cases/evidence-grounding-cases"
 import { PROTOCOL_AND_FAILURE_CASES } from "./cases/protocol-and-failure-cases";
 import { EVALUATION_CASES } from "./evaluation-dataset";
 import { runEvaluationSuite } from "./evaluation-runner";
-import type { EvaluationCaseResult } from "./types";
+import { LocalEvaluationScorer } from "./evaluation-scorer";
+import { buildEvaluationSuiteInputV1, EVALUATION_DATASET_ID, type EvaluationCaseInputV1 } from "./v1-types";
 
 let defaultCorpus: readonly StoredRunbookChunk[];
 
@@ -16,8 +17,13 @@ beforeAll(async () => {
   defaultCorpus = corpusLoad.chunks;
 });
 
-function byCaseId(results: readonly EvaluationCaseResult[]): Map<string, EvaluationCaseResult> {
+function byCaseId(results: readonly EvaluationCaseInputV1[]): Map<string, EvaluationCaseInputV1> {
   return new Map(results.map((result) => [result.caseId, result]));
+}
+
+function scoreAll(caseInputs: readonly EvaluationCaseInputV1[]) {
+  const suiteInput = buildEvaluationSuiteInputV1(EVALUATION_DATASET_ID, caseInputs);
+  return new LocalEvaluationScorer().score(suiteInput);
 }
 
 describe("runEvaluationSuite — order preservation", () => {
@@ -80,7 +86,7 @@ describe("runEvaluationSuite — isolation", () => {
       injectionProbeChunk: INJECTION_PROBE_CHUNK,
     });
     expect(results).toHaveLength(1);
-    expect(results[0]?.passed).toBe(true);
+    expect(scoreAll(results).cases[0]?.passed).toBe(true);
   });
 
   it("case invalid-tool-input passes when run alone", async () => {
@@ -93,6 +99,6 @@ describe("runEvaluationSuite — isolation", () => {
       injectionProbeChunk: INJECTION_PROBE_CHUNK,
     });
     expect(results).toHaveLength(1);
-    expect(results[0]?.passed).toBe(true);
+    expect(scoreAll(results).cases[0]?.passed).toBe(true);
   });
 });

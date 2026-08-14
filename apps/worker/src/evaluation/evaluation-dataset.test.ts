@@ -3,8 +3,9 @@ import { describe, expect, it } from "vitest";
 import { INJECTION_PROBE_CHUNK, loadDefaultRunbookCorpus } from "../rag";
 import { validateEvaluationDataset } from "./dataset-validation";
 import { EVALUATION_CASES } from "./evaluation-dataset";
-import { aggregateMetrics } from "./evaluation-metrics";
 import { runEvaluationSuite } from "./evaluation-runner";
+import { LocalEvaluationScorer } from "./evaluation-scorer";
+import { buildEvaluationSuiteInputV1, EVALUATION_DATASET_ID } from "./v1-types";
 
 const EXPECTED_CASE_IDS = [
   "notification-service-degradation",
@@ -49,16 +50,18 @@ describe("EVALUATION_CASES", () => {
   it("passes every declared expectation for all 15 cases when run against the real corpus and real components", async () => {
     const corpusLoad = await loadDefaultRunbookCorpus();
 
-    const results = await runEvaluationSuite({
+    const caseInputs = await runEvaluationSuite({
       cases: EVALUATION_CASES,
       defaultCorpus: corpusLoad.chunks,
       injectionProbeChunk: INJECTION_PROBE_CHUNK,
     });
+    const suiteInput = buildEvaluationSuiteInputV1(EVALUATION_DATASET_ID, caseInputs);
+    const suiteResult = new LocalEvaluationScorer().score(suiteInput);
 
-    const failures = results.filter((result) => !result.passed);
+    const failures = suiteResult.cases.filter((result) => !result.passed);
     expect(failures).toEqual([]);
 
-    const metrics = aggregateMetrics(results);
+    const metrics = suiteResult.metrics;
     expect(metrics.totalCases).toBe(15);
     expect(metrics.passedCases).toBe(15);
     expect(metrics.failedCases).toBe(0);

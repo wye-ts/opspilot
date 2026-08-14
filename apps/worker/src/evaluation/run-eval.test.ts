@@ -3,16 +3,25 @@ import { describe, expect, it, vi } from "vitest";
 import type { StoredRunbookChunk } from "@opspilot/agent-runtime";
 
 import { RunbookLoadError } from "../rag/markdown-runbook-loader";
+import { aggregateMetrics } from "./evaluation-metrics";
+import type { EvaluationScorer } from "./evaluation-scorer";
+import {
+  EvaluationServiceUnavailableError,
+  EvaluationServiceTimeoutError,
+  type EvaluationServiceErrorCategory,
+} from "./evaluation-service-errors";
 import {
   getExitCode,
   renderEvaluationOutput,
   renderEvaluationResolution,
+  renderScorerConfigError,
   resolveEvaluationRun,
   runEvaluation,
   type EvaluationOutcome,
   type EvaluationRunResolution,
 } from "./run-eval";
-import type { EvaluationCase, EvaluationCaseResult } from "./types";
+import type { EvaluationCase } from "./types";
+import type { EvaluationCaseInputV1, EvaluationCaseResultV1 } from "./v1-types";
 
 const FIXTURE_CORPUS: readonly StoredRunbookChunk[] = [
   { chunkId: "fixture-chunk-1", runbookId: "fixture-runbook", title: "Fixture", content: "fixture content" },
@@ -38,52 +47,54 @@ function validCase(id: string): EvaluationCase {
   };
 }
 
-function passingResult(caseId: string): EvaluationCaseResult {
+// The content of the normalized case input doesn't matter for the
+// runEvaluation-level tests below — scoring is stubbed separately via
+// stubScorer(), which ignores its input and returns a canned suite result.
+// This is only here so deps.runSuite has something type-correct to resolve
+// to.
+function dummyCaseInput(id: string): EvaluationCaseInputV1 {
   return {
-    caseId,
-    passed: true,
-    checks: [{ name: "status", passed: true, expected: "failed", observed: "failed" }],
+    caseId: id,
+    expectations: { runStatus: "failed", failure: { expectedCode: "TOOL_NOT_FOUND" } },
     observed: {
       runStatus: "failed",
-      retrievalCompletedObserved: false,
-      retrievedChunkIds: [],
-      requestedTools: [],
-      executedTools: [],
-      completedToolCallIds: [],
-      evidenceIds: [],
       errorCode: "TOOL_NOT_FOUND",
+      retrieval: { completed: false, chunkIds: [] },
+      tools: { requested: [], executed: [], completed: [] },
+      report: null,
     },
   };
 }
 
-function failingResult(caseId: string): EvaluationCaseResult {
+function stubScorer(cases: readonly EvaluationCaseResultV1[]): EvaluationScorer {
   return {
-    caseId,
-    passed: false,
-    checks: [
-      { name: "status", passed: false, expected: "failed", observed: "completed", reason: "mismatch" },
-    ],
-    observed: {
-      runStatus: "completed",
-      retrievalCompletedObserved: false,
-      retrievedChunkIds: [],
-      requestedTools: [],
-      executedTools: [],
-      completedToolCallIds: [],
-      evidenceIds: [],
-    },
+    score: (input) => ({
+      contractVersion: input.contractVersion,
+      datasetId: input.datasetId,
+      cases,
+      metrics: aggregateMetrics(cases),
+    }),
   };
+}
+
+function passingResult(caseId: string): EvaluationCaseResultV1 {
+  return { caseId, passed: true, checks: [{ name: "status", passed: true, reasonCode: null }] };
+}
+
+function failingResult(caseId: string): EvaluationCaseResultV1 {
+  return { caseId, passed: false, checks: [{ name: "status", passed: false, reasonCode: "STATUS_MISMATCH" }] };
 }
 
 describe("runEvaluation", () => {
-  it("returns an 'executed' outcome with zero failed cases when the injected runSuite stub reports all cases passing", async () => {
-    const runSuite = vi.fn().mockResolvedValue([passingResult("synthetic-1")]);
+  it("returns an 'executed' outcome with zero failed cases when the injected scorer reports all cases passing", async () => {
+    const runSuite = vi.fn().mockResolvedValue([dummyCaseInput("synthetic-1")]);
 
     const outcome = await runEvaluation({
       loadCorpus: async () => ({ chunks: FIXTURE_CORPUS, sourceFileCount: 1 }),
       cases: [validCase("synthetic-1")],
       injectionProbeChunk: FIXTURE_INJECTION_PROBE_CHUNK,
       runSuite,
+      scorer: stubScorer([passingResult("synthetic-1")]),
     });
 
     expect(outcome.kind).toBe("executed");
@@ -93,14 +104,15 @@ describe("runEvaluation", () => {
     expect(runSuite).toHaveBeenCalledTimes(1);
   });
 
-  it("returns an 'executed' outcome with a nonzero exit code when the injected runSuite stub reports a failing case", async () => {
-    const runSuite = vi.fn().mockResolvedValue([failingResult("synthetic-1")]);
+  it("returns an 'executed' outcome with a nonzero exit code when the injected scorer reports a failing case", async () => {
+    const runSuite = vi.fn().mockResolvedValue([dummyCaseInput("synthetic-1")]);
 
     const outcome = await runEvaluation({
       loadCorpus: async () => ({ chunks: FIXTURE_CORPUS, sourceFileCount: 1 }),
       cases: [validCase("synthetic-1")],
       injectionProbeChunk: FIXTURE_INJECTION_PROBE_CHUNK,
       runSuite,
+      scorer: stubScorer([failingResult("synthetic-1")]),
     });
 
     expect(outcome.kind).toBe("executed");
@@ -139,6 +151,23 @@ describe("runEvaluation", () => {
       runEvaluation({ loadCorpus, cases: [validCase("synthetic-1")], injectionProbeChunk: FIXTURE_INJECTION_PROBE_CHUNK }),
     ).rejects.toBeInstanceOf(RunbookLoadError);
   });
+
+  it("uses the real LocalEvaluationScorer (default scorerSelection) end-to-end when no scorer override is given", async () => {
+    const runSuite = vi.fn().mockResolvedValue([dummyCaseInput("synthetic-1")]);
+
+    const outcome = await runEvaluation({
+      loadCorpus: async () => ({ chunks: FIXTURE_CORPUS, sourceFileCount: 1 }),
+      cases: [validCase("synthetic-1")],
+      injectionProbeChunk: FIXTURE_INJECTION_PROBE_CHUNK,
+      runSuite,
+    });
+
+    expect(outcome.kind).toBe("executed");
+    if (outcome.kind !== "executed") throw new Error("unreachable");
+    // dummyCaseInput's expectations/observed agree (failed/TOOL_NOT_FOUND),
+    // so the real local scorer marks it passed.
+    expect(outcome.results).toEqual([{ caseId: "synthetic-1", passed: true, checks: expect.any(Array) }]);
+  });
 });
 
 describe("resolveEvaluationRun", () => {
@@ -166,15 +195,74 @@ describe("resolveEvaluationRun", () => {
   });
 
   it("passes through an 'outcome' resolution for a normal run", async () => {
-    const runSuite = vi.fn().mockResolvedValue([passingResult("synthetic-1")]);
+    const runSuite = vi.fn().mockResolvedValue([dummyCaseInput("synthetic-1")]);
     const resolution = await resolveEvaluationRun({
       loadCorpus: async () => ({ chunks: FIXTURE_CORPUS, sourceFileCount: 1 }),
       cases: [validCase("synthetic-1")],
       injectionProbeChunk: FIXTURE_INJECTION_PROBE_CHUNK,
       runSuite,
+      scorer: stubScorer([passingResult("synthetic-1")]),
     });
 
     expect(resolution.kind).toBe("outcome");
+  });
+
+  it("maps an EvaluationServiceError from the scorer into a 'scoring-error' resolution carrying only the category", async () => {
+    const runSuite = vi.fn().mockResolvedValue([dummyCaseInput("synthetic-1")]);
+    const failingScorer: EvaluationScorer = {
+      score: async () => {
+        throw new EvaluationServiceUnavailableError();
+      },
+    };
+
+    const resolution = await resolveEvaluationRun({
+      loadCorpus: async () => ({ chunks: FIXTURE_CORPUS, sourceFileCount: 1 }),
+      cases: [validCase("synthetic-1")],
+      injectionProbeChunk: FIXTURE_INJECTION_PROBE_CHUNK,
+      runSuite,
+      scorer: failingScorer,
+    });
+
+    expect(resolution).toEqual({ kind: "scoring-error", category: "SERVICE_UNAVAILABLE" });
+  });
+
+  it("maps a timeout to the TIMEOUT scoring-error category, distinct from SERVICE_UNAVAILABLE", async () => {
+    const runSuite = vi.fn().mockResolvedValue([dummyCaseInput("synthetic-1")]);
+    const failingScorer: EvaluationScorer = {
+      score: async () => {
+        throw new EvaluationServiceTimeoutError();
+      },
+    };
+
+    const resolution = await resolveEvaluationRun({
+      loadCorpus: async () => ({ chunks: FIXTURE_CORPUS, sourceFileCount: 1 }),
+      cases: [validCase("synthetic-1")],
+      injectionProbeChunk: FIXTURE_INJECTION_PROBE_CHUNK,
+      runSuite,
+      scorer: failingScorer,
+    });
+
+    expect(resolution).toEqual({ kind: "scoring-error", category: "TIMEOUT" });
+  });
+
+  it("never leaks the raw EvaluationServiceError message into the scoring-error resolution", async () => {
+    const runSuite = vi.fn().mockResolvedValue([dummyCaseInput("synthetic-1")]);
+    const failingScorer: EvaluationScorer = {
+      score: async () => {
+        throw new EvaluationServiceUnavailableError("secret postgres password in the error message");
+      },
+    };
+
+    const resolution = await resolveEvaluationRun({
+      loadCorpus: async () => ({ chunks: FIXTURE_CORPUS, sourceFileCount: 1 }),
+      cases: [validCase("synthetic-1")],
+      injectionProbeChunk: FIXTURE_INJECTION_PROBE_CHUNK,
+      runSuite,
+      scorer: failingScorer,
+    });
+
+    expect(resolution).toEqual({ kind: "scoring-error", category: "SERVICE_UNAVAILABLE" });
+    expect(JSON.stringify(resolution)).not.toContain("password");
   });
 });
 
@@ -272,6 +360,63 @@ describe("renderEvaluationResolution — three distinct CLI error categories", (
     const rendered = renderEvaluationResolution(resolution);
 
     expect(rendered.output).toContain("FAIL synthetic-1");
+    expect(rendered.exitCode).toBe(1);
+  });
+});
+
+describe("renderEvaluationResolution — remote scoring failures", () => {
+  it("renders a scoring-error as 'Evaluation scoring error:', with no local fallback, zero executed cases, and exit code 1", () => {
+    const resolution: EvaluationRunResolution = { kind: "scoring-error", category: "SERVICE_UNAVAILABLE" };
+
+    const rendered = renderEvaluationResolution(resolution);
+
+    expect(rendered.output).toContain(
+      "Evaluation scoring error: the evaluation service is unreachable.",
+    );
+    expect(rendered.output).toContain("No local scorer fallback; exiting without a result.");
+    expect(rendered.output).toContain("Cases executed: 0");
+    expect(rendered.output).not.toContain("Dataset configuration error");
+    expect(rendered.output).not.toContain("Evaluation setup error");
+    expect(rendered.output).not.toContain("Evaluation failed unexpectedly");
+    expect(rendered.isError).toBe(true);
+    expect(rendered.exitCode).toBe(1);
+  });
+
+  it("renders each remote-scoring failure category with its fixed safe copy", () => {
+    const expectations: Record<EvaluationServiceErrorCategory, string> = {
+      SERVICE_UNAVAILABLE: "the evaluation service is unreachable",
+      TIMEOUT: "the evaluation service request timed out",
+      HTTP_ERROR: "the evaluation service returned an error status",
+      MALFORMED_RESPONSE: "the evaluation service returned a malformed response",
+      UNSUPPORTED_VERSION: "the evaluation service returned an unsupported contract version",
+    };
+
+    for (const [category, copy] of Object.entries(expectations)) {
+      const resolution: EvaluationRunResolution = {
+        kind: "scoring-error",
+        category: category as EvaluationServiceErrorCategory,
+      };
+      const rendered = renderEvaluationResolution(resolution);
+      expect(rendered.output).toContain(`Evaluation scoring error: ${copy}.`);
+      expect(rendered.output).toContain("No local scorer fallback; exiting without a result.");
+      expect(rendered.isError).toBe(true);
+      expect(rendered.exitCode).toBe(1);
+    }
+  });
+});
+
+describe("renderScorerConfigError — fail-closed scorer configuration", () => {
+  it("renders an invalid scorer configuration as an 'Evaluation configuration error:', zero executed cases, exit code 1", () => {
+    const rendered = renderScorerConfigError(
+      "EVALUATION_SERVICE_URL is required when EVALUATION_SCORER=service.",
+    );
+
+    expect(rendered.output).toContain(
+      "Evaluation configuration error: EVALUATION_SERVICE_URL is required when EVALUATION_SCORER=service.",
+    );
+    expect(rendered.output).toContain("Cases executed: 0");
+    expect(rendered.output).not.toContain("Evaluation failed unexpectedly");
+    expect(rendered.isError).toBe(true);
     expect(rendered.exitCode).toBe(1);
   });
 });

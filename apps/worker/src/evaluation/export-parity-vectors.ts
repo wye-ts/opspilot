@@ -1,0 +1,27 @@
+import { writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { computeParityFixture } from "./parity-vectors";
+
+// Regenerates the committed apps/worker/src/evaluation/fixtures/ts-parity-v1.json
+// from the real 15-case dataset. Run directly via:
+//   pnpm --filter @opspilot/worker exec tsx src/evaluation/export-parity-vectors.ts
+// parity-vectors.test.ts is the gate that fails if this file drifts from
+// what's committed — this script is only how a maintainer regenerates it
+// after an intentional, reviewed change to the dataset or scoring.
+const FIXTURE_PATH = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "ts-parity-v1.json");
+
+async function main(): Promise<void> {
+  const fixture = await computeParityFixture();
+  writeFileSync(FIXTURE_PATH, `${JSON.stringify(fixture, null, 2)}\n`, "utf8");
+  console.log(`Wrote ${fixture.cases.length} parity cases to ${FIXTURE_PATH}`);
+}
+
+const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
+if (isMainModule) {
+  main().catch((error: unknown) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

@@ -1,32 +1,17 @@
 import { describe, expect, it } from "vitest";
 
 import { aggregateMetrics } from "./evaluation-metrics";
-import type { EvaluationCaseResult, EvaluationCheckResult } from "./types";
+import type { EvaluationCaseResultV1, EvaluationCheckV1 } from "./v1-types";
 
-function makeCheck(name: string, passed: boolean): EvaluationCheckResult {
-  return passed
-    ? { name, passed: true, expected: null, observed: null }
-    : { name, passed: false, expected: null, observed: null, reason: "synthetic failure" };
+function makeCheck(name: string, passed: boolean): EvaluationCheckV1 {
+  return passed ? { name, passed: true, reasonCode: null } : { name, passed: false, reasonCode: "STATUS_MISMATCH" };
 }
 
 function makeResult(
   caseId: string,
-  checks: readonly EvaluationCheckResult[],
-): EvaluationCaseResult {
-  return {
-    caseId,
-    passed: checks.every((check) => check.passed),
-    checks,
-    observed: {
-      runStatus: checks.every((check) => check.passed) ? "completed" : "failed",
-      retrievalCompletedObserved: false,
-      retrievedChunkIds: [],
-      requestedTools: [],
-      executedTools: [],
-      completedToolCallIds: [],
-      evidenceIds: [],
-    },
-  };
+  checks: readonly EvaluationCheckV1[],
+): EvaluationCaseResultV1 {
+  return { caseId, passed: checks.every((check) => check.passed), checks };
 }
 
 describe("aggregateMetrics", () => {

@@ -387,3 +387,220 @@ jobs:
         run: |
           docker rm -f opspilot opspilot-migration-failure \
             opspilot-skip-migrations opspilot-invalid-run-migrations || true
+
+  evaluation-service:
+    name: Evaluation service (Python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Phase 2 only (OpsPilot #61): this job is Python-only — no Node/pnpm
+    # setup, no worker->HTTP integration, no LIVE/paid-provider calls. It
+    # runs independently of the Node jobs above and does not weaken them.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: opspilot
+          POSTGRES_PASSWORD: opspilot_ci_only
+          POSTGRES_DB: opspilot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U opspilot -d opspilot"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      # The evaluation service owns a separate logical database from the
+      # Prisma-owned `opspilot`/`opspilot_test` used by the jobs above (see
+      # services/evaluation/README.md, "Persistence").
+      EVALUATION_DATABASE_URL: postgres://opspilot:opspilot_ci_only@localhost:5432/opspilot_evaluation_test
+
+    defaults:
+      run:
+        working-directory: services/evaluation
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv (and pin Python 3.13)
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.16"
+          python-version: "3.13"
+
+      - name: Install service dependencies
+        run: uv sync --locked
+
+      - name: Create the evaluation test database
+        run: |
+          docker exec "${{ job.services.postgres.id }}" \
+            psql -U opspilot -d opspilot -c 'CREATE DATABASE opspilot_evaluation_test OWNER opspilot;'
+
+      - name: Lint (ruff)
+        run: uv run ruff check src tests
+
+      - name: Type check (mypy)
+        run: uv run mypy
+
+      - name: Apply Alembic migrations
+        run: uv run alembic upgrade head
+
+      - name: Run pytest
+        run: uv run pytest -q
+
+  cross-service-parity:
+    name: Cross-service parity (TS worker -> Python evaluation service)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # OpsPilot #61 Phases 3-4: proves the real TypeScript->Python boundary and
+    # the Phase 4 default cutover. This job runs BOTH sides — the Python
+    # service (migration + pytest) and the Node worker (workspace deps) —
+    # then starts the FastAPI service on loopback, polls /health with a
+    # bounded wait, and runs the worker's cross-service parity +
+    # service-unavailable negative tests for real via the required-mode
+    # script (test:eval:cross-service sets EVALUATION_SERVICE_REQUIRED=1, so
+    # the parity suite FAILS CLOSED if the service is not proven healthy
+    # rather than skipping). It additionally proves the Phase 4 default cutover
+    # end to end with no EVALUATION_SCORER override: the CLI's real default
+    # resolves to the service scorer and succeeds against the live service,
+    # fails closed with no local fallback when that default is pointed at an
+    # unreachable service, and the explicit EVALUATION_SCORER=local oracle
+    # still works with no service running at all. It makes no provider/LIVE
+    # calls and does not weaken the Python-only evaluation-service job or the
+    # Node verify job.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: opspilot
+          POSTGRES_PASSWORD: opspilot_ci_only
+          POSTGRES_DB: opspilot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U opspilot -d opspilot"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      # The evaluation service owns a separate logical database from the
+      # Prisma-owned databases used by the Node jobs (see
+      # services/evaluation/README.md, "Persistence").
+      EVALUATION_DATABASE_URL: postgres://opspilot:opspilot_ci_only@localhost:5432/opspilot_evaluation_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Python side: install, migrate, and prove the service is green. ---
+      - name: Install uv (and pin Python 3.13)
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.16"
+          python-version: "3.13"
+
+      - name: Install service dependencies
+        working-directory: services/evaluation
+        run: uv sync --locked
+
+      - name: Create the evaluation test database
+        run: |
+          docker exec "${{ job.services.postgres.id }}" \
+            psql -U opspilot -d opspilot -c 'CREATE DATABASE opspilot_evaluation_test OWNER opspilot;'
+
+      - name: Apply Alembic migrations (evaluation test DB)
+        working-directory: services/evaluation
+        run: uv run alembic upgrade head
+
+      - name: Run the Python evaluation service tests
+        working-directory: services/evaluation
+        run: uv run pytest -q
+
+      # --- Node side: install and build the worker's workspace deps. ---
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.13.1
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build the worker's workspace dependencies
+        run: pnpm --filter @opspilot/worker run build:deps
+
+      # --- OpsPilot #61 Phase 4: default-cutover proof, explicit local leg. ---
+      # No service is running yet at this point in the job — proves the
+      # explicit EVALUATION_SCORER=local oracle really works independently of
+      # the Python service, not merely "the service happens to be reachable".
+      - name: Default-cutover proof — explicit local oracle works without the service
+        env:
+          EVALUATION_SCORER: local
+        run: pnpm --filter @opspilot/worker run eval
+
+      # --- Start the service on loopback and prove the real boundary. ---
+      - name: Start the evaluation service on 127.0.0.1:8001
+        run: |
+          cd services/evaluation
+          EVALUATION_DATABASE_URL="${{ env.EVALUATION_DATABASE_URL }}" \
+            nohup uv run uvicorn opspilot_evaluation.main:app \
+              --host 127.0.0.1 --port 8001 > /tmp/opspilot-evaluation.log 2>&1 &
+          echo $! > /tmp/opspilot-evaluation.pid
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8001/health >/dev/null 2>&1; then
+              echo "evaluation service is healthy"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "evaluation service did not become healthy within 60s:"
+          cat /tmp/opspilot-evaluation.log
+          exit 1
+
+      - name: Run cross-service parity + service-unavailable negative tests (required mode)
+        env:
+          EVALUATION_SERVICE_URL: http://127.0.0.1:8001
+        # The test:eval:cross-service script sets EVALUATION_SERVICE_REQUIRED=1,
+        # so the parity suite FAILS CLOSED if the service is not proven healthy
+        # rather than silently skipping — a generic vitest invocation would let
+        # an absent service degrade the suite to zero assertions and pass.
+        run: pnpm --filter @opspilot/worker run test:eval:cross-service
+
+      # --- OpsPilot #61 Phase 4: default-cutover proof, real CLI + real service. ---
+      # No EVALUATION_SCORER override at all — proves the CLI's actual default
+      # (unset env var) resolves to the service scorer and succeeds end to end
+      # against the real, already-healthy Python service started above.
+      - name: Default-cutover proof — no EVALUATION_SCORER override succeeds against the real service
+        env:
+          EVALUATION_SERVICE_URL: http://127.0.0.1:8001
+        run: pnpm --filter @opspilot/worker run eval
+
+      # Same omitted-EVALUATION_SCORER default, but pointed at a port nothing
+      # is listening on in this job — proves the default path fails closed
+      # (non-zero exit) with no local fallback when the service is
+      # unreachable, exactly like the unit-level proof in
+      # service-unavailable.test.ts. A step that "succeeds" here (exit 0)
+      # would mean the cutover silently fell back to local — fail the job.
+      - name: Default-cutover proof — no EVALUATION_SCORER override fails closed when the service is unreachable
+        env:
+          EVALUATION_SERVICE_URL: http://127.0.0.1:8099
+        run: |
+          if pnpm --filter @opspilot/worker run eval; then
+            echo "expected a non-zero exit (unreachable default-mode service), but the command succeeded"
+            exit 1
+          fi
+          echo "confirmed: default mode fails closed with no local fallback"
+
+      - name: Stop the evaluation service
+        if: always()
+        run: |
+          if [ -f /tmp/opspilot-evaluation.pid ]; then
+            kill "$(cat /tmp/opspilot-evaluation.pid)" 2>/dev/null || true
+          fi
