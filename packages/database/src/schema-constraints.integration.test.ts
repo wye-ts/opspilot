@@ -328,15 +328,20 @@ describe("agent_trace_events_event_type_chk — widened for the canonical lifecy
   });
 });
 
-describe("agent_trace_events_run_id_canonical_event_type_key — all-12 partial unique index", () => {
+// Issue #57, Checkpoint A — the #37 all-12 partial unique index is replaced
+// by two narrower indexes: a 9-type singleton index keeping (run_id,
+// event_type) identity, and a 3-type tool index keyed additionally on
+// payload->>'toolCallId' (docs/16-investigation-event-contract.md §5,
+// issue #57 plan §2.3).
+describe("agent_trace_events_run_id_canonical_singleton_key — 9 singleton canonical types", () => {
   it("exists by exact name", async () => {
     const rows = await prisma.$queryRaw<{ indexname: string }[]>`
       SELECT indexname FROM pg_indexes
-      WHERE indexname = 'agent_trace_events_run_id_canonical_event_type_key'`;
+      WHERE indexname = 'agent_trace_events_run_id_canonical_singleton_key'`;
     expect(rows).toHaveLength(1);
   });
 
-  it("rejects a raw duplicate canonical event type for the same run", async () => {
+  it("rejects a raw duplicate singleton canonical event type for the same run", async () => {
     const runId = await createRunningRunId();
 
     await prisma.$executeRaw`
@@ -359,13 +364,94 @@ describe("agent_trace_events_run_id_canonical_event_type_key — all-12 partial 
 
     // A second REPORT_GENERATED row for the same run is not rejected by this
     // index — it is excluded from the WHERE clause entirely, since it is
-    // legacy read-only and this migration is only about the 12 canonical
+    // legacy read-only and this migration is only about the canonical
     // write-eligible types.
     await expect(
       prisma.$executeRaw`
         INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
         VALUES (${runId}::uuid, 2, 'REPORT_GENERATED', '{"type":"REPORT_GENERATED"}'::jsonb)`,
     ).resolves.toBeTruthy();
+  });
+
+  it("does not constrain repeated TOOL_REQUESTED rows (governed by the tool index instead)", async () => {
+    const runId = await createRunningRunId();
+
+    await prisma.$executeRaw`
+      INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
+      VALUES (${runId}::uuid, 1, 'TOOL_REQUESTED',
+              '{"type":"TOOL_REQUESTED","toolCallId":"call-1","toolName":"get_service_status"}'::jsonb)`;
+    // The singleton index's WHERE clause names only the 9 singleton types,
+    // so a second tool-type row is not this index's concern at all.
+    await expect(
+      prisma.$executeRaw`
+        INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
+        VALUES (${runId}::uuid, 2, 'TOOL_REQUESTED',
+                '{"type":"TOOL_REQUESTED","toolCallId":"call-2","toolName":"get_service_status"}'::jsonb)`,
+    ).resolves.toBeTruthy();
+  });
+});
+
+describe("agent_trace_events_run_id_event_type_tool_call_id_key — repeatable tool types", () => {
+  it("exists by exact name", async () => {
+    const rows = await prisma.$queryRaw<{ indexname: string }[]>`
+      SELECT indexname FROM pg_indexes
+      WHERE indexname = 'agent_trace_events_run_id_event_type_tool_call_id_key'`;
+    expect(rows).toHaveLength(1);
+  });
+
+  it("permits repeated tool event types for distinct toolCallIds on the same run", async () => {
+    const runId = await createRunningRunId();
+
+    for (const [index, toolCallId] of ["call-1", "call-2", "call-3"].entries()) {
+      await expect(
+        prisma.$executeRaw`
+          INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
+          VALUES (${runId}::uuid, ${index + 1}, 'TOOL_REQUESTED',
+                  ${JSON.stringify({
+                    type: "TOOL_REQUESTED",
+                    toolCallId,
+                    toolName: "get_service_status",
+                  })}::jsonb)`,
+      ).resolves.toBeTruthy();
+    }
+
+    const count = await prisma.agentTraceEvent.count({ where: { runId, eventType: "TOOL_REQUESTED" } });
+    expect(count).toBe(3);
+  });
+
+  it("rejects a raw duplicate repeatable-event identity (same type + same toolCallId)", async () => {
+    const runId = await createRunningRunId();
+
+    await prisma.$executeRaw`
+      INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
+      VALUES (${runId}::uuid, 1, 'TOOL_REQUESTED',
+              '{"type":"TOOL_REQUESTED","toolCallId":"call-1","toolName":"get_service_status"}'::jsonb)`;
+
+    await expect(
+      prisma.$executeRaw`
+        INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
+        VALUES (${runId}::uuid, 2, 'TOOL_REQUESTED',
+                '{"type":"TOOL_REQUESTED","toolCallId":"call-1","toolName":"get_service_status"}'::jsonb)`,
+    ).rejects.toBeTruthy();
+  });
+
+  it("rejects the same repeatable identity even when the rest of the payload differs", async () => {
+    const runId = await createRunningRunId();
+
+    await prisma.$executeRaw`
+      INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
+      VALUES (${runId}::uuid, 1, 'TOOL_REQUESTED',
+              '{"type":"TOOL_REQUESTED","toolCallId":"call-1","toolName":"get_service_status"}'::jsonb)`;
+
+    // Same (event_type, toolCallId) with a different toolName is still the
+    // same identity — the index keys on toolCallId, and the payload
+    // difference does not create a second legitimate event.
+    await expect(
+      prisma.$executeRaw`
+        INSERT INTO agent_trace_events (run_id, sequence_number, event_type, payload)
+        VALUES (${runId}::uuid, 2, 'TOOL_REQUESTED',
+                '{"type":"TOOL_REQUESTED","toolCallId":"call-1","toolName":"a_different_tool"}'::jsonb)`,
+    ).rejects.toBeTruthy();
   });
 });
 
