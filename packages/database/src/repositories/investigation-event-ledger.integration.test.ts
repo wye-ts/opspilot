@@ -3,7 +3,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import type { PrismaClient, PrismaClientHandle } from "../client";
 import { PersistenceError } from "../errors";
-import { appendMultiToolSuccessPrefix, appendToolDiagnosticPairs } from "../test/canonical-stream";
+import {
+  NO_EVIDENCE_YET_ASSESSMENT,
+  appendMultiToolSuccessPrefix,
+  appendToolDiagnosticPairs,
+  statusUnresolvedAssessment,
+} from "../test/canonical-stream";
 import { createTestPrismaClient, truncateAllTables } from "../test/test-db";
 import {
   appendInvestigationEvent,
@@ -130,6 +135,9 @@ describe("appendInvestigationEvent — valid partial prefixes commit under RUNNI
       type: "TOOL_REQUESTED",
       toolCallId: "call-1",
       toolName: "get_service_status",
+      // Issue #58 Checkpoint B (§4): every NEW canonical TOOL_REQUESTED append
+      // requires a validated assessment; this is the run's first request.
+      assessment: NO_EVIDENCE_YET_ASSESSMENT,
     });
     expect(record.sequence).toBe(3);
     expect(await traceEventCount(runId)).toBe(3);
@@ -142,6 +150,8 @@ describe("appendInvestigationEvent — valid partial prefixes commit under RUNNI
       type: "TOOL_REQUESTED",
       toolCallId: "call-1",
       toolName: "unknown_tool",
+      // Issue #58 Checkpoint B (§4): first diagnostic request — no evidence yet.
+      assessment: NO_EVIDENCE_YET_ASSESSMENT,
     });
     const record = await appendInvestigationEvent(prisma, runId, {
       type: "TOOL_FAILED",
@@ -213,6 +223,8 @@ describe("appendInvestigationEvent — exact replay", () => {
         type: "TOOL_REQUESTED",
         toolCallId: "call-1",
         toolName: "get_service_status",
+        // Issue #58 Checkpoint B (§4): first diagnostic request — no evidence yet.
+        assessment: NO_EVIDENCE_YET_ASSESSMENT,
       });
 
       await expect(
@@ -220,6 +232,8 @@ describe("appendInvestigationEvent — exact replay", () => {
           type: "TOOL_REQUESTED",
           toolCallId: "call-1",
           toolName: "a_different_tool",
+          // Same run-state assessment; the conflict is on the changed toolName.
+          assessment: NO_EVIDENCE_YET_ASSESSMENT,
         }),
       ).rejects.toMatchObject({ code: "PERSISTENCE_CONFLICT" });
       expect(await traceEventCount(runId)).toBe(3);
@@ -237,6 +251,8 @@ describe("appendInvestigationEvent — exact replay", () => {
         type: "TOOL_REQUESTED",
         toolCallId: "call-1",
         toolName: "get_service_status",
+        // Issue #58 Checkpoint B (§4): first diagnostic request — no evidence yet.
+        assessment: NO_EVIDENCE_YET_ASSESSMENT,
       });
       await appendInvestigationEvent(prisma, runId, {
         type: "TOOL_COMPLETED",
@@ -261,6 +277,8 @@ describe("appendInvestigationEvent — exact replay", () => {
         type: "TOOL_REQUESTED",
         toolCallId: "call-1",
         toolName: "unknown_tool",
+        // Issue #58 Checkpoint B (§4): first diagnostic request — no evidence yet.
+        assessment: NO_EVIDENCE_YET_ASSESSMENT,
       });
       await appendInvestigationEvent(prisma, runId, {
         type: "TOOL_FAILED",
@@ -334,13 +352,19 @@ describe("issue #57 — bounded multi-step diagnostic persistence", () => {
       type: "TOOL_REQUESTED",
       toolCallId: "call-1",
       toolName: "get_service_status",
+      // Issue #58 Checkpoint B (§4): first diagnostic request — no evidence yet.
+      assessment: NO_EVIDENCE_YET_ASSESSMENT,
     });
     expect(first.sequence).toBe(3);
 
+    // The exact-replay identity is (runId, eventType, toolCallId), so the
+    // replay must carry a byte-identical payload INCLUDING the §4 assessment —
+    // a different one would be a PERSISTENCE_CONFLICT, not a replay.
     const replay = await appendInvestigationEvent(prisma, runId, {
       type: "TOOL_REQUESTED",
       toolCallId: "call-1",
       toolName: "get_service_status",
+      assessment: NO_EVIDENCE_YET_ASSESSMENT,
     });
     expect(replay.sequence).toBe(first.sequence);
     expect(replay.recordedAt).toBe(first.recordedAt);
@@ -358,6 +382,9 @@ describe("issue #57 — bounded multi-step diagnostic persistence", () => {
       type: "TOOL_REQUESTED",
       toolCallId: "call-2",
       toolName: "get_service_status",
+      // Evidence now exists (call-1 completed), so NO_EVIDENCE_YET would be
+      // A3-inconsistent; STATUS_UNRESOLVED grounds on the completed call-1.
+      assessment: statusUnresolvedAssessment(["call-1"]),
     });
     expect(next.sequence).toBe(first.sequence + 2);
   });
@@ -369,6 +396,8 @@ describe("issue #57 — bounded multi-step diagnostic persistence", () => {
       type: "TOOL_REQUESTED",
       toolCallId: "call-1",
       toolName: "get_service_status",
+      // Issue #58 Checkpoint B (§4): first diagnostic request — no evidence yet.
+      assessment: NO_EVIDENCE_YET_ASSESSMENT,
     });
 
     await expect(
@@ -376,6 +405,8 @@ describe("issue #57 — bounded multi-step diagnostic persistence", () => {
         type: "TOOL_REQUESTED",
         toolCallId: "call-1",
         toolName: "a_different_tool",
+        // Same assessment; the conflict is on the changed toolName.
+        assessment: NO_EVIDENCE_YET_ASSESSMENT,
       }),
     ).rejects.toMatchObject({ code: "PERSISTENCE_CONFLICT" });
     expect(await traceEventCount(runId)).toBe(3);
@@ -394,6 +425,8 @@ describe("issue #57 — bounded multi-step diagnostic persistence", () => {
       type: "TOOL_REQUESTED",
       toolCallId: "call-1",
       toolName: "unknown_tool",
+      // Issue #58 Checkpoint B (§4): first diagnostic request — no evidence yet.
+      assessment: NO_EVIDENCE_YET_ASSESSMENT,
     });
     await appendInvestigationEvent(prisma, runId, {
       type: "TOOL_FAILED",
@@ -428,14 +461,21 @@ describe("issue #57 — bounded multi-step diagnostic persistence", () => {
       type: "TOOL_REQUESTED",
       toolCallId: "call-1",
       toolName: "get_service_status",
+      // Issue #58 Checkpoint B (§4): first diagnostic request — no evidence yet.
+      assessment: NO_EVIDENCE_YET_ASSESSMENT,
     });
 
     let caught: unknown;
     try {
+      // The rejected candidate must still carry a valid §4 assessment — it is
+      // write-schema validated before the reducer rejects it. call-1 is open
+      // (not completed), so no evidence has run yet: NO_EVIDENCE_YET remains
+      // A3-consistent.
       await appendInvestigationEvent(prisma, runId, {
         type: "TOOL_REQUESTED",
         toolCallId: "call-2",
         toolName: "get_service_status",
+        assessment: NO_EVIDENCE_YET_ASSESSMENT,
       });
     } catch (error) {
       caught = error;
@@ -497,10 +537,14 @@ describe("issue #57 — bounded multi-step diagnostic persistence", () => {
 
     let caught: unknown;
     try {
+      // Rejected by the reducer before commit, but the candidate must still
+      // carry a valid §4 assessment. The three prior calls have completed, so
+      // the A3-consistent claim is STATUS_UNRESOLVED grounded on all three.
       await appendInvestigationEvent(prisma, runId, {
         type: "TOOL_REQUESTED",
         toolCallId: "call-4",
         toolName: "get_service_status",
+        assessment: statusUnresolvedAssessment(["call-1", "call-2", "call-3"]),
       });
     } catch (error) {
       caught = error;
@@ -568,6 +612,9 @@ describe("appendInvestigationEvent — transactional reducer validation", () => 
         type: "TOOL_REQUESTED",
         toolCallId: "call-1",
         toolName: "get_service_status",
+        // Rejected by the reducer before commit, but the candidate must still
+        // carry a valid §4 assessment.
+        assessment: NO_EVIDENCE_YET_ASSESSMENT,
       }),
     ).rejects.toMatchObject({ code: "PERSISTENCE_EVENT_STREAM_INVALID" });
 
@@ -581,6 +628,8 @@ describe("appendInvestigationEvent — transactional reducer validation", () => 
       type: "TOOL_REQUESTED",
       toolCallId: "call-1",
       toolName: "get_service_status",
+      // Issue #58 Checkpoint B (§4): first diagnostic request — no evidence yet.
+      assessment: NO_EVIDENCE_YET_ASSESSMENT,
     }); // open tool call, never completed
 
     await expect(appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED" })).rejects.toMatchObject({
@@ -599,6 +648,8 @@ describe("appendInvestigationEvent — transactional reducer validation", () => 
         type: "TOOL_REQUESTED",
         toolCallId: "call-1",
         toolName: "get_service_status",
+        // Issue #58 Checkpoint B (§4): first diagnostic request — no evidence yet.
+        assessment: NO_EVIDENCE_YET_ASSESSMENT,
       });
     } catch (error) {
       caught = error;
@@ -682,6 +733,8 @@ describe("getInvestigationEventRecords", () => {
       type: "TOOL_REQUESTED",
       toolCallId: "call-1",
       toolName: "get_service_status",
+      // Issue #58 Checkpoint B (§4): first diagnostic request — no evidence yet.
+      assessment: NO_EVIDENCE_YET_ASSESSMENT,
     });
 
     const records = await getInvestigationEventRecords(prisma, runId);
@@ -726,6 +779,8 @@ describe("the old persist-after batch behavior is no longer used", () => {
       type: "TOOL_REQUESTED",
       toolCallId: "call-1",
       toolName: "get_service_status",
+      // Issue #58 Checkpoint B (§4): first diagnostic request — no evidence yet.
+      assessment: NO_EVIDENCE_YET_ASSESSMENT,
     });
     await appendInvestigationEvent(prisma, runId, {
       type: "TOOL_COMPLETED",

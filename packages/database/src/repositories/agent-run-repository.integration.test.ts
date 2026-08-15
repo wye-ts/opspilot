@@ -13,6 +13,7 @@ import {
   startRun,
 } from "../repositories/agent-run-repository";
 import {
+  NO_EVIDENCE_YET_ASSESSMENT,
   appendDirectSuccessPrefix,
   appendFailurePrefix,
   appendOneToolSuccessPrefix,
@@ -742,6 +743,8 @@ describe("getAgentRun", () => {
       type: "TOOL_REQUESTED",
       toolCallId: "call-1",
       toolName: "get_service_status",
+      // Issue #58 Checkpoint B (§4): first diagnostic request — no evidence yet.
+      assessment: NO_EVIDENCE_YET_ASSESSMENT,
     });
 
     const persisted = await getAgentRun(prisma, run.id);
@@ -864,6 +867,8 @@ describe("getInvestigationState", () => {
       type: "TOOL_REQUESTED",
       toolCallId: "call-1",
       toolName: "get_service_status",
+      // Issue #58 Checkpoint B (§4): first diagnostic request — no evidence yet.
+      assessment: NO_EVIDENCE_YET_ASSESSMENT,
     });
 
     const state = await getInvestigationState(prisma, job.id);

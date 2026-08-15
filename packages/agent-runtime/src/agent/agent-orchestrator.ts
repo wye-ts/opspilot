@@ -1,4 +1,5 @@
 import {
+  EvidenceAssessmentSchema,
   MAX_DIAGNOSTIC_TOOL_CALLS,
   MAX_PROVIDER_TURNS,
   ResolutionReportSchema,
@@ -6,7 +7,7 @@ import {
   type AgentOrchestratorErrorCode,
   type AgentTraceEvent,
   type AgentTurnResult,
-  type EvidenceReference,
+  type EvidenceLocator,
   type InvestigationEventPayload,
   type InvestigationExecutionStage,
   type ReportValidationIssue,
@@ -163,8 +164,18 @@ function providerFailureCode(category: LlmProviderErrorCategory): AgentOrchestra
   }
 }
 
+// The run's single source-aware grounding helper, shared by the report path
+// (report evidence) and, since Issue #58 Checkpoint B (§9.2), the diagnostic
+// assessment path (supportedBy locators). A locator is grounded only if a
+// RAG_CHUNK id is among the retrieved chunks or a TOOL_EXECUTION id belongs
+// to a successfully completed tool call — a failed, merely-requested, or
+// never-attempted tool id is never grounded, a RAG id is never treated as
+// TOOL_EXECUTION merely because the strings match, and a hypothesis is never
+// evidence. The parameter is the locator projection both paths actually read,
+// so EvidenceReference[] (report) and EvidenceLocator[] (assessment
+// supportedBy) both flow through without reshaping.
 export function findInvalidEvidence(
-  evidence: readonly EvidenceReference[],
+  evidence: readonly Pick<EvidenceLocator, "evidenceId" | "sourceType">[],
   allowedRagChunkIds: ReadonlySet<string>,
   successfulToolExecutionIds: ReadonlySet<string>,
 ): boolean {
@@ -346,6 +357,13 @@ export async function runAgentOrchestrator(
         phase,
         maxOutputTokens,
         conversation,
+        // Issue #58 Checkpoint B (§10): the remaining diagnostic budget for
+        // THIS turn — MAX_DIAGNOSTIC_TOOL_CALLS minus the number of accepted
+        // diagnostic requests so far (0 on the forced FINALIZATION turn).
+        // Constraint visibility only: it tells the provider how much headroom
+        // the model has, while the #57 bounded-loop harness remains
+        // authoritative for actually enforcing the bound.
+        diagnosticCallsRemaining: MAX_DIAGNOSTIC_TOOL_CALLS - toolCallCount,
         // Conditional spread: exactOptionalPropertyTypes is on, so an optional
         // property must be absent or a real value, never an explicit undefined.
         ...(params.signal !== undefined ? { signal: params.signal } : {}),
@@ -480,6 +498,66 @@ export async function runAgentOrchestrator(
       );
     }
 
+    // Issue #58 Checkpoint B (§9.1): authoritative, provider-uniform
+    // assessment validation. The provider adapter extracts rawAssessment from
+    // the model output structurally (mirroring rawInput on report_submission);
+    // this central safeParse is the ONE site that validates it, for live and
+    // fake providers alike. EvidenceAssessmentSchema's own superRefine
+    // invariants enforce that SUFFICIENT cannot accompany a diagnostic
+    // request, so a raw SUFFICIENT assessment is rejected right here,
+    // centrally — deliberately no second, logically-unreachable re-check that
+    // could drift.
+    const parsedAssessment = EvidenceAssessmentSchema.safeParse(
+      result.request.rawAssessment,
+    );
+    if (!parsedAssessment.success) {
+      return failed(
+        "PROVIDER_PROTOCOL_INVALID",
+        "The diagnostic tool request carried an invalid evidence assessment.",
+        trace,
+        activeStage,
+      );
+    }
+
+    // Issue #58 Checkpoint B (§9.2): every supportedBy locator must be
+    // grounded in evidence actually available in this run, using the same
+    // source-aware helper the report path uses. Ungrounded or
+    // source-mismatched locators are a provider protocol violation; the
+    // message is deliberately closed and never echoes a provider-controlled
+    // id or value.
+    if (
+      findInvalidEvidence(
+        parsedAssessment.data.supportedBy,
+        allowedRagChunkIds,
+        successfulToolExecutionIds,
+      )
+    ) {
+      return failed(
+        "PROVIDER_PROTOCOL_INVALID",
+        "The diagnostic tool request cited evidence that was not available in the current agent execution.",
+        trace,
+        activeStage,
+      );
+    }
+
+    // Issue #58 Checkpoint B (§9.3): the run-state consistency of
+    // NO_EVIDENCE_YET. The reason may be claimed if and only if no tool or
+    // RAG evidence exists in the run yet — once either set is non-empty the
+    // model must cite it, and with nothing available NO_EVIDENCE_YET is the
+    // only reason it may claim.
+    const hasRunEvidence =
+      successfulToolExecutionIds.size > 0 || allowedRagChunkIds.size > 0;
+    const claimsNoEvidenceYet =
+      parsedAssessment.data.continuationReason === "NO_EVIDENCE_YET";
+    if (claimsNoEvidenceYet === hasRunEvidence) {
+      return failed(
+        "PROVIDER_PROTOCOL_INVALID",
+        "The diagnostic tool request declared evidence status inconsistently with the run's evidence state.",
+        trace,
+        activeStage,
+      );
+    }
+
     const { toolCallId, toolName, input } = result.request;
 
     // CANONICAL TOOL_REQUESTED, emitted here — before registry lookup and
@@ -488,7 +566,16 @@ export async function runAgentOrchestrator(
     // record TOOL_REQUESTED -> TOOL_FAILED. The LEGACY push stays at its
     // original post-validation position further below, unmoved, so a direct
     // caller's in-memory trace is unchanged for those two failures.
-    await emit({ type: "TOOL_REQUESTED", toolCallId, toolName });
+    // Issue #58 Checkpoint B (§9.4): only the VALIDATED assessment rides the
+    // canonical event and the conversation replay — never the raw form the
+    // provider returned. §9's guards above (V0 schema / A2 grounding / A3
+    // run-state consistency) have all passed by this point.
+    await emit({
+      type: "TOOL_REQUESTED",
+      toolCallId,
+      toolName,
+      assessment: parsedAssessment.data,
+    });
     toolCallCount += 1;
 
     const tool = toolRegistry.find(toolName);
@@ -554,6 +641,10 @@ export async function runAgentOrchestrator(
         toolCallId,
         toolName,
         input: parsedInput.data,
+        // Issue #58 Checkpoint B (§3.3/§9.4): the VALIDATED assessment only —
+        // the raw form, free-form rationale, chain-of-thought, and hypotheses
+        // never reach the conversation.
+        assessment: parsedAssessment.data,
       },
       {
         role: "diagnostic_tool_result",

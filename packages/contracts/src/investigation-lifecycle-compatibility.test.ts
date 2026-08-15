@@ -221,6 +221,33 @@ describe("projectToLegacyAgentTraceEvent", () => {
     });
   });
 
+  it("projects an assessment-carrying TOOL_REQUESTED to the narrow legacy shape, dropping the assessment", () => {
+    // Issue #58 Checkpoint B (§5.3): NEW canonical TOOL_REQUESTED appends carry
+    // a validated `assessment`, but the legacy in-memory trace object is
+    // deliberately assessment-free. The projection must therefore DROP the
+    // extra field — the read-side record schema keeps it optional (so every
+    // #57-and-earlier row stays readable), and the legacy projection is the
+    // narrow {type, toolCallId, toolName} shape regardless.
+    const withAssessment = record({
+      type: "TOOL_REQUESTED",
+      toolCallId: "c1",
+      toolName: "t",
+      assessment: {
+        evidenceState: "INSUFFICIENT",
+        continuationReason: "NO_EVIDENCE_YET",
+        supportedBy: [],
+      },
+    });
+    expect(projectToLegacyAgentTraceEvent(withAssessment)).toEqual({
+      type: "TOOL_REQUESTED",
+      toolCallId: "c1",
+      toolName: "t",
+    });
+    // And the projection is a valid AgentTraceEvent — no lingering assessment.
+    const projected = projectToLegacyAgentTraceEvent(withAssessment);
+    expect(AgentTraceEventSchema.safeParse(projected).success).toBe(true);
+  });
+
   it("remaps REPORT_VALIDATED to the legacy REPORT_GENERATED meaning", () => {
     expect(projectToLegacyAgentTraceEvent(record({ type: "REPORT_VALIDATED" }))).toEqual({
       type: "REPORT_GENERATED",

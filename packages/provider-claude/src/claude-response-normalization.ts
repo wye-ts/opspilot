@@ -10,8 +10,39 @@ function isToolUseBlock(block: Anthropic.ContentBlock): block is Anthropic.ToolU
   return block.type === "tool_use";
 }
 
-function toDiagnosticToolRequest(block: Anthropic.ToolUseBlock): DiagnosticToolRequest {
-  return { toolCallId: block.id, toolName: block.name, input: block.input };
+// Issue #58 Checkpoint B (§6): the diagnostic tool_use input arrives as a
+// STRUCTURAL wrapper { evidenceAssessment: <unknown>, toolInput: <unknown> }
+// (see claude-tool-schemas.ts §5). This splits it and nothing more: both
+// values are extracted unvalidated, mirroring how rawInput on
+// report_submission is passed through. Authoritative EvidenceAssessmentSchema
+// validation happens exactly once, in the orchestrator, uniformly for live and
+// fake providers. If the wrapper is structurally malformed — not an object, or
+// missing either key — the block is rejected as PROVIDER_PROTOCOL_INVALID
+// WITHOUT echoing provider-controlled content, and the pre-#58 flat diagnostic
+// shape (bare tool input) is rejected here too rather than accepted as a
+// backdoor.
+function tryToDiagnosticToolRequest(
+  block: Anthropic.ToolUseBlock,
+): { ok: true; request: DiagnosticToolRequest } | { ok: false } {
+  const wrapper = block.input;
+  if (wrapper === null || typeof wrapper !== "object" || Array.isArray(wrapper)) {
+    return { ok: false };
+  }
+
+  const record = wrapper as Record<string, unknown>;
+  if (!("evidenceAssessment" in record) || !("toolInput" in record)) {
+    return { ok: false };
+  }
+
+  return {
+    ok: true,
+    request: {
+      toolCallId: block.id,
+      toolName: block.name,
+      input: record.toolInput,
+      rawAssessment: record.evidenceAssessment,
+    },
+  };
 }
 
 /**
@@ -116,8 +147,22 @@ export function normalizeClaudeMessage(
     };
   }
 
-  // 0, or >=2, diagnostic tool calls (with 0 report calls) both collapse to
-  // protocol_error inside this shared, unmodified helper — see
-  // docs/04-agent-design.md §10 and llm-provider.ts.
-  return normalizeDiagnosticToolRequests(diagnosticBlocks.map(toDiagnosticToolRequest), context);
+  // Structural split (§6) runs on EVERY diagnostic block before the
+  // one-request-per-turn count check, so a malformed wrapper never slips
+  // through as an accepted request. 0, or >=2, diagnostic tool calls (with 0
+  // report calls) both collapse to protocol_error inside this shared,
+  // unmodified helper — see docs/04-agent-design.md §10 and llm-provider.ts.
+  const diagnosticRequests: DiagnosticToolRequest[] = [];
+  for (const block of diagnosticBlocks) {
+    const split = tryToDiagnosticToolRequest(block);
+    if (!split.ok) {
+      return protocolError(
+        context,
+        "A diagnostic tool call carried a malformed evidence-assessment wrapper.",
+      );
+    }
+    diagnosticRequests.push(split.request);
+  }
+
+  return normalizeDiagnosticToolRequests(diagnosticRequests, context);
 }

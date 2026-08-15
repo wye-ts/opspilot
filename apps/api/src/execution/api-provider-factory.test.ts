@@ -47,6 +47,7 @@ describe("createAgentProviderFactory", () => {
       turnIndex: 0,
       phase: "INVESTIGATION",
       maxOutputTokens: 1024,
+      diagnosticCallsRemaining: 3,
       conversation: [],
     });
 
@@ -86,12 +87,14 @@ describe("createAgentProviderFactory", () => {
       turnIndex: 0,
       phase: "INVESTIGATION",
       maxOutputTokens: 1024,
+      diagnosticCallsRemaining: 3,
       conversation: [],
     }).catch(() => undefined);
     await second.runAgentTurn({
       turnIndex: 0,
       phase: "INVESTIGATION",
       maxOutputTokens: 1024,
+      diagnosticCallsRemaining: 3,
       conversation: [],
     }).catch(() => undefined);
 
@@ -111,7 +114,13 @@ describe("createAgentProviderFactory", () => {
 
     const provider = factory.createProvider(job, "LIVE");
     void provider
-      .runAgentTurn({ turnIndex: 0, phase: "INVESTIGATION", maxOutputTokens: 1024, conversation: [] })
+      .runAgentTurn({
+        turnIndex: 0,
+        phase: "INVESTIGATION",
+        maxOutputTokens: 1024,
+        diagnosticCallsRemaining: 3,
+        conversation: [],
+      })
       .catch(() => undefined);
 
     return Promise.resolve().then(() => {
@@ -138,7 +147,13 @@ describe("createAgentProviderFactory", () => {
 
     const provider = factory.createProvider(job, "LIVE");
     await provider
-      .runAgentTurn({ turnIndex: 0, phase: "INVESTIGATION", maxOutputTokens: 1024, conversation: [] })
+      .runAgentTurn({
+        turnIndex: 0,
+        phase: "INVESTIGATION",
+        maxOutputTokens: 1024,
+        diagnosticCallsRemaining: 3,
+        conversation: [],
+      })
       .catch(() => undefined);
 
     expect(logger).toHaveBeenCalledTimes(1);

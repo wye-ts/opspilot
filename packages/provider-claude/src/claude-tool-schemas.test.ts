@@ -146,7 +146,11 @@ describe("toStrictInputSchema", () => {
 });
 
 describe("toClaudeDiagnosticTool", () => {
-  it("sets strict: true and derives the input schema from the tool's Zod inputSchema", () => {
+  // Issue #58 Checkpoint B (§5): the diagnostic wire shape is the nested
+  // { evidenceAssessment, toolInput } wrapper, derived from the REAL Zod
+  // schemas. These are the §5 "Generated-schema tests" — asserted on the
+  // actual emitted strict schema, never a handwritten approximation.
+  it("sets strict: true and wraps the tool input with the evidence-assessment wrapper", () => {
     const claudeTool = toClaudeDiagnosticTool({
       tool: getServiceStatusTool,
       description: "Look up the current operational status of a service.",
@@ -154,7 +158,75 @@ describe("toClaudeDiagnosticTool", () => {
 
     expect(claudeTool.name).toBe("get_service_status");
     expect(claudeTool.strict).toBe(true);
-    expect(claudeTool.input_schema).toEqual(toStrictInputSchema(getServiceStatusTool.inputSchema));
+
+    const schema = claudeTool.input_schema as {
+      type: string;
+      additionalProperties: boolean;
+      required: string[];
+      properties: {
+        evidenceAssessment: {
+          type: string;
+          properties: {
+            evidenceState: { type: string; enum: string[] };
+            continuationReason: { type: string; enum: string[] };
+            supportedBy: {
+              type: string;
+              items: { properties: { sourceType: { type: string; enum: string[] } } };
+            };
+          };
+        };
+        toolInput: Record<string, unknown>;
+      };
+    };
+
+    // Top-level object is strict, with both wrapper keys required.
+    expect(schema.type).toBe("object");
+    expect(schema.additionalProperties).toBe(false);
+    expect(schema.required).toEqual(["evidenceAssessment", "toolInput"]);
+
+    // The three closed vocabularies survive into the generated schema:
+    // evidence state, continuation reason, and locator sourceType.
+    expect(schema.properties.evidenceAssessment.properties.evidenceState.type).toBe("string");
+    expect(schema.properties.evidenceAssessment.properties.evidenceState.enum).toEqual([
+      "SUFFICIENT",
+      "INSUFFICIENT",
+      "CONFLICTING",
+    ]);
+    expect(schema.properties.evidenceAssessment.properties.continuationReason.enum).toEqual([
+      "NO_EVIDENCE_YET",
+      "STATUS_UNRESOLVED",
+      "SCOPE_NOT_COVERED",
+      "CONFLICT_UNRESOLVED",
+    ]);
+    expect(
+      schema.properties.evidenceAssessment.properties.supportedBy.items.properties.sourceType.enum,
+    ).toEqual(["RAG_CHUNK", "TOOL_EXECUTION"]);
+
+    // toolInput is exactly the bare tool's schema — the wrapper never mutates it.
+    expect(schema.properties.toolInput).toEqual(toStrictInputSchema(getServiceStatusTool.inputSchema));
+
+    // No unsupported Anthropic strict-schema keywords anywhere in the wrapper.
+    const violations: string[] = [];
+    collectViolations(claudeTool.input_schema, "$", violations);
+    expect(violations).toEqual([]);
+  });
+
+  // The checkpoint is explicit: superRefine cross-field semantics are NOT
+  // represented by JSON Schema; orchestrator validation remains authoritative.
+  // So the emitted diagnostic schema must NOT structurally encode invariants
+  // like "SUFFICIENT cannot accompany a diagnostic request" (which would be a
+  // duplicate, drift-prone check) — only the base enum/required shape above.
+  it("does not encode superRefine invariants into the generated diagnostic schema", () => {
+    const claudeTool = toClaudeDiagnosticTool({
+      tool: getServiceStatusTool,
+      description: "Look up the current operational status of a service.",
+    });
+
+    // The SUFFICIENT-rejection and CONFLICTING-needs-two-locators rules are
+    // superRefine-only; a minItems/dependency-style structural encoding would
+    // be a second, logically-unreachable copy of the check the orchestrator
+    // already runs authoritatively.
+    expect(JSON.stringify(claudeTool.input_schema)).not.toContain("minItems");
   });
 });
 

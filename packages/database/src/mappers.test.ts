@@ -230,7 +230,15 @@ describe("toInvestigationEventCreateInput", () => {
       { type: "RUN_CREATED" },
       { type: "AGENT_STARTED" },
       { type: "RETRIEVAL_COMPLETED", chunks: [] },
-      { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" },
+      // Issue #58 Checkpoint B (§4): a fresh canonical TOOL_REQUESTED write
+      // must carry a validated assessment (NO_EVIDENCE_YET — no evidence has
+      // run before this run's first diagnostic request).
+      {
+        type: "TOOL_REQUESTED",
+        toolCallId: "call-1",
+        toolName: "get_service_status",
+        assessment: { evidenceState: "INSUFFICIENT", continuationReason: "NO_EVIDENCE_YET", supportedBy: [] },
+      },
       { type: "TOOL_COMPLETED", toolCallId: "call-1", toolName: "get_service_status" },
       { type: "TOOL_FAILED", toolCallId: "call-1", toolName: "get_service_status", failureCode: "TOOL_NOT_FOUND" },
       { type: "REPORT_GENERATION_STARTED" },

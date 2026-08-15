@@ -865,8 +865,13 @@ Defines:
 `AgentRun.promptVersion` stores a logical version such as:
 
 ```text
-opspilot-agent-v1
+opspilot-agent-v2
 ```
+
+`opspilot-agent-v2` supersedes `opspilot-agent-v1`: Issue #58 Checkpoint B
+added the investigation-only evidence-assessment guidance
+(claude-message-mapping.ts), a behavior-changing prompt update that warrants a
+new logical version.
 
 A behavior-changing prompt update requires:
 
@@ -1050,7 +1055,7 @@ Examples:
 
 ```text
 RUN_STARTED
-"Investigation started using prompt version opspilot-agent-v1."
+"Investigation started using prompt version opspilot-agent-v2."
 
 TOOL_REQUESTED
 "Checking the current status of notification-service."

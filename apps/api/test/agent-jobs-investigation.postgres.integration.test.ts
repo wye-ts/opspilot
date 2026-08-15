@@ -120,10 +120,23 @@ async function createMultiStepCompletedRun(
   for (let index = 0; index < count; index += 1) {
     const callId = `call-${index + 1}`;
     callIds.push(callId);
+    // Issue #58 Checkpoint B (§4): every NEW canonical TOOL_REQUESTED append
+    // requires a validated assessment. The first request has no evidence yet
+    // (NO_EVIDENCE_YET); later requests are STATUS_UNRESOLVED grounded on the
+    // completed calls that precede them.
+    const assessment =
+      index === 0
+        ? { evidenceState: "INSUFFICIENT", continuationReason: "NO_EVIDENCE_YET", supportedBy: [] }
+        : {
+            evidenceState: "INSUFFICIENT",
+            continuationReason: "STATUS_UNRESOLVED",
+            supportedBy: callIds.map((evidenceId) => ({ evidenceId, sourceType: "TOOL_EXECUTION" })),
+          };
     await appendInvestigationEvent(prisma, started.run.id, {
       type: "TOOL_REQUESTED",
       toolCallId: callId,
       toolName: "get_service_status",
+      assessment,
     });
     await appendInvestigationEvent(prisma, started.run.id, {
       type: "TOOL_COMPLETED",

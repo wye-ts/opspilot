@@ -76,6 +76,7 @@ import {
   ReportValidationFailureCodeSchema as _ReportValidationFailureCodeSchema,
   ToolFailureCodeSchema as _ToolFailureCodeSchema,
   ToolRequestedRecordEventSchema as _ToolRequestedRecordEventSchema,
+  ToolRequestedWriteEventSchema as _ToolRequestedWriteEventSchema,
   mapInvestigationEventToExecutionStage as _mapInvestigationEventToExecutionStage,
 } from "./investigation-event";
 import {
@@ -136,6 +137,7 @@ export const InvestigationEventRecordSchema = _InvestigationEventRecordSchema;
 export const INVESTIGATION_EVENT_NEW_WRITE_TYPE_COUNT = _INVESTIGATION_EVENT_NEW_WRITE_TYPE_COUNT;
 export const INVESTIGATION_EVENT_LEGACY_TYPE_COUNT = _INVESTIGATION_EVENT_LEGACY_TYPE_COUNT;
 export const ToolRequestedRecordEventSchema = _ToolRequestedRecordEventSchema;
+export const ToolRequestedWriteEventSchema = _ToolRequestedWriteEventSchema;
 export const mapInvestigationEventToExecutionStage = _mapInvestigationEventToExecutionStage;
 export const hasCanonicalInvestigationLifecycleMarker = _hasCanonicalInvestigationLifecycleMarker;
 export const projectToLegacyAgentTraceEvent = _projectToLegacyAgentTraceEvent;
@@ -182,6 +184,7 @@ export type {
   ReportValidationFailureCode,
   ToolFailureCode,
   ToolRequestedRecordEvent,
+  ToolRequestedWriteEvent,
 } from "./investigation-event";
 export type {
   DeriveExecutionStageProgressInput,

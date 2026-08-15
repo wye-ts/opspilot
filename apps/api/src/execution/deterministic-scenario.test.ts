@@ -1,4 +1,8 @@
-import { getServiceStatusTool, type FakeProviderTurn } from "@opspilot/agent-runtime";
+import {
+  getServiceStatusTool,
+  type FakeProviderTurn,
+  type FakeProviderTurnResolver,
+} from "@opspilot/agent-runtime";
 import { AgentTraceEventSchema } from "@opspilot/contracts";
 import type { AgentJobRecord } from "@opspilot/database";
 import { describe, expect, it } from "vitest";
@@ -15,19 +19,30 @@ function buildJob(overrides: Partial<AgentJobRecord> = {}): AgentJobRecord {
   };
 }
 
+// The scenario's turns array is typed as the §12 union
+// (FakeProviderTurn | FakeProviderTurnResolver)[] because the fake provider
+// accepts either a literal turn or a deterministic function of the turn input.
+// createDeterministicScenario only ever emits literal turns, so these helpers
+// reject a resolver-form entry outright and narrow the literal.
+type TurnEntry = FakeProviderTurn | FakeProviderTurnResolver;
+
+function isLiteralTurn(entry: TurnEntry | undefined): entry is FakeProviderTurn {
+  return typeof entry !== "function";
+}
+
 function expectToolRequestTurn(
-  turn: FakeProviderTurn | undefined,
+  turn: TurnEntry | undefined,
 ): Extract<FakeProviderTurn, { kind: "diagnostic_tool_requests" }> {
-  if (!turn || turn.kind !== "diagnostic_tool_requests") {
+  if (!isLiteralTurn(turn) || turn.kind !== "diagnostic_tool_requests") {
     throw new Error("expected a diagnostic_tool_requests turn");
   }
   return turn;
 }
 
 function expectReportSubmissionTurn(
-  turn: FakeProviderTurn | undefined,
+  turn: TurnEntry | undefined,
 ): Extract<FakeProviderTurn, { kind: "report_submission" }> {
-  if (!turn || turn.kind !== "report_submission") {
+  if (!isLiteralTurn(turn) || turn.kind !== "report_submission") {
     throw new Error("expected a report_submission turn");
   }
   return turn;

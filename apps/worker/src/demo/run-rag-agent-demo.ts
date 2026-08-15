@@ -90,6 +90,19 @@ function buildDemoScenario(): FakeAgentScenario {
             toolCallId: DEMO_TOOL_CALL_ID,
             toolName: "get_service_status",
             input: { serviceSlug: "notification-service" },
+            // Issue #58 Checkpoint B: retrieval runs before this request, so
+            // the run already holds RAG evidence (DEMO_RAG_CHUNK_ID is among
+            // the retrieved chunks, matching the report's cited RAG evidence).
+            // The orchestrator's A3 guard therefore forbids NO_EVIDENCE_YET
+            // here — the run-state-consistent claim is STATUS_UNRESOLVED
+            // citing the available chunk.
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "STATUS_UNRESOLVED",
+              supportedBy: [
+                { evidenceId: DEMO_RAG_CHUNK_ID, sourceType: "RAG_CHUNK" },
+              ],
+            },
           },
         ],
       },

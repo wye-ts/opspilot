@@ -22,7 +22,27 @@ export const PROTOCOL_AND_FAILURE_CASES: readonly EvaluationCase[] = [
         {
           kind: "diagnostic_tool_requests",
           usage: USAGE,
-          requests: [{ toolCallId: "case9-call-1", toolName: "search_logs", input: {} }],
+          requests: [
+            {
+              toolCallId: "case9-call-1",
+              toolName: "search_logs",
+              input: {},
+              // Issue #58 Checkpoint B: retrieval runs before this request, so
+              // the run holds RAG evidence — the A2/A3 guards (which run before
+              // the TOOL_NOT_FOUND failure) require a grounded, non-
+              // NO_EVIDENCE_YET assessment.
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: [
+                  {
+                    evidenceId: "runbook-notification-degradation-001",
+                    sourceType: "RAG_CHUNK",
+                  },
+                ],
+              },
+            },
+          ],
         },
       ],
     },
@@ -46,7 +66,25 @@ export const PROTOCOL_AND_FAILURE_CASES: readonly EvaluationCase[] = [
           kind: "diagnostic_tool_requests",
           usage: USAGE,
           requests: [
-            { toolCallId: "case10-call-1", toolName: "get_service_status", input: { serviceSlug: "" } },
+            {
+              toolCallId: "case10-call-1",
+              toolName: "get_service_status",
+              input: { serviceSlug: "" },
+              // Issue #58 Checkpoint B: retrieval runs before this request, so
+              // the run holds RAG evidence — the A2/A3 guards (which run before
+              // the TOOL_INPUT_INVALID failure) require a grounded, non-
+              // NO_EVIDENCE_YET assessment.
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: [
+                  {
+                    evidenceId: "runbook-notification-degradation-001",
+                    sourceType: "RAG_CHUNK",
+                  },
+                ],
+              },
+            },
           ],
         },
       ],
@@ -75,11 +113,36 @@ export const PROTOCOL_AND_FAILURE_CASES: readonly EvaluationCase[] = [
               toolCallId: "case11-call-1",
               toolName: "get_service_status",
               input: { serviceSlug: "notification-service" },
+              // Issue #58 Checkpoint B: the two-request turn collapses to
+              // PROVIDER_PROTOCOL_INVALID during normalization, before any
+              // orchestrator guard reads the assessment — the rawAssessment is
+              // present to satisfy the contract type, and kept run-state-
+              // plausible (retrieval has run, so RAG evidence exists).
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: [
+                  {
+                    evidenceId: "runbook-notification-degradation-001",
+                    sourceType: "RAG_CHUNK",
+                  },
+                ],
+              },
             },
             {
               toolCallId: "case11-call-2",
               toolName: "get_service_status",
               input: { serviceSlug: "notification-service" },
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: [
+                  {
+                    evidenceId: "runbook-notification-degradation-001",
+                    sourceType: "RAG_CHUNK",
+                  },
+                ],
+              },
             },
           ],
         },
@@ -109,6 +172,19 @@ export const PROTOCOL_AND_FAILURE_CASES: readonly EvaluationCase[] = [
               toolCallId: "case12-call-1",
               toolName: "get_service_status",
               input: { serviceSlug: "notification-service" },
+              // Issue #58 Checkpoint B: first request; retrieval has run, so
+              // the A3 guard forbids NO_EVIDENCE_YET — cite the available
+              // RAG chunk.
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: [
+                  {
+                    evidenceId: "runbook-notification-degradation-001",
+                    sourceType: "RAG_CHUNK",
+                  },
+                ],
+              },
             },
           ],
         },
@@ -120,6 +196,15 @@ export const PROTOCOL_AND_FAILURE_CASES: readonly EvaluationCase[] = [
               toolCallId: "case12-call-2",
               toolName: "get_service_status",
               input: { serviceSlug: "notification-service" },
+              // Issue #58 Checkpoint B: case12-call-1 completed, so its id is
+              // now grounded evidence to cite.
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: [
+                  { evidenceId: "case12-call-1", sourceType: "TOOL_EXECUTION" },
+                ],
+              },
             },
           ],
         },
@@ -131,6 +216,16 @@ export const PROTOCOL_AND_FAILURE_CASES: readonly EvaluationCase[] = [
               toolCallId: "case12-call-3",
               toolName: "get_service_status",
               input: { serviceSlug: "notification-service" },
+              // Issue #58 Checkpoint B: case12-call-1 and case12-call-2 both
+              // completed, so both ids are grounded evidence to cite.
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: [
+                  { evidenceId: "case12-call-1", sourceType: "TOOL_EXECUTION" },
+                  { evidenceId: "case12-call-2", sourceType: "TOOL_EXECUTION" },
+                ],
+              },
             },
           ],
         },
@@ -139,7 +234,9 @@ export const PROTOCOL_AND_FAILURE_CASES: readonly EvaluationCase[] = [
           // investigation turns, then a reserved finalization turn. A fourth
           // tool request on that finalization turn is exactly the "missing
           // final report" protocol violation — the call is rejected before a
-          // TOOL_REQUESTED is ever emitted.
+          // TOOL_REQUESTED is ever emitted. The rawAssessment is never read
+          // (the finalization-turn guard fires first) but the contract type
+          // still requires it.
           kind: "diagnostic_tool_requests",
           usage: USAGE,
           requests: [
@@ -147,6 +244,15 @@ export const PROTOCOL_AND_FAILURE_CASES: readonly EvaluationCase[] = [
               toolCallId: "case12-call-4",
               toolName: "get_service_status",
               input: { serviceSlug: "notification-service" },
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: [
+                  { evidenceId: "case12-call-1", sourceType: "TOOL_EXECUTION" },
+                  { evidenceId: "case12-call-2", sourceType: "TOOL_EXECUTION" },
+                  { evidenceId: "case12-call-3", sourceType: "TOOL_EXECUTION" },
+                ],
+              },
             },
           ],
         },
@@ -188,7 +294,27 @@ export const PROTOCOL_AND_FAILURE_CASES: readonly EvaluationCase[] = [
         {
           kind: "diagnostic_tool_requests",
           usage: USAGE,
-          requests: [{ toolCallId: "case13-call-1", toolName: "always_fails", input: {} }],
+          requests: [
+            {
+              toolCallId: "case13-call-1",
+              toolName: "always_fails",
+              input: {},
+              // Issue #58 Checkpoint B: retrieval runs before this request, so
+              // the run holds RAG evidence — the A2/A3 guards (which run before
+              // the TOOL_EXECUTION_FAILED failure) require a grounded, non-
+              // NO_EVIDENCE_YET assessment.
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: [
+                  {
+                    evidenceId: "runbook-notification-degradation-001",
+                    sourceType: "RAG_CHUNK",
+                  },
+                ],
+              },
+            },
+          ],
         },
       ],
     },

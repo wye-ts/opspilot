@@ -139,6 +139,47 @@ describe("successful runs", () => {
     expect(stage(progress, "REPORT_GENERATION").status).toBe("completed");
   });
 
+  it("ignores the Checkpoint B assessment field on TOOL_REQUESTED (reducer reads only lifecycle facts)", () => {
+    // Issue #58 Checkpoint B (§5.3): every NEW canonical TOOL_REQUESTED append
+    // carries a validated `assessment` (the model-declared evidence status
+    // before that request), but the reducer derives stage progress from
+    // lifecycle and tool facts alone — the extra field must change nothing.
+    // This is the persistence-channel proof that the continuation decision
+    // data is inert to stage accounting: the same stream with and without the
+    // assessment produces byte-identical progress.
+    const WITH_ASSESSMENT: typeof ONE_TOOL_SUCCESS = [
+      ev({ type: "RUN_CREATED" }, 0),
+      ev({ type: "AGENT_STARTED" }, 1),
+      ev({ type: "RETRIEVAL_COMPLETED", chunks: [] }, 2),
+      ev(
+        {
+          type: "TOOL_REQUESTED",
+          toolCallId: "c1",
+          toolName: "check_status",
+          assessment: {
+            evidenceState: "INSUFFICIENT",
+            continuationReason: "NO_EVIDENCE_YET",
+            supportedBy: [],
+          },
+        },
+        3,
+      ),
+      ev({ type: "TOOL_COMPLETED", toolCallId: "c1", toolName: "check_status" }, 4),
+      ev({ type: "REPORT_GENERATION_STARTED" }, 5),
+      ev({ type: "REPORT_SUBMITTED" }, 9),
+      ev({ type: "REPORT_VALIDATED" }, 10),
+      ev({ type: "RUN_COMPLETED" }, 10),
+    ];
+
+    const withAssessment = derive({
+      events: stream(WITH_ASSESSMENT),
+      runStatus: "COMPLETED",
+      now: at(10),
+    });
+    const without = derive({ events: stream(ONE_TOOL_SUCCESS), runStatus: "COMPLETED", now: at(10) });
+    expect(withAssessment).toEqual(without);
+  });
+
   it("accepts a voluntary early report without REPORT_GENERATION_STARTED while a turn remains", () => {
     // #57 (targeted fix): with fewer than MAX_DIAGNOSTIC_TOOL_CALLS tools and
     // the tool closed, the provider may VOLUNTARILY submit the report on a

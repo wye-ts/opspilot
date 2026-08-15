@@ -401,7 +401,12 @@ export class ClaudeLlmProvider implements LlmProvider {
       // Never inferred or hardcoded here — the caller (orchestrator or smoke
       // runner) owns this value, and it is the single output-budget authority.
       max_tokens: input.maxOutputTokens,
-      system: buildSystemPrompt(input.phase),
+      // Issue #58 Checkpoint B (§8/§10): the investigation-only guidance block
+      // interpolates the turn's remaining diagnostic capacity (constraint
+      // visibility, not a quota — the #57 harness remains authoritative for the
+      // bound). buildSystemPrompt takes it on every turn, INVESTIGATION and
+      // FINALIZATION alike, so the call shape stays uniform.
+      system: buildSystemPrompt(input.phase, input.diagnosticCallsRemaining),
       messages: buildClaudeMessages(input.conversation),
       tools,
       tool_choice: toolChoice,

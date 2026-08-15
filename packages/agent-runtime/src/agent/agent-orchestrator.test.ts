@@ -1,9 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
-import { FakeLlmProvider, type FakeAgentScenario, type FakeProviderTurn } from "../providers/fake-llm-provider";
+import {
+  FakeLlmProvider,
+  type FakeAgentScenario,
+  type FakeProviderTurn,
+  type FakeProviderTurnResolver,
+} from "../providers/fake-llm-provider";
 import { LlmProviderError } from "../providers/llm-provider";
-import type { AgentConversationMessage, LlmProvider } from "../providers/llm-provider";
+import type {
+  AgentConversationMessage,
+  DiagnosticToolResultEntry,
+  LlmProvider,
+} from "../providers/llm-provider";
 import {
   RetrieverError,
   type RetrievedRunbookChunk,
@@ -14,7 +23,10 @@ import {
   getServiceStatusTool,
   type DiagnosticToolDefinition,
 } from "../tools";
-import type { InvestigationEventPayload } from "@opspilot/contracts";
+import {
+  InvestigationEventPayloadSchema,
+  type InvestigationEventPayload,
+} from "@opspilot/contracts";
 
 import { runAgentOrchestrator } from "./agent-orchestrator";
 
@@ -35,6 +47,19 @@ class FakeRunbookRetriever implements RunbookRetriever {
 }
 
 const usage = { inputTokens: 100, outputTokens: 20 };
+
+// Issue #58 Checkpoint B: the assessment a first diagnostic request must carry
+// before any evidence exists — INSUFFICIENT / NO_EVIDENCE_YET with an empty
+// supportedBy, exactly the run-state-consistent claim the orchestrator's V0 +
+// A3 guards require (agent-orchestrator.ts §9.1/§9.3). Every fixture below
+// migrates to carry a rawAssessment consistent with the evidence available
+// BEFORE the request: the first call in a scenario uses this, later calls use
+// statusUnresolvedCiting(...) below.
+const NO_EVIDENCE_YET_ASSESSMENT = {
+  evidenceState: "INSUFFICIENT",
+  continuationReason: "NO_EVIDENCE_YET",
+  supportedBy: [],
+} as const;
 
 const ticketContext: AgentConversationMessage = {
   role: "ticket_context",
@@ -87,10 +112,29 @@ function buildToolRequestScenario(
       {
         kind: "diagnostic_tool_requests",
         usage,
-        requests: [{ toolCallId: "call-1", toolName, input: { serviceSlug } }],
+        requests: [
+          { toolCallId: "call-1", toolName, input: { serviceSlug }, rawAssessment: NO_EVIDENCE_YET_ASSESSMENT },
+        ],
       },
       { kind: "report_submission", usage, rawInput: validReport },
     ],
+  };
+}
+
+// Issue #58 Checkpoint B (§12): the assessment for the i-th diagnostic request
+// (0-based) in a scripted sequence. The first request carries NO_EVIDENCE_YET
+// with an empty supportedBy; each later request must cite exactly the tool
+// calls already completed in the run (call-1 .. call-i), which is the
+// run-state-consistent claim the orchestrator's A2/A3 guards require.
+function assessmentForTurnIndex(i: number): unknown {
+  if (i === 0) return NO_EVIDENCE_YET_ASSESSMENT;
+  return {
+    evidenceState: "INSUFFICIENT",
+    continuationReason: "STATUS_UNRESOLVED",
+    supportedBy: Array.from({ length: i }, (_, j) => ({
+      evidenceId: `call-${j + 1}`,
+      sourceType: "TOOL_EXECUTION",
+    })),
   };
 }
 
@@ -109,6 +153,7 @@ function buildMultiToolTurns(toolCount: number, toolName = "get_service_status")
         toolCallId: `call-${i + 1}`,
         toolName,
         input: { serviceSlug: "notification-service" },
+        rawAssessment: assessmentForTurnIndex(i),
       },
     ],
   }));
@@ -196,6 +241,9 @@ describe("runAgentOrchestrator", () => {
         toolCallId: "call-1",
         toolName: "get_service_status",
         input: { serviceSlug: "notification-service" },
+        // Checkpoint B (§3.3/§9.4): the VALIDATED assessment rides the
+        // conversation append, never the raw form.
+        assessment: NO_EVIDENCE_YET_ASSESSMENT,
       },
       {
         role: "diagnostic_tool_result",
@@ -281,6 +329,7 @@ describe("runAgentOrchestrator", () => {
               toolCallId: "call-1",
               toolName: "get_service_status",
               input: { serviceSlug: 12345 },
+              rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
             },
           ],
         },
@@ -319,7 +368,7 @@ describe("runAgentOrchestrator", () => {
         {
           kind: "diagnostic_tool_requests",
           usage,
-          requests: [{ toolCallId: "call-1", toolName: "broken_tool", input: {} }],
+          requests: [{ toolCallId: "call-1", toolName: "broken_tool", input: {}, rawAssessment: NO_EVIDENCE_YET_ASSESSMENT }],
         },
         { kind: "report_submission", usage, rawInput: validReport },
       ],
@@ -475,6 +524,7 @@ describe("runAgentOrchestrator", () => {
               toolCallId: sentinelToolCallId,
               toolName: "get_service_status",
               input: { serviceSlug: "notification-service" },
+              rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
             },
           ],
         },
@@ -486,6 +536,14 @@ describe("runAgentOrchestrator", () => {
               toolCallId: sentinelToolCallId,
               toolName: "get_service_status",
               input: { serviceSlug: "notification-service" },
+              // The duplicate is rejected by the duplicate-identity guard
+              // before V0/A2/A3 ever run, so this assessment is never
+              // validated — it exists only to keep the fixture type-valid.
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: [{ evidenceId: sentinelToolCallId, sourceType: "TOOL_EXECUTION" }],
+              },
             },
           ],
         },
@@ -537,11 +595,13 @@ describe("runAgentOrchestrator", () => {
               toolCallId: "call-1",
               toolName: "get_service_status",
               input: { serviceSlug: "notification-service" },
+              rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
             },
             {
               toolCallId: "call-2",
               toolName: "get_service_status",
               input: { serviceSlug: "billing-service" },
+              rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
             },
           ],
         },
@@ -581,7 +641,7 @@ describe("runAgentOrchestrator", () => {
         {
           kind: "diagnostic_tool_requests",
           usage,
-          requests: [{ toolCallId: "call-1", toolName: "throwing_tool", input: {} }],
+          requests: [{ toolCallId: "call-1", toolName: "throwing_tool", input: {}, rawAssessment: NO_EVIDENCE_YET_ASSESSMENT }],
         },
         { kind: "report_submission", usage, rawInput: validReport },
       ],
@@ -638,6 +698,7 @@ describe("runAgentOrchestrator", () => {
               toolCallId: "call-1",
               toolName: "get_service_status",
               input: { serviceSlug: "notification-service" },
+              rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
             },
           ],
         },
@@ -687,6 +748,14 @@ describe("runAgentOrchestrator", () => {
               toolCallId: "call-1",
               toolName: "get_service_status",
               input: { serviceSlug: "notification-service" },
+              // RAG evidence (rag-chunk-2) is already allowed in this run, so
+              // the request must cite it (A3: NO_EVIDENCE_YET is only valid
+              // when no evidence at all exists).
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: [{ evidenceId: "rag-chunk-2", sourceType: "RAG_CHUNK" }],
+              },
             },
           ],
         },
@@ -1116,6 +1185,13 @@ describe("runAgentOrchestrator — retrieval integration", () => {
               toolCallId: "call-1",
               toolName: "get_service_status",
               input: { serviceSlug: "notification-service" },
+              // The retriever already returned sampleChunk, so RAG evidence
+              // exists in this run — the request must cite it (A3).
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: [{ evidenceId: sampleChunk.chunkId, sourceType: "RAG_CHUNK" }],
+              },
             },
           ],
         },
@@ -1352,7 +1428,7 @@ describe("runAgentOrchestrator — canonical lifecycle emission", () => {
           {
             kind: "diagnostic_tool_requests" as const,
             usage,
-            requests: [{ toolCallId: "call-1", toolName: "get_service_status", input: { wrong: 1 } }],
+            requests: [{ toolCallId: "call-1", toolName: "get_service_status", input: { wrong: 1 }, rawAssessment: NO_EVIDENCE_YET_ASSESSMENT }],
           },
         ],
       } satisfies FakeAgentScenario,
@@ -1495,6 +1571,7 @@ describe("runAgentOrchestrator — canonical lifecycle emission", () => {
               toolCallId: `call-${turn}`,
               toolName: "get_service_status",
               input: { serviceSlug: "notification-service" },
+              rawAssessment: assessmentForTurnIndex(turn - 1),
             },
           };
         }
@@ -1755,6 +1832,7 @@ describe("runAgentOrchestrator — bounded multi-step diagnostic loop (issue #57
               toolCallId: `call-${turn}`,
               toolName: "get_service_status",
               input: { serviceSlug: "notification-service" },
+              rawAssessment: assessmentForTurnIndex(turn - 1),
             },
           };
         }
@@ -1779,12 +1857,12 @@ describe("runAgentOrchestrator — bounded multi-step diagnostic loop (issue #57
         {
           kind: "diagnostic_tool_requests",
           usage,
-          requests: [{ toolCallId: "call-1", toolName: "get_service_status", input: { serviceSlug: "notification-service" } }],
+          requests: [{ toolCallId: "call-1", toolName: "get_service_status", input: { serviceSlug: "notification-service" }, rawAssessment: assessmentForTurnIndex(0) }],
         },
         {
           kind: "diagnostic_tool_requests",
           usage,
-          requests: [{ toolCallId: "call-2", toolName: "delete_everything", input: { serviceSlug: "notification-service" } }],
+          requests: [{ toolCallId: "call-2", toolName: "delete_everything", input: { serviceSlug: "notification-service" }, rawAssessment: assessmentForTurnIndex(1) }],
         },
       ],
     };
@@ -1826,12 +1904,12 @@ describe("runAgentOrchestrator — bounded multi-step diagnostic loop (issue #57
         {
           kind: "diagnostic_tool_requests",
           usage,
-          requests: [{ toolCallId: "call-1", toolName: "get_service_status", input: { serviceSlug: "notification-service" } }],
+          requests: [{ toolCallId: "call-1", toolName: "get_service_status", input: { serviceSlug: "notification-service" }, rawAssessment: assessmentForTurnIndex(0) }],
         },
         {
           kind: "diagnostic_tool_requests",
           usage,
-          requests: [{ toolCallId: "call-2", toolName: "throwing_tool", input: {} }],
+          requests: [{ toolCallId: "call-2", toolName: "throwing_tool", input: {}, rawAssessment: assessmentForTurnIndex(1) }],
         },
       ],
     };
@@ -1867,8 +1945,8 @@ describe("runAgentOrchestrator — bounded multi-step diagnostic loop (issue #57
           kind: "diagnostic_tool_requests",
           usage,
           requests: [
-            { toolCallId: "call-2", toolName: "get_service_status", input: { serviceSlug: "notification-service" } },
-            { toolCallId: "call-3", toolName: "get_service_status", input: { serviceSlug: "billing-service" } },
+            { toolCallId: "call-2", toolName: "get_service_status", input: { serviceSlug: "notification-service" }, rawAssessment: assessmentForTurnIndex(1) },
+            { toolCallId: "call-3", toolName: "get_service_status", input: { serviceSlug: "billing-service" }, rawAssessment: assessmentForTurnIndex(2) },
           ],
         },
       ],
@@ -1910,6 +1988,7 @@ describe("runAgentOrchestrator — bounded multi-step diagnostic loop (issue #57
                 toolCallId: "call-1",
                 toolName: "get_service_status",
                 input: { serviceSlug: "notification-service" },
+                rawAssessment: assessmentForTurnIndex(0),
               },
             };
           }
@@ -2009,7 +2088,7 @@ describe("runAgentOrchestrator — bounded multi-step diagnostic loop (issue #57
         {
           kind: "diagnostic_tool_requests",
           usage,
-          requests: [{ toolCallId: "call-2", toolName: "throwing_tool", input: {} }],
+          requests: [{ toolCallId: "call-2", toolName: "throwing_tool", input: {}, rawAssessment: assessmentForTurnIndex(1) }],
         },
       ],
     };
@@ -2033,5 +2112,948 @@ describe("runAgentOrchestrator — bounded multi-step diagnostic loop (issue #57
       "TOOL_REQUESTED",
       "TOOL_FAILED",
     ]);
+  });
+});
+
+// ============================================================================
+// Issue #58 Checkpoint B §13–§15 — evidence-aware continuation scenarios, the
+// §14 protocol-negative matrix, and the persistence-channel proofs. Fixtures
+// use the REAL seeded status table (get-service-status.ts): notification-
+// service=DEGRADED, billing-service=OUTAGE, auth-service=OPERATIONAL, and
+// UNKNOWN for anything unseeded.
+// ============================================================================
+
+describe("runAgentOrchestrator — evidence-aware continuation (issue #58 Checkpoint B §13)", () => {
+  function recordingEmitter() {
+    const emitted: InvestigationEventPayload[] = [];
+    return {
+      emitted,
+      emitLifecycleEvent: async (payload: InvestigationEventPayload) => {
+        emitted.push(payload);
+      },
+    };
+  }
+
+  const types = (emitted: readonly InvestigationEventPayload[]) => emitted.map((e) => e.type);
+
+  const UNKNOWN_STATUS_OUTPUT = { serviceSlug: "unknown-service", status: "UNKNOWN" };
+
+  // A schema-valid report variant for the evidence-state under test. The
+  // report contract (P1-1) forbids a non-null rootCause whenever the evidence
+  // is non-sufficient, so every INSUFFICIENT fixture passes rootCause: null.
+  function reportVariant(args: {
+    category?: string;
+    evidenceState: "SUFFICIENT" | "INSUFFICIENT";
+    rootCause: string | null;
+    evidence: Array<{
+      evidenceId: string;
+      sourceType: "TOOL_EXECUTION";
+      finding: string;
+    }>;
+  }): unknown {
+    return {
+      category: args.category ?? "SERVICE_DEGRADATION",
+      summary: "Evidence gathered for the ticket.",
+      customerImpact: "Impact assessed from the gathered evidence.",
+      recommendedResolution: "Follow up per the ticket.",
+      confidence: 0.5,
+      evidence: args.evidence,
+      evidenceState: args.evidenceState,
+      rootCause: args.rootCause,
+      suggestedActions: [],
+    };
+  }
+
+  it("A — sufficient causal evidence after ONE diagnostic stops the loop with a voluntary early report (no second tool)", async () => {
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    const provider = new FakeLlmProvider(
+      buildToolRequestScenario("scenario-a", "notification-service"),
+    );
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("completed");
+    if (result.status !== "completed") throw new Error("unreachable");
+    expect(result.report.evidenceState).toBe("SUFFICIENT");
+    expect(result.report.rootCause).toBe("notification-service is degraded.");
+    expect(result.report.evidence).toEqual([
+      {
+        evidenceId: "call-1",
+        sourceType: "TOOL_EXECUTION",
+        finding: "notification-service reported status DEGRADED.",
+      },
+    ]);
+    // The loop stopped after one diagnostic — no second request merely to
+    // spend budget, and no REPORT_GENERATION_STARTED (voluntary early report).
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(2);
+    expect(types(emitted)).toEqual([
+      "AGENT_STARTED",
+      "TOOL_REQUESTED",
+      "TOOL_COMPLETED",
+      "REPORT_SUBMITTED",
+      "REPORT_VALIDATED",
+    ]);
+    // The canonical TOOL_REQUESTED carries the VALIDATED first-request
+    // assessment (no evidence existed before the request).
+    const toolRequested = emitted.find((e) => e.type === "TOOL_REQUESTED");
+    expect(toolRequested).toMatchObject({ assessment: NO_EVIDENCE_YET_ASSESSMENT });
+  });
+
+  it("B — an UNKNOWN observation justifies a SECOND diagnostic, decided by the reactive provider from the model-visible prior result", async () => {
+    const observedPriorResults: unknown[] = [];
+    const seenRemainingBudget: number[] = [];
+
+    const scenario: FakeAgentScenario = {
+      id: "scenario-b",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-1",
+              toolName: "get_service_status",
+              input: { serviceSlug: "unknown-service" },
+              rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
+            },
+          ],
+        },
+        // A PURE FUNCTION of the turn input (FakeProviderTurnResolver, §12):
+        // it must READ the prior UNKNOWN result from the conversation, record
+        // it, and only then request a second diagnostic grounded on it. If the
+        // orchestrator ever failed to surface the prior result, the assertion
+        // below throws and the test fails — proof the reactive fake actually
+        // sees the run context rather than replaying a fixed script.
+        (input) => {
+          const priorResults = input.conversation.filter(
+            (m): m is DiagnosticToolResultEntry => m.role === "diagnostic_tool_result",
+          );
+          expect(priorResults).toHaveLength(1);
+          expect(priorResults[0]?.toolCallId).toBe("call-1");
+          expect(priorResults[0]?.output).toEqual(UNKNOWN_STATUS_OUTPUT);
+          observedPriorResults.push(priorResults[0]?.output);
+          // After one accepted diagnostic, two calls remain.
+          seenRemainingBudget.push(input.diagnosticCallsRemaining);
+          return {
+            kind: "diagnostic_tool_requests",
+            usage,
+            requests: [
+              {
+                toolCallId: "call-2",
+                toolName: "get_service_status",
+                input: { serviceSlug: "notification-service" },
+                rawAssessment: {
+                  evidenceState: "INSUFFICIENT",
+                  continuationReason: "STATUS_UNRESOLVED",
+                  supportedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+                },
+              },
+            ],
+          };
+        },
+        (input) => {
+          const priorResults = input.conversation.filter(
+            (m): m is DiagnosticToolResultEntry => m.role === "diagnostic_tool_result",
+          );
+          expect(priorResults).toHaveLength(2);
+          expect(priorResults[1]?.toolCallId).toBe("call-2");
+          expect(priorResults[1]?.output).toEqual({
+            serviceSlug: "notification-service",
+            status: "DEGRADED",
+          });
+          observedPriorResults.push(priorResults[1]?.output);
+          return {
+            kind: "report_submission",
+            usage,
+            rawInput: reportVariant({
+              evidenceState: "SUFFICIENT",
+              rootCause: "notification-service is degraded.",
+              evidence: [
+                {
+                  evidenceId: "call-1",
+                  sourceType: "TOOL_EXECUTION",
+                  finding: "unknown-service reported UNKNOWN — inconclusive.",
+                },
+                {
+                  evidenceId: "call-2",
+                  sourceType: "TOOL_EXECUTION",
+                  finding: "notification-service reported status DEGRADED.",
+                },
+              ],
+            }),
+          };
+        },
+      ],
+    };
+
+    const result = await runAgentOrchestrator({
+      provider: new FakeLlmProvider(scenario),
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+    });
+
+    expect(result.status).toBe("completed");
+    if (result.status !== "completed") throw new Error("unreachable");
+    expect(result.report.evidenceState).toBe("SUFFICIENT");
+    // The reactive turns saw BOTH prior results before deciding.
+    expect(observedPriorResults).toEqual([
+      UNKNOWN_STATUS_OUTPUT,
+      { serviceSlug: "notification-service", status: "DEGRADED" },
+    ]);
+    expect(seenRemainingBudget).toEqual([2]);
+  });
+
+  it("C — a real inconclusive UNKNOWN observation leads to a voluntary INSUFFICIENT report (rootCause null), not another diagnostic", async () => {
+    const provider = new FakeLlmProvider({
+      id: "scenario-c",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-1",
+              toolName: "get_service_status",
+              input: { serviceSlug: "unknown-service" },
+              rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
+            },
+          ],
+        },
+        {
+          kind: "report_submission",
+          usage,
+          rawInput: reportVariant({
+            evidenceState: "INSUFFICIENT",
+            rootCause: null,
+            evidence: [
+              {
+                evidenceId: "call-1",
+                sourceType: "TOOL_EXECUTION",
+                finding: "unknown-service status could not be confirmed (UNKNOWN).",
+              },
+            ],
+          }),
+        },
+      ],
+    });
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+    });
+
+    expect(result.status).toBe("completed");
+    if (result.status !== "completed") throw new Error("unreachable");
+    expect(result.report.evidenceState).toBe("INSUFFICIENT");
+    expect(result.report.rootCause).toBeNull();
+    expect(result.report.evidence).toHaveLength(1);
+    expect(result.report.evidence[0]?.evidenceId).toBe("call-1");
+    // One diagnostic ran, then the loop stopped voluntarily instead of
+    // spending the remaining budget after an inconclusive observation.
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("C0 — zero-evidence insufficient stop: an immediate INSUFFICIENT report with evidence [] and no TOOL_REQUESTED", async () => {
+    const provider = new FakeLlmProvider({
+      id: "scenario-c0",
+      turns: [
+        {
+          kind: "report_submission",
+          usage,
+          rawInput: reportVariant({
+            category: "UNKNOWN",
+            evidenceState: "INSUFFICIENT",
+            rootCause: null,
+            evidence: [],
+          }),
+        },
+      ],
+    });
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+    });
+
+    expect(result.status).toBe("completed");
+    if (result.status !== "completed") throw new Error("unreachable");
+    expect(result.report.evidenceState).toBe("INSUFFICIENT");
+    expect(result.report.rootCause).toBeNull();
+    expect(result.report.evidence).toEqual([]);
+    // No diagnostic was ever requested or executed.
+    expect(result.trace).toEqual([{ type: "REPORT_GENERATED" }]);
+  });
+
+  it("E — a tool failure on a later diagnostic persists the validated assessment on the canonical TOOL_REQUESTED and fails closed", async () => {
+    const throwingTool: DiagnosticToolDefinition = {
+      name: "throwing_tool",
+      inputSchema: z.object({}).strict(),
+      outputSchema: z.object({}).strict(),
+      async execute() {
+        throw new Error("boom");
+      },
+    };
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    const scenario: FakeAgentScenario = {
+      id: "scenario-e",
+      turns: [
+        ...buildMultiToolTurns(1),
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-2",
+              toolName: "throwing_tool",
+              input: {},
+              rawAssessment: assessmentForTurnIndex(1),
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = await runAgentOrchestrator({
+      provider: new FakeLlmProvider(scenario),
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool, throwingTool]),
+      initialConversation: [ticketContext],
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.code).toBe("TOOL_EXECUTION_FAILED");
+    expect(result.failedStage).toBe("DIAGNOSTIC_EXECUTION");
+
+    // Both accepted requests persisted their validated assessment before the
+    // failure — no evidence yet for the first, grounded on call-1 for the
+    // second. The failed call never became successful evidence.
+    const toolRequestedEvents = emitted.filter((e) => e.type === "TOOL_REQUESTED");
+    expect(toolRequestedEvents).toHaveLength(2);
+    expect(toolRequestedEvents[0]).toMatchObject({ assessment: NO_EVIDENCE_YET_ASSESSMENT });
+    expect(toolRequestedEvents[1]).toMatchObject({
+      assessment: {
+        evidenceState: "INSUFFICIENT",
+        continuationReason: "STATUS_UNRESOLVED",
+        supportedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+      },
+    });
+    expect(types(emitted)).toEqual([
+      "AGENT_STARTED",
+      "TOOL_REQUESTED",
+      "TOOL_COMPLETED",
+      "TOOL_REQUESTED",
+      "TOOL_FAILED",
+    ]);
+    // No report was ever submitted.
+    expect(types(emitted)).not.toContain("REPORT_SUBMITTED");
+  });
+
+  it("F — bound exhaustion: the forced FINALIZATION turn sees diagnosticCallsRemaining 0 and reports honestly (INSUFFICIENT, rootCause null)", async () => {
+    const seenRemainingOnFinalization: number[] = [];
+    const scenario: FakeAgentScenario = {
+      id: "scenario-f",
+      turns: [
+        ...buildMultiToolTurns(3),
+        // The FINALIZATION turn is a pure function of the input (§12): it must
+        // observe that the diagnostic budget is exhausted and submit an honest
+        // INSUFFICIENT report — the model may not request a fourth diagnostic.
+        (input) => {
+          expect(input.phase).toBe("FINALIZATION");
+          seenRemainingOnFinalization.push(input.diagnosticCallsRemaining);
+          return {
+            kind: "report_submission",
+            usage,
+            rawInput: reportVariant({
+              evidenceState: "INSUFFICIENT",
+              rootCause: null,
+              evidence: [
+                { evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "first check." },
+                { evidenceId: "call-2", sourceType: "TOOL_EXECUTION", finding: "second check." },
+                { evidenceId: "call-3", sourceType: "TOOL_EXECUTION", finding: "third check." },
+              ],
+            }),
+          };
+        },
+      ],
+    };
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+
+    const result = await runAgentOrchestrator({
+      provider: new FakeLlmProvider(scenario),
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("completed");
+    if (result.status !== "completed") throw new Error("unreachable");
+    // The bound was exhausted: zero diagnostic headroom on the finalization turn.
+    expect(seenRemainingOnFinalization).toEqual([0]);
+    // The report stayed honest despite the bound: evidence was still
+    // insufficient, so the accepted report carries rootCause null.
+    expect(result.report.evidenceState).toBe("INSUFFICIENT");
+    expect(result.report.rootCause).toBeNull();
+    expect(result.report.evidence).toHaveLength(3);
+    // Forced finalization announces REPORT_GENERATION_STARTED — the truthful
+    // ledger record that the bound, not the model, ended the investigation.
+    expect(types(emitted)).toContain("REPORT_GENERATION_STARTED");
+  });
+
+  it("G — sufficient non-causal healthy evidence: an OPERATIONAL observation stops the loop with a SUFFICIENT report and null root cause", async () => {
+    const provider = new FakeLlmProvider({
+      id: "scenario-g",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-1",
+              toolName: "get_service_status",
+              input: { serviceSlug: "auth-service" },
+              rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
+            },
+          ],
+        },
+        {
+          kind: "report_submission",
+          usage,
+          rawInput: reportVariant({
+            evidenceState: "SUFFICIENT",
+            rootCause: null,
+            evidence: [
+              {
+                evidenceId: "call-1",
+                sourceType: "TOOL_EXECUTION",
+                finding: "auth-service reported status OPERATIONAL — no degradation found.",
+              },
+            ],
+          }),
+        },
+      ],
+    });
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+    });
+
+    expect(result.status).toBe("completed");
+    if (result.status !== "completed") throw new Error("unreachable");
+    expect(result.report.evidenceState).toBe("SUFFICIENT");
+    expect(result.report.rootCause).toBeNull();
+    expect(result.report.evidence[0]?.evidenceId).toBe("call-1");
+    // No extra diagnostic merely to spend budget: one check, then the report.
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("runAgentOrchestrator — diagnostic assessment protocol negatives (issue #58 Checkpoint B §14)", () => {
+  function recordingEmitter() {
+    const emitted: InvestigationEventPayload[] = [];
+    return {
+      emitted,
+      emitLifecycleEvent: async (payload: InvestigationEventPayload) => {
+        emitted.push(payload);
+      },
+    };
+  }
+
+  const types = (emitted: readonly InvestigationEventPayload[]) => emitted.map((e) => e.type);
+
+  // Every guard failure must fail closed: PROVIDER_PROTOCOL_INVALID, the
+  // offending request leaves no canonical TOOL_REQUESTED (and therefore no
+  // side effect), and a prior completed tool turn, when present, executed
+  // exactly once. expectedExecuteCount therefore equals the number of
+  // completed tool turns in the scenario — never the rejected request.
+  async function runAndExpectAssessmentRejected(args: {
+    name: string;
+    turns: readonly (FakeProviderTurn | FakeProviderTurnResolver)[];
+    expectedEmittedTypes: readonly string[];
+    expectedFailedStage: string;
+    expectedExecuteCount?: number;
+    allowedRagChunkIds?: ReadonlySet<string>;
+  }) {
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    const provider = new FakeLlmProvider({ id: args.name, turns: args.turns });
+    const executeSpy = vi.spyOn(getServiceStatusTool, "execute");
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      ...(args.allowedRagChunkIds ? { allowedRagChunkIds: args.allowedRagChunkIds } : {}),
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.code).toBe("PROVIDER_PROTOCOL_INVALID");
+    expect(result.failedStage).toBe(args.expectedFailedStage);
+    expect(types(emitted)).toEqual(args.expectedEmittedTypes);
+    expect(executeSpy).toHaveBeenCalledTimes(args.expectedExecuteCount ?? 0);
+  }
+
+  it("V0 rejects a malformed raw assessment (missing a required field)", async () => {
+    await runAndExpectAssessmentRejected({
+      name: "neg-1-malformed",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-1",
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+              rawAssessment: { evidenceState: "INSUFFICIENT" },
+            },
+          ],
+        },
+      ],
+      expectedEmittedTypes: ["AGENT_STARTED"],
+      expectedFailedStage: "AGENT_ANALYSIS",
+    });
+  });
+
+  it("V0 rejects a SUFFICIENT evidence state on a request for another diagnostic", async () => {
+    await runAndExpectAssessmentRejected({
+      name: "neg-2-sufficient",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-1",
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+              rawAssessment: {
+                evidenceState: "SUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+              },
+            },
+          ],
+        },
+      ],
+      expectedEmittedTypes: ["AGENT_STARTED"],
+      expectedFailedStage: "AGENT_ANALYSIS",
+    });
+  });
+
+  it("A2 rejects a supportedBy locator naming a toolCallId that never existed in the run", async () => {
+    await runAndExpectAssessmentRejected({
+      name: "neg-3-unknown-tool-id",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-1",
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: [{ evidenceId: "call-999", sourceType: "TOOL_EXECUTION" }],
+              },
+            },
+          ],
+        },
+      ],
+      expectedEmittedTypes: ["AGENT_STARTED"],
+      expectedFailedStage: "AGENT_ANALYSIS",
+    });
+  });
+
+  it("A2 rejects a supportedBy locator citing the current request's own id, which has not completed yet", async () => {
+    const turns: FakeProviderTurn[] = [
+      {
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "call-1",
+            toolName: "get_service_status",
+            input: { serviceSlug: "notification-service" },
+            rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
+          },
+        ],
+      },
+      {
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "call-2",
+            toolName: "get_service_status",
+            input: { serviceSlug: "notification-service" },
+            // call-2 is the CURRENT request's own id — requested but not yet
+            // completed, so it is not grounded evidence for A2.
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "STATUS_UNRESOLVED",
+              supportedBy: [{ evidenceId: "call-2", sourceType: "TOOL_EXECUTION" }],
+            },
+          },
+        ],
+      },
+    ];
+    await runAndExpectAssessmentRejected({
+      name: "neg-4-requested-not-completed",
+      turns,
+      expectedEmittedTypes: ["AGENT_STARTED", "TOOL_REQUESTED", "TOOL_COMPLETED"],
+      expectedFailedStage: "DIAGNOSTIC_EXECUTION",
+      expectedExecuteCount: 1,
+    });
+  });
+
+  it("A2 rejects a locator claiming TOOL_EXECUTION for an id that is a RAG chunk in this run", async () => {
+    await runAndExpectAssessmentRejected({
+      name: "neg-5-rag-as-tool",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-1",
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: [{ evidenceId: "rag-chunk-1", sourceType: "TOOL_EXECUTION" }],
+              },
+            },
+          ],
+        },
+      ],
+      expectedEmittedTypes: ["AGENT_STARTED"],
+      expectedFailedStage: "AGENT_ANALYSIS",
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+    });
+  });
+
+  it("A2 rejects a locator claiming RAG_CHUNK for an id that is a completed tool call in this run", async () => {
+    const turns: FakeProviderTurn[] = [
+      {
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "call-1",
+            toolName: "get_service_status",
+            input: { serviceSlug: "notification-service" },
+            rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
+          },
+        ],
+      },
+      {
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "call-2",
+            toolName: "get_service_status",
+            input: { serviceSlug: "notification-service" },
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "STATUS_UNRESOLVED",
+              supportedBy: [{ evidenceId: "call-1", sourceType: "RAG_CHUNK" }],
+            },
+          },
+        ],
+      },
+    ];
+    await runAndExpectAssessmentRejected({
+      name: "neg-6-tool-as-rag",
+      turns,
+      expectedEmittedTypes: ["AGENT_STARTED", "TOOL_REQUESTED", "TOOL_COMPLETED"],
+      expectedFailedStage: "DIAGNOSTIC_EXECUTION",
+      expectedExecuteCount: 1,
+    });
+  });
+
+  it("V0 rejects a supportedBy repeating the same (sourceType, evidenceId) locator", async () => {
+    await runAndExpectAssessmentRejected({
+      name: "neg-7-duplicate-locator",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-1",
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: [
+                  { evidenceId: "call-1", sourceType: "TOOL_EXECUTION" },
+                  { evidenceId: "call-1", sourceType: "TOOL_EXECUTION" },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      expectedEmittedTypes: ["AGENT_STARTED"],
+      expectedFailedStage: "AGENT_ANALYSIS",
+    });
+  });
+
+  it("V0 rejects CONFLICT_UNRESOLVED without evidenceState CONFLICTING", async () => {
+    await runAndExpectAssessmentRejected({
+      name: "neg-8-conflict-reason-mismatch",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-1",
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "CONFLICT_UNRESOLVED",
+                supportedBy: [
+                  { evidenceId: "call-1", sourceType: "TOOL_EXECUTION" },
+                  { evidenceId: "call-2", sourceType: "TOOL_EXECUTION" },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      expectedEmittedTypes: ["AGENT_STARTED"],
+      expectedFailedStage: "AGENT_ANALYSIS",
+    });
+  });
+
+  it("V0 rejects CONFLICTING with fewer than two distinct grounded locators", async () => {
+    await runAndExpectAssessmentRejected({
+      name: "neg-9-conflicting-single",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-1",
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+              rawAssessment: {
+                evidenceState: "CONFLICTING",
+                continuationReason: "CONFLICT_UNRESOLVED",
+                supportedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+              },
+            },
+          ],
+        },
+      ],
+      expectedEmittedTypes: ["AGENT_STARTED"],
+      expectedFailedStage: "AGENT_ANALYSIS",
+    });
+  });
+
+  it("V0 rejects NO_EVIDENCE_YET with a non-empty supportedBy", async () => {
+    await runAndExpectAssessmentRejected({
+      name: "neg-10-no-evidence-with-support",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-1",
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "NO_EVIDENCE_YET",
+                supportedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+              },
+            },
+          ],
+        },
+      ],
+      expectedEmittedTypes: ["AGENT_STARTED"],
+      expectedFailedStage: "AGENT_ANALYSIS",
+    });
+  });
+
+  it("A3 rejects NO_EVIDENCE_YET once tool evidence exists in the run", async () => {
+    const turns: FakeProviderTurn[] = [
+      {
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "call-1",
+            toolName: "get_service_status",
+            input: { serviceSlug: "notification-service" },
+            rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
+          },
+        ],
+      },
+      {
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "call-2",
+            toolName: "get_service_status",
+            input: { serviceSlug: "notification-service" },
+            // Schema-valid (empty supportedBy), but call-1 already completed:
+            // the A3 iff rule forbids claiming NO_EVIDENCE_YET now.
+            rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
+          },
+        ],
+      },
+    ];
+    await runAndExpectAssessmentRejected({
+      name: "neg-11-no-evidence-after-evidence",
+      turns,
+      expectedEmittedTypes: ["AGENT_STARTED", "TOOL_REQUESTED", "TOOL_COMPLETED"],
+      expectedFailedStage: "DIAGNOSTIC_EXECUTION",
+      expectedExecuteCount: 1,
+    });
+  });
+
+  it("A3 composition — no non-NO_EVIDENCE_YET reason can pass while both evidence sets are empty", async () => {
+    // The A3 guard's "claimsNoEvidenceYet === hasRunEvidence" both-false side
+    // is provably unreachable for any V0/A2-valid assessment: a non-
+    // NO_EVIDENCE_YET reason must cite >= 1 locator (V0 superRefine), and with
+    // both evidence sets empty no locator is grounded (A2). So the model's only
+    // consistent claim with zero evidence is NO_EVIDENCE_YET, and anything else
+    // fails closed here — this pins the observable protocol-negative behavior.
+    await runAndExpectAssessmentRejected({
+      name: "neg-12-status-unresolved-no-evidence",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-1",
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+              },
+            },
+          ],
+        },
+      ],
+      expectedEmittedTypes: ["AGENT_STARTED"],
+      expectedFailedStage: "AGENT_ANALYSIS",
+    });
+  });
+
+  it("16 — a reused provider tool-call identity is rejected before a second TOOL_REQUESTED or any side effect", async () => {
+    const turns: FakeProviderTurn[] = [
+      {
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "dup-1",
+            toolName: "get_service_status",
+            input: { serviceSlug: "notification-service" },
+            rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
+          },
+        ],
+      },
+      {
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "dup-1",
+            toolName: "get_service_status",
+            input: { serviceSlug: "notification-service" },
+            // The duplicate-identity guard fires BEFORE V0/A2/A3, so this
+            // assessment is never read — it exists only to keep the fixture
+            // type-valid. The key assertion is the emitted types below: the
+            // rejected duplicate produces NO second TOOL_REQUESTED.
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "STATUS_UNRESOLVED",
+              supportedBy: [{ evidenceId: "dup-1", sourceType: "TOOL_EXECUTION" }],
+            },
+          },
+        ],
+      },
+    ];
+    await runAndExpectAssessmentRejected({
+      name: "neg-16-duplicate-identity",
+      turns,
+      expectedEmittedTypes: ["AGENT_STARTED", "TOOL_REQUESTED", "TOOL_COMPLETED"],
+      expectedFailedStage: "DIAGNOSTIC_EXECUTION",
+      expectedExecuteCount: 1,
+    });
+  });
+});
+
+describe("runAgentOrchestrator — assessment rides the persistence channel (§9.4/§15)", () => {
+  function recordingEmitter() {
+    const emitted: InvestigationEventPayload[] = [];
+    return {
+      emitted,
+      emitLifecycleEvent: async (payload: InvestigationEventPayload) => {
+        emitted.push(payload);
+      },
+    };
+  }
+
+  it("emits every canonical TOOL_REQUESTED carrying a schema-valid validated assessment", async () => {
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+
+    const result = await runAgentOrchestrator({
+      provider: new FakeLlmProvider(buildNToolsThenReportScenario(2)),
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("completed");
+
+    const toolRequestedEvents = emitted.filter((e) => e.type === "TOOL_REQUESTED");
+    expect(toolRequestedEvents).toHaveLength(2);
+    // Both writes satisfy the new TOOL_REQUESTED write contract (§4): the
+    // assessment is REQUIRED and schema-valid on every new canonical append.
+    for (const event of toolRequestedEvents) {
+      const parsed = InvestigationEventPayloadSchema.safeParse(event);
+      expect(parsed.success).toBe(true);
+    }
+    // The persisted assessments are exactly the validated run-state-consistent
+    // claims: no evidence yet for the first request, grounded on call-1 for
+    // the second.
+    expect(toolRequestedEvents[0]).toMatchObject({ assessment: NO_EVIDENCE_YET_ASSESSMENT });
+    expect(toolRequestedEvents[1]).toMatchObject({
+      assessment: {
+        evidenceState: "INSUFFICIENT",
+        continuationReason: "STATUS_UNRESOLVED",
+        supportedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+      },
+    });
   });
 });

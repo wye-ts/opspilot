@@ -1,6 +1,7 @@
 import type {
   AgentTurnResult,
   DiagnosticToolRequest,
+  EvidenceAssessment,
   TokenUsage,
 } from "@opspilot/contracts";
 
@@ -21,6 +22,14 @@ export interface DiagnosticToolRequestEntry {
   readonly toolCallId: string;
   readonly toolName: string;
   readonly input: unknown;
+  // Issue #58 Checkpoint B (§3.3): the VALIDATED evidence assessment that
+  // accompanied this accepted diagnostic request. Appended to the
+  // conversation only after the orchestrator's authoritative
+  // EvidenceAssessmentSchema validation accepts it — never the raw
+  // unvalidated form. Replayed to Claude on later turns so each decision
+  // point sees the prior model-declared evidentiary status that justified
+  // the earlier tool call (docs/16 §6.3).
+  readonly assessment: EvidenceAssessment;
 }
 
 export interface DiagnosticToolResultEntry {
@@ -69,6 +78,16 @@ export interface AgentTurnInput {
   readonly phase: AgentTurnPhase;
   readonly maxOutputTokens: number;
   readonly conversation: readonly AgentConversationMessage[];
+  // Issue #58 Checkpoint B (§3.2): remaining diagnostic capacity for THIS
+  // turn, computed by the orchestrator as MAX_DIAGNOSTIC_TOOL_CALLS minus the
+  // number of accepted diagnostic requests so far (0 on the FINALIZATION
+  // turn). This is CONSTRAINT VISIBILITY, not a quota: it tells the model how
+  // much headroom it has, but the #57 harness remains authoritative for
+  // actually enforcing the bound. Deliberately NOT turnIndex — turnIndex is
+  // an orchestrator-internal loop counter a provider must not interpret
+  // (docs/04-agent-design.md §9). FakeLlmProvider ignores it; a live adapter
+  // surfaces it in the system prompt / guidance block.
+  readonly diagnosticCallsRemaining: number;
   // Optional caller-owned cancellation seam. AbortSignal is a platform
   // primitive, not an SDK type, so this stays provider-neutral: FakeLlmProvider
   // ignores it, and a live adapter forwards it to its transport.

@@ -1,6 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type { DiagnosticToolDefinition } from "@opspilot/agent-runtime";
-import { ResolutionReportSchema } from "@opspilot/contracts";
+import { EvidenceAssessmentSchema, ResolutionReportSchema } from "@opspilot/contracts";
 import { z } from "zod";
 
 export interface DiagnosticToolWithDescription {
@@ -92,7 +92,23 @@ export function toClaudeDiagnosticTool({
     name: tool.name,
     description,
     strict: true,
-    input_schema: toStrictInputSchema(tool.inputSchema),
+    // Issue #58 Checkpoint B (§5): every diagnostic tool call now carries the
+    // model-declared evidence assessment alongside the tool input. The wrapper
+    // is STRUCTURAL — derived from the real Zod schemas (EvidenceAssessmentSchema
+    // for the assessment, the tool's own inputSchema for toolInput) rather than
+    // a handwritten duplicate. The provider adapter only splits it
+    // (claude-response-normalization.ts); authoritative validation of the
+    // assessment happens once, in the orchestrator. superRefine cross-field
+    // invariants are deliberately NOT represented in this JSON Schema —
+    // orchestrator validation remains the authority.
+    input_schema: toStrictInputSchema(
+      z
+        .object({
+          evidenceAssessment: EvidenceAssessmentSchema,
+          toolInput: tool.inputSchema,
+        })
+        .strict(),
+    ),
   };
 }
 

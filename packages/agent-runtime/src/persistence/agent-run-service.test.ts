@@ -68,7 +68,18 @@ function toolThenReportScenario(): FakeAgentScenario {
         kind: "diagnostic_tool_requests",
         usage,
         requests: [
-          { toolCallId: TOOL_CALL_ID, toolName: "get_service_status", input: { serviceSlug: "auth-service" } },
+          {
+            toolCallId: TOOL_CALL_ID,
+            toolName: "get_service_status",
+            input: { serviceSlug: "auth-service" },
+            // Checkpoint B: first request, run before any evidence exists, so
+            // it must carry the run-state-consistent NO_EVIDENCE_YET claim.
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "NO_EVIDENCE_YET",
+              supportedBy: [],
+            },
+          },
         ],
       },
       { kind: "report_submission", usage, rawInput: VALID_REPORT },

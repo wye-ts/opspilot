@@ -5,6 +5,15 @@ export const DiagnosticToolRequestSchema = z
     toolCallId: z.string().min(1),
     toolName: z.string().min(1),
     input: z.unknown(),
+    // Issue #58 Checkpoint B (§3.1): the model-declared evidence assessment as
+    // it arrived from the provider, UNVALIDATED. Mirroring rawInput on
+    // report_submission (docs/04-agent-design.md §13) exactly, the provider
+    // adapter only extracts this structurally; authoritative
+    // EvidenceAssessmentSchema validation happens once, in the orchestrator,
+    // uniformly for live and fake providers (see agent-orchestrator.ts's
+    // V0 guard). Never persist or replay this raw form — only the validated
+    // value rides on the canonical TOOL_REQUESTED record.
+    rawAssessment: z.unknown(),
   })
   .strict();
 
