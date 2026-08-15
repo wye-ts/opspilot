@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
-import { FakeLlmProvider, type FakeAgentScenario } from "../providers/fake-llm-provider";
+import { FakeLlmProvider, type FakeAgentScenario, type FakeProviderTurn } from "../providers/fake-llm-provider";
 import { LlmProviderError } from "../providers/llm-provider";
 import type { AgentConversationMessage, LlmProvider } from "../providers/llm-provider";
 import {
@@ -89,6 +89,36 @@ function buildToolRequestScenario(
         requests: [{ toolCallId: "call-1", toolName, input: { serviceSlug } }],
       },
       { kind: "report_submission", usage, rawInput: validReport },
+    ],
+  };
+}
+
+// Issue #57 Checkpoint B — the bounded loop is multi-step, so scenarios must
+// script several sequential diagnostic turns (one tool request per turn, as
+// the runtime and contract require) before whatever final turn a test needs.
+// The fake provider indexes turns by turnIndex, so array position IS the
+// provider turn. toolCallId is derived from position (call-1, call-2, ...) so
+// every request carries a fresh id, as the contract requires.
+function buildMultiToolTurns(toolCount: number, toolName = "get_service_status"): FakeProviderTurn[] {
+  return Array.from({ length: toolCount }, (_, i) => ({
+    kind: "diagnostic_tool_requests",
+    usage,
+    requests: [
+      {
+        toolCallId: `call-${i + 1}`,
+        toolName,
+        input: { serviceSlug: "notification-service" },
+      },
+    ],
+  }));
+}
+
+function buildNToolsThenReportScenario(toolCount: number, report: unknown = validReport): FakeAgentScenario {
+  return {
+    id: `${toolCount}-tools-then-report`,
+    turns: [
+      ...buildMultiToolTurns(toolCount),
+      { kind: "report_submission", usage, rawInput: report },
     ],
   };
 }
@@ -383,33 +413,12 @@ describe("runAgentOrchestrator", () => {
     expect(JSON.stringify(result.reportValidationIssues)).not.toContain("70");
   });
 
-  it("fails with PROVIDER_PROTOCOL_INVALID without a third provider call, when a second diagnostic tool request replaces the required report", async () => {
+  it("fails with PROVIDER_PROTOCOL_INVALID when a fourth diagnostic tool request replaces the required report on the forced finalization turn", async () => {
+    // Three diagnostic turns fill the investigation budget; the 4th request
+    // lands on the reserved FINALIZATION turn, which requires a report.
     const scenario: FakeAgentScenario = {
-      id: "second-tool-request",
-      turns: [
-        {
-          kind: "diagnostic_tool_requests",
-          usage,
-          requests: [
-            {
-              toolCallId: "call-1",
-              toolName: "get_service_status",
-              input: { serviceSlug: "notification-service" },
-            },
-          ],
-        },
-        {
-          kind: "diagnostic_tool_requests",
-          usage,
-          requests: [
-            {
-              toolCallId: "call-2",
-              toolName: "get_service_status",
-              input: { serviceSlug: "notification-service" },
-            },
-          ],
-        },
-      ],
+      id: "fourth-tool-request",
+      turns: [...buildMultiToolTurns(3), ...buildMultiToolTurns(1)],
     };
     const provider = new FakeLlmProvider(scenario);
     const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
@@ -424,11 +433,87 @@ describe("runAgentOrchestrator", () => {
     expect(result.status).toBe("failed");
     if (result.status !== "failed") throw new Error("unreachable");
     expect(result.code).toBe("PROVIDER_PROTOCOL_INVALID");
+    expect(result.failedStage).toBe("REPORT_GENERATION");
+    // Exactly three tool request/completion pairs ran; the rejected request
+    // never produced a trace entry.
     expect(result.trace).toEqual([
       { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" },
       { type: "TOOL_COMPLETED", toolCallId: "call-1", toolName: "get_service_status" },
+      { type: "TOOL_REQUESTED", toolCallId: "call-2", toolName: "get_service_status" },
+      { type: "TOOL_COMPLETED", toolCallId: "call-2", toolName: "get_service_status" },
+      { type: "TOOL_REQUESTED", toolCallId: "call-3", toolName: "get_service_status" },
+      { type: "TOOL_COMPLETED", toolCallId: "call-3", toolName: "get_service_status" },
     ]);
+    // The loop never exceeds MAX_PROVIDER_TURNS.
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(4);
+  });
+
+  it("fails with PROVIDER_PROTOCOL_INVALID at DIAGNOSTIC_EXECUTION when the provider reuses a prior tool-call identity, executing the tool exactly once and never exposing the reused id in the message", async () => {
+    // P1 final correction: a repeated provider toolCallId must be rejected
+    // before any side effect. Checkpoint A's exact-replay semantics would
+    // otherwise re-append an identical (runId, eventType, toolCallId) row and
+    // execute the tool a second time while the ledger records only one
+    // request/completion pair — so runtime, not persistence, must reject.
+    const sentinelToolCallId = "toolu_sk-ant-api03-credential-1a2b3c";
+    const scenario: FakeAgentScenario = {
+      id: "duplicate-tool-call-id",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: sentinelToolCallId,
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+            },
+          ],
+        },
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: sentinelToolCallId,
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+            },
+          ],
+        },
+      ],
+    };
+    const provider = new FakeLlmProvider(scenario);
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+    const registry = new InMemoryToolRegistry([getServiceStatusTool]);
+    const executeSpy = vi.spyOn(getServiceStatusTool, "execute");
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: registry,
+      initialConversation: [ticketContext],
+    });
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.code).toBe("PROVIDER_PROTOCOL_INVALID");
+    // Turn 1 is a post-tool investigation turn, so the truthful active stage
+    // is DIAGNOSTIC_EXECUTION (the run is mid-loop, below its bound).
+    expect(result.failedStage).toBe("DIAGNOSTIC_EXECUTION");
+    // The provider was called for turn 0 and turn 1, but the tool executed
+    // exactly once — the duplicate request was rejected, not re-run.
     expect(runAgentTurnSpy).toHaveBeenCalledTimes(2);
+    expect(executeSpy).toHaveBeenCalledTimes(1);
+    // The rejected duplicate produced no additional trace entries.
+    expect(result.trace).toEqual([
+      { type: "TOOL_REQUESTED", toolCallId: sentinelToolCallId, toolName: "get_service_status" },
+      { type: "TOOL_COMPLETED", toolCallId: sentinelToolCallId, toolName: "get_service_status" },
+    ]);
+    // The failure message is closed: it must never echo the provider-controlled
+    // identifier, even when that identifier is credential-shaped. (The trace
+    // legitimately carries the id from the successful turn-0 execution; the
+    // requirement is that the REJECTION message does not.)
+    expect(result.message).toBe("A diagnostic request reused a prior tool-call identity.");
+    expect(result.message).not.toContain(sentinelToolCallId);
   });
 
   it("stops after a provider protocol_error, without executing tools or calling the provider again", async () => {
@@ -1187,7 +1272,11 @@ describe("runAgentOrchestrator — canonical lifecycle emission", () => {
     expect(result.trace).toEqual([{ type: "REPORT_GENERATED" }]);
   });
 
-  it("emits the exact canonical order for a ONE-TOOL success", async () => {
+  it("emits the exact canonical order for a ONE-TOOL voluntary early report (no REPORT_GENERATION_STARTED)", async () => {
+    // After one diagnostic the loop still has an investigation turn available,
+    // so the provider may submit the report directly on turn 1 — a voluntary
+    // early report, which must NOT be announced with a synthetic
+    // REPORT_GENERATION_STARTED (issue #57 Decision 4).
     const { emitted, emitLifecycleEvent } = recordingEmitter();
     const provider = new FakeLlmProvider(
       buildToolRequestScenario("tool-then-report", "notification-service"),
@@ -1205,7 +1294,6 @@ describe("runAgentOrchestrator — canonical lifecycle emission", () => {
       "AGENT_STARTED",
       "TOOL_REQUESTED",
       "TOOL_COMPLETED",
-      "REPORT_GENERATION_STARTED",
       "REPORT_SUBMITTED",
       "REPORT_VALIDATED",
     ]);
@@ -1381,17 +1469,24 @@ describe("runAgentOrchestrator — canonical lifecycle emission", () => {
     expect(types(emitted)).toEqual(["AGENT_STARTED"]);
   });
 
-  it("attributes a provider failure on the FINALIZATION turn to REPORT_GENERATION", async () => {
+  it("attributes a provider failure on the forced FINALIZATION turn to REPORT_GENERATION", async () => {
+    // The diagnostic bound is exhausted after three tools, so the next
+    // provider call is forced finalization; a provider failure there belongs
+    // to REPORT_GENERATION — never DIAGNOSTIC_EXECUTION, which has finished.
     const { emitted, emitLifecycleEvent } = recordingEmitter();
     let turn = 0;
     const provider: LlmProvider = {
       runAgentTurn: async () => {
-        if (turn++ === 0) {
+        if (turn++ < 3) {
           return {
             type: "diagnostic_tool_request",
-            providerRequestId: "p:0",
+            providerRequestId: `p:${turn - 1}`,
             usage,
-            request: { toolCallId: "call-1", toolName: "get_service_status", input: { serviceSlug: "notification-service" } },
+            request: {
+              toolCallId: `call-${turn}`,
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+            },
           };
         }
         throw new LlmProviderError("SERVER_ERROR", "provider exploded");
@@ -1413,6 +1508,10 @@ describe("runAgentOrchestrator — canonical lifecycle emission", () => {
       "AGENT_STARTED",
       "TOOL_REQUESTED",
       "TOOL_COMPLETED",
+      "TOOL_REQUESTED",
+      "TOOL_COMPLETED",
+      "TOOL_REQUESTED",
+      "TOOL_COMPLETED",
       "REPORT_GENERATION_STARTED",
     ]);
   });
@@ -1420,26 +1519,18 @@ describe("runAgentOrchestrator — canonical lifecycle emission", () => {
   // The final-turn guard runs BEFORE the canonical emission, so a second tool
   // request never produces a second TOOL_REQUESTED (which the reducer would
   // reject as TOOL_LIMIT_EXCEEDED).
-  it("emits no second TOOL_REQUESTED when a tool is requested on the final provider turn", async () => {
+  it("emits no fourth TOOL_REQUESTED when a tool is requested on the forced final provider turn", async () => {
+    // The final-turn guard runs BEFORE the canonical emission, so a tool
+    // request on the finalization turn never produces a 4th TOOL_REQUESTED
+    // (which the reducer would reject).
     const { emitted, emitLifecycleEvent } = recordingEmitter();
-    const twoToolRequests: FakeAgentScenario = {
-      id: "two-tools",
-      turns: [
-        {
-          kind: "diagnostic_tool_requests",
-          usage,
-          requests: [{ toolCallId: "call-1", toolName: "get_service_status", input: { serviceSlug: "notification-service" } }],
-        },
-        {
-          kind: "diagnostic_tool_requests",
-          usage,
-          requests: [{ toolCallId: "call-2", toolName: "get_service_status", input: { serviceSlug: "notification-service" } }],
-        },
-      ],
+    const fourToolRequests: FakeAgentScenario = {
+      id: "four-tools",
+      turns: [...buildMultiToolTurns(3), ...buildMultiToolTurns(1)],
     };
 
     const result = await runAgentOrchestrator({
-      provider: new FakeLlmProvider(twoToolRequests),
+      provider: new FakeLlmProvider(fourToolRequests),
       toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
       initialConversation: [ticketContext],
       emitLifecycleEvent,
@@ -1449,7 +1540,7 @@ describe("runAgentOrchestrator — canonical lifecycle emission", () => {
     if (result.status !== "failed") throw new Error("unreachable");
     expect(result.code).toBe("PROVIDER_PROTOCOL_INVALID");
     expect(result.failedStage).toBe("REPORT_GENERATION");
-    expect(types(emitted).filter((t) => t === "TOOL_REQUESTED")).toHaveLength(1);
+    expect(types(emitted).filter((t) => t === "TOOL_REQUESTED")).toHaveLength(3);
   });
 
   it("does not emit AGENT_STARTED for the pre-agent RETRIEVAL_PARAMS_INVALID exception", async () => {
@@ -1539,5 +1630,399 @@ describe("runAgentOrchestrator — canonical lifecycle emission", () => {
       // Only the investigation turn ran; the finalization turn never started.
       expect(runAgentTurnSpy).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+/**
+ * Issue #57 Checkpoint B — the bounded multi-step runtime loop. These tests
+ * pin the loop mechanics with deterministic fake providers: one diagnostic
+ * tool request per investigation turn, forced finalization on the reserved
+ * final turn, defense-in-depth bounds, truthful active-stage attribution, and
+ * exact event ordering on both output channels. No LIVE/paid provider is
+ * involved.
+ */
+describe("runAgentOrchestrator — bounded multi-step diagnostic loop (issue #57 Checkpoint B)", () => {
+  function recordingEmitter() {
+    const emitted: InvestigationEventPayload[] = [];
+    return {
+      emitted,
+      emitLifecycleEvent: async (payload: InvestigationEventPayload) => {
+        emitted.push(payload);
+      },
+    };
+  }
+
+  const types = (emitted: readonly InvestigationEventPayload[]) => emitted.map((e) => e.type);
+
+  const registry = new InMemoryToolRegistry([getServiceStatusTool]);
+
+  it("completes after two diagnostic tool calls followed by a voluntary report, without REPORT_GENERATION_STARTED", async () => {
+    const provider = new FakeLlmProvider(buildNToolsThenReportScenario(2));
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: registry,
+      initialConversation: [ticketContext],
+    });
+
+    expect(result.status).toBe("completed");
+    if (result.status !== "completed") throw new Error("unreachable");
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(3);
+    expect(result.trace).toEqual([
+      { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" },
+      { type: "TOOL_COMPLETED", toolCallId: "call-1", toolName: "get_service_status" },
+      { type: "TOOL_REQUESTED", toolCallId: "call-2", toolName: "get_service_status" },
+      { type: "TOOL_COMPLETED", toolCallId: "call-2", toolName: "get_service_status" },
+      { type: "REPORT_GENERATED" },
+    ]);
+  });
+
+  it("completes after three diagnostic tool calls followed by the forced finalization report, with REPORT_GENERATION_STARTED", async () => {
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    const provider = new FakeLlmProvider(buildNToolsThenReportScenario(3));
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+    const executeSpy = vi.spyOn(getServiceStatusTool, "execute");
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: registry,
+      initialConversation: [ticketContext],
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("completed");
+    if (result.status !== "completed") throw new Error("unreachable");
+    // The loop used exactly MAX_PROVIDER_TURNS provider calls and exactly
+    // MAX_DIAGNOSTIC_TOOL_CALLS tool executions — never more.
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(4);
+    expect(executeSpy).toHaveBeenCalledTimes(3);
+    // Canonical stream carries every diagnostic request/outcome in exact order,
+    // then the forced-finalization report-start before the finalization result.
+    expect(types(emitted)).toEqual([
+      "AGENT_STARTED",
+      "TOOL_REQUESTED",
+      "TOOL_COMPLETED",
+      "TOOL_REQUESTED",
+      "TOOL_COMPLETED",
+      "TOOL_REQUESTED",
+      "TOOL_COMPLETED",
+      "REPORT_GENERATION_STARTED",
+      "REPORT_SUBMITTED",
+      "REPORT_VALIDATED",
+    ]);
+    // The legacy channel preserves the repeated tool events in exact order.
+    expect(result.trace).toEqual([
+      { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" },
+      { type: "TOOL_COMPLETED", toolCallId: "call-1", toolName: "get_service_status" },
+      { type: "TOOL_REQUESTED", toolCallId: "call-2", toolName: "get_service_status" },
+      { type: "TOOL_COMPLETED", toolCallId: "call-2", toolName: "get_service_status" },
+      { type: "TOOL_REQUESTED", toolCallId: "call-3", toolName: "get_service_status" },
+      { type: "TOOL_COMPLETED", toolCallId: "call-3", toolName: "get_service_status" },
+      { type: "REPORT_GENERATED" },
+    ]);
+  });
+
+  it("emits REPORT_GENERATION_STARTED before the forced-finalization provider call, and never before an investigation turn", async () => {
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    let turn = 0;
+    const provider: LlmProvider = {
+      runAgentTurn: async (input) => {
+        // Asserted AT the provider-call boundary: the finalization call must
+        // already see the report-start fact in the emission stream, while no
+        // investigation call may see it.
+        const startedSeen = emitted.some((e) => e.type === "REPORT_GENERATION_STARTED");
+        if (input.phase === "FINALIZATION") {
+          expect(startedSeen).toBe(true);
+        } else {
+          expect(startedSeen).toBe(false);
+        }
+        if (turn++ < 3) {
+          return {
+            type: "diagnostic_tool_request",
+            providerRequestId: `p:${turn - 1}`,
+            usage,
+            request: {
+              toolCallId: `call-${turn}`,
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+            },
+          };
+        }
+        return { type: "report_submission", providerRequestId: "p:3", usage, rawInput: validReport };
+      },
+    };
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: registry,
+      initialConversation: [ticketContext],
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("completed");
+  });
+
+  it("fails closed with TOOL_NOT_FOUND when a forbidden tool is requested on a later diagnostic step", async () => {
+    const scenario: FakeAgentScenario = {
+      id: "forbidden-on-step-2",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [{ toolCallId: "call-1", toolName: "get_service_status", input: { serviceSlug: "notification-service" } }],
+        },
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [{ toolCallId: "call-2", toolName: "delete_everything", input: { serviceSlug: "notification-service" } }],
+        },
+      ],
+    };
+    const provider = new FakeLlmProvider(scenario);
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+    const executeSpy = vi.spyOn(getServiceStatusTool, "execute");
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: registry,
+      initialConversation: [ticketContext],
+    });
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.code).toBe("TOOL_NOT_FOUND");
+    expect(result.failedStage).toBe("DIAGNOSTIC_EXECUTION");
+    // Step 1 executed; step 2's forbidden request executed nothing.
+    expect(executeSpy).toHaveBeenCalledTimes(1);
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(2);
+    expect(result.trace).toEqual([
+      { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" },
+      { type: "TOOL_COMPLETED", toolCallId: "call-1", toolName: "get_service_status" },
+    ]);
+  });
+
+  it("fails closed with TOOL_EXECUTION_FAILED when a tool throws on a later diagnostic step, without retrying or calling the provider again", async () => {
+    const throwingTool: DiagnosticToolDefinition = {
+      name: "throwing_tool",
+      inputSchema: z.object({}).strict(),
+      outputSchema: z.object({}).strict(),
+      async execute() {
+        throw new Error("simulated internal failure: db connection refused at 10.0.0.5");
+      },
+    };
+    const scenario: FakeAgentScenario = {
+      id: "tool-failure-on-step-2",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [{ toolCallId: "call-1", toolName: "get_service_status", input: { serviceSlug: "notification-service" } }],
+        },
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [{ toolCallId: "call-2", toolName: "throwing_tool", input: {} }],
+        },
+      ],
+    };
+    const provider = new FakeLlmProvider(scenario);
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool, throwingTool]),
+      initialConversation: [ticketContext],
+    });
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.code).toBe("TOOL_EXECUTION_FAILED");
+    expect(result.failedStage).toBe("DIAGNOSTIC_EXECUTION");
+    expect(JSON.stringify(result)).not.toContain("db connection refused");
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(2);
+    expect(result.trace).toEqual([
+      { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" },
+      { type: "TOOL_COMPLETED", toolCallId: "call-1", toolName: "get_service_status" },
+      { type: "TOOL_REQUESTED", toolCallId: "call-2", toolName: "throwing_tool" },
+    ]);
+  });
+
+  it("attributes a protocol error on a post-tool investigation turn to DIAGNOSTIC_EXECUTION", async () => {
+    const scenario: FakeAgentScenario = {
+      id: "post-tool-protocol-error",
+      turns: [
+        ...buildMultiToolTurns(1),
+        // Two requests in one turn normalize to PROVIDER_PROTOCOL_INVALID.
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            { toolCallId: "call-2", toolName: "get_service_status", input: { serviceSlug: "notification-service" } },
+            { toolCallId: "call-3", toolName: "get_service_status", input: { serviceSlug: "billing-service" } },
+          ],
+        },
+      ],
+    };
+    const provider = new FakeLlmProvider(scenario);
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: registry,
+      initialConversation: [ticketContext],
+    });
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.code).toBe("PROVIDER_PROTOCOL_INVALID");
+    expect(result.failedStage).toBe("DIAGNOSTIC_EXECUTION");
+    expect(result.trace).toEqual([
+      { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" },
+      { type: "TOOL_COMPLETED", toolCallId: "call-1", toolName: "get_service_status" },
+    ]);
+  });
+
+  it.each([
+    ["TIMEOUT", "PROVIDER_TIMEOUT"],
+    ["CANCELLED", "PROVIDER_CANCELLED"],
+    ["RATE_LIMIT", "PROVIDER_UNAVAILABLE"],
+  ] as const)(
+    "attributes a provider %s on a post-tool investigation turn to DIAGNOSTIC_EXECUTION",
+    async (category, expectedCode) => {
+      let turn = 0;
+      const provider: LlmProvider = {
+        runAgentTurn: async () => {
+          if (turn++ === 0) {
+            return {
+              type: "diagnostic_tool_request",
+              providerRequestId: "p:0",
+              usage,
+              request: {
+                toolCallId: "call-1",
+                toolName: "get_service_status",
+                input: { serviceSlug: "notification-service" },
+              },
+            };
+          }
+          throw new LlmProviderError(category, `${category} on the second investigation turn`);
+        },
+      };
+
+      const result = await runAgentOrchestrator({
+        provider,
+        toolRegistry: registry,
+        initialConversation: [ticketContext],
+      });
+
+      expect(result.status).toBe("failed");
+      if (result.status !== "failed") throw new Error("unreachable");
+      expect(result.code).toBe(expectedCode);
+      expect(result.failedStage).toBe("DIAGNOSTIC_EXECUTION");
+    },
+  );
+
+  it("completes when the report cites a toolCallId from an earlier diagnostic step", async () => {
+    const provider = new FakeLlmProvider(
+      buildNToolsThenReportScenario(2, {
+        ...validReport,
+        evidence: [
+          { evidenceId: "call-2", sourceType: "TOOL_EXECUTION", finding: "notification-service reported status DEGRADED." },
+        ],
+      }),
+    );
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: registry,
+      initialConversation: [ticketContext],
+    });
+
+    expect(result.status).toBe("completed");
+  });
+
+  it("accumulates every successful diagnostic execution id, so a report may cite several across steps", async () => {
+    const provider = new FakeLlmProvider(
+      buildNToolsThenReportScenario(2, {
+        ...validReport,
+        evidence: [
+          { evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "first finding" },
+          { evidenceId: "call-2", sourceType: "TOOL_EXECUTION", finding: "second finding" },
+        ],
+      }),
+    );
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: registry,
+      initialConversation: [ticketContext],
+    });
+
+    expect(result.status).toBe("completed");
+  });
+
+  it("rejects a report citing a toolCallId that never completed, after several diagnostics", async () => {
+    const provider = new FakeLlmProvider(
+      buildNToolsThenReportScenario(2, {
+        ...validReport,
+        evidence: [
+          { evidenceId: "call-2", sourceType: "TOOL_EXECUTION", finding: "real finding" },
+          { evidenceId: "call-999", sourceType: "TOOL_EXECUTION", finding: "invented finding" },
+        ],
+      }),
+    );
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: registry,
+      initialConversation: [ticketContext],
+    });
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.code).toBe("REPORT_EVIDENCE_INVALID");
+    expect(result.failedStage).toBe("REPORT_GENERATION");
+  });
+
+  it("never lets a tool that failed on a later diagnostic step become successful evidence", async () => {
+    const throwingTool: DiagnosticToolDefinition = {
+      name: "throwing_tool",
+      inputSchema: z.object({}).strict(),
+      outputSchema: z.object({}).strict(),
+      async execute() {
+        throw new Error("boom");
+      },
+    };
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    const scenario: FakeAgentScenario = {
+      id: "failed-step-2",
+      turns: [
+        ...buildMultiToolTurns(1),
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [{ toolCallId: "call-2", toolName: "throwing_tool", input: {} }],
+        },
+      ],
+    };
+
+    const result = await runAgentOrchestrator({
+      provider: new FakeLlmProvider(scenario),
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool, throwingTool]),
+      initialConversation: [ticketContext],
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.code).toBe("TOOL_EXECUTION_FAILED");
+    // The run fails closed before any report could cite the failed id: the
+    // canonical stream ends at the failure and never emits REPORT_SUBMITTED.
+    expect(types(emitted)).toEqual([
+      "AGENT_STARTED",
+      "TOOL_REQUESTED",
+      "TOOL_COMPLETED",
+      "TOOL_REQUESTED",
+      "TOOL_FAILED",
+    ]);
   });
 });

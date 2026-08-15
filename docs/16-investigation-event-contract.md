@@ -12,9 +12,9 @@
 
 ## 0. What v1 models
 
-**Issue #36 v1 models the current OpsPilot runtime exactly: two provider turns maximum, zero or one tool call, optional retrieval.** It does not model speculative multi-tool or generic workflow execution, because the runtime cannot produce those streams and a contract that accepts histories the system cannot generate is not validating anything.
+**Issue #36 v1 modeled the current OpsPilot runtime exactly: two provider turns maximum, zero or one tool call, optional retrieval.** Since issue #57 Checkpoint A, the canonical **contract** additionally accepts a bounded serial multi-step diagnostic loop: up to `MAX_DIAGNOSTIC_TOOL_CALLS` distinct `TOOL_REQUESTED` events per run (`packages/contracts/src/agent-run-bounds.ts`), one open at a time, serialized against `DIAGNOSTIC_EXECUTION`. Since issue #57 Checkpoint B, the **production runtime actually emits** that bounded loop (see `docs/04-agent-design.md` §7): a run may take up to `MAX_PROVIDER_TURNS` provider turns, with at most one diagnostic request per investigation turn, a voluntary report on any earlier turn, and forced finalization on the reserved final turn. Checkpoint A's v1-shaped streams remain valid, and the contract still does not model speculative multi-tool or generic workflow execution beyond the bounded loop.
 
-The two supported successful paths:
+The two v1-shaped successful paths:
 
 ```text
 Direct no-tool report          One-tool finalization
@@ -30,7 +30,30 @@ RUN_COMPLETED                  REPORT_GENERATION_STARTED
                                RUN_COMPLETED
 ```
 
-Not supported in v1, and rejected: a second tool request (`TOOL_LIMIT_EXCEEDED`), multiple sequential tools, concurrent tools, provider reasoning between tools, and generic multi-turn workflow execution.
+Since Checkpoint B the runtime also emits the bounded multi-step loop. Each
+investigation turn carries at most one diagnostic request; the provider may
+submit a voluntary report on any turn before the bound, otherwise the reserved
+final turn forces finalization:
+
+```text
+Bounded multi-step loop (issue #57 Checkpoint B)
+───────────────────────────────────────────────
+RUN_CREATED
+AGENT_STARTED
+[RETRIEVAL_COMPLETED]
+TOOL_REQUESTED / TOOL_COMPLETED        up to MAX_DIAGNOSTIC_TOOL_CALLS pairs,
+TOOL_REQUESTED / TOOL_COMPLETED        one open at a time, serial against
+TOOL_REQUESTED / TOOL_COMPLETED        DIAGNOSTIC_EXECUTION; may stop early
+REPORT_GENERATION_STARTED              ONLY on the forced-finalization turn
+REPORT_SUBMITTED
+REPORT_VALIDATED
+RUN_COMPLETED
+```
+
+A voluntary early report (fewer than `MAX_DIAGNOSTIC_TOOL_CALLS` tools closed)
+skips `REPORT_GENERATION_STARTED` — see §4.
+
+Not supported in v1, and rejected: concurrent tools, provider reasoning between tools, and generic multi-turn workflow execution. Since issue #57 Checkpoint A, a **bounded serial multi-step diagnostic loop** is a contract capability: up to `MAX_DIAGNOSTIC_TOOL_CALLS` distinct tool requests per run, one open at a time, serialized against `DIAGNOSTIC_EXECUTION` (a 4th request while the loop is full is rejected with `TOOL_LIMIT_EXCEEDED`). Since Checkpoint B the **runtime emits** exactly that loop: up to `MAX_DIAGNOSTIC_TOOL_CALLS` diagnostic tool calls across up to `MAX_PROVIDER_TURNS` provider turns, one tool per investigation turn, forced finalization on the reserved final turn.
 
 ---
 
@@ -137,11 +160,11 @@ It is also the **single place** where full validation happens. `hasCanonicalInve
 | `RUN_CREATED` | completes `INVESTIGATION_CREATED`; must be first and unique |
 | `AGENT_STARTED` | activates `AGENT_ANALYSIS`; unique; rejected after any retrieval, tool, or report event |
 | `RETRIEVAL_COMPLETED` | informational; no stage boundary effect. **Optional — see "Retrieval is configuration-dependent" below.** When present: requires `AGENT_STARTED`, requires `AGENT_ANALYSIS` active, at most once in v1, rejected once the tool or report phase has begun |
-| `TOOL_REQUESTED` | requires `AGENT_STARTED` and `AGENT_ANALYSIS` active; hands over to `DIAGNOSTIC_EXECUTION`; **at most one per run** — a second request is rejected with `TOOL_LIMIT_EXCEEDED` while the first is open or has completed. `TOOL_LIMIT_EXCEEDED` applies only while the run has not already entered a terminal failure path; after `TOOL_FAILED`, `EVENT_AFTER_FAILURE` takes precedence over any later non-terminal event, including a second `TOOL_REQUESTED` |
+| `TOOL_REQUESTED` | the **first** request requires `AGENT_STARTED` and `AGENT_ANALYSIS` active and hands over to `DIAGNOSTIC_EXECUTION`; later requests (issue #57) require `DIAGNOSTIC_EXECUTION` already active — the loop is serial, **one open tool call at a time**, so a request while another is still open is rejected with `TOOL_REQUEST_WHILE_OPEN`, and a repeated `toolCallId` with `DUPLICATE_TOOL_CALL_ID`. At most `MAX_DIAGNOSTIC_TOOL_CALLS` distinct requests per run: the request that would exceed the bound is rejected with `TOOL_LIMIT_EXCEEDED`. After `TOOL_FAILED`, `EVENT_AFTER_FAILURE` takes precedence over any later non-terminal event, including a further `TOOL_REQUESTED` |
 | `TOOL_COMPLETED` | closes its tool call as completed; no stage boundary effect |
 | `TOOL_FAILED` | closes its tool call as failed **and immediately fails `DIAGNOSTIC_EXECUTION`** with the exact tool failure code |
 | `REPORT_GENERATION_STARTED` | requires `AGENT_STARTED`, **at least one preceding tool call**, and no open tool call; closes analysis/diagnostics and activates `REPORT_GENERATION`; at most once |
-| `REPORT_SUBMITTED` | requires `AGENT_STARTED` and no open tool call; **on any tool path also requires a prior `REPORT_GENERATION_STARTED`**; opens `REPORT_GENERATION` if not already open; unique |
+| `REPORT_SUBMITTED` | requires `AGENT_STARTED` and no open tool call; opens `REPORT_GENERATION` if not already open; unique. **`REPORT_GENERATION_STARTED` is optional only on a *voluntary early report*** (issue #57, targeted fix): with fewer than `MAX_DIAGNOSTIC_TOOL_CALLS` tools closed, the provider may submit the report directly on a still-available investigation turn, so `TOOL_COMPLETED → REPORT_SUBMITTED → REPORT_VALIDATED` is valid without it. Once the diagnostic bound is **exhausted**, the submission can only be the result of the **forced finalization turn**, which must be announced with `REPORT_GENERATION_STARTED` first — a submission at the bound without it is rejected with `MISSING_LIFECYCLE_FACT`. When the event *is* present it must still precede `REPORT_SUBMITTED` |
 | `REPORT_VALIDATED` | completes `REPORT_GENERATION`; requires a prior `REPORT_SUBMITTED` |
 | `REPORT_VALIDATION_FAILED` | **immediately fails** `REPORT_GENERATION` with the exact report failure code; requires a prior `REPORT_SUBMITTED` |
 | `RUN_COMPLETED` | validates strict completion (below); mutates nothing |
@@ -171,21 +194,36 @@ no retriever configured: AGENT_STARTED → provider/tool/report activity
 
 What the contract constrains is only *where* the event may appear when it does appear (see the table).
 
-### `REPORT_GENERATION_STARTED` is a finalization-turn fact
+### `REPORT_GENERATION_STARTED` is a finalization-turn fact — optional on a voluntary report, required at the exhausted bound
 
-The orchestrator emits it only immediately before a `FINALIZATION` provider call, and under the current
-execution model that turn is reached only after the investigation turn produced a diagnostic tool call.
-So the event **requires a preceding tool phase** and is rejected on a no-tool run
+The orchestrator emits it only immediately before a `FINALIZATION` provider call. Under the current
+execution model that turn is reached only after the investigation turn produced a diagnostic tool call,
+so when the event *is* present it **requires a preceding tool phase** and is rejected on a no-tool run
 (`PHASE_ORDER_VIOLATION`). On the direct no-tool path report generation begins at `REPORT_SUBMITTED`.
 
-Conversely, on any tool path the event becomes mandatory, in two places:
+On a tool path the fact is **optional precisely when the loop still has an investigation turn
+available** — a **voluntary early report** (issue #57, targeted fix). With fewer than
+`MAX_DIAGNOSTIC_TOOL_CALLS` diagnostic requests issued and all closed successfully, the provider may
+submit the report directly on that still-available turn, so `TOOL_COMPLETED → REPORT_SUBMITTED →
+REPORT_VALIDATED` is canonical without it. Once exactly `MAX_DIAGNOSTIC_TOOL_CALLS` requests have
+occurred there is no investigation turn left: the next provider call is necessarily the **forced
+finalization turn**, and the runtime contract requires `REPORT_GENERATION_STARTED` to be emitted
+**before** that call. A submission at the exhausted bound without the fact is therefore rejected
+(`MISSING_LIFECYCLE_FACT`), and the only runtime-producible finalization shape there is
+`third TOOL_COMPLETED → REPORT_GENERATION_STARTED → report result`.
 
-- `REPORT_SUBMITTED` after a tool phase requires it (`MISSING_LIFECYCLE_FACT`);
-- **`RUN_FAILED` after tools closed successfully with no `TOOL_FAILED` also requires it**
-  (`MISSING_LIFECYCLE_FACT`). Once every tool succeeded, the next thing the orchestrator does is the
-  finalization provider call, so a provider or protocol failure at that point belongs to
-  `REPORT_GENERATION`. Without the report-start fact the stream would attribute it to
-  `DIAGNOSTIC_EXECUTION`, which had already finished its work.
+Two failure-attribution consequences follow:
+
+- A provider/protocol failure on the **forced finalization turn** names `REPORT_GENERATION`, and it
+  requires the report-start fact: a `RUN_FAILED` naming `REPORT_GENERATION` for a provider or protocol
+  code after tools closed successfully with no `TOOL_FAILED` still requires it
+  (`MISSING_LIFECYCLE_FACT`). Without the fact the stream would attribute the failure to
+  `DIAGNOSTIC_EXECUTION`, which had already finished its work. This is a finalization-turn failure,
+  **not** a mid-loop failure — the mid-loop exception (below) applies only to provider failures
+  *between* diagnostics while the loop is still below its bound.
+- A provider/protocol failure **between** diagnostics (fewer than `MAX_DIAGNOSTIC_TOOL_CALLS` requests
+  issued, no open call) names `DIAGNOSTIC_EXECUTION` and needs no report-start fact — see the
+  precisely-scoped mid-loop exception in the failure-policy table below.
 
 ### Terminal failure names the stage that was running
 
@@ -210,8 +248,22 @@ names. The rules are derived from the actual `failed(...)` sites in
 | Retrieval | `RETRIEVAL_PARAMS_INVALID`, `RETRIEVAL_FAILED`, `RETRIEVAL_RESPONSE_INVALID` | `AGENT_ANALYSIS` | — |
 | Tool | `TOOL_NOT_FOUND`, `TOOL_INPUT_INVALID`, `TOOL_EXECUTION_FAILED`, `TOOL_OUTPUT_INVALID` | `DIAGNOSTIC_EXECUTION` | a preceding `TOOL_FAILED` fact |
 | Report validation | `REPORT_SCHEMA_INVALID`, `REPORT_EVIDENCE_INVALID` | `REPORT_GENERATION` | a preceding `REPORT_VALIDATION_FAILED` fact |
-| Provider / protocol | `PROVIDER_PROTOCOL_INVALID`, `PROVIDER_UNAVAILABLE`, `PROVIDER_TIMEOUT`, `PROVIDER_CANCELLED` | `AGENT_ANALYSIS` **or** `REPORT_GENERATION` (after `REPORT_GENERATION_STARTED`, **before** `REPORT_SUBMITTED`) | never `DIAGNOSTIC_EXECUTION`; never after `REPORT_SUBMITTED` |
+| Provider / protocol | `PROVIDER_PROTOCOL_INVALID`, `PROVIDER_UNAVAILABLE`, `PROVIDER_TIMEOUT`, `PROVIDER_CANCELLED` | `AGENT_ANALYSIS` **or** `REPORT_GENERATION` (after `REPORT_GENERATION_STARTED`, **before** `REPORT_SUBMITTED`) **or** `DIAGNOSTIC_EXECUTION` only while the diagnostic loop is mid-flight (issue #57 §7) | never after `REPORT_SUBMITTED`; the `DIAGNOSTIC_EXECUTION` exception requires the loop to be active and **below its bound** — at least one request begun, fewer than `MAX_DIAGNOSTIC_TOOL_CALLS` requests issued, no open tool call, no tool-specific failure, and the report phase not begun |
 | Pre-agent exception | `RETRIEVAL_PARAMS_INVALID` only | `AGENT_ANALYSIS` | stream is exactly `RUN_CREATED → RUN_FAILED` |
+
+**Narrow mid-loop provider exception (issue #57 §7).** In the bounded loop a provider call happens not
+only before analysis and before finalization but *between* diagnostic tools — each loop iteration asks
+the model for the next action. A provider or protocol failure on such a call is causally a
+`DIAGNOSTIC_EXECUTION` failure even though no tool call is open at that instant. The reducer admits it
+only while the loop is demonstrably mid-flight *and still below its bound*: at least one `TOOL_REQUESTED`
+has begun, fewer than `MAX_DIAGNOSTIC_TOOL_CALLS` requests were issued, no tool call is open (the
+failure is what ended the iteration, not a tool), no tool-specific failure fact is present (a tool
+failure would have already attributed the stage), and the report phase has not begun. At the **exhausted
+bound** the loop is no longer mid-flight — the next provider call is the forced finalization turn, so a
+provider failure there belongs to `REPORT_GENERATION` (announced with `REPORT_GENERATION_STARTED`), never
+to `DIAGNOSTIC_EXECUTION`. Outside those conditions the four provider codes are
+`DIAGNOSTIC_EXECUTION`-illegal exactly as before, and the matching `REPORT_GENERATION_STARTED`-less
+stream is still rejected.
 
 **Once `REPORT_SUBMITTED` has occurred the provider has already returned a report payload**, so a
 provider or protocol failure can no longer be what ended the run — only report validation can. The only

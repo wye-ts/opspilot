@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { MAX_DIAGNOSTIC_TOOL_CALLS } from "./agent-run-bounds";
 import { AgentOrchestratorErrorCodeSchema } from "./agent-orchestrator";
 import { ExecutionStageProgressListSchema } from "./investigation-execution-stage";
 import type { InvestigationEventRecord, InvestigationEventRecordPayload } from "./investigation-event";
@@ -96,6 +97,26 @@ const ONE_TOOL_SUCCESS = [
   ev({ type: "RUN_COMPLETED" }, 10),
 ];
 
+// The full bounded loop: MAX_DIAGNOSTIC_TOOL_CALLS serial tools, then the
+// FORCED finalization turn — which, with the diagnostic bound exhausted, is
+// the only provider call left and MUST be announced with
+// REPORT_GENERATION_STARTED before the report is submitted.
+const THREE_TOOL_SUCCESS = [
+  ev({ type: "RUN_CREATED" }, 0),
+  ev({ type: "AGENT_STARTED" }, 1),
+  ev({ type: "RETRIEVAL_COMPLETED", chunks: [] }, 2),
+  ev({ type: "TOOL_REQUESTED", toolCallId: "c1", toolName: "check_status" }, 3),
+  ev({ type: "TOOL_COMPLETED", toolCallId: "c1", toolName: "check_status" }, 4),
+  ev({ type: "TOOL_REQUESTED", toolCallId: "c2", toolName: "inspect_logs" }, 5),
+  ev({ type: "TOOL_COMPLETED", toolCallId: "c2", toolName: "inspect_logs" }, 6),
+  ev({ type: "TOOL_REQUESTED", toolCallId: "c3", toolName: "query_metrics" }, 7),
+  ev({ type: "TOOL_COMPLETED", toolCallId: "c3", toolName: "query_metrics" }, 8),
+  ev({ type: "REPORT_GENERATION_STARTED" }, 9),
+  ev({ type: "REPORT_SUBMITTED" }, 10),
+  ev({ type: "REPORT_VALIDATED" }, 11),
+  ev({ type: "RUN_COMPLETED" }, 11),
+];
+
 describe("successful runs", () => {
   it("no-tool success omits DIAGNOSTIC_EXECUTION rather than leaving it pending", () => {
     const progress = derive({
@@ -118,24 +139,28 @@ describe("successful runs", () => {
     expect(stage(progress, "REPORT_GENERATION").status).toBe("completed");
   });
 
-  it("rejects a tool run that submits a report without REPORT_GENERATION_STARTED", () => {
-    expectCode(
-      () =>
-        derive({
-          events: stream([
-            ev({ type: "RUN_CREATED" }, 0),
-            ev({ type: "AGENT_STARTED" }, 1),
-            ev({ type: "TOOL_REQUESTED", toolCallId: "c1", toolName: "t" }, 2),
-            ev({ type: "TOOL_COMPLETED", toolCallId: "c1", toolName: "t" }, 3),
-            ev({ type: "REPORT_SUBMITTED" }, 4),
-            ev({ type: "REPORT_VALIDATED" }, 5),
-            ev({ type: "RUN_COMPLETED" }, 5),
-          ]),
-          runStatus: "COMPLETED",
-          now: at(5),
-        }),
-      "MISSING_LIFECYCLE_FACT",
-    );
+  it("accepts a voluntary early report without REPORT_GENERATION_STARTED while a turn remains", () => {
+    // #57 (targeted fix): with fewer than MAX_DIAGNOSTIC_TOOL_CALLS tools and
+    // the tool closed, the provider may VOLUNTARILY submit the report on a
+    // still-available investigation turn, so no report-start is needed. This
+    // is distinct from the forced finalization path at the exhausted bound,
+    // where REPORT_GENERATION_STARTED is required (tested in the bounded-loop
+    // describe).
+    const progress = derive({
+      events: stream([
+        ev({ type: "RUN_CREATED" }, 0),
+        ev({ type: "AGENT_STARTED" }, 1),
+        ev({ type: "TOOL_REQUESTED", toolCallId: "c1", toolName: "t" }, 2),
+        ev({ type: "TOOL_COMPLETED", toolCallId: "c1", toolName: "t" }, 3),
+        ev({ type: "REPORT_SUBMITTED" }, 4),
+        ev({ type: "REPORT_VALIDATED" }, 5),
+        ev({ type: "RUN_COMPLETED" }, 5),
+      ]),
+      runStatus: "COMPLETED",
+      now: at(5),
+    });
+    expect(stage(progress, "DIAGNOSTIC_EXECUTION").status).toBe("completed");
+    expect(stage(progress, "REPORT_GENERATION").status).toBe("completed");
   });
 
   it("allows the direct no-tool path to submit without REPORT_GENERATION_STARTED", () => {
@@ -440,7 +465,12 @@ describe("lifecycle uniqueness and ordering", () => {
 describe("tool-call identity and state", () => {
   const prefix = [ev({ type: "RUN_CREATED" }, 0), ev({ type: "AGENT_STARTED" }, 1)];
 
-  it("rejects a repeated TOOL_REQUESTED id via the one-tool limit", () => {
+  it("rejects a repeated TOOL_REQUESTED id with DUPLICATE_TOOL_CALL_ID", () => {
+    // #57 §3: a direct invalid stream reusing a toolCallId as a new request
+    // is a contract violation. Exact-replay duplicates of an identical
+    // payload are resolved to the original row at the repository layer, so
+    // reaching this check means a genuinely distinct second request reused
+    // the id.
     expectCode(
       () =>
         derive({
@@ -450,7 +480,7 @@ describe("tool-call identity and state", () => {
             ev({ type: "TOOL_REQUESTED", toolCallId: "c1", toolName: "t" }, 3),
           ]),
         }),
-      "TOOL_LIMIT_EXCEEDED",
+      "DUPLICATE_TOOL_CALL_ID",
     );
   });
 
@@ -552,19 +582,22 @@ describe("tool-call identity and state", () => {
     );
   });
 
-  it("rejects a second tool call after the first completed (v1 executes at most one)", () => {
-    expectCode(
-      () =>
-        derive({
-          events: stream([
-            ...prefix,
-            ev({ type: "TOOL_REQUESTED", toolCallId: "c1", toolName: "a" }, 2),
-            ev({ type: "TOOL_COMPLETED", toolCallId: "c1", toolName: "a" }, 3),
-            ev({ type: "TOOL_REQUESTED", toolCallId: "c2", toolName: "b" }, 4),
-          ]),
-        }),
-      "TOOL_LIMIT_EXCEEDED",
-    );
+  it("accepts a second tool call after the first completed (the loop continues)", () => {
+    // #57 §5: completed diagnostic calls do not move the macro stage back to
+    // AGENT_ANALYSIS; a second request while DIAGNOSTIC_EXECUTION is active
+    // continues the loop.
+    const progress = derive({
+      events: stream([
+        ...prefix,
+        ev({ type: "TOOL_REQUESTED", toolCallId: "c1", toolName: "a" }, 2),
+        ev({ type: "TOOL_COMPLETED", toolCallId: "c1", toolName: "a" }, 3),
+        ev({ type: "TOOL_REQUESTED", toolCallId: "c2", toolName: "b" }, 4),
+      ]),
+      runStatus: "RUNNING",
+      now: at(6),
+    });
+    expect(stage(progress, "AGENT_ANALYSIS").status).toBe("completed");
+    expect(stage(progress, "DIAGNOSTIC_EXECUTION").status).toBe("active");
   });
 
   it("preserves a valid mid-tool RUNNING prefix", () => {
@@ -1297,7 +1330,7 @@ describe("REPORT_GENERATION_STARTED is a finalization-turn fact", () => {
   });
 });
 
-// ── Finding 3: tool-path finalization failures need report-start ─────────
+// ── Finding 3, narrowed by #57 §7: mid-loop provider failures ────────────
 
 describe("tool-path finalization failure attribution", () => {
   const toolSuccessPrefix = [
@@ -1308,19 +1341,23 @@ describe("tool-path finalization failure attribution", () => {
     ev({ type: "TOOL_COMPLETED", toolCallId: "c1", toolName: "t" }, 4),
   ];
 
-  it("rejects a finalization provider failure with no report-start", () => {
-    expectCode(
-      () =>
-        derive({
-          events: stream([
-            ...toolSuccessPrefix,
-            ev({ type: "RUN_FAILED", failureCode: "PROVIDER_TIMEOUT", failedStage: "DIAGNOSTIC_EXECUTION" }, 5),
-          ]),
-          runStatus: "FAILED",
-          now: at(5),
-        }),
-      "MISSING_LIFECYCLE_FACT",
-    );
+  it("accepts a mid-loop provider failure at DIAGNOSTIC_EXECUTION without report-start", () => {
+    // #57 §7: with the tool closed and the loop genuinely mid-flight (at
+    // least one request, no open call, no tool-specific failure, no report
+    // phase), a provider/protocol failure may truthfully name
+    // DIAGNOSTIC_EXECUTION — and REPORT_GENERATION_STARTED is not required
+    // for it.
+    const progress = derive({
+      events: stream([
+        ...toolSuccessPrefix,
+        ev({ type: "RUN_FAILED", failureCode: "PROVIDER_TIMEOUT", failedStage: "DIAGNOSTIC_EXECUTION" }, 5),
+      ]),
+      runStatus: "FAILED",
+      now: at(5),
+    });
+    expect(stage(progress, "DIAGNOSTIC_EXECUTION").status).toBe("failed");
+    expect(stage(progress, "DIAGNOSTIC_EXECUTION").failureCode).toBe("PROVIDER_TIMEOUT");
+    expect(stage(progress, "REPORT_GENERATION").status).toBe("omitted");
   });
 
   it("accepts the same failure once report-start is recorded and it fails REPORT_GENERATION", () => {
@@ -1354,12 +1391,12 @@ describe("tool-path finalization failure attribution", () => {
   });
 });
 
-// ── Finding 4: sequential tool calls ─────────────────────────────────────
+// ── #57 §5: the bounded multi-step diagnostic loop ────────────────────────
 
-describe("v1 executes at most one tool call", () => {
+describe("bounded multi-step diagnostic loop", () => {
   const prefix = [ev({ type: "RUN_CREATED" }, 0), ev({ type: "AGENT_STARTED" }, 1)];
 
-  it("rejects a second request while the first is still open", () => {
+  it("rejects a new request while another call is still open (case 7)", () => {
     expectCode(
       () =>
         derive({
@@ -1369,11 +1406,13 @@ describe("v1 executes at most one tool call", () => {
             ev({ type: "TOOL_REQUESTED", toolCallId: "c2", toolName: "b" }, 3),
           ]),
         }),
-      "TOOL_LIMIT_EXCEEDED",
+      "TOOL_REQUEST_WHILE_OPEN",
     );
   });
 
-  it("rejects a second request after the first completed", () => {
+  it("rejects a fourth distinct request with TOOL_LIMIT_EXCEEDED (case 12)", () => {
+    // MAX_DIAGNOSTIC_TOOL_CALLS = 3 requests are legal; the fourth distinct
+    // request hits the bound.
     expectCode(
       () =>
         derive({
@@ -1382,6 +1421,10 @@ describe("v1 executes at most one tool call", () => {
             ev({ type: "TOOL_REQUESTED", toolCallId: "c1", toolName: "a" }, 2),
             ev({ type: "TOOL_COMPLETED", toolCallId: "c1", toolName: "a" }, 3),
             ev({ type: "TOOL_REQUESTED", toolCallId: "c2", toolName: "b" }, 4),
+            ev({ type: "TOOL_COMPLETED", toolCallId: "c2", toolName: "b" }, 5),
+            ev({ type: "TOOL_REQUESTED", toolCallId: "c3", toolName: "c" }, 6),
+            ev({ type: "TOOL_COMPLETED", toolCallId: "c3", toolName: "c" }, 7),
+            ev({ type: "TOOL_REQUESTED", toolCallId: "c4", toolName: "d" }, 8),
           ]),
         }),
       "TOOL_LIMIT_EXCEEDED",
@@ -1390,7 +1433,7 @@ describe("v1 executes at most one tool call", () => {
 
   it("rejects a second request after the first failed", () => {
     // A failure fact makes any later non-terminal event illegal, so the
-    // stream is rejected before the tool limit is consulted — the point is
+    // stream is rejected before any loop rule is consulted — the point is
     // that a second tool call is unreachable either way.
     expectCode(
       () =>
@@ -1404,6 +1447,125 @@ describe("v1 executes at most one tool call", () => {
         }),
       "EVENT_AFTER_FAILURE",
     );
+  });
+
+  it("accepts the full three-tool forced-finalization loop WITH REPORT_GENERATION_STARTED (case 13)", () => {
+    // At the exhausted diagnostic bound the next provider call is necessarily
+    // the forced FINALIZATION turn, which must be announced with
+    // REPORT_GENERATION_STARTED before the report is submitted.
+    const progress = derive({ events: stream(THREE_TOOL_SUCCESS), runStatus: "COMPLETED", now: at(11) });
+    expect(stage(progress, "AGENT_ANALYSIS").status).toBe("completed");
+    expect(stage(progress, "DIAGNOSTIC_EXECUTION").status).toBe("completed");
+    expect(stage(progress, "REPORT_GENERATION").status).toBe("completed");
+  });
+
+  it("accepts a two-tool voluntary early report without REPORT_GENERATION_STARTED (case 1)", () => {
+    // Fewer than MAX_DIAGNOSTIC_TOOL_CALLS tools, all closed: the report may
+    // be submitted directly on a still-available investigation turn.
+    const progress = derive({
+      events: stream([
+        ...prefix,
+        ev({ type: "TOOL_REQUESTED", toolCallId: "c1", toolName: "a" }, 2),
+        ev({ type: "TOOL_COMPLETED", toolCallId: "c1", toolName: "a" }, 3),
+        ev({ type: "TOOL_REQUESTED", toolCallId: "c2", toolName: "b" }, 4),
+        ev({ type: "TOOL_COMPLETED", toolCallId: "c2", toolName: "b" }, 5),
+        ev({ type: "REPORT_SUBMITTED" }, 6),
+        ev({ type: "REPORT_VALIDATED" }, 7),
+        ev({ type: "RUN_COMPLETED" }, 7),
+      ]),
+      runStatus: "COMPLETED",
+      now: at(7),
+    });
+    expect(stage(progress, "DIAGNOSTIC_EXECUTION").status).toBe("completed");
+    expect(stage(progress, "REPORT_GENERATION").status).toBe("completed");
+  });
+
+  it("rejects REPORT_SUBMITTED without REPORT_GENERATION_STARTED after three completed tools (case 2)", () => {
+    // At the exhausted bound the submission can only be the result of the
+    // forced finalization turn, which must be recorded first.
+    expectCode(
+      () =>
+        derive({
+          events: stream([
+            ...prefix,
+            ev({ type: "TOOL_REQUESTED", toolCallId: "c1", toolName: "a" }, 2),
+            ev({ type: "TOOL_COMPLETED", toolCallId: "c1", toolName: "a" }, 3),
+            ev({ type: "TOOL_REQUESTED", toolCallId: "c2", toolName: "b" }, 4),
+            ev({ type: "TOOL_COMPLETED", toolCallId: "c2", toolName: "b" }, 5),
+            ev({ type: "TOOL_REQUESTED", toolCallId: "c3", toolName: "c" }, 6),
+            ev({ type: "TOOL_COMPLETED", toolCallId: "c3", toolName: "c" }, 7),
+            ev({ type: "REPORT_SUBMITTED" }, 8),
+          ]),
+          runStatus: "RUNNING",
+          now: at(8),
+        }),
+      "MISSING_LIFECYCLE_FACT",
+    );
+  });
+
+  it("accepts a two-tool mid-loop provider failure at DIAGNOSTIC_EXECUTION (case 4)", () => {
+    // toolCallCount (2) is below the bound, so the loop is genuinely mid-flight
+    // and a provider/protocol failure may truthfully name DIAGNOSTIC_EXECUTION.
+    const progress = derive({
+      events: stream([
+        ...prefix,
+        ev({ type: "TOOL_REQUESTED", toolCallId: "c1", toolName: "a" }, 2),
+        ev({ type: "TOOL_COMPLETED", toolCallId: "c1", toolName: "a" }, 3),
+        ev({ type: "TOOL_REQUESTED", toolCallId: "c2", toolName: "b" }, 4),
+        ev({ type: "TOOL_COMPLETED", toolCallId: "c2", toolName: "b" }, 5),
+        ev({ type: "RUN_FAILED", failureCode: "PROVIDER_TIMEOUT", failedStage: "DIAGNOSTIC_EXECUTION" }, 6),
+      ]),
+      runStatus: "FAILED",
+      now: at(6),
+    });
+    expect(stage(progress, "DIAGNOSTIC_EXECUTION").status).toBe("failed");
+    expect(stage(progress, "DIAGNOSTIC_EXECUTION").failureCode).toBe("PROVIDER_TIMEOUT");
+  });
+
+  it("rejects a provider failure at DIAGNOSTIC_EXECUTION after three completed tools (case 5)", () => {
+    // At the exhausted bound the loop is no longer mid-flight, so a provider
+    // code cannot be attributed to DIAGNOSTIC_EXECUTION; the forced
+    // finalization turn (and any failure on it) belongs to REPORT_GENERATION.
+    expectCode(
+      () =>
+        derive({
+          events: stream([
+            ...prefix,
+            ev({ type: "TOOL_REQUESTED", toolCallId: "c1", toolName: "a" }, 2),
+            ev({ type: "TOOL_COMPLETED", toolCallId: "c1", toolName: "a" }, 3),
+            ev({ type: "TOOL_REQUESTED", toolCallId: "c2", toolName: "b" }, 4),
+            ev({ type: "TOOL_COMPLETED", toolCallId: "c2", toolName: "b" }, 5),
+            ev({ type: "TOOL_REQUESTED", toolCallId: "c3", toolName: "c" }, 6),
+            ev({ type: "TOOL_COMPLETED", toolCallId: "c3", toolName: "c" }, 7),
+            ev({ type: "RUN_FAILED", failureCode: "PROVIDER_TIMEOUT", failedStage: "DIAGNOSTIC_EXECUTION" }, 8),
+          ]),
+          runStatus: "FAILED",
+          now: at(8),
+        }),
+      "FAILURE_CODE_STAGE_MISMATCH",
+    );
+  });
+
+  it("accepts a forced-finalization provider failure at REPORT_GENERATION after three tools (case 6)", () => {
+    // 3 completed tools → REPORT_GENERATION_STARTED → provider failure on the
+    // forced finalization turn: the only runtime-producible finalization path.
+    const progress = derive({
+      events: stream([
+        ...prefix,
+        ev({ type: "TOOL_REQUESTED", toolCallId: "c1", toolName: "a" }, 2),
+        ev({ type: "TOOL_COMPLETED", toolCallId: "c1", toolName: "a" }, 3),
+        ev({ type: "TOOL_REQUESTED", toolCallId: "c2", toolName: "b" }, 4),
+        ev({ type: "TOOL_COMPLETED", toolCallId: "c2", toolName: "b" }, 5),
+        ev({ type: "TOOL_REQUESTED", toolCallId: "c3", toolName: "c" }, 6),
+        ev({ type: "TOOL_COMPLETED", toolCallId: "c3", toolName: "c" }, 7),
+        ev({ type: "REPORT_GENERATION_STARTED" }, 8),
+        ev({ type: "RUN_FAILED", failureCode: "PROVIDER_TIMEOUT", failedStage: "REPORT_GENERATION" }, 9),
+      ]),
+      runStatus: "FAILED",
+      now: at(9),
+    });
+    expect(stage(progress, "REPORT_GENERATION").status).toBe("failed");
+    expect(stage(progress, "REPORT_GENERATION").failureCode).toBe("PROVIDER_TIMEOUT");
   });
 
   it("accepts the single-tool path and the no-tool path", () => {
@@ -1846,6 +2008,25 @@ describe("contract errors never echo provider-controlled values", () => {
           ]),
         }),
       "DUPLICATE_TOOL_OUTCOME",
+    );
+    assertSanitized(error.message, MALICIOUS_ID);
+  });
+
+  it("omits a malicious toolCallId from a DUPLICATE_TOOL_CALL_ID message", () => {
+    // #57 targeted fix: the repeated-identity message must not echo the raw
+    // (provider-controlled) toolCallId — only the closed error code, sequence
+    // number, and a structural description.
+    const error = expectCode(
+      () =>
+        derive({
+          events: stream([
+            ev({ type: "RUN_CREATED" }, 0),
+            ev({ type: "AGENT_STARTED" }, 1),
+            ev({ type: "TOOL_REQUESTED", toolCallId: MALICIOUS_ID, toolName: "t" }, 2),
+            ev({ type: "TOOL_REQUESTED", toolCallId: MALICIOUS_ID, toolName: "t" }, 3),
+          ]),
+        }),
+      "DUPLICATE_TOOL_CALL_ID",
     );
     assertSanitized(error.message, MALICIOUS_ID);
   });

@@ -67,12 +67,35 @@ const REPORT: ResolutionReport = {
   suggestedActions: [],
 };
 
-function investigationTurn(): FakeMessage {
+// A report that cites exactly the toolCallIds that actually completed, as the
+// orchestrator's evidence validator requires (it rejects evidence that does not
+// reference a completed TOOL_EXECUTION id).
+function reportCiting(...evidenceIds: string[]): ResolutionReport {
+  return {
+    category: "SERVICE_DEGRADATION",
+    summary: "The notification service is degraded, delaying outbound email.",
+    rootCause: "get_service_status reported the notification service as DEGRADED.",
+    customerImpact: "Customers experience delayed notification emails.",
+    recommendedResolution: "Escalate to the notifications on-call engineer.",
+    confidence: 0.8,
+    evidence: evidenceIds.map((evidenceId) => ({
+      evidenceId,
+      sourceType: "TOOL_EXECUTION",
+      finding: `get_service_status returned DEGRADED for notification-service (${evidenceId}).`,
+    })),
+    suggestedActions: [],
+  };
+}
+
+// toolCallId defaults to TOOL_CALL_ID so single-investigation-turn tests keep
+// their existing fixtures; multi-turn tests pass distinct ids, because the
+// runtime rejects a reused diagnostic tool-call identity within one run.
+function investigationTurn(toolCallId: string = TOOL_CALL_ID): FakeMessage {
   return message({
     content: [
       {
         type: "tool_use",
-        id: TOOL_CALL_ID,
+        id: toolCallId,
         name: "get_service_status",
         input: { serviceSlug: "notification-service" },
         caller: { type: "direct" },
@@ -153,27 +176,47 @@ describe("orchestrator through the Claude adapter (mocked transport)", () => {
     expect(result.report.evidence[0]?.evidenceId).toBe(TOOL_CALL_ID);
   });
 
-  it("drives exactly two provider turns, with the phase-appropriate tool policy", async () => {
+  it("drives exactly four provider turns — three investigation turns, then the reserved finalization turn — with the phase-appropriate tool policy", async () => {
+    // Under the #57 bound (MAX_PROVIDER_TURNS = 4, MAX_DIAGNOSTIC_TOOL_CALLS = 3)
+    // the provider is called once per turn: turns 0-2 are investigation turns
+    // (tool_choice auto), and turn 3 is the reserved finalization turn, which
+    // forces submit_resolution_report.
+    //
+    // The three investigation turns carry DISTINCT toolCallIds (call-1/2/3),
+    // as the contract and the runtime's duplicate-identity guard require, and
+    // the finalization report cites exactly the successful distinct ids the
+    // evidence validator accepts.
     const create = vi
       .fn()
-      .mockResolvedValueOnce(investigationTurn())
-      .mockResolvedValueOnce(finalizationTurn());
+      .mockResolvedValueOnce(investigationTurn("call-1"))
+      .mockResolvedValueOnce(investigationTurn("call-2"))
+      .mockResolvedValueOnce(investigationTurn("call-3"))
+      .mockResolvedValueOnce(finalizationTurn(reportCiting("call-1", "call-2", "call-3")));
 
     await runOrchestrator(buildProvider(create));
 
-    expect(create).toHaveBeenCalledTimes(2);
+    expect(create).toHaveBeenCalledTimes(4);
 
-    const first = create.mock.calls[0]?.[0] as Anthropic.MessageCreateParamsNonStreaming;
-    const second = create.mock.calls[1]?.[0] as Anthropic.MessageCreateParamsNonStreaming;
+    const investigationCalls = create.mock.calls.slice(0, 3);
+    for (const [params] of investigationCalls) {
+      expect((params as Anthropic.MessageCreateParamsNonStreaming).tool_choice).toEqual({
+        type: "auto",
+        disable_parallel_tool_use: true,
+      });
+    }
 
-    expect(first.tool_choice).toEqual({ type: "auto", disable_parallel_tool_use: true });
-    expect(second.tool_choice).toEqual({
+    const finalizationParams = create.mock.calls[3]?.[0] as Anthropic.MessageCreateParamsNonStreaming;
+    expect(finalizationParams.tool_choice).toEqual({
       type: "tool",
       name: "submit_resolution_report",
       disable_parallel_tool_use: true,
     });
-    // The tool result from turn 1 is replayed into turn 2's conversation.
-    expect(JSON.stringify(second.messages)).toContain(TOOL_CALL_ID);
+    // The tool results from all three investigation turns are replayed into the
+    // reserved finalization turn's conversation, each carrying its own id.
+    const finalizationConversation = JSON.stringify(finalizationParams.messages);
+    for (const callId of ["call-1", "call-2", "call-3"]) {
+      expect(finalizationConversation).toContain(callId);
+    }
   });
 
   it("rejects a report citing evidence the run never produced", async () => {

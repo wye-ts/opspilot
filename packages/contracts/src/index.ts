@@ -11,6 +11,10 @@ import {
   RecordApprovalDecisionInputSchema as _RecordApprovalDecisionInputSchema,
 } from "./agent-run-approval";
 import {
+  MAX_DIAGNOSTIC_TOOL_CALLS as _MAX_DIAGNOSTIC_TOOL_CALLS,
+  MAX_PROVIDER_TURNS as _MAX_PROVIDER_TURNS,
+} from "./agent-run-bounds";
+import {
   EvidenceReferenceSchema as _EvidenceReferenceSchema,
   IncidentCategorySchema as _IncidentCategorySchema,
   ResolutionReportSchema as _ResolutionReportSchema,
@@ -72,6 +76,8 @@ import {
 
 export const ApprovalDecisionSchema = _ApprovalDecisionSchema;
 export const RecordApprovalDecisionInputSchema = _RecordApprovalDecisionInputSchema;
+export const MAX_PROVIDER_TURNS = _MAX_PROVIDER_TURNS;
+export const MAX_DIAGNOSTIC_TOOL_CALLS = _MAX_DIAGNOSTIC_TOOL_CALLS;
 export const EvidenceReferenceSchema = _EvidenceReferenceSchema;
 export const IncidentCategorySchema = _IncidentCategorySchema;
 export const ResolutionReportSchema = _ResolutionReportSchema;

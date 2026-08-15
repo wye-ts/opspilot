@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { MAX_DIAGNOSTIC_TOOL_CALLS } from "./agent-run-bounds";
 import type { AgentOrchestratorErrorCode } from "./agent-orchestrator";
 import {
   ExecutionStageProgressListSchema,
@@ -43,6 +44,8 @@ export type InvestigationEventContractErrorCode =
   | "TOOL_NAME_MISMATCH"
   | "OPEN_TOOL_CALL"
   | "TOOL_LIMIT_EXCEEDED"
+  | "DUPLICATE_TOOL_CALL_ID"
+  | "TOOL_REQUEST_WHILE_OPEN"
   | "TOOL_REQUEST_AFTER_REPORT_PHASE"
   // ── Terminal and failure consistency
   | "EVENT_AFTER_TERMINAL"
@@ -135,6 +138,17 @@ interface FailurePolicy {
    * can no longer be what ended the run — only report validation can.
    */
   readonly allowedAfterReportSubmitted: boolean;
+  /**
+   * The precisely-scoped issue #57 mid-loop exception: a provider/protocol
+   * code may be attributed to DIAGNOSTIC_EXECUTION ONLY while a diagnostic
+   * loop is genuinely active (at least one request begun, the bound not yet
+   * exhausted, no open call, no tool-specific failure fact, report phase not
+   * begun — see `diagnosticLoopActive` in the RUN_FAILED branch). It is never
+   * a blanket permission: a no-tool stream claiming a provider failure at
+   * DIAGNOSTIC_EXECUTION, an open-tool stream claiming one, or a stream at
+   * the exhausted bound claiming one, all stay rejected.
+   */
+  readonly allowedInDiagnosticLoop?: boolean;
 }
 
 const ANALYSIS_ONLY = ["AGENT_ANALYSIS"] as const;
@@ -218,31 +232,36 @@ const FAILURE_POLICY = {
   },
 
   // Provider / protocol — attributable to whichever stage was awaiting the
-  // provider, never to diagnostics, and never after the provider has already
-  // returned a report payload.
+  // provider, never to diagnostics except the one precisely-scoped mid-loop
+  // case (issue #57 §7), and never after the provider has already returned a
+  // report payload.
   PROVIDER_PROTOCOL_INVALID: {
     legalStages: ANALYSIS_OR_REPORT,
     requiresSpecificFact: "none",
     allowedBeforeAgentStarted: false,
     allowedAfterReportSubmitted: false,
+    allowedInDiagnosticLoop: true,
   },
   PROVIDER_UNAVAILABLE: {
     legalStages: ANALYSIS_OR_REPORT,
     requiresSpecificFact: "none",
     allowedBeforeAgentStarted: false,
     allowedAfterReportSubmitted: false,
+    allowedInDiagnosticLoop: true,
   },
   PROVIDER_TIMEOUT: {
     legalStages: ANALYSIS_OR_REPORT,
     requiresSpecificFact: "none",
     allowedBeforeAgentStarted: false,
     allowedAfterReportSubmitted: false,
+    allowedInDiagnosticLoop: true,
   },
   PROVIDER_CANCELLED: {
     legalStages: ANALYSIS_OR_REPORT,
     requiresSpecificFact: "none",
     allowedBeforeAgentStarted: false,
     allowedAfterReportSubmitted: false,
+    allowedInDiagnosticLoop: true,
   },
 } satisfies Record<AgentOrchestratorErrorCode, FailurePolicy>;
 
@@ -256,6 +275,8 @@ interface FailureCompatibilityContext {
   readonly preAgentException: boolean;
   readonly reportSubmitted: boolean;
   readonly sequence: number;
+  /** True while a diagnostic loop is genuinely mid-flight (issue #57 §7). */
+  readonly diagnosticLoopActive: boolean;
 }
 
 /**
@@ -276,6 +297,7 @@ function assertFailureCodeCompatibleWithContext(context: FailureCompatibilityCon
     preAgentException,
     reportSubmitted,
     sequence,
+    diagnosticLoopActive,
   } = context;
   const policy: FailurePolicy = FAILURE_POLICY[failureCode];
   // Messages name codes and stages only — both are closed enums defined in
@@ -298,8 +320,20 @@ function assertFailureCodeCompatibleWithContext(context: FailureCompatibilityCon
     );
   }
 
-  if (!policy.legalStages.includes(failedStage)) {
-    reject(`this code is only attributable to ${policy.legalStages.join(" or ")}`);
+  // The one precisely-scoped #57 exception: provider/protocol codes may name
+  // DIAGNOSTIC_EXECUTION only while a diagnostic loop is genuinely active.
+  // This is not a broad relaxation — the four codes keep their ordinary
+  // legal stages, and the reducer still rejects a no-tool stream claiming a
+  // provider failure at DIAGNOSTIC_EXECUTION.
+  const stageLegal =
+    policy.legalStages.includes(failedStage) ||
+    (policy.allowedInDiagnosticLoop === true &&
+      failedStage === "DIAGNOSTIC_EXECUTION" &&
+      diagnosticLoopActive);
+  if (!stageLegal) {
+    reject(
+      `this code is only attributable to ${policy.legalStages.join(" or ")}${policy.allowedInDiagnosticLoop === true ? " plus DIAGNOSTIC_EXECUTION while a diagnostic loop is active" : ""}`,
+    );
   }
 
   if (policy.requiresSpecificFact === "tool" && specificFailure === null) {
@@ -427,6 +461,12 @@ export function deriveExecutionStageProgress(
   };
 
   const toolCalls = new Map<string, ToolCallState>();
+  // Counted tool bound (issue #57 §5): at most MAX_DIAGNOSTIC_TOOL_CALLS
+  // requests may be issued per run. The invariant
+  // MAX_DIAGNOSTIC_TOOL_CALLS <= MAX_PROVIDER_TURNS - 1 is asserted by the
+  // agent-run-bounds tests, guaranteeing a turn is always left for the
+  // forced finalization call.
+  let toolCallCount = 0;
   const seen = {
     runCreated: false,
     agentStarted: false,
@@ -587,35 +627,57 @@ export function deriveExecutionStageProgress(
             `TOOL_REQUESTED at sequence ${event.sequence} occurs before AGENT_STARTED.`,
           );
         }
-        // v1 models the current runtime exactly: MAX_PROVIDER_TURNS = 2
-        // means one investigation turn and one mandatory finalization turn,
-        // so a run can contain at most ONE tool call. A second request is
-        // rejected regardless of whether the first is open, completed, or
-        // failed — the runtime has no turn left to issue it in.
-        if (seen.toolPhaseStarted) {
+        // Counted tool bound (issue #57 §5). MAX_PROVIDER_TURNS reserves one
+        // turn for forced finalization, so a request past the bound has no
+        // turn left to be issued in.
+        if (toolCallCount >= MAX_DIAGNOSTIC_TOOL_CALLS) {
           fail(
             "TOOL_LIMIT_EXCEEDED",
-            `A second tool request was received at sequence ${event.sequence}; this runtime executes at most one tool call per run.`,
+            `The tool request at sequence ${event.sequence} exceeds the ${MAX_DIAGNOSTIC_TOOL_CALLS}-call bound for a single investigation run.`,
           );
         }
-        if (stages.AGENT_ANALYSIS.status !== "active") {
+        // A repeated id is either an exact-replay duplicate (already resolved
+        // to the original row at the repository layer) or a double issue
+        // within the same run; the reducer rejects it as a contract
+        // violation rather than attempting to distinguish the two.
+        //
+        // The message deliberately does not echo the raw toolCallId: that id is
+        // provider-controlled, and reducer errors may reach a log (same rule as
+        // every other message in this file — closed codes, sequence numbers,
+        // and numeric counts only).
+        if (toolCalls.has(toolCallId)) {
+          fail(
+            "DUPLICATE_TOOL_CALL_ID",
+            `A second tool request at sequence ${event.sequence} reused a prior tool-call identity; every request in a run must carry a fresh id.`,
+          );
+        }
+        if (openToolCallIds().length > 0) {
+          fail(
+            "TOOL_REQUEST_WHILE_OPEN",
+            `A tool request at sequence ${event.sequence} was issued while ${openToolCallIds().length} tool call(s) are still open; the loop may not overlap calls.`,
+          );
+        }
+        if (toolCallCount === 0) {
+          // First request: analysis hands over to diagnostics.
+          if (stages.AGENT_ANALYSIS.status !== "active") {
+            fail(
+              "PHASE_ORDER_VIOLATION",
+              `The tool request at sequence ${event.sequence} requires AGENT_ANALYSIS to be active; it is "${stages.AGENT_ANALYSIS.status}".`,
+            );
+          }
+          complete("AGENT_ANALYSIS", at);
+          activate("DIAGNOSTIC_EXECUTION", at);
+          diagnosticExecutionEverActive = true;
+        } else if (stages.DIAGNOSTIC_EXECUTION.status !== "active") {
+          // Subsequent request: the loop must still be executing diagnostics.
           fail(
             "PHASE_ORDER_VIOLATION",
-            `The tool request at sequence ${event.sequence} requires AGENT_ANALYSIS to be active; it is "${stages.AGENT_ANALYSIS.status}".`,
+            `The tool request at sequence ${event.sequence} requires DIAGNOSTIC_EXECUTION to be active; it is "${stages.DIAGNOSTIC_EXECUTION.status}".`,
           );
         }
-        // No duplicate-id check is needed: reaching a second TOOL_REQUESTED
-        // at all is already rejected above by the one-tool limit, so a
-        // repeated id cannot occur. A separate code for it would be
-        // unreachable, and an error that cannot be thrown is a false claim
-        // about what the contract enforces.
         toolCalls.set(toolCallId, { toolName, state: "open" });
         seen.toolPhaseStarted = true;
-        // The one tool call this runtime allows always hands analysis over
-        // to diagnostics.
-        complete("AGENT_ANALYSIS", at);
-        activate("DIAGNOSTIC_EXECUTION", at);
-        diagnosticExecutionEverActive = true;
+        toolCallCount += 1;
         break;
       }
 
@@ -711,7 +773,7 @@ export function deriveExecutionStageProgress(
           );
         }
         // An unfinished tool call is the more specific fault, so it is
-        // reported ahead of the missing report-start fact below.
+        // reported ahead of the report-start fact below.
         const open = openToolCallIds();
         if (open.length > 0) {
           fail(
@@ -719,15 +781,23 @@ export function deriveExecutionStageProgress(
             `REPORT_SUBMITTED at sequence ${event.sequence} occurs while ${open.length} tool call(s) are still open.`,
           );
         }
-        // On any tool path the orchestrator reaches the report through a
-        // distinct finalization provider call, and #37 must record that it
-        // began. Only the direct no-tool path may submit without it, because
-        // there the very first, unconstrained turn returns the report and
-        // nothing could have announced it in advance.
-        if (seen.toolPhaseStarted && !seen.reportGenerationStarted) {
+        // REPORT_GENERATION_STARTED is optional on a tool path ONLY while the
+        // loop still has an investigation turn available (toolCallCount below
+        // MAX_DIAGNOSTIC_TOOL_CALLS): a voluntary early report submitted on a
+        // still-available turn needs no announcement. Once the diagnostic
+        // bound is exhausted, the next provider call is necessarily the forced
+        // FINALIZATION turn, and the runtime contract requires the report-start
+        // fact to be recorded BEFORE that call — so a submission at the bound
+        // without it is a missing lifecycle fact, not a voluntary early report.
+        // (A no-tool run has toolCallCount 0, so the direct no-tool submission
+        // stays valid.)
+        if (
+          toolCallCount >= MAX_DIAGNOSTIC_TOOL_CALLS &&
+          !seen.reportGenerationStarted
+        ) {
           fail(
             "MISSING_LIFECYCLE_FACT",
-            `REPORT_SUBMITTED at sequence ${event.sequence} follows tool execution but no REPORT_GENERATION_STARTED was recorded; a tool path must announce the finalization call.`,
+            `REPORT_SUBMITTED at sequence ${event.sequence} without a preceding REPORT_GENERATION_STARTED after the ${MAX_DIAGNOSTIC_TOOL_CALLS}-call diagnostic bound; the forced finalization turn that returned the report must be recorded with REPORT_GENERATION_STARTED first.`,
           );
         }
         seen.reportSubmitted = true;
@@ -824,21 +894,30 @@ export function deriveExecutionStageProgress(
           );
         }
 
-        // Finding 3: once every requested tool closed successfully and no
-        // TOOL_FAILED occurred, the orchestrator's next act is the
-        // FINALIZATION provider call — so a failure here belongs to report
-        // generation and must be preceded by REPORT_GENERATION_STARTED.
-        // Without that fact the stream would misattribute a provider or
-        // protocol failure to DIAGNOSTIC_EXECUTION, which had already
-        // finished its work.
+        // Finding 3, narrowed by #57 §7. Once every requested tool closed
+        // successfully and no TOOL_FAILED occurred, the loop's next act is
+        // the FINALIZATION provider call — either a voluntary early report
+        // (submitted directly on a still-available turn, so no report-start)
+        // or, once the diagnostic bound is exhausted, the forced finalization
+        // turn (which MUST be announced with REPORT_GENERATION_STARTED). A
+        // provider/protocol failure attributed to REPORT_GENERATION must
+        // therefore still be preceded by REPORT_GENERATION_STARTED, so it is
+        // not misattributed to a report stage that never announced itself. A
+        // failure attributed to DIAGNOSTIC_EXECUTION is governed instead by
+        // assertFailureCodeCompatibleWithContext below, which admits
+        // provider/protocol codes there only while the loop is genuinely
+        // active — and, since a voluntary early report carries no report-start,
+        // only a RUN_FAILED naming REPORT_GENERATION is constrained by this
+        // check.
         if (
           seen.toolPhaseStarted &&
           specificFailure === null &&
-          !seen.reportGenerationStarted
+          !seen.reportGenerationStarted &&
+          failedStage === "REPORT_GENERATION"
         ) {
           fail(
             "MISSING_LIFECYCLE_FACT",
-            `RUN_FAILED at sequence ${event.sequence} follows successful tool execution with no REPORT_GENERATION_STARTED; the finalization call that failed must be recorded before attributing the failure.`,
+            `RUN_FAILED at sequence ${event.sequence} attributes the failure to REPORT_GENERATION but no REPORT_GENERATION_STARTED was recorded; the finalization call that failed must be recorded before attributing the failure.`,
           );
         }
 
@@ -890,6 +969,20 @@ export function deriveExecutionStageProgress(
           }
         }
 
+        // #57 §7: a diagnostic loop is genuinely mid-flight only when at
+        // least one request was issued, the bound is NOT yet exhausted (at the
+        // exact bound the next provider call is forced finalization, so a
+        // provider failure there belongs to REPORT_GENERATION, not to the
+        // loop), no call is still open, no tool-specific failure already
+        // occurred, and the report phase has not begun. Only then may a
+        // provider/protocol code name DIAGNOSTIC_EXECUTION.
+        const diagnosticLoopActive =
+          toolCallCount > 0 &&
+          toolCallCount < MAX_DIAGNOSTIC_TOOL_CALLS &&
+          openToolCallIds().length === 0 &&
+          specificFailure === null &&
+          !reportPhaseBegun();
+
         // Causal compatibility of the code with the stage it is attributed
         // to, applied to both branches: confirming a specific fact does not
         // exempt the pair from being possible in the first place.
@@ -900,6 +993,7 @@ export function deriveExecutionStageProgress(
           preAgentException,
           reportSubmitted: seen.reportSubmitted,
           sequence: event.sequence,
+          diagnosticLoopActive,
         });
 
         if (specificFailure === null) {

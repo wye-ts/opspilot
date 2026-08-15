@@ -191,6 +191,73 @@ describe("buildObservedFacts", () => {
     expect(() => buildObservedFacts(agentResult, executedTools)).toThrow(NonJsonSafeValueError);
   });
 
+  describe("issue #57 — multi-step repeated-tool trace compatibility", () => {
+    it("carries every requested/completed tool fact from a three-tool canonical trace, in deterministic order", () => {
+      const agentResult: AgentOrchestratorResult = {
+        status: "completed",
+        report: VALID_REPORT,
+        trace: [
+          { type: "TOOL_REQUESTED", toolName: "get_service_status", toolCallId: "call-1" },
+          { type: "TOOL_COMPLETED", toolName: "get_service_status", toolCallId: "call-1" },
+          { type: "TOOL_REQUESTED", toolName: "get_service_status", toolCallId: "call-2" },
+          { type: "TOOL_COMPLETED", toolName: "get_service_status", toolCallId: "call-2" },
+          { type: "TOOL_REQUESTED", toolName: "get_service_status", toolCallId: "call-3" },
+          { type: "TOOL_COMPLETED", toolName: "get_service_status", toolCallId: "call-3" },
+        ],
+      };
+      const executedTools: readonly RecordedToolExecution[] = [
+        { toolName: "get_service_status", input: { serviceSlug: "auth-service" } },
+        { toolName: "get_service_status", input: { serviceSlug: "billing-service" } },
+        { toolName: "get_service_status", input: { serviceSlug: "notification-service" } },
+      ];
+
+      const facts = buildObservedFacts(agentResult, executedTools);
+
+      // The array-shaped v1 facts carry all three repeats — never collapsed.
+      expect(facts.tools.requested).toEqual([
+        { toolName: "get_service_status", toolCallId: "call-1" },
+        { toolName: "get_service_status", toolCallId: "call-2" },
+        { toolName: "get_service_status", toolCallId: "call-3" },
+      ]);
+      expect(facts.tools.completed).toEqual([
+        { toolName: "get_service_status", toolCallId: "call-1" },
+        { toolName: "get_service_status", toolCallId: "call-2" },
+        { toolName: "get_service_status", toolCallId: "call-3" },
+      ]);
+      expect(facts.tools.executed).toHaveLength(3);
+      expect(facts.runStatus).toBe("completed");
+    });
+
+    it("keeps a failed multi-step trace truthful: requested includes the failed call, completed excludes it", () => {
+      const agentResult: AgentOrchestratorResult = {
+        status: "failed",
+        code: "TOOL_NOT_FOUND",
+        message: "fixed message",
+        failedStage: "DIAGNOSTIC_EXECUTION",
+        trace: [
+          { type: "TOOL_REQUESTED", toolName: "get_service_status", toolCallId: "call-1" },
+          { type: "TOOL_COMPLETED", toolName: "get_service_status", toolCallId: "call-1" },
+          { type: "TOOL_REQUESTED", toolName: "missing_tool", toolCallId: "call-2" },
+        ],
+      };
+      const executedTools: readonly RecordedToolExecution[] = [
+        { toolName: "get_service_status", input: { serviceSlug: "auth-service" } },
+      ];
+
+      const facts = buildObservedFacts(agentResult, executedTools);
+
+      expect(facts.runStatus).toBe("failed");
+      expect(facts.errorCode).toBe("TOOL_NOT_FOUND");
+      expect(facts.tools.requested).toEqual([
+        { toolName: "get_service_status", toolCallId: "call-1" },
+        { toolName: "missing_tool", toolCallId: "call-2" },
+      ]);
+      expect(facts.tools.completed).toEqual([{ toolName: "get_service_status", toolCallId: "call-1" }]);
+      expect(facts.tools.executed).toHaveLength(1);
+      expect(facts.report).toBeNull();
+    });
+  });
+
   describe("ObservedFacts discriminated union (independent-review finding, High #1)", () => {
     it("compile-time: a completed run with a null report is now rejected — the exact contradictory shape TypeScript previously accepted", () => {
       // @ts-expect-error — ObservedFacts ties runStatus/errorCode/report

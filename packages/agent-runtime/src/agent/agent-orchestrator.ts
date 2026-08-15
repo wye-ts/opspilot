@@ -1,4 +1,6 @@
 import {
+  MAX_DIAGNOSTIC_TOOL_CALLS,
+  MAX_PROVIDER_TURNS,
   ResolutionReportSchema,
   summarizeReportValidationIssues,
   type AgentOrchestratorErrorCode,
@@ -29,12 +31,15 @@ import {
 } from "../rag/runbook-retriever";
 import type { ToolRegistry } from "../tools/diagnostic-tool";
 
-// docs/04-agent-design.md §11 runs an unbounded investigation loop governed
-// by a configured turn budget (AGENT_MAX_INVESTIGATION_TURNS, default 5).
-// This vertical slice hard-bounds the loop to 2 logical provider turns
-// instead of wiring the full budget/deadline machinery: at most one
-// diagnostic tool call, then a required report submission.
-const MAX_PROVIDER_TURNS = 2;
+// Issue #57 Checkpoint B: the orchestrator adopts the reviewed, shared source
+// bounds from packages/contracts/src/agent-run-bounds.ts — 4 provider turns /
+// 3 diagnostic tool calls, with MAX_DIAGNOSTIC_TOOL_CALLS <= MAX_PROVIDER_TURNS - 1
+// asserted by a contracts unit test. Turns 0..2 are INVESTIGATION, each
+// accepting at most one diagnostic tool request (so the diagnostic bound
+// coincides with the number of investigation turns); turn 3 is the reserved
+// forced FINALIZATION turn. The aspirational AGENT_MAX_* env budgets in
+// docs/04-agent-design.md §7 remain unwired (Decision 1); there is no
+// same-tool-name limit (Decision 3).
 
 // A provider must not infer this from turnIndex itself (see
 // docs/04-agent-design.md §9's phase concept) — only the orchestrator's own
@@ -291,17 +296,38 @@ export async function runAgentOrchestrator(
   }
 
   const successfulToolExecutionIds = new Set<string>();
+  // Provider-requested diagnostic tool-call identities for this run, used to
+  // reject a reused identity before any side effect (P1 final correction).
+  // Distinct from successfulToolExecutionIds: a provider may try to reuse an
+  // identity whether or not its earlier request executed, and must be rejected
+  // either way.
+  const requestedToolCallIds = new Set<string>();
+  // Accepted diagnostic tool requests this run, incremented per emitted
+  // TOOL_REQUESTED (mirroring the reducer's own per-request count). Drives
+  // the state-derived active-stage attribution and the defense-in-depth bound
+  // check below; the canonical ledger reconstructs the same count from the
+  // persisted stream.
+  let toolCallCount = 0;
 
   for (let turnIndex = 0; turnIndex < MAX_PROVIDER_TURNS; turnIndex++) {
     const phase: AgentTurnPhase =
       turnIndex === MAX_PROVIDER_TURNS - 1 ? "FINALIZATION" : "INVESTIGATION";
 
-    // The stage a provider/protocol failure on THIS turn belongs to. On the
+    // The stage a provider/protocol failure on THIS turn belongs to (issue #57
+    // §4.2), derived from run state rather than phase alone. On the
     // finalization turn REPORT_GENERATION_STARTED has just been emitted, so
-    // REPORT_GENERATION is the active stage; on the investigation turn it is
-    // still AGENT_ANALYSIS.
+    // REPORT_GENERATION is the active stage. On an investigation turn after at
+    // least one completed diagnostic, the agent is awaiting the provider's next
+    // diagnostic decision — a provider failure there is a DIAGNOSTIC_EXECUTION
+    // failure, which the reducer admits (as diagnosticLoopActive) only while
+    // the loop is genuinely mid-flight and below its bound. Before any tool,
+    // an investigation failure is still AGENT_ANALYSIS.
     const activeStage: InvestigationExecutionStage =
-      phase === "FINALIZATION" ? "REPORT_GENERATION" : "AGENT_ANALYSIS";
+      phase === "FINALIZATION"
+        ? "REPORT_GENERATION"
+        : toolCallCount > 0
+          ? "DIAGNOSTIC_EXECUTION"
+          : "AGENT_ANALYSIS";
 
     // Announced immediately before the finalization provider call, and only
     // there. Under the current execution model that turn is reachable only
@@ -406,13 +432,49 @@ export async function runAgentOrchestrator(
     // result.type === "diagnostic_tool_request"
     if (turnIndex === MAX_PROVIDER_TURNS - 1) {
       // Deliberately BEFORE the canonical TOOL_REQUESTED emission below: a
-      // second tool request on the finalization turn must not produce a
-      // second TOOL_REQUESTED in the ledger (TOOL_LIMIT_EXCEEDED). By this
-      // point REPORT_GENERATION_STARTED has been emitted, so REPORT_GENERATION
-      // is the truthful active stage.
+      // diagnostic tool request on the forced finalization turn must not
+      // produce a TOOL_REQUESTED in the ledger at all — the turn requires a
+      // report submission, and a rejected request is a provider protocol
+      // failure. By this point REPORT_GENERATION_STARTED has been emitted, so
+      // REPORT_GENERATION is the truthful active stage.
       return failed(
         "PROVIDER_PROTOCOL_INVALID",
         "A report submission was required on the final provider turn, but another diagnostic tool request was received.",
+        trace,
+        "REPORT_GENERATION",
+      );
+    }
+
+    // P1 final-correction guard: a provider must never reuse a diagnostic
+    // tool-call identity within a single run. Persistence cannot enforce this
+    // — Checkpoint A's exact-replay semantics deliberately re-append an
+    // identical (runId, eventType, toolCallId) row (ambiguous-commit retry),
+    // so a repeated identity would execute the tool a second time while the
+    // ledger records only one request/completion pair. Reject here, before
+    // the canonical TOOL_REQUESTED emit and before any side effect, at the
+    // already-derived truthful active stage. The message is deliberately
+    // closed: it must never echo the provider-controlled identifier.
+    if (requestedToolCallIds.has(result.request.toolCallId)) {
+      return failed(
+        "PROVIDER_PROTOCOL_INVALID",
+        "A diagnostic request reused a prior tool-call identity.",
+        trace,
+        activeStage,
+      );
+    }
+    requestedToolCallIds.add(result.request.toolCallId);
+
+    // Defense-in-depth (issue #57 §4.1): never accept more diagnostic tool
+    // requests than the shared bound, even if future constants drift so that
+    // the investigation turns outnumber MAX_DIAGNOSTIC_TOOL_CALLS. With the
+    // current equality (MAX_DIAGNOSTIC_TOOL_CALLS === MAX_PROVIDER_TURNS - 1)
+    // this coincides with the finalization-turn guard above and is
+    // unreachable; it exists so a future constant change fails closed instead
+    // of executing a call past the reviewed ceiling.
+    if (toolCallCount >= MAX_DIAGNOSTIC_TOOL_CALLS) {
+      return failed(
+        "PROVIDER_PROTOCOL_INVALID",
+        "The diagnostic tool bound was reached, but another diagnostic tool request was received.",
         trace,
         "REPORT_GENERATION",
       );
@@ -427,6 +489,7 @@ export async function runAgentOrchestrator(
     // original post-validation position further below, unmoved, so a direct
     // caller's in-memory trace is unchanged for those two failures.
     await emit({ type: "TOOL_REQUESTED", toolCallId, toolName });
+    toolCallCount += 1;
 
     const tool = toolRegistry.find(toolName);
     if (!tool) {
@@ -501,8 +564,10 @@ export async function runAgentOrchestrator(
     ];
   }
 
-  // Unreachable: the turnIndex === MAX_PROVIDER_TURNS - 1 check above always
-  // returns before a 3rd iteration could start.
+  // Unreachable: the finalization turn always returns before the loop can fall
+  // through — a diagnostic tool request is rejected by the finalization-turn
+  // guard, a report submission returns immediately, and a provider/protocol
+  // failure fails closed.
   return failed(
     "PROVIDER_PROTOCOL_INVALID",
     "Bounded provider-turn loop exhausted without a report submission.",

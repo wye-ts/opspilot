@@ -1086,9 +1086,29 @@
             {
               "toolName": "get_service_status",
               "toolCallId": "case12-call-1"
+            },
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case12-call-2"
+            },
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case12-call-3"
             }
           ],
           "expectedExecuted": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "notification-service"
+              }
+            },
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "notification-service"
+              }
+            },
             {
               "toolName": "get_service_status",
               "input": {
@@ -1100,7 +1120,18 @@
             {
               "toolName": "get_service_status",
               "toolCallId": "case12-call-1"
+            },
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case12-call-2"
+            },
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case12-call-3"
             }
+          ],
+          "forbiddenCompletedToolCallIds": [
+            "case12-call-4"
           ]
         },
         "failure": {
@@ -1123,9 +1154,29 @@
             {
               "toolName": "get_service_status",
               "toolCallId": "case12-call-1"
+            },
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case12-call-2"
+            },
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case12-call-3"
             }
           ],
           "executed": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "notification-service"
+              }
+            },
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "notification-service"
+              }
+            },
             {
               "toolName": "get_service_status",
               "input": {
@@ -1137,6 +1188,14 @@
             {
               "toolName": "get_service_status",
               "toolCallId": "case12-call-1"
+            },
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case12-call-2"
+            },
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case12-call-3"
             }
           ]
         },
@@ -1162,6 +1221,11 @@
           },
           {
             "name": "tool-completed",
+            "passed": true,
+            "reasonCode": null
+          },
+          {
+            "name": "tool-forbidden-completed",
             "passed": true,
             "reasonCode": null
           },

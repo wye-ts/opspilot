@@ -6,7 +6,7 @@ import {
   type InvestigationRunStatus,
 } from "@opspilot/contracts";
 
-import type { Prisma } from "../generated/prisma-client/client";
+import { Prisma } from "../generated/prisma-client/client";
 import { PersistenceError } from "../errors";
 import { fromInvestigationEventRows } from "../mappers";
 
@@ -26,11 +26,31 @@ export function isTerminalEventType(eventType: string): eventType is TerminalEve
 }
 
 /**
- * The all-12 exact-replay policy (docs/reviews/21-issue-37-incremental-event-
- * persistence-plan.md §4), shared by BOTH write paths — the generic
- * incremental append (`appendInvestigationEvent`) and, in a later phase, the
- * terminal transaction (`finalizeTerminal`) — so there is exactly one replay
- * rule for every canonical event type, never two subtly different ones.
+ * The three repeatable diagnostic event types (issue #57 §2). Under the
+ * bounded multi-step contract these may legitimately occur more than once per
+ * run — once per distinct `toolCallId` — so their exact-replay identity is
+ * `(runId, eventType, toolCallId)` rather than `(runId, eventType)`. The 9
+ * remaining canonical types are lifecycle/report singletons and keep the
+ * `(runId, eventType)` identity unchanged.
+ */
+const REPEATABLE_DIAGNOSTIC_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "TOOL_REQUESTED",
+  "TOOL_COMPLETED",
+  "TOOL_FAILED",
+]);
+
+/**
+ * The canonical exact-replay policy (docs/reviews/21-issue-37-incremental-event-
+ * persistence-plan.md §4, generalized by issue #57 §2), shared by BOTH write
+ * paths — the generic incremental append (`appendInvestigationEvent`) and, in
+ * a later phase, the terminal transaction (`finalizeTerminal`) — so there is
+ * exactly one replay rule for every canonical event type, never two subtly
+ * different ones.
+ *
+ * Identity is per-type: the 9 singleton lifecycle/report types use
+ * `(runId, eventType)`, while the 3 repeatable diagnostic types
+ * (`TOOL_REQUESTED`, `TOOL_COMPLETED`, `TOOL_FAILED`) use
+ * `(runId, eventType, toolCallId)`.
  *
  * A transaction can commit and STILL leave the caller with an ambiguous
  * driver/network failure before it observes the returned row. A retry of
@@ -47,10 +67,16 @@ export type CanonicalEventReplay =
 
 /**
  * Resolves whether `payload` is an exact replay of an already-stored event
- * of the same type on this run, a genuinely new event, or a conflicting
+ * of the same identity on this run, a genuinely new event, or a conflicting
  * retry.
  *
- *   no stored row for (runId, payload.type)          -> "absent": proceed to allocate/insert
+ * Identity is per-type (issue #57 §2): the 9 singleton canonical types match
+ * on `(runId, eventType)`; the 3 repeatable diagnostic types additionally
+ * match on `payload->>'toolCallId'`, so a distinct toolCallId is a
+ * legitimate new event, while the same identity with an identical payload is
+ * always an exact replay.
+ *
+ *   no stored row for the identity                    -> "absent": proceed to allocate/insert
  *   stored row, payload JSONB-equal to the candidate  -> "replay": return the original,
  *                                                         insert nothing, consume no sequence
  *   stored row, payload NOT equal to the candidate    -> PERSISTENCE_CONFLICT, insert nothing
@@ -78,13 +104,22 @@ export async function resolveCanonicalEventReplay(
 ): Promise<CanonicalEventReplay> {
   const candidateJson = JSON.stringify(payload);
 
+  // Only the 3 repeatable diagnostic types narrow by toolCallId. The
+  // terminal finalize path also calls this resolver with singleton payloads,
+  // which is unaffected — the 9 singleton types keep their (runId, eventType)
+  // identity exactly as before.
+  const identityCondition = REPEATABLE_DIAGNOSTIC_EVENT_TYPES.has(payload.type)
+    ? Prisma.sql`AND payload->>'toolCallId' = ${(payload as { toolCallId: string }).toolCallId}`
+    : Prisma.empty;
+
   const rows = await tx.$queryRaw<
     { sequenceNumber: number; createdAt: Date; payloadMatches: boolean }[]
   >`
     SELECT sequence_number AS "sequenceNumber", created_at AS "createdAt",
            (payload IS NOT DISTINCT FROM ${candidateJson}::jsonb) AS "payloadMatches"
     FROM agent_trace_events
-    WHERE run_id = ${runId}::uuid AND event_type = ${payload.type}`;
+    WHERE run_id = ${runId}::uuid AND event_type = ${payload.type}
+    ${identityCondition}`;
   const [row] = rows;
 
   if (!row) return { kind: "absent" };

@@ -1,4 +1,8 @@
-import type { AgentOrchestratorErrorCode, InvestigationExecutionStage } from "@opspilot/contracts";
+import {
+  MAX_DIAGNOSTIC_TOOL_CALLS,
+  type AgentOrchestratorErrorCode,
+  type InvestigationExecutionStage,
+} from "@opspilot/contracts";
 
 import type { PrismaClient } from "../client";
 import { appendInvestigationEvent } from "../repositories/agent-run-repository";
@@ -51,6 +55,57 @@ export async function appendOneToolSuccessPrefix(prisma: PrismaClient, runId: st
     toolName: FIXTURE_TOOL_NAME,
   });
   await appendInvestigationEvent(prisma, runId, { type: "REPORT_GENERATION_STARTED" });
+  await appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED" });
+  await appendInvestigationEvent(prisma, runId, { type: "REPORT_VALIDATED" });
+}
+
+/**
+ * Emits `count` serial `TOOL_REQUESTED -> TOOL_COMPLETED` pairs (issue #57
+ * §2). The first pair reuses `FIXTURE_TOOL_CALL_ID` so existing single-tool
+ * assertions keep passing against the same helper, and later pairs get
+ * `call-2`, `call-3`, ... — distinct toolCallIds, which the repeatable
+ * diagnostic identity requires. Leaves the run as a RUNNING mid-loop prefix
+ * (DIAGNOSTIC_EXECUTION active); no report events are emitted here.
+ */
+export async function appendToolDiagnosticPairs(
+  prisma: PrismaClient,
+  runId: string,
+  count: number,
+): Promise<void> {
+  await appendInvestigationEvent(prisma, runId, { type: "AGENT_STARTED" });
+  for (let i = 0; i < count; i += 1) {
+    const toolCallId = i === 0 ? FIXTURE_TOOL_CALL_ID : `call-${i + 1}`;
+    await appendInvestigationEvent(prisma, runId, {
+      type: "TOOL_REQUESTED",
+      toolCallId,
+      toolName: FIXTURE_TOOL_NAME,
+    });
+    await appendInvestigationEvent(prisma, runId, {
+      type: "TOOL_COMPLETED",
+      toolCallId,
+      toolName: FIXTURE_TOOL_NAME,
+    });
+  }
+}
+
+/**
+ * The full bounded-loop success path (issue #57, targeted fix): `count` serial
+ * tool pairs, then the report. While `count < MAX_DIAGNOSTIC_TOOL_CALLS` this
+ * is a VOLUNTARY early report — the provider submits on a still-available
+ * investigation turn, so REPORT_GENERATION_STARTED is omitted. At the
+ * exhausted bound (`count === MAX_DIAGNOSTIC_TOOL_CALLS`) the next provider
+ * call is necessarily the FORCED finalization turn, so REPORT_GENERATION_STARTED
+ * is emitted before REPORT_SUBMITTED. Ready for `finalizeCompleted`.
+ */
+export async function appendMultiToolSuccessPrefix(
+  prisma: PrismaClient,
+  runId: string,
+  count: number,
+): Promise<void> {
+  await appendToolDiagnosticPairs(prisma, runId, count);
+  if (count >= MAX_DIAGNOSTIC_TOOL_CALLS) {
+    await appendInvestigationEvent(prisma, runId, { type: "REPORT_GENERATION_STARTED" });
+  }
   await appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED" });
   await appendInvestigationEvent(prisma, runId, { type: "REPORT_VALIDATED" });
 }

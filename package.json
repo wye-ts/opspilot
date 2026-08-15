@@ -24,7 +24,7 @@
     "api:start": "pnpm --filter @opspilot/api run start",
     "api:start:dev": "pnpm --filter @opspilot/api run start:dev",
     "api:demo": "pnpm --filter @opspilot/api run demo",
-    "test:integration:sequential": "pnpm --filter @opspilot/database run test:integration && pnpm --filter @opspilot/api run test:integration",
+    "test:integration:sequential": "pnpm --filter @opspilot/database run test:integration && pnpm --filter @opspilot/agent-runtime run test:integration && pnpm --filter @opspilot/api run test:integration",
     "agent:preflight": "tsx scripts/agent/preflight.ts",
     "agent:verify": "tsx scripts/agent/verify.ts",
     "agent:scope-check": "tsx scripts/agent/scope-check.ts",
