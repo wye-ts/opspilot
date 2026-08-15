@@ -87,6 +87,14 @@ export async function runForcedFinalizationProbe(provider: LlmProvider): Promise
       toolCallId: PROBE_TOOL_CALL_ID,
       toolName: "get_service_status",
       input: { serviceSlug: "notification-service" },
+      // Issue #58 Checkpoint B: mirrors what turn 0 of a real run would have
+      // appended — this was the first diagnostic request with no prior RAG or
+      // tool evidence, so the VALIDATED assessment is NO_EVIDENCE_YET.
+      assessment: {
+        evidenceState: "INSUFFICIENT",
+        continuationReason: "NO_EVIDENCE_YET",
+        supportedBy: [],
+      },
     },
     {
       role: "diagnostic_tool_result",
@@ -101,6 +109,11 @@ export async function runForcedFinalizationProbe(provider: LlmProvider): Promise
       turnIndex: 1,
       phase: "FINALIZATION",
       maxOutputTokens: 4096,
+      // Issue #58 Checkpoint B (§10): the diagnostic budget is 0 on the forced
+      // finalization turn — the remaining headroom is MAX_DIAGNOSTIC_TOOL_CALLS
+      // minus the calls already accepted, and a real run would have spent all
+      // of them before reaching FINALIZATION.
+      diagnosticCallsRemaining: 0,
       conversation,
     });
 

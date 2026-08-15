@@ -46,6 +46,7 @@ const REPORT: ResolutionReport = {
   confidence: 0.5,
   evidence: [{ evidenceId: "run-1-call-1", sourceType: "TOOL_EXECUTION", finding: "f" }],
   suggestedActions: [],
+  evidenceState: "SUFFICIENT",
 };
 
 describe("mapAgentRunResponse", () => {

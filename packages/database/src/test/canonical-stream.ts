@@ -1,11 +1,38 @@
 import {
   MAX_DIAGNOSTIC_TOOL_CALLS,
   type AgentOrchestratorErrorCode,
+  type EvidenceAssessment,
   type InvestigationExecutionStage,
 } from "@opspilot/contracts";
 
 import type { PrismaClient } from "../client";
 import { appendInvestigationEvent } from "../repositories/agent-run-repository";
+
+/**
+ * Issue #58 Checkpoint B (§4): every NEW canonical TOOL_REQUESTED append must
+ * carry a validated `assessment`. These builders produce the assessments the
+ * orchestrator would actually emit for the corresponding stream state, so the
+ * fixtures cannot drift into a write contract the runtime would reject.
+ */
+export const NO_EVIDENCE_YET_ASSESSMENT: EvidenceAssessment = {
+  evidenceState: "INSUFFICIENT",
+  continuationReason: "NO_EVIDENCE_YET",
+  supportedBy: [],
+};
+
+/** STATUS_UNRESOLVED grounded on the already-completed diagnostic call ids. */
+export function statusUnresolvedAssessment(
+  toolCallIds: readonly string[],
+): EvidenceAssessment {
+  return {
+    evidenceState: "INSUFFICIENT",
+    continuationReason: "STATUS_UNRESOLVED",
+    supportedBy: toolCallIds.map((evidenceId) => ({
+      evidenceId,
+      sourceType: "TOOL_EXECUTION",
+    })),
+  };
+}
 
 /**
  * Test-only helpers for building the canonical lifecycle prefix a run must
@@ -48,6 +75,8 @@ export async function appendOneToolSuccessPrefix(prisma: PrismaClient, runId: st
     type: "TOOL_REQUESTED",
     toolCallId: FIXTURE_TOOL_CALL_ID,
     toolName: FIXTURE_TOOL_NAME,
+    // The run's first diagnostic request: no evidence gathered yet (A3).
+    assessment: NO_EVIDENCE_YET_ASSESSMENT,
   });
   await appendInvestigationEvent(prisma, runId, {
     type: "TOOL_COMPLETED",
@@ -75,10 +104,22 @@ export async function appendToolDiagnosticPairs(
   await appendInvestigationEvent(prisma, runId, { type: "AGENT_STARTED" });
   for (let i = 0; i < count; i += 1) {
     const toolCallId = i === 0 ? FIXTURE_TOOL_CALL_ID : `call-${i + 1}`;
+    // Each request grounds its assessment on the evidence completed BEFORE it
+    // (A3): the first pair has none (NO_EVIDENCE_YET), later pairs cite every
+    // earlier completed call id.
+    const assessment =
+      i === 0
+        ? NO_EVIDENCE_YET_ASSESSMENT
+        : statusUnresolvedAssessment(
+            Array.from({ length: i }, (_, priorIndex) =>
+              priorIndex === 0 ? FIXTURE_TOOL_CALL_ID : `call-${priorIndex + 1}`,
+            ),
+          );
     await appendInvestigationEvent(prisma, runId, {
       type: "TOOL_REQUESTED",
       toolCallId,
       toolName: FIXTURE_TOOL_NAME,
+      assessment,
     });
     await appendInvestigationEvent(prisma, runId, {
       type: "TOOL_COMPLETED",
@@ -147,6 +188,8 @@ export async function appendFailurePrefix(
         type: "TOOL_REQUESTED",
         toolCallId: FIXTURE_TOOL_CALL_ID,
         toolName: FIXTURE_TOOL_NAME,
+        // First diagnostic request of the run: no evidence gathered yet (A3).
+        assessment: NO_EVIDENCE_YET_ASSESSMENT,
       });
       await appendInvestigationEvent(prisma, runId, {
         type: "TOOL_FAILED",

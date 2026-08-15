@@ -43,6 +43,7 @@ const VALID_REPORT: ResolutionReport = {
   confidence: 0.8,
   evidence: [{ evidenceId: TOOL_CALL_ID, sourceType: "TOOL_EXECUTION", finding: "Finding" }],
   suggestedActions: [],
+  evidenceState: "SUFFICIENT",
 };
 
 const JOB_ID = "job-1";
@@ -67,7 +68,18 @@ function toolThenReportScenario(): FakeAgentScenario {
         kind: "diagnostic_tool_requests",
         usage,
         requests: [
-          { toolCallId: TOOL_CALL_ID, toolName: "get_service_status", input: { serviceSlug: "auth-service" } },
+          {
+            toolCallId: TOOL_CALL_ID,
+            toolName: "get_service_status",
+            input: { serviceSlug: "auth-service" },
+            // Checkpoint B: first request, run before any evidence exists, so
+            // it must carry the run-state-consistent NO_EVIDENCE_YET claim.
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "NO_EVIDENCE_YET",
+              supportedBy: [],
+            },
+          },
         ],
       },
       { kind: "report_submission", usage, rawInput: VALID_REPORT },

@@ -247,6 +247,7 @@ describe("live smoke bounded multi-step run (MINOR closure fix)", () => {
                   finding: "notification-service reported status DEGRADED.",
                 },
               ],
+              evidenceState: "SUFFICIENT",
               suggestedActions: [],
             },
           };
@@ -261,6 +262,28 @@ describe("live smoke bounded multi-step run (MINOR closure fix)", () => {
               ? TOOL_CALL_IDS[1]
               : TOOL_CALL_IDS[2];
         requestedToolCallIds.push(toolCallId);
+        // Issue #58 Checkpoint B: the assessment must be run-state-consistent
+        // with evidence available BEFORE this request. The current id was just
+        // pushed above and has not executed yet, so the grounded prior evidence
+        // is requestedToolCallIds.slice(0, -1): empty on turn 0 (NO_EVIDENCE_YET
+        // is the only A3-consistent claim), then the completed call ids in
+        // turn order for the later turns.
+        const priorToolCallIds = requestedToolCallIds.slice(0, -1);
+        const rawAssessment =
+          priorToolCallIds.length === 0
+            ? {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "NO_EVIDENCE_YET",
+                supportedBy: [],
+              }
+            : {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: priorToolCallIds.map((evidenceId) => ({
+                  evidenceId,
+                  sourceType: "TOOL_EXECUTION",
+                })),
+              };
         return {
           type: "diagnostic_tool_request",
           providerRequestId: `req-${toolCallId}`,
@@ -269,6 +292,7 @@ describe("live smoke bounded multi-step run (MINOR closure fix)", () => {
             toolCallId,
             toolName: "get_service_status",
             input: { serviceSlug: "notification-service" },
+            rawAssessment,
           },
         };
       },

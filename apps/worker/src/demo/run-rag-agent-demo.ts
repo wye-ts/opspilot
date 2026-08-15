@@ -66,6 +66,7 @@ function buildDemoScenario(): FakeAgentScenario {
         finding: "Runbook confirms notification-service degradation is a known failure mode.",
       },
     ],
+    evidenceState: "SUFFICIENT",
     suggestedActions: [
       {
         type: "CREATE_ESCALATION",
@@ -89,6 +90,19 @@ function buildDemoScenario(): FakeAgentScenario {
             toolCallId: DEMO_TOOL_CALL_ID,
             toolName: "get_service_status",
             input: { serviceSlug: "notification-service" },
+            // Issue #58 Checkpoint B: retrieval runs before this request, so
+            // the run already holds RAG evidence (DEMO_RAG_CHUNK_ID is among
+            // the retrieved chunks, matching the report's cited RAG evidence).
+            // The orchestrator's A3 guard therefore forbids NO_EVIDENCE_YET
+            // here — the run-state-consistent claim is STATUS_UNRESOLVED
+            // citing the available chunk.
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "STATUS_UNRESOLVED",
+              supportedBy: [
+                { evidenceId: DEMO_RAG_CHUNK_ID, sourceType: "RAG_CHUNK" },
+              ],
+            },
           },
         ],
       },
@@ -150,6 +164,23 @@ function formatTraceLine(
   }
 }
 
+// rootCause is nullable (Issue #58, P1-1): non-sufficient evidence never
+// carries a root cause, and a SUFFICIENT report may be a grounded non-causal
+// conclusion. Mirrors apps/web/src/components/ReportPanel.tsx's
+// rootCauseDisplay() wording so the CLI and web surfaces agree, without a
+// cross-package UI-copy abstraction for a three-branch string switch.
+function rootCauseDisplay(report: ResolutionReport): string {
+  if (report.rootCause !== null) return report.rootCause;
+  switch (report.evidenceState) {
+    case "SUFFICIENT":
+      return "No causal root cause identified.";
+    case "INSUFFICIENT":
+      return "Not determined — insufficient evidence.";
+    case "CONFLICTING":
+      return "Not determined — evidence is conflicting.";
+  }
+}
+
 export function formatDemoOutput(
   ticket: DemoTicket,
   { agentResult, corpusLoad }: RagDemoScenarioResult,
@@ -174,7 +205,7 @@ export function formatDemoOutput(
       "Resolution Report",
       `Category: ${report.category}`,
       `Summary: ${report.summary}`,
-      `Root Cause: ${report.rootCause}`,
+      `Root Cause: ${rootCauseDisplay(report)}`,
       `Customer Impact: ${report.customerImpact}`,
       `Recommended Resolution: ${report.recommendedResolution}`,
       `Confidence: ${report.confidence.toFixed(2)}`,

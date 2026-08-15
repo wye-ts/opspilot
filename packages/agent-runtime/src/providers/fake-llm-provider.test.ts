@@ -5,6 +5,16 @@ import { FakeLlmProvider, type FakeAgentScenario } from "./fake-llm-provider";
 const usage = { inputTokens: 100, outputTokens: 20 };
 const maxOutputTokens = 4096;
 
+// Issue #58 Checkpoint B: a first diagnostic request runs before any evidence
+// exists, so its rawAssessment must carry the run-state-consistent claim
+// (INSUFFICIENT / NO_EVIDENCE_YET, empty supportedBy) — the same shape the
+// orchestrator's V0 + A3 guards require of live providers.
+const NO_EVIDENCE_YET_ASSESSMENT = {
+  evidenceState: "INSUFFICIENT",
+  continuationReason: "NO_EVIDENCE_YET",
+  supportedBy: [],
+};
+
 const toolThenReportScenario: FakeAgentScenario = {
   id: "tool-then-report",
   turns: [
@@ -16,6 +26,7 @@ const toolThenReportScenario: FakeAgentScenario = {
           toolCallId: "call-1",
           toolName: "check_service_status",
           input: { serviceSlug: "notification-service" },
+          rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
         },
       ],
     },
@@ -38,6 +49,7 @@ describe("FakeLlmProvider", () => {
       turnIndex: 0,
       phase: "INVESTIGATION",
       maxOutputTokens,
+      diagnosticCallsRemaining: 3,
       conversation: [],
     });
     expect(first.type).toBe("diagnostic_tool_request");
@@ -50,6 +62,7 @@ describe("FakeLlmProvider", () => {
       turnIndex: 1,
       phase: "FINALIZATION",
       maxOutputTokens,
+      diagnosticCallsRemaining: 0,
       conversation: [],
     });
     expect(second.type).toBe("report_submission");
@@ -69,12 +82,14 @@ describe("FakeLlmProvider", () => {
       turnIndex: 0,
       phase: "INVESTIGATION",
       maxOutputTokens,
+      diagnosticCallsRemaining: 3,
       conversation: [],
     });
     const second = await provider.runAgentTurn({
       turnIndex: 0,
       phase: "INVESTIGATION",
       maxOutputTokens,
+      diagnosticCallsRemaining: 3,
       conversation: [],
     });
 
@@ -93,11 +108,13 @@ describe("FakeLlmProvider", () => {
               toolCallId: "call-1",
               toolName: "check_service_status",
               input: { serviceSlug: "notification-service" },
+              rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
             },
             {
               toolCallId: "call-2",
               toolName: "search_logs",
               input: { serviceSlug: "notification-service" },
+              rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
             },
           ],
         },
@@ -109,6 +126,7 @@ describe("FakeLlmProvider", () => {
       turnIndex: 0,
       phase: "INVESTIGATION",
       maxOutputTokens,
+      diagnosticCallsRemaining: 3,
       conversation: [],
     });
 

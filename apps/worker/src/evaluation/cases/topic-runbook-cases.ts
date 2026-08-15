@@ -29,6 +29,7 @@ const CASE_1_REPORT: ResolutionReport = {
       finding: "Runbook confirms this is a known notification-service degradation pattern.",
     },
   ],
+  evidenceState: "SUFFICIENT",
   suggestedActions: [
     {
       type: "UPDATE_TICKET_STATUS",
@@ -62,6 +63,7 @@ const CASE_2_REPORT: ResolutionReport = {
       finding: "Runbook remediation steps for a notification queue backlog.",
     },
   ],
+  evidenceState: "SUFFICIENT",
   suggestedActions: [
     {
       type: "UPDATE_TICKET_STATUS",
@@ -95,6 +97,7 @@ const CASE_3_REPORT: ResolutionReport = {
       finding: "Runbook describes authentication failure root causes.",
     },
   ],
+  evidenceState: "SUFFICIENT",
   suggestedActions: [
     {
       type: "CREATE_ESCALATION",
@@ -127,6 +130,7 @@ const CASE_4_REPORT: ResolutionReport = {
       finding: "Runbook describes database connection pool saturation.",
     },
   ],
+  evidenceState: "SUFFICIENT",
   suggestedActions: [],
 };
 
@@ -149,6 +153,7 @@ const CASE_5_REPORT: ResolutionReport = {
       finding: "Runbook describes billing invoice PDF formatting issues.",
     },
   ],
+  evidenceState: "SUFFICIENT",
   suggestedActions: [
     {
       type: "DRAFT_CUSTOMER_REPLY",
@@ -163,7 +168,10 @@ const CASE_5_REPORT: ResolutionReport = {
 const CASE_6_REPORT: ResolutionReport = {
   category: "UNKNOWN",
   summary: "No known runbook matches this query; status could not be determined from available evidence.",
-  rootCause: "Unable to determine a root cause from available evidence.",
+  // Issue #58 (P1-1): non-sufficient evidence carries no root cause. The old
+  // sentinel sentence only stated what could not be established — the schema
+  // now conveys that structurally via INSUFFICIENT + rootCause null.
+  rootCause: null,
   customerImpact: "Impact could not be determined from available evidence.",
   recommendedResolution: "Escalate for manual investigation.",
   confidence: 0.2,
@@ -174,6 +182,7 @@ const CASE_6_REPORT: ResolutionReport = {
       finding: "unclassified-service status could not be confirmed (UNKNOWN).",
     },
   ],
+  evidenceState: "INSUFFICIENT",
   suggestedActions: [],
 };
 
@@ -194,6 +203,19 @@ export const TOPIC_RUNBOOK_CASES: readonly EvaluationCase[] = [
             toolCallId: "case1-call-1",
             toolName: "get_service_status",
             input: { serviceSlug: "notification-service" },
+            // Issue #58 Checkpoint B: retrieval runs before this request, so
+            // the run already holds RAG evidence (expectedTop1) — the A3 guard
+            // forbids NO_EVIDENCE_YET here.
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "STATUS_UNRESOLVED",
+              supportedBy: [
+                {
+                  evidenceId: "runbook-notification-degradation-001",
+                  sourceType: "RAG_CHUNK",
+                },
+              ],
+            },
           },
         ],
       },
@@ -233,6 +255,19 @@ export const TOPIC_RUNBOOK_CASES: readonly EvaluationCase[] = [
             toolCallId: "case2-call-1",
             toolName: "get_service_status",
             input: { serviceSlug: "notification-service" },
+            // Issue #58 Checkpoint B: retrieval runs before this request, so
+            // the run already holds RAG evidence (expectedTop1) — the A3 guard
+            // forbids NO_EVIDENCE_YET here.
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "STATUS_UNRESOLVED",
+              supportedBy: [
+                {
+                  evidenceId: "runbook-notification-queue-backlog-001",
+                  sourceType: "RAG_CHUNK",
+                },
+              ],
+            },
           },
         ],
       },
@@ -273,7 +308,24 @@ export const TOPIC_RUNBOOK_CASES: readonly EvaluationCase[] = [
         kind: "diagnostic_tool_requests",
         usage: USAGE,
         requests: [
-          { toolCallId: "case3-call-1", toolName: "get_service_status", input: { serviceSlug: "auth-service" } },
+          {
+            toolCallId: "case3-call-1",
+            toolName: "get_service_status",
+            input: { serviceSlug: "auth-service" },
+            // Issue #58 Checkpoint B: retrieval runs before this request, so
+            // the run already holds RAG evidence (expectedTop1) — the A3 guard
+            // forbids NO_EVIDENCE_YET here.
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "STATUS_UNRESOLVED",
+              supportedBy: [
+                {
+                  evidenceId: "runbook-auth-failures-001",
+                  sourceType: "RAG_CHUNK",
+                },
+              ],
+            },
+          },
         ],
       },
       { kind: "report_submission", usage: USAGE, rawInput: CASE_3_REPORT },
@@ -308,7 +360,24 @@ export const TOPIC_RUNBOOK_CASES: readonly EvaluationCase[] = [
         kind: "diagnostic_tool_requests",
         usage: USAGE,
         requests: [
-          { toolCallId: "case4-call-1", toolName: "get_service_status", input: { serviceSlug: "database" } },
+          {
+            toolCallId: "case4-call-1",
+            toolName: "get_service_status",
+            input: { serviceSlug: "database" },
+            // Issue #58 Checkpoint B: retrieval runs before this request, so
+            // the run already holds RAG evidence (expectedTop1) — the A3 guard
+            // forbids NO_EVIDENCE_YET here.
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "STATUS_UNRESOLVED",
+              supportedBy: [
+                {
+                  evidenceId: "runbook-database-connection-saturation-001",
+                  sourceType: "RAG_CHUNK",
+                },
+              ],
+            },
+          },
         ],
       },
       { kind: "report_submission", usage: USAGE, rawInput: CASE_4_REPORT },
@@ -340,6 +409,19 @@ export const TOPIC_RUNBOOK_CASES: readonly EvaluationCase[] = [
             toolCallId: "case5-call-1",
             toolName: "get_service_status",
             input: { serviceSlug: "billing-service" },
+            // Issue #58 Checkpoint B: retrieval runs before this request, so
+            // the run already holds RAG evidence (expectedTop1) — the A3 guard
+            // forbids NO_EVIDENCE_YET here.
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "STATUS_UNRESOLVED",
+              supportedBy: [
+                {
+                  evidenceId: "runbook-billing-invoice-formatting-001",
+                  sourceType: "RAG_CHUNK",
+                },
+              ],
+            },
           },
         ],
       },
@@ -377,6 +459,15 @@ export const TOPIC_RUNBOOK_CASES: readonly EvaluationCase[] = [
             toolCallId: "case6-call-1",
             toolName: "get_service_status",
             input: { serviceSlug: "unclassified-service" },
+            // Issue #58 Checkpoint B: this query returns zero retrieval
+            // results (expectedNoResults) and no tool has executed yet, so
+            // both evidence sets are empty — NO_EVIDENCE_YET is the
+            // run-state-consistent claim the A3 guard requires here.
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "NO_EVIDENCE_YET",
+              supportedBy: [],
+            },
           },
         ],
       },

@@ -1,4 +1,4 @@
-import type { AgentRunOutcomeView } from "../api/types";
+import type { AgentRunOutcomeView, StoredResolutionReport } from "../api/types";
 import { humanizeEnum } from "../format/text";
 
 // RUNNING is excluded at the type level, not just gated at the call site —
@@ -28,6 +28,28 @@ export interface ReportPanelProps {
 //
 // Suggested actions are a SEPARATE component (SuggestedActionsPanel) with
 // its own gating — this panel never renders them.
+//
+// rootCause is nullable (Issue #58, P1-1): non-sufficient evidence never
+// carries a root cause, and a SUFFICIENT report may be a grounded non-causal
+// conclusion. The rendered value therefore depends on evidenceState, which a
+// pre-#58 stored report (evidenceState undefined) does not carry — legacy
+// rows always had a non-null string rootCause, so that case renders it.
+function rootCauseDisplay(report: {
+  readonly rootCause: string | null;
+  readonly evidenceState?: StoredResolutionReport["evidenceState"];
+}): string {
+  if (report.rootCause !== null) return report.rootCause;
+  switch (report.evidenceState) {
+    case "SUFFICIENT":
+      return "No causal root cause identified.";
+    case "INSUFFICIENT":
+      return "Not determined — insufficient evidence.";
+    case "CONFLICTING":
+      return "Not determined — evidence is conflicting.";
+    default:
+      return "Not determined.";
+  }
+}
 export function ReportPanel({ outcome, failedStageLabel = null }: ReportPanelProps) {
   if (outcome.type === "FAILED") {
     return (
@@ -85,7 +107,7 @@ export function ReportPanel({ outcome, failedStageLabel = null }: ReportPanelPro
         </div>
         <div className="report-panel-field">
           <dt>Root cause</dt>
-          <dd>{report.rootCause}</dd>
+          <dd>{rootCauseDisplay(report)}</dd>
         </div>
         <div className="report-panel-field">
           <dt>Customer impact</dt>

@@ -303,9 +303,16 @@ source bound:
 with `MAX_DIAGNOSTIC_TOOL_CALLS <= MAX_PROVIDER_TURNS - 1` (equality holds
 today): turns 0–2 each accept at most one diagnostic request, and turn 3 is
 forced finalization. A voluntary report may be submitted earlier, on any
-investigation turn. There is no evidence-sufficiency policy yet (that is #58):
-the provider's own continue/stop choice is the only gate on how many diagnostic
-steps a run takes before reporting.
+investigation turn.
+
+These bounds are the mechanical **capability** — *can* another diagnostic
+safely execute? Issue #58 adds the evidence-sufficiency **policy** layered on
+top — *should* another diagnostic execute, given what has been gathered so
+far? The two are deliberately separate: `diagnosticCallsRemaining` (derived
+from these bounds) is exposed to the model as harness **capacity**, never as
+a quota to spend — reaching zero forces finalization regardless of whether
+the model has asked for every remaining call, and having calls left is never
+by itself a reason to make one. See §13.1 for the full policy.
 
 Rules:
 
@@ -394,7 +401,13 @@ The system may persist:
 - bounded result summary;
 - evidence identifiers;
 - report confidence;
-- observable rationale summary.
+- observable rationale summary;
+- the closed-vocabulary evidence assessment (`evidenceState`, `continuationReason`,
+  `supportedBy` evidence locators) that accompanies every new diagnostic
+  request (issue #58, §13.1) — never a free-form rationale or chain-of-thought
+  field. The model states *what* it concluded from a closed vocabulary and
+  *which* already-existing evidence supports that conclusion; it never gets a
+  prose field to explain *why* in its own words.
 
 The system must not persist:
 
@@ -594,6 +607,104 @@ const allowedEvidenceIds = new Set([
 A tool execution is added to `successfulToolExecutionIds` only after its ownership-fenced completion transaction commits successfully. Evidence validation happens before `completeAgentRunWithReport(...)` begins.
 
 A validated report is not persisted by the validator itself. It is passed to `completeAgentRunWithReport(...)`, which performs the atomic completion transaction.
+
+---
+
+### 13.1 Evidence Sufficiency Policy (Issue #58)
+
+§7 established the **mechanical capability** the bounded loop enforces: *can*
+another diagnostic safely execute (budget, deadline, cancellation)? Issue #58
+adds the layer on top — the **policy** of *should* another diagnostic
+execute, given what has been gathered so far. The two never collapse into
+one: a run can be well within its mechanical bounds and still be required to
+stop, because the evidence already gathered settles the question (or because
+no further diagnostic is justified even though evidence remains thin).
+
+**Responsibility split.**
+
+| | Model | Harness |
+|---|---|---|
+| Judges `evidenceState` (`SUFFICIENT` / `INSUFFICIENT` / `CONFLICTING`) | ✓ | |
+| Chooses a `continuationReason` from the closed vocabulary (`NO_EVIDENCE_YET`, `STATUS_UNRESOLVED`, `SCOPE_NOT_COVERED`, `CONFLICT_UNRESOLVED`) | ✓ | |
+| Cites already-existing evidence supporting that judgment | ✓ | |
+| Decides whether another specific diagnostic is justified | ✓ | |
+| Calibrates report `confidence` semantically | ✓ | |
+| Exposes prior tool/RAG context to the model | | ✓ |
+| Exposes `diagnosticCallsRemaining` as a cap, never a quota | | ✓ |
+| Validates the assessment (schema + cross-checks against run state) | | ✓ |
+| Enforces source-aware grounding (a `TOOL_EXECUTION` id must actually be a completed tool call, not a RAG chunk, and vice versa) | | ✓ |
+| Enforces run-state consistency (e.g. `NO_EVIDENCE_YET` is illegal once any evidence exists) | | ✓ |
+| Enforces the §7 mechanical bounds | | ✓ |
+| Persists the validated assessment on every new `TOOL_REQUESTED` | | ✓ |
+| Reconstructs `stopReason` from canonical records (never stores it) | | ✓ |
+| Fails closed on any violation | | ✓ |
+
+The harness never claims to have verified the model's *judgment* was
+correct — only that the judgment is internally consistent with the evidence
+actually gathered this run and expressed in the closed vocabulary. Whether
+`SUFFICIENT`/`INSUFFICIENT`/`CONFLICTING` was the *right* call is issue #59's
+evaluation job, not something the orchestrator can decide.
+
+**Evidence sourcing.** Two source types exist, and they are not
+interchangeable: `TOOL_EXECUTION` (a diagnostic tool call completed this run)
+is current telemetry; `RAG_CHUNK` (a retrieved runbook chunk) is documentary
+and contextual — it may justify *what to inspect next*, but it is never
+current telemetry by itself and can never substitute for a tool observation
+when the report claims a live operational fact. A model-stated hypothesis or
+rationale is never itself evidence; only a real, grounded locator
+(`sourceType` + `evidenceId`) counts.
+
+**`rootCause` may be `null` even when `SUFFICIENT`.** Sufficiency and
+causality are separate claims: a grounded "service is OPERATIONAL, no fault
+observed" verdict is a legitimate `SUFFICIENT` conclusion with `rootCause:
+null` — the evidence was enough to answer the question, and the honest
+answer has no causal root cause to name. Every non-`SUFFICIENT` report
+carries `rootCause: null` unconditionally (the one-way anti-fabrication
+invariant); a `SUFFICIENT` report is simply never *forced* to invent one.
+
+**Legacy report compatibility.** A report stored before issue #58 shipped
+carries no `evidenceState` at all. Reading it applies the exact pre-#58
+contract (non-null `rootCause`, at least one evidence entry) rather than the
+new conditional rules — a legacy row is read exactly as strictly as it would
+have been validated the day it was written, never more permissively.
+
+**No new canonical event, no new persisted field.** The evidence assessment
+rides the existing `TOOL_REQUESTED` event as an additional `assessment`
+field; nothing new is added to the canonical event taxonomy, and the derived
+investigation `stopReason` (below) is never itself written to the database.
+
+#### Investigation `stopReason` — derived, never stored
+
+```ts
+type InvestigationStopReason = "SUFFICIENT_EVIDENCE" | "NO_JUSTIFIED_DIAGNOSTIC" | "BOUND_EXHAUSTED";
+```
+
+| `forcedFinalization` | Report `evidenceState` | `stopReason` |
+|---|---|---|
+| `true` | any | `BOUND_EXHAUSTED` |
+| `false` | `SUFFICIENT` | `SUFFICIENT_EVIDENCE` |
+| `false` | `INSUFFICIENT` / `CONFLICTING` | `NO_JUSTIFIED_DIAGNOSTIC` |
+| `false` | absent (legacy report) | `null` |
+
+`forcedFinalization` is read from the canonical ledger's `REPORT_GENERATION_STARTED`
+fact (present only when the §7 bound, not the model, ended the run — issue
+#57 guarantees a voluntary early report never emits it). `BOUND_EXHAUSTED` is
+therefore a genuine harness-owned fact, independent of model judgment; it
+wins regardless of what the final report's `evidenceState` says, because the
+bound is what actually stopped the run. `SUFFICIENT_EVIDENCE` and
+`NO_JUSTIFIED_DIAGNOSTIC` are the model-declared / protocol-implied stop
+judgment — a voluntary non-sufficient report *means* "no further allowed
+diagnostic was justified," which is a claim the protocol defines, not a
+harness-proven fact. `deriveInvestigationStopReason` (`@opspilot/contracts`)
+is a pure function of exactly these two inputs; `GET
+/v1/agent-jobs/:jobId/investigation`'s `mapInvestigationStateResponse`
+(`apps/api/src/agent-jobs/dto/agent-job-response.mapper.ts`) is its only
+production caller, deriving `stopReason` from the persisted COMPLETED
+report's `evidenceState` and the ledger's `REPORT_GENERATION_STARTED`
+presence — never from wall-clock timing, tool-call count alone, or any
+provider implementation detail. The additive `stopReason` field is not added
+to the separate `/v1/agent-runs/:runId` detail endpoint, which has no
+canonical event stream to derive `forcedFinalization` from.
 
 ---
 
@@ -865,8 +976,13 @@ Defines:
 `AgentRun.promptVersion` stores a logical version such as:
 
 ```text
-opspilot-agent-v1
+opspilot-agent-v2
 ```
+
+`opspilot-agent-v2` supersedes `opspilot-agent-v1`: Issue #58 Checkpoint B
+added the investigation-only evidence-assessment guidance
+(claude-message-mapping.ts), a behavior-changing prompt update that warrants a
+new logical version.
 
 A behavior-changing prompt update requires:
 
@@ -1050,7 +1166,7 @@ Examples:
 
 ```text
 RUN_STARTED
-"Investigation started using prompt version opspilot-agent-v1."
+"Investigation started using prompt version opspilot-agent-v2."
 
 TOOL_REQUESTED
 "Checking the current status of notification-service."

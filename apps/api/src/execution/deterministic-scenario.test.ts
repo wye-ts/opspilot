@@ -1,4 +1,8 @@
-import { getServiceStatusTool, type FakeProviderTurn } from "@opspilot/agent-runtime";
+import {
+  getServiceStatusTool,
+  type FakeProviderTurn,
+  type FakeProviderTurnResolver,
+} from "@opspilot/agent-runtime";
 import { AgentTraceEventSchema } from "@opspilot/contracts";
 import type { AgentJobRecord } from "@opspilot/database";
 import { describe, expect, it } from "vitest";
@@ -15,19 +19,30 @@ function buildJob(overrides: Partial<AgentJobRecord> = {}): AgentJobRecord {
   };
 }
 
+// The scenario's turns array is typed as the §12 union
+// (FakeProviderTurn | FakeProviderTurnResolver)[] because the fake provider
+// accepts either a literal turn or a deterministic function of the turn input.
+// createDeterministicScenario only ever emits literal turns, so these helpers
+// reject a resolver-form entry outright and narrow the literal.
+type TurnEntry = FakeProviderTurn | FakeProviderTurnResolver;
+
+function isLiteralTurn(entry: TurnEntry | undefined): entry is FakeProviderTurn {
+  return typeof entry !== "function";
+}
+
 function expectToolRequestTurn(
-  turn: FakeProviderTurn | undefined,
+  turn: TurnEntry | undefined,
 ): Extract<FakeProviderTurn, { kind: "diagnostic_tool_requests" }> {
-  if (!turn || turn.kind !== "diagnostic_tool_requests") {
+  if (!isLiteralTurn(turn) || turn.kind !== "diagnostic_tool_requests") {
     throw new Error("expected a diagnostic_tool_requests turn");
   }
   return turn;
 }
 
 function expectReportSubmissionTurn(
-  turn: FakeProviderTurn | undefined,
+  turn: TurnEntry | undefined,
 ): Extract<FakeProviderTurn, { kind: "report_submission" }> {
-  if (!turn || turn.kind !== "report_submission") {
+  if (!isLiteralTurn(turn) || turn.kind !== "report_submission") {
     throw new Error("expected a report_submission turn");
   }
   return turn;
@@ -115,9 +130,10 @@ describe("createDeterministicScenario", () => {
 interface DeterministicReportShape {
   readonly category: string;
   readonly summary: string;
-  readonly rootCause: string;
+  readonly rootCause: string | null;
   readonly customerImpact: string;
   readonly recommendedResolution: string;
+  readonly evidenceState: string;
   readonly evidence: ReadonlyArray<{ readonly evidenceId: string; readonly sourceType: string; readonly finding: string }>;
 }
 
@@ -206,15 +222,19 @@ describe("report content does not overclaim what the persisted trace/evidence co
     expect(reportText).not.toContain("captured in this run's trace");
   });
 
-  it("states the tool completed successfully, that no root cause or customer impact was established, that the returned status is not persisted, and that further action needs a diagnostic workflow", () => {
+  it("declares INSUFFICIENT evidence with a null rootCause, states that no customer impact was established, that the returned status is not persisted, and that further action needs a diagnostic workflow", () => {
     const job = buildJob({ ticketContext: { ticketId: "T-9", summary: "billing errors reported" } });
     const report = extractReport(job);
 
-    expect(report.rootCause.toLowerCase()).toContain("completed successfully");
-    expect(report.rootCause.toLowerCase()).toContain("no root cause could be established");
+    // Issue #58 (P1-1): this scenario never evaluates the tool's returned
+    // status, so its evidence is truthfully INSUFFICIENT and the report carries
+    // no root cause — conveyed structurally (rootCause null + evidenceState),
+    // not by the old sentinel prose.
+    expect(report.evidenceState).toBe("INSUFFICIENT");
+    expect(report.rootCause).toBeNull();
     expect(report.customerImpact.toLowerCase()).toContain("no customer impact could be established");
 
-    const notPersistedText = [report.rootCause, report.customerImpact, report.recommendedResolution, ...report.evidence.map((e) => e.finding)]
+    const notPersistedText = [report.customerImpact, report.recommendedResolution, ...report.evidence.map((e) => e.finding)]
       .join(" ")
       .toLowerCase();
     expect(notPersistedText).toContain("not persisted");

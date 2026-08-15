@@ -24,6 +24,7 @@ const validReport: ResolutionReport = {
   evidence: [
     { evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "notification-service reported DEGRADED." },
   ],
+  evidenceState: "SUFFICIENT",
   suggestedActions: [],
 };
 
@@ -70,7 +71,20 @@ describe("runToolThenReportScenario", () => {
         {
           kind: "diagnostic_tool_requests",
           usage,
-          requests: [{ toolCallId: "call-1", toolName: "get_service_status", input: { serviceSlug: "notification-service" } }],
+          requests: [
+            {
+              toolCallId: "call-1",
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+              // Issue #58 Checkpoint B: first request, no prior RAG or tool
+              // evidence — NO_EVIDENCE_YET is the run-state-consistent claim.
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "NO_EVIDENCE_YET",
+                supportedBy: [],
+              },
+            },
+          ],
         },
         { kind: "report_submission", usage, rawInput: validReport },
       ],

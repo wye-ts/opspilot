@@ -84,6 +84,7 @@ const VALID_REPORT = {
   recommendedResolution: "Resolution",
   confidence: 0.8,
   evidence: [{ evidenceId: "chunk-1", sourceType: "RAG_CHUNK", finding: "Finding" }],
+  evidenceState: "SUFFICIENT",
   suggestedActions: [],
 };
 

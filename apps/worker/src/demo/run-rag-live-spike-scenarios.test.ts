@@ -47,6 +47,7 @@ function buildReport(evidence: ResolutionReport["evidence"]): ResolutionReport {
     recommendedResolution: "Resolution.",
     confidence: 0.8,
     evidence,
+    evidenceState: "SUFFICIENT",
     suggestedActions: [],
   };
 }

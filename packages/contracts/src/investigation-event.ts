@@ -7,6 +7,7 @@ import {
   ToolCompletedTraceEventSchema,
   ToolRequestedTraceEventSchema,
 } from "./agent-trace-event";
+import { EvidenceAssessmentSchema } from "./evidence-assessment";
 import {
   InvestigationExecutionStageSchema,
   type InvestigationExecutionStage,
@@ -121,14 +122,48 @@ const RunFailedEventSchema = z
   .strict()
   .readonly();
 
+// Shared TOOL_REQUESTED field shape for the canonical write/record split
+// (Issue #58 §5.3, resolves P1-5), derived from ToolRequestedTraceEventSchema
+// itself via .unwrap() rather than re-declared — so the `type`/`toolCallId`/
+// `toolName` bounds have exactly one owner (agent-trace-event.ts) and cannot
+// drift from the legacy trace object the way a hand-authored copy could.
+const ToolRequestedTraceEventBaseSchema = ToolRequestedTraceEventSchema.unwrap();
+
+// RECORD/READ (Checkpoint A): assessment OPTIONAL so every #57-and-earlier
+// TOOL_REQUESTED row, which never carried one, stays readable.
+export const ToolRequestedRecordEventSchema = ToolRequestedTraceEventBaseSchema
+  .extend({ assessment: EvidenceAssessmentSchema.optional() })
+  .readonly();
+
+export type ToolRequestedRecordEvent = z.infer<typeof ToolRequestedRecordEventSchema>;
+
+// WRITE (Checkpoint B, §4): assessment REQUIRED on every NEW canonical append
+// — every new continuation decision is reconstructable by construction, not
+// merely by convention (P1-5). Landed together with the orchestrator change
+// that starts supplying the validated `assessment` on every emission, so a
+// write-eligible payload without one is rejected from the moment producers
+// are required to provide it. Stored historical rows still read through the
+// optional record schema above.
+export const ToolRequestedWriteEventSchema = ToolRequestedTraceEventBaseSchema
+  .extend({ assessment: EvidenceAssessmentSchema })
+  .readonly();
+
+export type ToolRequestedWriteEvent = z.infer<typeof ToolRequestedWriteEventSchema>;
+
 // The 12 new-write branches, defined once and reused by both the
 // write-eligible payload union and the wider read/record union below — so
-// neither list can drift out of sync with the other.
+// neither list can drift out of sync with the other. The write-side
+// TOOL_REQUESTED slot is ToolRequestedWriteEventSchema (assessment REQUIRED,
+// Issue #58 Checkpoint B): every new canonical append carries the validated
+// continuation assessment. RETRIEVAL_COMPLETED and TOOL_COMPLETED still reuse
+// the exact legacy schema objects byte-for-byte; TOOL_REQUESTED intentionally
+// diverges by the added `assessment` field only, with its `type`/`toolCallId`/
+// `toolName` bounds single-sourced from agent-trace-event.ts.
 const NEW_WRITE_EVENT_BRANCHES = [
   RunCreatedEventSchema,
   AgentStartedEventSchema,
   RetrievalCompletedTraceEventSchema,
-  ToolRequestedTraceEventSchema,
+  ToolRequestedWriteEventSchema,
   ToolCompletedTraceEventSchema,
   ToolFailedEventSchema,
   ReportGenerationStartedEventSchema,
@@ -159,10 +194,37 @@ export type InvestigationEventType = InvestigationEventPayload["type"];
 // never by InvestigationEventPayloadSchema — because a persisted/read
 // record may legitimately be a pre-#37 legacy row, but nothing should ever
 // construct a fresh REPORT_GENERATED payload going forward.
-export const InvestigationEventRecordPayloadSchema = z.discriminatedUnion("type", [
-  ...NEW_WRITE_EVENT_BRANCHES,
+//
+// The read-side TOOL_REQUESTED slot uses ToolRequestedRecordEventSchema
+// (assessment OPTIONAL, Issue #58 Checkpoint A) — a stored record may carry an
+// assessment from a future write, and a pre-#58 row without one stays readable
+// because the field is optional. RETRIEVAL_COMPLETED and TOOL_COMPLETED still
+// reuse the exact legacy schema objects byte-for-byte, so those two slots
+// cannot drift at all. TOOL_REQUESTED intentionally cannot stay byte-identical
+// once it carries canonical assessment metadata the legacy trace object never
+// had — but its `type`/`toolCallId`/`toolName` bounds are still single-sourced,
+// derived via ToolRequestedTraceEventSchema.unwrap().extend(...) rather than
+// re-declared, so only the added `assessment` field can differ.
+const INVESTIGATION_EVENT_RECORD_BRANCHES = [
+  RunCreatedEventSchema,
+  AgentStartedEventSchema,
+  RetrievalCompletedTraceEventSchema,
+  ToolRequestedRecordEventSchema,
+  ToolCompletedTraceEventSchema,
+  ToolFailedEventSchema,
+  ReportGenerationStartedEventSchema,
+  ReportSubmittedEventSchema,
+  ReportValidatedEventSchema,
+  ReportValidationFailedEventSchema,
+  RunCompletedEventSchema,
+  RunFailedEventSchema,
   ReportGeneratedTraceEventSchema,
-]);
+] as const;
+
+export const InvestigationEventRecordPayloadSchema = z.discriminatedUnion(
+  "type",
+  INVESTIGATION_EVENT_RECORD_BRANCHES,
+);
 
 export type InvestigationEventRecordPayload = z.infer<
   typeof InvestigationEventRecordPayloadSchema

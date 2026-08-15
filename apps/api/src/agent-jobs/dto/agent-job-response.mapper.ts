@@ -1,4 +1,5 @@
 import type { AgentJobRecord, AgentRunRecord, PersistedAgentJob, PersistedInvestigationState } from "@opspilot/database";
+import { deriveInvestigationStopReason, type InvestigationStopReason } from "@opspilot/contracts";
 
 import { mapAgentRunRecordResponse, type AgentRunResponseData } from "../../agent-runs/dto/agent-run-response.mapper";
 
@@ -66,6 +67,13 @@ export interface InvestigationStateResponseData {
   readonly trace: PersistedInvestigationState["trace"];
   readonly outcome: PersistedInvestigationState["outcome"];
   readonly events: PersistedInvestigationState["events"];
+  // Issue #58 Checkpoint C (§9.2): derived, never stored — reconstructed
+  // from exactly the two inputs already carried on this snapshot (the
+  // persisted COMPLETED report's evidenceState and the REPORT_GENERATION_STARTED
+  // ledger fact). Additive field; the separate /v1/agent-runs/:runId detail
+  // endpoint is untouched — it has no canonical event stream to derive
+  // forcedFinalization from.
+  readonly stopReason: InvestigationStopReason | null;
 }
 
 // Explicit field-by-field mapping — never a spread of the domain record.
@@ -73,11 +81,17 @@ export interface InvestigationStateResponseData {
 export function mapInvestigationStateResponse(
   state: PersistedInvestigationState,
 ): InvestigationStateResponseData {
+  const stopReason = deriveInvestigationStopReason({
+    evidenceState: state.outcome?.type === "COMPLETED" ? state.outcome.report.evidenceState : undefined,
+    forcedFinalization: state.events.some((event) => event.payload.type === "REPORT_GENERATION_STARTED"),
+  });
+
   return {
     job: mapAgentJobResponse(state.job),
     run: state.run !== null ? mapAgentRunRecordResponse(state.run) : null,
     trace: state.trace,
     outcome: state.outcome,
     events: state.events,
+    stopReason,
   };
 }

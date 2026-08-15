@@ -47,6 +47,7 @@ function buildDemoScenario(): FakeAgentScenario {
         finding: "billing-service reported status OUTAGE.",
       },
     ],
+    evidenceState: "SUFFICIENT",
     suggestedActions: [
       {
         type: "CREATE_ESCALATION",
@@ -70,6 +71,15 @@ function buildDemoScenario(): FakeAgentScenario {
             toolCallId: DEMO_TOOL_CALL_ID,
             toolName: "get_service_status",
             input: { serviceSlug: "billing-service" },
+            // Issue #58 Checkpoint B: this demo's single diagnostic request
+            // runs before any evidence exists (no retriever, no prior tool
+            // execution), so its assessment is the run-state-consistent
+            // NO_EVIDENCE_YET claim the orchestrator's V0 + A3 guards require.
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "NO_EVIDENCE_YET",
+              supportedBy: [],
+            },
           },
         ],
       },

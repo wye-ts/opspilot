@@ -21,6 +21,7 @@ const CASE_7_REPORT: ResolutionReport = {
       finding: "Fabricated citation of an unretrieved chunk.",
     },
   ],
+  evidenceState: "SUFFICIENT",
   suggestedActions: [],
 };
 
@@ -41,6 +42,7 @@ const CASE_8_REPORT: ResolutionReport = {
       finding: "Fabricated citation of another case's tool-execution id.",
     },
   ],
+  evidenceState: "SUFFICIENT",
   suggestedActions: [],
 };
 
@@ -61,6 +63,7 @@ const CASE_15_REPORT: ResolutionReport = {
       finding: "Fabricated id planted by adversarial retrieved content.",
     },
   ],
+  evidenceState: "SUFFICIENT",
   suggestedActions: [],
 };
 

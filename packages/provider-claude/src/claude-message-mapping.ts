@@ -32,7 +32,18 @@ export function buildClaudeMessages(
               type: "tool_use",
               id: entry.toolCallId,
               name: entry.toolName,
-              input: entry.input,
+              // Issue #58 Checkpoint B (§7): Claude is stateless, so an
+              // accepted diagnostic request is rebuilt as the same nested
+              // wrapper the live wire shape carries — the VALIDATED prior
+              // assessment alongside the prior tool input. This is what lets
+              // the next turn see both the prior diagnostic result AND the
+              // model-declared evidentiary status that justified taking it.
+              // Only the validated assessment ever reaches replay; the raw
+              // form, free-form rationale, and chain-of-thought never do.
+              input: {
+                evidenceAssessment: entry.assessment,
+                toolInput: entry.input,
+              },
             },
           ],
         });
@@ -148,13 +159,30 @@ required, in addition to whatever the tool schema shows:
 - category: exactly one of SERVICE_DEGRADATION, RATE_LIMITING,
   AUTHENTICATION, CONFIGURATION, DATA_QUALITY, UNKNOWN.
 - summary: 1-1000 characters.
-- rootCause: 1-1500 characters.
+- rootCause: ALWAYS a key, but either a 1-1500 character string or null.
+  It MUST be null whenever evidenceState is not SUFFICIENT (you may not
+  name a definitive root cause without sufficient evidence). When
+  evidenceState is SUFFICIENT:
+  - use a non-null rootCause only when the evidence supports a causal conclusion;
+  - rootCause: null is valid and preferred for a grounded non-causal conclusion
+    (for example, "no fault observed" — an operational-state conclusion).
+  Do not invent a cause merely because evidenceState is SUFFICIENT.
 - customerImpact: 1-1000 characters.
 - recommendedResolution: 1-2000 characters.
 - confidence: a decimal fraction between 0 and 1 inclusive (for example 0.7).
   Never a percentage (never 70) and never a value outside 0-1.
-- evidence: an array of 1 to 10 entries. At least one is required; never
-  submit more than ten. Each entry is { evidenceId, sourceType, finding }:
+- evidenceState: ALWAYS required, exactly one of SUFFICIENT, INSUFFICIENT,
+  or CONFLICTING — your model-declared judgment of the gathered evidence.
+  This is distinct from evidence.length: state your judgment, do not count.
+- evidence: an array of 0 to 10 entries, each { evidenceId, sourceType,
+  finding }, with cardinality conditioned on evidenceState:
+  - SUFFICIENT requires at least one entry (never submit zero).
+  - CONFLICTING requires at least two DISTINCT entries — evidence that
+    genuinely disagrees (never two entries about the same single
+    observation).
+  - INSUFFICIENT allows zero to ten: zero is truthful when nothing was
+    gathered; do not pad an empty investigation with invented entries.
+  Never submit more than ten entries total. Each entry:
   - evidenceId: 1-128 characters.
   - sourceType: exactly "RAG_CHUNK" or "TOOL_EXECUTION".
   - finding: 1-500 characters.
@@ -179,8 +207,26 @@ Example of a minimally valid input:
   "customerImpact": "Delayed notification delivery for a subset of users.",
   "recommendedResolution": "Scale the notification service and monitor error rate.",
   "confidence": 0.7,
+  "evidenceState": "SUFFICIENT",
   "evidence": [
     { "evidenceId": "<copied exactly from the tool_result>", "sourceType": "TOOL_EXECUTION", "finding": "get_service_status reported DEGRADED." }
+  ],
+  "suggestedActions": []
+}
+
+A grounded NON-causal conclusion under SUFFICIENT evidence still uses
+"rootCause": null — the observed state is the finding, and inventing a cause
+would be fabrication:
+{
+  "category": "UNKNOWN",
+  "summary": "get_service_status reported OPERATIONAL for the checked service.",
+  "rootCause": null,
+  "customerImpact": "No customer impact observed.",
+  "recommendedResolution": "No action required; monitor for regression.",
+  "confidence": 0.8,
+  "evidenceState": "SUFFICIENT",
+  "evidence": [
+    { "evidenceId": "<copied exactly from the tool_result>", "sourceType": "TOOL_EXECUTION", "finding": "get_service_status reported OPERATIONAL." }
   ],
   "suggestedActions": []
 }`;
@@ -191,7 +237,88 @@ You must call submit_resolution_report now. No further investigation is
 possible; base your report only on evidence already gathered in this
 conversation.`;
 
-export function buildSystemPrompt(phase: AgentTurnPhase): string {
+// Issue #58 Checkpoint B (§8): INVESTIGATION-only guidance teaching the
+// evidence-sufficiency model that governs diagnostic continuation. This is a
+// behavior-changing prompt update, so it records the logical prompt-version
+// bump to opspilot-agent-v2 (docs/04-agent-design.md §20.4; the repo's
+// AGENT_PROMPT_VERSION default in docs/03-technical-design.md is updated to
+// match). Deliberately appended on the INVESTIGATION phase only: the
+// FINALIZATION turn is a forced report submission with no diagnostic decision
+// to guide. It teaches structure and decision rules — never hidden reasoning
+// requirements, and it never asks the model to reveal chain-of-thought.
+function investigationGuidance(diagnosticCallsRemaining: number): string {
+  return `
+
+Evidence assessment for diagnostic tool calls:
+
+Every diagnostic tool call must carry an "evidenceAssessment" alongside its
+toolInput. Assess only evidence that already exists in this conversation
+BEFORE the requested diagnostic — never cite the tool call you are requesting
+as if its result already exists, and never a hypothesis.
+
+What counts as evidence:
+- TOOL_EXECUTION: a diagnostic observation produced in THIS run by a
+  completed diagnostic tool call. Its evidenceId is the exact tool_use id
+  from that call's result. An UNKNOWN or inconclusive status is NOT evidence
+  of health and does not establish a root cause.
+- RAG_CHUNK: contextual/documentary evidence (retrieved runbook content). It
+  may motivate what to inspect or support interpretation, but it is NOT
+  current telemetry by itself.
+- hypothesis: a model-level provisional claim. NOT evidence. Never cite a
+  hypothesis as an EvidenceLocator.
+
+Continuation rule:
+Another diagnostic is justified ONLY when:
+- evidence is not already sufficient; AND
+- a specific allowed diagnostic can materially reduce an identified evidence
+  gap or adjudicate a grounded conflict.
+
+If evidence is insufficient but no specific allowed diagnostic could
+materially change the conclusion, stop investigating and submit an honest
+INSUFFICIENT report rather than consuming remaining budget.
+
+diagnosticCallsRemaining is ${diagnosticCallsRemaining} this turn. It is hard
+  upper-bound/capacity information, NOT a quota. Never call a tool merely
+  because budget remains.
+
+continuationReason must be exactly one of:
+- NO_EVIDENCE_YET: no tool or runbook evidence exists yet.
+- STATUS_UNRESOLVED: evidence exists but does not yet answer the question.
+- SCOPE_NOT_COVERED: the evidence gathered covers other ground, not what must
+  be known.
+- CONFLICT_UNRESOLVED: the evidence disagrees and the conflict is not yet
+  adjudicated.
+
+supportedBy rules:
+- supportedBy may contain at most 10 evidence locators.
+- NO_EVIDENCE_YET requires supportedBy: [].
+- Every other continuationReason (STATUS_UNRESOLVED, SCOPE_NOT_COVERED,
+  CONFLICT_UNRESOLVED) requires at least one already-existing grounded
+  locator. The stricter conflict rules below still apply.
+
+Assessment invariants (enforced downstream — get them right the first time):
+- evidenceState SUFFICIENT cannot accompany a diagnostic request. You keep
+  requesting only while evidence is not sufficient.
+- evidenceState CONFLICTING requires at least two DISTINCT evidence locators.
+- continuationReason CONFLICT_UNRESOLVED implies evidenceState CONFLICTING.
+- evidenceState CONFLICTING alone does not force continuationReason
+  CONFLICT_UNRESOLVED.
+- If evidence remains genuinely conflicting and no further justified
+  diagnostic can adjudicate it, submit CONFLICTING, keep rootCause: null, and
+  preserve both grounded sides.
+
+evidenceAssessment carries only its three structured fields (evidenceState,
+continuationReason, supportedBy) — never free-form rationale, prose, or
+chain-of-thought.`;
+}
+
+export function buildSystemPrompt(
+  phase: AgentTurnPhase,
+  diagnosticCallsRemaining: number,
+): string {
   const withBounds = BASE_SYSTEM_PROMPT + REPORT_FIELD_BOUNDS;
-  return phase === "FINALIZATION" ? withBounds + FINALIZATION_SUFFIX : withBounds;
+  if (phase === "FINALIZATION") {
+    return withBounds + FINALIZATION_SUFFIX;
+  }
+  return withBounds + investigationGuidance(diagnosticCallsRemaining);
 }

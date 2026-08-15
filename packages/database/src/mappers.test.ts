@@ -31,6 +31,20 @@ const VALID_REPORT = {
   confidence: 0.8,
   evidence: [{ evidenceId: "chunk-1", sourceType: "RAG_CHUNK", finding: "Finding" }],
   suggestedActions: [],
+  evidenceState: "SUFFICIENT",
+};
+
+// A pre-#58 stored report: no evidenceState, always non-null rootCause and
+// >= 1 evidence entry. Must keep reading under the fail-closed legacy branch.
+const LEGACY_REPORT = {
+  category: "SERVICE_DEGRADATION",
+  summary: "Summary",
+  rootCause: "Root cause",
+  customerImpact: "Impact",
+  recommendedResolution: "Resolution",
+  confidence: 0.8,
+  evidence: [{ evidenceId: "chunk-1", sourceType: "RAG_CHUNK", finding: "Finding" }],
+  suggestedActions: [],
 };
 
 describe("toTicketContextWrite / fromTicketContextRead", () => {
@@ -216,7 +230,15 @@ describe("toInvestigationEventCreateInput", () => {
       { type: "RUN_CREATED" },
       { type: "AGENT_STARTED" },
       { type: "RETRIEVAL_COMPLETED", chunks: [] },
-      { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "get_service_status" },
+      // Issue #58 Checkpoint B (§4): a fresh canonical TOOL_REQUESTED write
+      // must carry a validated assessment (NO_EVIDENCE_YET — no evidence has
+      // run before this run's first diagnostic request).
+      {
+        type: "TOOL_REQUESTED",
+        toolCallId: "call-1",
+        toolName: "get_service_status",
+        assessment: { evidenceState: "INSUFFICIENT", continuationReason: "NO_EVIDENCE_YET", supportedBy: [] },
+      },
       { type: "TOOL_COMPLETED", toolCallId: "call-1", toolName: "get_service_status" },
       { type: "TOOL_FAILED", toolCallId: "call-1", toolName: "get_service_status", failureCode: "TOOL_NOT_FOUND" },
       { type: "REPORT_GENERATION_STARTED" },
@@ -431,6 +453,18 @@ describe("toReportWrite / fromReportRead", () => {
 
   it("rejects an invalid report", () => {
     expect(() => toReportWrite({ summary: "missing required fields" })).toThrow(PersistenceError);
+  });
+
+  it("fromReportRead keeps reading a pre-#58 legacy report (no evidenceState)", () => {
+    expect(fromReportRead(LEGACY_REPORT)).toEqual(LEGACY_REPORT);
+  });
+
+  it("fromReportRead fails closed on a corrupt legacy report (rootCause null)", () => {
+    expect(() => fromReportRead({ ...LEGACY_REPORT, rootCause: null })).toThrow(PersistenceError);
+  });
+
+  it("fromReportRead fails closed on a corrupt legacy report (empty evidence)", () => {
+    expect(() => fromReportRead({ ...LEGACY_REPORT, evidence: [] })).toThrow(PersistenceError);
   });
 });
 

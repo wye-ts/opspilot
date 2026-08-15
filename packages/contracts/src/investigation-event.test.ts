@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { AgentTraceEventSchema } from "./agent-trace-event";
+import { AgentTraceEventSchema, ToolRequestedTraceEventSchema } from "./agent-trace-event";
 import {
   INVESTIGATION_EVENT_LEGACY_TYPE_COUNT,
   INVESTIGATION_EVENT_NEW_WRITE_TYPE_COUNT,
   InvestigationEventPayloadSchema,
   InvestigationEventRecordPayloadSchema,
   InvestigationEventRecordSchema,
+  ToolRequestedRecordEventSchema,
+  ToolRequestedWriteEventSchema,
   mapInvestigationEventToExecutionStage,
 } from "./investigation-event";
 import {
@@ -83,7 +85,17 @@ describe("strict union behavior", () => {
     RUN_CREATED: { type: "RUN_CREATED" },
     AGENT_STARTED: { type: "AGENT_STARTED" },
     RETRIEVAL_COMPLETED: { type: "RETRIEVAL_COMPLETED", chunks: [] },
-    TOOL_REQUESTED: { type: "TOOL_REQUESTED", toolCallId: "call-1", toolName: "check_status" },
+    TOOL_REQUESTED: {
+      type: "TOOL_REQUESTED",
+      toolCallId: "call-1",
+      toolName: "check_status",
+      // Checkpoint B: the new-write branch requires a valid assessment.
+      assessment: {
+        evidenceState: "INSUFFICIENT",
+        continuationReason: "NO_EVIDENCE_YET",
+        supportedBy: [],
+      },
+    },
     TOOL_COMPLETED: { type: "TOOL_COMPLETED", toolCallId: "call-1", toolName: "check_status" },
     TOOL_FAILED: {
       type: "TOOL_FAILED",
@@ -327,5 +339,168 @@ describe("overlapping legacy branch schemas remain byte-compatible", () => {
     for (const fixture of legacyFixtures) {
       expect(InvestigationEventRecordSchema.safeParse(baseRecord(fixture)).success).toBe(true);
     }
+  });
+});
+
+describe("TOOL_REQUESTED assessment on the record/read side (Issue #58 Checkpoint A)", () => {
+  // A pre-#58 TOOL_REQUESTED row never carried an `assessment`.
+  const assessmentLessToolRequested = {
+    type: "TOOL_REQUESTED",
+    toolCallId: "call-1",
+    toolName: "check_status",
+  } as const;
+
+  const groundedAssessment = {
+    evidenceState: "INSUFFICIENT",
+    continuationReason: "STATUS_UNRESOLVED",
+    supportedBy: [{ evidenceId: "tool-execution-001", sourceType: "TOOL_EXECUTION" }],
+  } as const;
+
+  it("parses an assessment-less TOOL_REQUESTED record (pre-#58 read compat)", () => {
+    expect(
+      InvestigationEventRecordPayloadSchema.safeParse(assessmentLessToolRequested).success,
+    ).toBe(true);
+    expect(
+      InvestigationEventRecordSchema.safeParse(baseRecord(assessmentLessToolRequested)).success,
+    ).toBe(true);
+  });
+
+  it("parses a TOOL_REQUESTED record carrying a valid assessment", () => {
+    expect(
+      InvestigationEventRecordSchema.safeParse(
+        baseRecord({ ...assessmentLessToolRequested, assessment: groundedAssessment }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("rejects a TOOL_REQUESTED record carrying an invalid assessment", () => {
+    const invalidAssessment = {
+      ...groundedAssessment,
+      evidenceState: "SUFFICIENT", // cannot accompany another diagnostic
+    };
+    expect(
+      InvestigationEventRecordSchema.safeParse(
+        baseRecord({ ...assessmentLessToolRequested, assessment: invalidAssessment }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("the record-side schema itself rejects assessment-bearing TOOL_REQUESTED with an invalid assessment", () => {
+    expect(
+      ToolRequestedRecordEventSchema.safeParse({
+        type: "TOOL_REQUESTED",
+        toolCallId: "call-1",
+        toolName: "check_status",
+        assessment: {
+          evidenceState: "CONFLICTING",
+          continuationReason: "SCOPE_NOT_COVERED",
+          supportedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("the new-write TOOL_REQUESTED branch still accepts the legacy trace object WITHOUT any added key", () => {
+    // Write-path compatibility with every pre-#58 producer that emits a
+    // TOOL_REQUESTED without an assessment would NOT hold — the write branch
+    // now requires it (see the write/record proof below). This assertion is
+    // the inverse: the write branch is intentionally stricter.
+    expect(
+      InvestigationEventPayloadSchema.safeParse(assessmentLessToolRequested).success,
+    ).toBe(false);
+  });
+
+  it("rejects an extra key on the record-side TOOL_REQUESTED schema (strict preserved)", () => {
+    expect(
+      ToolRequestedRecordEventSchema.safeParse({
+        ...assessmentLessToolRequested,
+        bogus: "not a field",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("inherits the legacy toolCallId/toolName bounds via derivation, not a re-declared copy", () => {
+    // Same out-of-bounds values the legacy ToolRequestedTraceEventSchema
+    // itself rejects (min(1)/max(128)) — proves ToolRequestedRecordEventSchema
+    // is built from that schema's own field constraints, not an independent
+    // hand-authored approximation of them.
+    const emptyToolCallId = { ...assessmentLessToolRequested, toolCallId: "" };
+    const overlongToolName = { ...assessmentLessToolRequested, toolName: "t".repeat(129) };
+
+    expect(ToolRequestedTraceEventSchema.safeParse(emptyToolCallId).success).toBe(false);
+    expect(ToolRequestedRecordEventSchema.safeParse(emptyToolCallId).success).toBe(false);
+
+    expect(ToolRequestedTraceEventSchema.safeParse(overlongToolName).success).toBe(false);
+    expect(ToolRequestedRecordEventSchema.safeParse(overlongToolName).success).toBe(false);
+  });
+});
+
+describe("TOOL_REQUESTED write/record split (Issue #58 Checkpoint B §4)", () => {
+  const assessmentLessToolRequested = {
+    type: "TOOL_REQUESTED",
+    toolCallId: "call-1",
+    toolName: "check_status",
+  } as const;
+
+  const groundedAssessment = {
+    evidenceState: "INSUFFICIENT",
+    continuationReason: "STATUS_UNRESOLVED",
+    supportedBy: [{ evidenceId: "tool-execution-001", sourceType: "TOOL_EXECUTION" }],
+  } as const;
+
+  it("write schema rejects a TOOL_REQUESTED without assessment", () => {
+    expect(
+      InvestigationEventPayloadSchema.safeParse(assessmentLessToolRequested).success,
+    ).toBe(false);
+    expect(
+      ToolRequestedWriteEventSchema.safeParse(assessmentLessToolRequested).success,
+    ).toBe(false);
+  });
+
+  it("write schema accepts a TOOL_REQUESTED carrying a valid assessment", () => {
+    const payload = { ...assessmentLessToolRequested, assessment: groundedAssessment };
+    expect(
+      InvestigationEventPayloadSchema.safeParse(payload).success,
+    ).toBe(true);
+    const parsed = ToolRequestedWriteEventSchema.parse(payload);
+    expect(Object.keys(parsed).sort()).toEqual(["assessment", "toolCallId", "toolName", "type"]);
+    expect(parsed.assessment).toEqual(groundedAssessment);
+  });
+
+  it("record schema still accepts a TOOL_REQUESTED without assessment (pre-#58 read compat)", () => {
+    expect(
+      InvestigationEventRecordPayloadSchema.safeParse(assessmentLessToolRequested).success,
+    ).toBe(true);
+    expect(
+      InvestigationEventRecordSchema.safeParse(baseRecord(assessmentLessToolRequested)).success,
+    ).toBe(true);
+  });
+
+  it("record schema accepts a TOOL_REQUESTED carrying a valid assessment", () => {
+    const payload = { ...assessmentLessToolRequested, assessment: groundedAssessment };
+    expect(
+      InvestigationEventRecordSchema.safeParse(baseRecord(payload)).success,
+    ).toBe(true);
+  });
+
+  it("record schema rejects a TOOL_REQUESTED carrying an invalid assessment", () => {
+    const invalidAssessment = {
+      ...groundedAssessment,
+      evidenceState: "SUFFICIENT", // cannot accompany another diagnostic
+    };
+    expect(
+      InvestigationEventRecordSchema.safeParse(
+        baseRecord({ ...assessmentLessToolRequested, assessment: invalidAssessment }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("the write schema's assessment is the single EvidenceAssessmentSchema, so SUFFICIENT is rejected too", () => {
+    expect(
+      ToolRequestedWriteEventSchema.safeParse({
+        ...assessmentLessToolRequested,
+        assessment: { ...groundedAssessment, evidenceState: "SUFFICIENT" },
+      }).success,
+    ).toBe(false);
   });
 });

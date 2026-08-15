@@ -240,7 +240,9 @@ describe("route successes", () => {
 
     expect(res.status).toBe(200);
     expect(Object.keys(res.body).sort()).toEqual(["data"]);
-    expect(Object.keys(res.body.data).sort()).toEqual(["events", "job", "outcome", "run", "trace"]);
+    // Issue #58 Checkpoint C: stopReason is an additive derived field on this
+    // response only (§9.2) — the exact key set must include it.
+    expect(Object.keys(res.body.data).sort()).toEqual(["events", "job", "outcome", "run", "stopReason", "trace"]);
     expect(Object.keys(res.body.data.job).sort()).toEqual(["createdAt", "id", "summary", "ticketId"]);
     expect(Object.keys(res.body.data.run).sort()).toEqual(
       ["attemptNumber", "createdAt", "estimatedCostUsd", "finishedAt", "id", "jobId", "modelIdentifier", "providerMode", "startedAt", "status"].sort(),

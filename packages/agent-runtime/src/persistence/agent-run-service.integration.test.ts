@@ -1,5 +1,9 @@
 import { createPrismaClient, type AgentJobRecord, type PrismaClientHandle } from "@opspilot/database";
-import type { InvestigationEventRecord, ResolutionReport } from "@opspilot/contracts";
+import type {
+  InvestigationEventPayload,
+  InvestigationEventRecord,
+  ResolutionReport,
+} from "@opspilot/contracts";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { FakeLlmProvider, type FakeAgentScenario, type FakeProviderTurn } from "../providers/fake-llm-provider";
@@ -56,15 +60,46 @@ function completedReport(callIds: readonly string[]): ResolutionReport {
       sourceType: "TOOL_EXECUTION",
       finding: `Tool call ${callId} completed successfully.`,
     })),
+    evidenceState: "SUFFICIENT",
     suggestedActions: [],
   };
 }
 
-function toolTurn(callId: string, serviceSlug: string, toolName: string = TOOL_NAME): FakeProviderTurn {
+// Issue #58 Checkpoint B (§12): every diagnostic request must carry a
+// rawAssessment consistent with the evidence available BEFORE that request —
+// the first tool call in a scenario claims NO_EVIDENCE_YET with an empty
+// supportedBy; each later call cites the tool calls already completed in the
+// run. The orchestrator's V0 + A3 guards reject any fixture that claims
+// otherwise.
+const NO_EVIDENCE_YET_ASSESSMENT = {
+  evidenceState: "INSUFFICIENT",
+  continuationReason: "NO_EVIDENCE_YET",
+  supportedBy: [],
+} as const;
+
+// assessment is the rawAssessment carried on the request. Callers that build a
+// second/third turn pass a STATUS_UNRESOLVED assessment citing the earlier
+// completed call(s).
+function toolTurn(
+  callId: string,
+  serviceSlug: string,
+  toolName: string = TOOL_NAME,
+  assessment: unknown = NO_EVIDENCE_YET_ASSESSMENT,
+): FakeProviderTurn {
   return {
     kind: "diagnostic_tool_requests",
     usage: { inputTokens: 1, outputTokens: 1 },
-    requests: [{ toolCallId: callId, toolName, input: { serviceSlug } }],
+    requests: [{ toolCallId: callId, toolName, input: { serviceSlug }, rawAssessment: assessment }],
+  };
+}
+
+// §12: the run-state-consistent assessment for a call made AFTER earlier
+// calls have completed — STATUS_UNRESOLVED citing exactly those call ids.
+function statusUnresolvedCiting(callIds: readonly string[]): unknown {
+  return {
+    evidenceState: "INSUFFICIENT",
+    continuationReason: "STATUS_UNRESOLVED",
+    supportedBy: callIds.map((evidenceId) => ({ evidenceId, sourceType: "TOOL_EXECUTION" })),
   };
 }
 
@@ -83,7 +118,7 @@ function twoToolVoluntaryEarlyReportScenario(): FakeAgentScenario {
     id: "checkpoint-c-two-tool-voluntary",
     turns: [
       toolTurn("call-1", "auth-service"),
-      toolTurn("call-2", "billing-service"),
+      toolTurn("call-2", "billing-service", TOOL_NAME, statusUnresolvedCiting(["call-1"])),
       reportTurn(completedReport(["call-1", "call-2"])),
     ],
   };
@@ -96,8 +131,8 @@ function threeToolForcedFinalizationScenario(): FakeAgentScenario {
     id: "checkpoint-c-three-tool-forced",
     turns: [
       toolTurn("call-1", "auth-service"),
-      toolTurn("call-2", "billing-service"),
-      toolTurn("call-3", "notification-service"),
+      toolTurn("call-2", "billing-service", TOOL_NAME, statusUnresolvedCiting(["call-1"])),
+      toolTurn("call-3", "notification-service", TOOL_NAME, statusUnresolvedCiting(["call-1", "call-2"])),
       reportTurn(completedReport(["call-1", "call-2", "call-3"])),
     ],
   };
@@ -111,7 +146,7 @@ function firstSucceedsThenUnknownToolScenario(): FakeAgentScenario {
     id: "checkpoint-c-first-succeeds-then-unknown",
     turns: [
       toolTurn("call-1", "auth-service"),
-      toolTurn("call-2", "auth-service", "missing_tool"),
+      toolTurn("call-2", "auth-service", "missing_tool", statusUnresolvedCiting(["call-1"])),
     ],
   };
 }
@@ -224,6 +259,25 @@ describe("issue #57 Checkpoint C — real multi-step persistence/readback", () =
     const traceCompleted = run.trace.filter((event) => event.type === "TOOL_COMPLETED");
     expect(traceRequested.map((event) => event.toolCallId)).toEqual(["call-1", "call-2"]);
     expect(traceCompleted.map((event) => event.toolCallId)).toEqual(["call-1", "call-2"]);
+
+    // Issue #58 Checkpoint B (§9.4/§15): the PERSISTED TOOL_REQUESTED rows
+    // carry the VALIDATED run-state-consistent assessments — no evidence yet
+    // for the first request, grounded on the completed call-1 for the second.
+    const requestedPayloads = state.events
+      .filter((event) => event.payload.type === "TOOL_REQUESTED")
+      .map((event) => event.payload);
+    expect(requestedPayloads[0]).toMatchObject({
+      toolCallId: "call-1",
+      assessment: NO_EVIDENCE_YET_ASSESSMENT,
+    });
+    expect(requestedPayloads[1]).toMatchObject({
+      toolCallId: "call-2",
+      assessment: {
+        evidenceState: "INSUFFICIENT",
+        continuationReason: "STATUS_UNRESOLVED",
+        supportedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+      },
+    });
   });
 
   it("persists the three-tool forced-finalization run (max bound) with REPORT_GENERATION_STARTED present", async () => {
@@ -355,5 +409,62 @@ describe("issue #57 Checkpoint C — real multi-step persistence/readback", () =
     // outcome (a second read is byte-identical).
     const reread = await service.getInvestigationState(job.id);
     expect(reread).toEqual(state);
+  });
+
+  it("exact-replays an assessment-carrying TOOL_REQUESTED through the real repository: same sequence, no new row, next event contiguous", async () => {
+    // Issue #58 Checkpoint B (§15): the JSONB-payload-idempotent exact-replay
+    // guarantee (Checkpoint A) must hold for the NEW write payload too — an
+    // assessment-carrying TOOL_REQUESTED re-appended identically returns the
+    // ORIGINAL record (same sequence, no insert), and the next distinct event
+    // still lands on the contiguous sequence number.
+    const repository = createPrismaAgentRunRepository(handle.prisma);
+    const service = createAgentRunService(repository);
+    const job = await service.createAgentJob({
+      ticketId: "TKT-58",
+      summary: "Checkpoint B exact-replay persistence proof",
+    });
+    const started = await repository.startRun(job.id, "FAKE", null);
+    const runId = started.run.id;
+
+    await repository.appendInvestigationEvent(runId, { type: "AGENT_STARTED" });
+
+    const requestPayload: Extract<InvestigationEventPayload, { type: "TOOL_REQUESTED" }> = {
+      type: "TOOL_REQUESTED",
+      toolCallId: "call-1",
+      toolName: "get_service_status",
+      // Built inline (mutable) so the array is assignable to the write event's
+      // EvidenceLocator[] slot — the `as const` fixture is too deeply readonly.
+      assessment: {
+        evidenceState: "INSUFFICIENT",
+        continuationReason: "NO_EVIDENCE_YET",
+        supportedBy: [],
+      },
+    };
+    const first = await repository.appendInvestigationEvent(runId, requestPayload);
+    const replayed = await repository.appendInvestigationEvent(runId, requestPayload);
+
+    // The replay returned the ORIGINAL record — same sequence, no new row.
+    expect(replayed.sequence).toBe(first.sequence);
+    expect(replayed.recordedAt).toBe(first.recordedAt);
+    expect(replayed.payload).toEqual(first.payload);
+
+    // The next distinct event is contiguous — the replay consumed no sequence.
+    await repository.appendInvestigationEvent(runId, {
+      type: "TOOL_COMPLETED",
+      toolCallId: "call-1",
+      toolName: "get_service_status",
+    });
+
+    const state = await service.getInvestigationState(job.id);
+    expect(state.events.map((event) => event.sequence)).toEqual([1, 2, 3, 4]);
+    expect(payloadTypes(state.events)).toEqual([
+      "RUN_CREATED",
+      "AGENT_STARTED",
+      "TOOL_REQUESTED",
+      "TOOL_COMPLETED",
+    ]);
+    // The single persisted TOOL_REQUESTED row carries the validated assessment.
+    const requested = state.events.find((event) => event.payload.type === "TOOL_REQUESTED");
+    expect(requested?.payload).toMatchObject(requestPayload);
   });
 });

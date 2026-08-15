@@ -98,6 +98,7 @@ const APPROVAL_ELIGIBLE_REPORT = {
   recommendedResolution: "Resolution.",
   confidence: 0.5,
   evidence: [{ evidenceId: "e-1", sourceType: "TOOL_EXECUTION" as const, finding: "f" }],
+  evidenceState: "SUFFICIENT" as const,
   suggestedActions: [
     { type: "DRAFT_CUSTOMER_REPLY" as const, payload: { subject: "Update", body: "A human will follow up." } },
   ],
@@ -145,6 +146,8 @@ async function createFailedApprovalRun(prisma: PrismaClient, ticketId: string) {
     type: "TOOL_REQUESTED",
     toolCallId: "call-1",
     toolName: "get_service_status",
+    // Issue #58 Checkpoint B (§4): first diagnostic request — no evidence yet.
+    assessment: { evidenceState: "INSUFFICIENT", continuationReason: "NO_EVIDENCE_YET", supportedBy: [] },
   });
   await appendInvestigationEvent(prisma, started.run.id, {
     type: "TOOL_FAILED",
@@ -593,6 +596,8 @@ describe("GET /v1/agent-runs/:runId — canonical projection", () => {
       type: "TOOL_REQUESTED",
       toolCallId: "call-1",
       toolName: "get_service_status",
+      // Issue #58 Checkpoint B (§4): first diagnostic request — no evidence yet.
+      assessment: { evidenceState: "INSUFFICIENT", continuationReason: "NO_EVIDENCE_YET", supportedBy: [] },
     });
 
     const res = await request(testApp.app.getHttpServer()).get(`/v1/agent-runs/${started.run.id}`);

@@ -112,7 +112,7 @@ export type {
   RawProviderTurnContext,
 } from "./providers/llm-provider";
 export type LlmProviderError = InstanceType<typeof LlmProviderError>;
-export type { FakeAgentScenario, FakeProviderTurn } from "./providers/fake-llm-provider";
+export type { FakeAgentScenario, FakeProviderTurn, FakeProviderTurnResolver } from "./providers/fake-llm-provider";
 export type FakeLlmProvider = InstanceType<typeof FakeLlmProvider>;
 export type FakeScenarioTurnNotFoundError = InstanceType<typeof FakeScenarioTurnNotFoundError>;
 

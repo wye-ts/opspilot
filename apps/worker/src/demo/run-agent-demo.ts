@@ -45,6 +45,7 @@ function buildDemoScenario(): FakeAgentScenario {
         finding: "notification-service reported status DEGRADED.",
       },
     ],
+    evidenceState: "SUFFICIENT",
     suggestedActions: [
       {
         type: "CREATE_ESCALATION",
@@ -68,6 +69,15 @@ function buildDemoScenario(): FakeAgentScenario {
             toolCallId: DEMO_TOOL_CALL_ID,
             toolName: "get_service_status",
             input: { serviceSlug: "notification-service" },
+            // Issue #58 Checkpoint B: this demo's single diagnostic request
+            // runs before any evidence exists (no retriever, no prior tool
+            // execution), so its assessment is the run-state-consistent
+            // NO_EVIDENCE_YET claim the orchestrator's V0 + A3 guards require.
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "NO_EVIDENCE_YET",
+              supportedBy: [],
+            },
           },
         ],
       },
@@ -112,6 +122,24 @@ function formatTraceLine(
   }
 }
 
+// rootCause is nullable (Issue #58, P1-1): non-sufficient evidence never
+// carries a root cause, and a SUFFICIENT report may be a grounded non-causal
+// conclusion. Mirrors apps/web/src/components/ReportPanel.tsx's
+// rootCauseDisplay() wording (also duplicated in run-rag-agent-demo.ts) so
+// the CLI and web surfaces agree, without a cross-package UI-copy
+// abstraction for a three-branch string switch.
+function rootCauseDisplay(report: ResolutionReport): string {
+  if (report.rootCause !== null) return report.rootCause;
+  switch (report.evidenceState) {
+    case "SUFFICIENT":
+      return "No causal root cause identified.";
+    case "INSUFFICIENT":
+      return "Not determined — insufficient evidence.";
+    case "CONFLICTING":
+      return "Not determined — evidence is conflicting.";
+  }
+}
+
 export function formatDemoOutput(
   ticket: DemoTicket,
   result: AgentOrchestratorResult,
@@ -133,7 +161,7 @@ export function formatDemoOutput(
       "Resolution Report",
       `Category: ${report.category}`,
       `Summary: ${report.summary}`,
-      `Root Cause: ${report.rootCause}`,
+      `Root Cause: ${rootCauseDisplay(report)}`,
       `Customer Impact: ${report.customerImpact}`,
       `Recommended Resolution: ${report.recommendedResolution}`,
       `Confidence: ${report.confidence.toFixed(2)}`,

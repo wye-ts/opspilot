@@ -71,7 +71,12 @@ export function createDeterministicScenario(job: AgentJobRecord): FakeAgentScena
   const report: ResolutionReport = {
     category: "UNKNOWN",
     summary: `A diagnostic check of ${serviceSlug} was performed for ticket ${job.ticketContext.ticketId}: ${truncatedSummary}`,
-    rootCause: `The get_service_status diagnostic tool completed successfully for ${serviceSlug}. No root cause could be established: this milestone does not persist the status value the tool returned, only that the call completed.`,
+    // Issue #58 (P1-1): non-sufficient evidence must carry no root cause. This
+    // scenario never evaluates the tool's returned status, so its evidence is
+    // truthfully INSUFFICIENT and rootCause is null — the old sentinel prose
+    // was a statement about what the report could NOT establish, which is the
+    // new schema's job to convey structurally.
+    rootCause: null,
     customerImpact: "No customer impact could be established: the tool's returned status value is not persisted by this milestone.",
     recommendedResolution: `Further operational action requires a diagnostic workflow that records and evaluates the returned status for ${serviceSlug}; this milestone does not implement one.`,
     confidence: 0.5,
@@ -90,6 +95,7 @@ export function createDeterministicScenario(job: AgentJobRecord): FakeAgentScena
     // on the tool's returned status, which this scenario never evaluates
     // (see the report fields above). Every other ticketId keeps
     // suggestedActions: [] exactly as shipped in Milestone 6B.
+    evidenceState: "INSUFFICIENT",
     suggestedActions:
       job.ticketContext.ticketId === APPROVAL_DEMO_TICKET_ID
         ? [
@@ -110,7 +116,21 @@ export function createDeterministicScenario(job: AgentJobRecord): FakeAgentScena
       {
         kind: "diagnostic_tool_requests",
         usage: FIXED_TOKEN_USAGE,
-        requests: [{ toolCallId, toolName: "get_service_status", input: { serviceSlug } }],
+        requests: [
+          {
+            toolCallId,
+            toolName: "get_service_status",
+            input: { serviceSlug },
+            // Issue #58 Checkpoint B: the single diagnostic request runs before
+            // any evidence exists, so its assessment is the run-state-consistent
+            // NO_EVIDENCE_YET claim the orchestrator's V0 + A3 guards require.
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "NO_EVIDENCE_YET",
+              supportedBy: [],
+            },
+          },
+        ],
       },
       { kind: "report_submission", usage: FIXED_TOKEN_USAGE, rawInput: report },
     ],
