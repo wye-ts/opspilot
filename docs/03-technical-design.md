@@ -614,7 +614,7 @@ Represents one investigation attempt. Each retry is a **new** `AgentRun` — the
 | `outputTokens` | Integer nullable | Provider usage |
 | `cacheReadTokens` | Integer nullable | Provider usage when available |
 | `estimatedCostUsd` | Decimal nullable | Derived from configured pricing table |
-| `finalReport` | JSONB nullable | Validated final report |
+| `finalReport` | JSONB nullable | Validated final report. Issue #58 adds a required `evidenceState` (`SUFFICIENT`/`INSUFFICIENT`/`CONFLICTING`) and makes `rootCause` nullable — a report is never forced to invent a root cause it did not find, and a `CONFLICTING` report must keep both disagreeing observations visible rather than silently picking one. See docs/04-agent-design.md §13.1 for the full evidence-sufficiency policy and the derived, never-stored investigation `stopReason`. |
 | `errorCode` | String nullable | Stable application error code |
 | `errorMessage` | Text nullable | Sanitized failure detail |
 | `providerMode` | Enum | `FAKE`, `LIVE` — which provider implementation actually executed this run |

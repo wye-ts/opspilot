@@ -2560,6 +2560,272 @@ describe("runAgentOrchestrator — evidence-aware continuation (issue #58 Checkp
   });
 });
 
+describe("runAgentOrchestrator — genuine current-run conflict (issue #58 Checkpoint C §3)", () => {
+  function recordingEmitter() {
+    const emitted: InvestigationEventPayload[] = [];
+    return {
+      emitted,
+      emitLifecycleEvent: async (payload: InvestigationEventPayload) => {
+        emitted.push(payload);
+      },
+    };
+  }
+
+  const types = (emitted: readonly InvestigationEventPayload[]) => emitted.map((e) => e.type);
+
+  // Test-only, deterministic diagnostic tool (§3.1): produces a genuine
+  // CURRENT-RUN tool-vs-tool contradiction about the SAME subject/service
+  // slug — the first completed call reports DEGRADED, every subsequent call
+  // reports OPERATIONAL. Never added to DIAGNOSTIC_TOOL_CATALOG (no
+  // production catalog change) and never registered outside this test file.
+  // Instance isolation (Revision 3 P2-2): the ordering counter lives in a
+  // closure private to ONE factory call, never a module-global — each test
+  // below constructs its own fresh tool instance and fresh InMemoryToolRegistry,
+  // so the scenario stays deterministic under repeated/parallel/reordered runs.
+  function createConflictingStatusProbeTool(): DiagnosticToolDefinition {
+    const InputSchema = z.object({ serviceSlug: z.string().min(1).max(100) }).strict();
+    const OutputSchema = z
+      .object({
+        serviceSlug: z.string().min(1).max(100),
+        status: z.enum(["DEGRADED", "OPERATIONAL"]),
+      })
+      .strict();
+    let callCount = 0;
+    return {
+      name: "conflicting_status_probe",
+      inputSchema: InputSchema,
+      outputSchema: OutputSchema,
+      async execute(rawInput) {
+        const { serviceSlug } = InputSchema.parse(rawInput);
+        callCount += 1;
+        return { serviceSlug, status: callCount === 1 ? "DEGRADED" : "OPERATIONAL" };
+      },
+    };
+  }
+
+  // A schema-valid CONFLICTING report: rootCause is always null (P1-1, the
+  // one-way anti-fabrication invariant) — a conflict can never be silently
+  // resolved into a confident, categorical rootCause.
+  function conflictingReportVariant(evidence: Array<{
+    evidenceId: string;
+    sourceType: "TOOL_EXECUTION";
+    finding: string;
+  }>): unknown {
+    return {
+      category: "SERVICE_DEGRADATION",
+      summary: "Two diagnostics disagree about the same service's status.",
+      customerImpact: "Cannot be determined while the signals conflict.",
+      recommendedResolution: "Manually verify payments-gateway status before acting.",
+      confidence: 0.4,
+      evidence,
+      evidenceState: "CONFLICTING",
+      rootCause: null,
+      suggestedActions: [],
+    };
+  }
+
+  it("D — genuine current-run conflict: two tool-vs-tool observations about the same slug produce a CONFLICTING report with both sides preserved", async () => {
+    const tool = createConflictingStatusProbeTool();
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+
+    const provider = new FakeLlmProvider({
+      id: "scenario-d",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-1",
+              toolName: "conflicting_status_probe",
+              input: { serviceSlug: "payments-gateway" },
+              rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
+            },
+          ],
+        },
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-2",
+              toolName: "conflicting_status_probe",
+              input: { serviceSlug: "payments-gateway" },
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+              },
+            },
+          ],
+        },
+        {
+          kind: "report_submission",
+          usage,
+          rawInput: conflictingReportVariant([
+            { evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "payments-gateway reported DEGRADED." },
+            { evidenceId: "call-2", sourceType: "TOOL_EXECUTION", finding: "payments-gateway reported OPERATIONAL." },
+          ]),
+        },
+      ],
+    });
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([tool]),
+      initialConversation: [ticketContext],
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("completed");
+    if (result.status !== "completed") throw new Error("unreachable");
+    expect(result.report.evidenceState).toBe("CONFLICTING");
+    expect(result.report.rootCause).toBeNull();
+    expect(result.report.evidence.map((e) => e.evidenceId).sort()).toEqual(["call-1", "call-2"]);
+    // Both disagreeing sides survive in the report — neither is silently
+    // chosen as truth over the other.
+    const findings = result.report.evidence.map((e) => e.finding);
+    expect(findings.some((f) => f.includes("DEGRADED"))).toBe(true);
+    expect(findings.some((f) => f.includes("OPERATIONAL"))).toBe(true);
+    expect(types(emitted)).toEqual([
+      "AGENT_STARTED",
+      "TOOL_REQUESTED",
+      "TOOL_COMPLETED",
+      "TOOL_REQUESTED",
+      "TOOL_COMPLETED",
+      "REPORT_SUBMITTED",
+      "REPORT_VALIDATED",
+    ]);
+    // Voluntary stop while genuinely conflicting — the model chose to report
+    // rather than request a third diagnostic; the bound was never reached.
+    expect(types(emitted)).not.toContain("REPORT_GENERATION_STARTED");
+  });
+
+  it("positive CONFLICT_UNRESOLVED — a third diagnostic grounded on both conflicting observations is accepted and actually executes; the run stays honest at forced finalization", async () => {
+    const tool = createConflictingStatusProbeTool();
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    const executeSpy = vi.spyOn(tool, "execute");
+
+    const provider = new FakeLlmProvider({
+      id: "scenario-d-conflict-unresolved",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-1",
+              toolName: "conflicting_status_probe",
+              input: { serviceSlug: "payments-gateway" },
+              rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
+            },
+          ],
+        },
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-2",
+              toolName: "conflicting_status_probe",
+              input: { serviceSlug: "payments-gateway" },
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+              },
+            },
+          ],
+        },
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-3",
+              toolName: "conflicting_status_probe",
+              input: { serviceSlug: "payments-gateway" },
+              // The positive path (Revision 3 P2-3): CONFLICTING +
+              // CONFLICT_UNRESOLVED, grounded on BOTH already-completed
+              // disagreeing observations, requesting a further check to
+              // adjudicate. Must be ACCEPTED, not rejected — this is the
+              // positive counterpart to Checkpoint B's negative-only coverage.
+              rawAssessment: {
+                evidenceState: "CONFLICTING",
+                continuationReason: "CONFLICT_UNRESOLVED",
+                supportedBy: [
+                  { evidenceId: "call-1", sourceType: "TOOL_EXECUTION" },
+                  { evidenceId: "call-2", sourceType: "TOOL_EXECUTION" },
+                ],
+              },
+            },
+          ],
+        },
+        // The diagnostic-tool-call bound (3) is now spent by call-3, so the
+        // 4th provider turn is forced FINALIZATION — no 4th diagnostic is
+        // permitted regardless of what the model wants next.
+        (input) => {
+          expect(input.phase).toBe("FINALIZATION");
+          expect(input.diagnosticCallsRemaining).toBe(0);
+          return {
+            kind: "report_submission",
+            usage,
+            rawInput: conflictingReportVariant([
+              { evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "payments-gateway reported DEGRADED." },
+              { evidenceId: "call-2", sourceType: "TOOL_EXECUTION", finding: "payments-gateway reported OPERATIONAL." },
+              { evidenceId: "call-3", sourceType: "TOOL_EXECUTION", finding: "A third check did not adjudicate the disagreement." },
+            ]),
+          };
+        },
+      ],
+    });
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([tool]),
+      initialConversation: [ticketContext],
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("completed");
+    if (result.status !== "completed") throw new Error("unreachable");
+
+    // The positive CONFLICT_UNRESOLVED request reached the canonical ledger
+    // with its assessment persisted, and the diagnostic it requested
+    // actually executed — proving "another diagnostic request is accepted"
+    // under the conflicting-evidence path end-to-end, not merely schema-legal.
+    const toolRequestedEvents = emitted.filter((e) => e.type === "TOOL_REQUESTED");
+    expect(toolRequestedEvents).toHaveLength(3);
+    expect(toolRequestedEvents[2]).toMatchObject({
+      toolCallId: "call-3",
+      assessment: {
+        evidenceState: "CONFLICTING",
+        continuationReason: "CONFLICT_UNRESOLVED",
+        supportedBy: [
+          { evidenceId: "call-1", sourceType: "TOOL_EXECUTION" },
+          { evidenceId: "call-2", sourceType: "TOOL_EXECUTION" },
+        ],
+      },
+    });
+    expect(executeSpy).toHaveBeenCalledTimes(3);
+
+    // The bound, not the model, ended the run — forced finalization is
+    // truthfully announced.
+    expect(types(emitted)).toContain("REPORT_GENERATION_STARTED");
+
+    // No fabricated resolution: requesting another diagnostic never implies
+    // the conflict was resolved. The honest final report still reports
+    // CONFLICTING with rootCause null, citing all three observations.
+    expect(result.report.evidenceState).toBe("CONFLICTING");
+    expect(result.report.rootCause).toBeNull();
+    expect(result.report.evidence.map((e) => e.evidenceId).sort()).toEqual([
+      "call-1",
+      "call-2",
+      "call-3",
+    ]);
+  });
+});
+
 describe("runAgentOrchestrator — diagnostic assessment protocol negatives (issue #58 Checkpoint B §14)", () => {
   function recordingEmitter() {
     const emitted: InvestigationEventPayload[] = [];
