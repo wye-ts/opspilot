@@ -39,8 +39,9 @@ const DEMO_RETRIEVAL_INPUT = {
   topK: 2,
 };
 
-// Exactly two provider turns, matching MAX_PROVIDER_TURNS: turn 0 is a
-// diagnostic_tool_request, turn 1 is the required report_submission.
+// This deterministic demo completes early in two provider turns: turn 0 is a
+// diagnostic_tool_request and turn 1 voluntarily submits the report. The
+// runtime can continue for additional diagnostics up to the shared bounds.
 function buildDemoScenario(): FakeAgentScenario {
   const usage = { inputTokens: 150, outputTokens: 50 };
 
