@@ -303,7 +303,7 @@ pnpm --filter @opspilot/worker run test:claude:live
 
 > **Warning:** This makes paid Anthropic API requests. It is excluded from normal tests and CI.
 >
-> The smoke is fail-closed and never falls back to `FAKE`. One run can make up to two Anthropic
+> The smoke is fail-closed and never falls back to `FAKE`. One run can make up to four Anthropic
 > Messages API requests. Its caller-owned deadline covers provider calls, not tool, retrieval, or
 > persistence work.
 
