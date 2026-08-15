@@ -81,6 +81,16 @@ export const EvidenceAssessmentSchema = z
         message: "NO_EVIDENCE_YET must cite no evidence locators.",
       });
     }
+    if (v.continuationReason !== "NO_EVIDENCE_YET" && v.supportedBy.length === 0) {
+      // Every other continuation reason claims something was gathered and
+      // examined — it must be grounded by at least one real locator, or it
+      // collapses into an unreconstructable bare assertion (P2-3).
+      ctx.addIssue({
+        code: "custom",
+        path: ["supportedBy"],
+        message: `${v.continuationReason} must cite at least one evidence locator.`,
+      });
+    }
   });
 
 export type EvidenceAssessment = z.infer<typeof EvidenceAssessmentSchema>;

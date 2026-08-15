@@ -151,6 +151,23 @@ function formatTraceLine(
   }
 }
 
+// rootCause is nullable (Issue #58, P1-1): non-sufficient evidence never
+// carries a root cause, and a SUFFICIENT report may be a grounded non-causal
+// conclusion. Mirrors apps/web/src/components/ReportPanel.tsx's
+// rootCauseDisplay() wording so the CLI and web surfaces agree, without a
+// cross-package UI-copy abstraction for a three-branch string switch.
+function rootCauseDisplay(report: ResolutionReport): string {
+  if (report.rootCause !== null) return report.rootCause;
+  switch (report.evidenceState) {
+    case "SUFFICIENT":
+      return "No causal root cause identified.";
+    case "INSUFFICIENT":
+      return "Not determined — insufficient evidence.";
+    case "CONFLICTING":
+      return "Not determined — evidence is conflicting.";
+  }
+}
+
 export function formatDemoOutput(
   ticket: DemoTicket,
   { agentResult, corpusLoad }: RagDemoScenarioResult,
@@ -175,7 +192,7 @@ export function formatDemoOutput(
       "Resolution Report",
       `Category: ${report.category}`,
       `Summary: ${report.summary}`,
-      `Root Cause: ${report.rootCause}`,
+      `Root Cause: ${rootCauseDisplay(report)}`,
       `Customer Impact: ${report.customerImpact}`,
       `Recommended Resolution: ${report.recommendedResolution}`,
       `Confidence: ${report.confidence.toFixed(2)}`,

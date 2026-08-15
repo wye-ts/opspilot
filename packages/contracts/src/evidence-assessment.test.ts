@@ -104,6 +104,34 @@ describe("EvidenceAssessmentSchema", () => {
     ).toBe(false);
   });
 
+  it("rejects STATUS_UNRESOLVED with an empty supportedBy", () => {
+    expect(
+      EvidenceAssessmentSchema.safeParse({
+        ...statusUnresolvedAssessment,
+        supportedBy: [],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects SCOPE_NOT_COVERED with an empty supportedBy", () => {
+    expect(
+      EvidenceAssessmentSchema.safeParse({
+        ...statusUnresolvedAssessment,
+        continuationReason: "SCOPE_NOT_COVERED",
+        supportedBy: [],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts SCOPE_NOT_COVERED with one grounded locator", () => {
+    expect(
+      EvidenceAssessmentSchema.safeParse({
+        ...statusUnresolvedAssessment,
+        continuationReason: "SCOPE_NOT_COVERED",
+      }).success,
+    ).toBe(true);
+  });
+
   it("rejects an unknown evidenceState value", () => {
     expect(
       EvidenceAssessmentSchema.safeParse({

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { AgentTraceEventSchema } from "./agent-trace-event";
+import { AgentTraceEventSchema, ToolRequestedTraceEventSchema } from "./agent-trace-event";
 import {
   INVESTIGATION_EVENT_LEGACY_TYPE_COUNT,
   INVESTIGATION_EVENT_NEW_WRITE_TYPE_COUNT,
@@ -403,5 +403,29 @@ describe("TOOL_REQUESTED assessment on the record/read side (Issue #58 Checkpoin
   it("the new-write TOOL_REQUESTED branch stays structurally identical to the legacy trace event", () => {
     const writeToolRequested = InvestigationEventPayloadSchema.parse(assessmentLessToolRequested);
     expect(Object.keys(writeToolRequested).sort()).toEqual(["toolCallId", "toolName", "type"]);
+  });
+
+  it("rejects an extra key on the record-side TOOL_REQUESTED schema (strict preserved)", () => {
+    expect(
+      ToolRequestedRecordEventSchema.safeParse({
+        ...assessmentLessToolRequested,
+        bogus: "not a field",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("inherits the legacy toolCallId/toolName bounds via derivation, not a re-declared copy", () => {
+    // Same out-of-bounds values the legacy ToolRequestedTraceEventSchema
+    // itself rejects (min(1)/max(128)) — proves ToolRequestedRecordEventSchema
+    // is built from that schema's own field constraints, not an independent
+    // hand-authored approximation of them.
+    const emptyToolCallId = { ...assessmentLessToolRequested, toolCallId: "" };
+    const overlongToolName = { ...assessmentLessToolRequested, toolName: "t".repeat(129) };
+
+    expect(ToolRequestedTraceEventSchema.safeParse(emptyToolCallId).success).toBe(false);
+    expect(ToolRequestedRecordEventSchema.safeParse(emptyToolCallId).success).toBe(false);
+
+    expect(ToolRequestedTraceEventSchema.safeParse(overlongToolName).success).toBe(false);
+    expect(ToolRequestedRecordEventSchema.safeParse(overlongToolName).success).toBe(false);
   });
 });

@@ -141,12 +141,11 @@ const NEW_WRITE_EVENT_BRANCHES = [
 ] as const;
 
 // Shared TOOL_REQUESTED field shape for the canonical write/record split
-// (Issue #58 §5.3, resolves P1-5). Defined once so the two canonical-only
-// schemas below cannot drift from each other or from the legacy trace object.
-const TOOL_REQUESTED_BASE_SHAPE = {
-  toolCallId: z.string().min(1).max(128),
-  toolName: z.string().min(1).max(128),
-};
+// (Issue #58 §5.3, resolves P1-5), derived from ToolRequestedTraceEventSchema
+// itself via .unwrap() rather than re-declared — so the `type`/`toolCallId`/
+// `toolName` bounds have exactly one owner (agent-trace-event.ts) and cannot
+// drift from the legacy trace object the way a hand-authored copy could.
+const ToolRequestedTraceEventBaseSchema = ToolRequestedTraceEventSchema.unwrap();
 
 // RECORD/READ only (Checkpoint A): assessment OPTIONAL so every #57-and-earlier
 // TOOL_REQUESTED row, which never carried one, stays readable. The WRITE side
@@ -154,13 +153,8 @@ const TOOL_REQUESTED_BASE_SHAPE = {
 // ToolRequestedTraceEventSchema until Checkpoint B, when the orchestrator
 // starts supplying `assessment` on every emission — the write-required schema
 // and the producer change can only land together.
-export const ToolRequestedRecordEventSchema = z
-  .object({
-    type: z.literal("TOOL_REQUESTED"),
-    ...TOOL_REQUESTED_BASE_SHAPE,
-    assessment: EvidenceAssessmentSchema.optional(),
-  })
-  .strict()
+export const ToolRequestedRecordEventSchema = ToolRequestedTraceEventBaseSchema
+  .extend({ assessment: EvidenceAssessmentSchema.optional() })
   .readonly();
 
 export type ToolRequestedRecordEvent = z.infer<typeof ToolRequestedRecordEventSchema>;
@@ -191,9 +185,13 @@ export type InvestigationEventType = InvestigationEventPayload["type"];
 // assessment from a future write, and a pre-#58 row without one stays readable
 // because the field is optional. The WRITE side (NEW_WRITE_EVENT_BRANCHES,
 // InvestigationEventPayloadSchema) keeps the unchanged legacy trace object
-// until Checkpoint B. Every other slot references the exact shared objects
-// from NEW_WRITE_EVENT_BRANCHES / agent-trace-event.ts, so the two unions
-// cannot drift except in the deliberately-different TOOL_REQUESTED slot.
+// until Checkpoint B. RETRIEVAL_COMPLETED and TOOL_COMPLETED still reuse the
+// exact legacy schema objects byte-for-byte, so those two slots cannot drift
+// at all. TOOL_REQUESTED intentionally cannot stay byte-identical once it
+// carries canonical assessment metadata the legacy trace object never had —
+// but its `type`/`toolCallId`/`toolName` bounds are still single-sourced,
+// derived via ToolRequestedTraceEventSchema.unwrap().extend(...) rather than
+// re-declared, so only the added `assessment` field can differ.
 const INVESTIGATION_EVENT_RECORD_BRANCHES = [
   RunCreatedEventSchema,
   AgentStartedEventSchema,
