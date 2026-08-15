@@ -296,6 +296,12 @@ export async function runAgentOrchestrator(
   }
 
   const successfulToolExecutionIds = new Set<string>();
+  // Provider-requested diagnostic tool-call identities for this run, used to
+  // reject a reused identity before any side effect (P1 final correction).
+  // Distinct from successfulToolExecutionIds: a provider may try to reuse an
+  // identity whether or not its earlier request executed, and must be rejected
+  // either way.
+  const requestedToolCallIds = new Set<string>();
   // Accepted diagnostic tool requests this run, incremented per emitted
   // TOOL_REQUESTED (mirroring the reducer's own per-request count). Drives
   // the state-derived active-stage attribution and the defense-in-depth bound
@@ -438,6 +444,25 @@ export async function runAgentOrchestrator(
         "REPORT_GENERATION",
       );
     }
+
+    // P1 final-correction guard: a provider must never reuse a diagnostic
+    // tool-call identity within a single run. Persistence cannot enforce this
+    // — Checkpoint A's exact-replay semantics deliberately re-append an
+    // identical (runId, eventType, toolCallId) row (ambiguous-commit retry),
+    // so a repeated identity would execute the tool a second time while the
+    // ledger records only one request/completion pair. Reject here, before
+    // the canonical TOOL_REQUESTED emit and before any side effect, at the
+    // already-derived truthful active stage. The message is deliberately
+    // closed: it must never echo the provider-controlled identifier.
+    if (requestedToolCallIds.has(result.request.toolCallId)) {
+      return failed(
+        "PROVIDER_PROTOCOL_INVALID",
+        "A diagnostic request reused a prior tool-call identity.",
+        trace,
+        activeStage,
+      );
+    }
+    requestedToolCallIds.add(result.request.toolCallId);
 
     // Defense-in-depth (issue #57 §4.1): never accept more diagnostic tool
     // requests than the shared bound, even if future constants drift so that

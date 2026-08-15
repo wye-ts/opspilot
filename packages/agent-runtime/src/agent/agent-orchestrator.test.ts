@@ -448,6 +448,74 @@ describe("runAgentOrchestrator", () => {
     expect(runAgentTurnSpy).toHaveBeenCalledTimes(4);
   });
 
+  it("fails with PROVIDER_PROTOCOL_INVALID at DIAGNOSTIC_EXECUTION when the provider reuses a prior tool-call identity, executing the tool exactly once and never exposing the reused id in the message", async () => {
+    // P1 final correction: a repeated provider toolCallId must be rejected
+    // before any side effect. Checkpoint A's exact-replay semantics would
+    // otherwise re-append an identical (runId, eventType, toolCallId) row and
+    // execute the tool a second time while the ledger records only one
+    // request/completion pair — so runtime, not persistence, must reject.
+    const sentinelToolCallId = "toolu_sk-ant-api03-credential-1a2b3c";
+    const scenario: FakeAgentScenario = {
+      id: "duplicate-tool-call-id",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: sentinelToolCallId,
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+            },
+          ],
+        },
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: sentinelToolCallId,
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+            },
+          ],
+        },
+      ],
+    };
+    const provider = new FakeLlmProvider(scenario);
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+    const registry = new InMemoryToolRegistry([getServiceStatusTool]);
+    const executeSpy = vi.spyOn(getServiceStatusTool, "execute");
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: registry,
+      initialConversation: [ticketContext],
+    });
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.code).toBe("PROVIDER_PROTOCOL_INVALID");
+    // Turn 1 is a post-tool investigation turn, so the truthful active stage
+    // is DIAGNOSTIC_EXECUTION (the run is mid-loop, below its bound).
+    expect(result.failedStage).toBe("DIAGNOSTIC_EXECUTION");
+    // The provider was called for turn 0 and turn 1, but the tool executed
+    // exactly once — the duplicate request was rejected, not re-run.
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(2);
+    expect(executeSpy).toHaveBeenCalledTimes(1);
+    // The rejected duplicate produced no additional trace entries.
+    expect(result.trace).toEqual([
+      { type: "TOOL_REQUESTED", toolCallId: sentinelToolCallId, toolName: "get_service_status" },
+      { type: "TOOL_COMPLETED", toolCallId: sentinelToolCallId, toolName: "get_service_status" },
+    ]);
+    // The failure message is closed: it must never echo the provider-controlled
+    // identifier, even when that identifier is credential-shaped. (The trace
+    // legitimately carries the id from the successful turn-0 execution; the
+    // requirement is that the REJECTION message does not.)
+    expect(result.message).toBe("A diagnostic request reused a prior tool-call identity.");
+    expect(result.message).not.toContain(sentinelToolCallId);
+  });
+
   it("stops after a provider protocol_error, without executing tools or calling the provider again", async () => {
     const scenario: FakeAgentScenario = {
       id: "provider-protocol-error",

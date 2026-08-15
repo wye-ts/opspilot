@@ -123,16 +123,54 @@ export const PROTOCOL_AND_FAILURE_CASES: readonly EvaluationCase[] = [
             },
           ],
         },
+        {
+          kind: "diagnostic_tool_requests",
+          usage: USAGE,
+          requests: [
+            {
+              toolCallId: "case12-call-3",
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+            },
+          ],
+        },
+        {
+          // The approved #57 bound is 3 diagnostic tool calls across the
+          // investigation turns, then a reserved finalization turn. A fourth
+          // tool request on that finalization turn is exactly the "missing
+          // final report" protocol violation — the call is rejected before a
+          // TOOL_REQUESTED is ever emitted.
+          kind: "diagnostic_tool_requests",
+          usage: USAGE,
+          requests: [
+            {
+              toolCallId: "case12-call-4",
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+            },
+          ],
+        },
       ],
     },
     expectations: {
       runStatus: "failed",
       tool: {
-        expectedRequested: [{ toolName: "get_service_status", toolCallId: "case12-call-1" }],
+        expectedRequested: [
+          { toolName: "get_service_status", toolCallId: "case12-call-1" },
+          { toolName: "get_service_status", toolCallId: "case12-call-2" },
+          { toolName: "get_service_status", toolCallId: "case12-call-3" },
+        ],
         expectedExecuted: [
           { toolName: "get_service_status", input: { serviceSlug: "notification-service" } },
+          { toolName: "get_service_status", input: { serviceSlug: "notification-service" } },
+          { toolName: "get_service_status", input: { serviceSlug: "notification-service" } },
         ],
-        expectedCompleted: [{ toolName: "get_service_status", toolCallId: "case12-call-1" }],
+        expectedCompleted: [
+          { toolName: "get_service_status", toolCallId: "case12-call-1" },
+          { toolName: "get_service_status", toolCallId: "case12-call-2" },
+          { toolName: "get_service_status", toolCallId: "case12-call-3" },
+        ],
+        forbiddenCompletedToolCallIds: ["case12-call-4"],
       },
       failure: { expectedCode: "PROVIDER_PROTOCOL_INVALID" },
     },

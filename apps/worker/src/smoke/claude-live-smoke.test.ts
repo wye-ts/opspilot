@@ -1,6 +1,8 @@
 import { inspect } from "node:util";
 
 import opspilotAgentRuntime from "@opspilot/agent-runtime";
+import type { LlmProvider } from "@opspilot/agent-runtime";
+import { MAX_PROVIDER_TURNS } from "@opspilot/contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import type { EnvRecord } from "@opspilot/provider-claude";
@@ -206,5 +208,114 @@ describe("live smoke scenario wiring", () => {
     // An empty scenario throws inside the fake provider; either way the
     // scenario must not resolve to a completed run.
     expect(result === null || result.status !== "completed").toBe(true);
+  });
+});
+
+describe("live smoke bounded multi-step run (MINOR closure fix)", () => {
+  const TOOL_CALL_IDS = ["call-a", "call-b", "call-c"] as const;
+
+  // Deterministic fake provider that drives the full #57 bound: three
+  // INVESTIGATION diagnostic turns, then a FINALIZATION report. Records every
+  // invocation so the test can assert the exact provider-call count and phase
+  // order. No network, no clock, no AbortSignal.timeout — fully deterministic.
+  function buildBoundedProvider() {
+    const calls: Array<{ turnIndex: number; phase: string }> = [];
+    const requestedToolCallIds: string[] = [];
+
+    const provider: LlmProvider = {
+      async runAgentTurn(input) {
+        calls.push({ turnIndex: input.turnIndex, phase: input.phase });
+
+        if (input.phase === "FINALIZATION") {
+          return {
+            type: "report_submission",
+            providerRequestId: "req-finalization",
+            usage: { inputTokens: 1, outputTokens: 1 },
+            rawInput: {
+              category: "SERVICE_DEGRADATION",
+              summary: "Notification delivery is delayed for some customers.",
+              rootCause: "notification-service is running in a degraded state.",
+              customerImpact:
+                "Some customers are experiencing delayed notification emails.",
+              recommendedResolution:
+                "Escalate to the messaging platform team to investigate notification-service degradation.",
+              confidence: 0.9,
+              evidence: [
+                {
+                  evidenceId: TOOL_CALL_IDS[2],
+                  sourceType: "TOOL_EXECUTION",
+                  finding: "notification-service reported status DEGRADED.",
+                },
+              ],
+              suggestedActions: [],
+            },
+          };
+        }
+
+        // Literal indexes keep the ids definitely-typed under
+        // noUncheckedIndexedAccess: INVESTIGATION turns are turnIndex 0..2.
+        const toolCallId =
+          input.turnIndex === 0
+            ? TOOL_CALL_IDS[0]
+            : input.turnIndex === 1
+              ? TOOL_CALL_IDS[1]
+              : TOOL_CALL_IDS[2];
+        requestedToolCallIds.push(toolCallId);
+        return {
+          type: "diagnostic_tool_request",
+          providerRequestId: `req-${toolCallId}`,
+          usage: { inputTokens: 1, outputTokens: 1 },
+          request: {
+            toolCallId,
+            toolName: "get_service_status",
+            input: { serviceSlug: "notification-service" },
+          },
+        };
+      },
+    };
+
+    return { provider, calls, requestedToolCallIds };
+  }
+
+  it("drives three diagnostic turns plus a finalization report with exactly four provider calls", async () => {
+    const { provider, calls, requestedToolCallIds } = buildBoundedProvider();
+
+    const result = await runSmokeScenario({
+      createProvider: () => provider,
+      // One AbortController for the whole run, threaded to every provider turn —
+      // the same aggregate-deadline shape the live smoke uses. No wall-clock wait.
+      signal: new AbortController().signal,
+      log: () => {},
+    });
+
+    expect(result.status).toBe("completed");
+    if (result.status !== "completed") throw new Error("unreachable");
+
+    // Provider invoked exactly four times — no retry storm, no early exit.
+    expect(calls).toHaveLength(4);
+    // First three turns are INVESTIGATION; finalization stays the fourth turn.
+    expect(calls.slice(0, 3).map((call) => call.phase)).toEqual([
+      "INVESTIGATION",
+      "INVESTIGATION",
+      "INVESTIGATION",
+    ]);
+    expect(calls[3]?.phase).toBe("FINALIZATION");
+    // The three accepted diagnostic toolCallIds are distinct, and every one
+    // actually executed (successfulToolExecutionIds gates report evidence).
+    const completedToolCallIds = result.trace
+      .filter((event) => event.type === "TOOL_COMPLETED")
+      .map((event) => event.toolCallId);
+    expect(completedToolCallIds).toEqual(["call-a", "call-b", "call-c"]);
+    expect(new Set(completedToolCallIds).size).toBe(3);
+    expect(requestedToolCallIds).toEqual(["call-a", "call-b", "call-c"]);
+    // The accepted report references an executed tool-call evidence id.
+    expect(result.report.evidence[0]?.evidenceId).toBe("call-c");
+  });
+
+  it("advertises the same max provider-call bound the orchestrator enforces before any call", () => {
+    // The pre-call warning is derived from the same reviewed shared constant
+    // the orchestrator uses as its provider-turn loop bound, so a change to the
+    // runtime bound fails this test instead of silently drifting the warning.
+    expect(PAID_CALL_WARNING).toContain(String(MAX_PROVIDER_TURNS));
   });
 });

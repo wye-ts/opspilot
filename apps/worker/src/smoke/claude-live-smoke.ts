@@ -3,6 +3,8 @@ import { fileURLToPath } from "node:url";
 import opspilotAgentRuntime from "@opspilot/agent-runtime";
 import type { AgentOrchestratorResult, LlmProvider } from "@opspilot/agent-runtime";
 
+import { MAX_PROVIDER_TURNS } from "@opspilot/contracts";
+
 import opspilotProviderClaude from "@opspilot/provider-claude";
 import type {
   ClaudeProviderLogEvent,
@@ -17,29 +19,34 @@ const { parseProviderConfig, createLlmProviderFactory } = opspilotProviderClaude
 /**
  * Opt-in, fail-closed live smoke.
  *
- * The point of this script is one real two-turn OpsPilot smoke run, which
- * performs up to two Anthropic Messages API requests under the current bounded
- * orchestrator (INVESTIGATION, then FINALIZATION), and proves the
- * provider-neutral runtime survives them. Everything below exists so that it
- * either does that, or exits non-zero — the one outcome it must never produce
- * is a green run that quietly executed the deterministic provider, because that
- * would look like proof while proving nothing.
+ * The point of this script is one real bounded OpsPilot smoke run, which
+ * performs up to MAX_PROVIDER_TURNS Anthropic Messages API requests under the
+ * reviewed bounded orchestrator (up to MAX_PROVIDER_TURNS - 1 INVESTIGATION
+ * turns, then FINALIZATION), and proves the provider-neutral runtime survives
+ * them. Everything below exists so that it either does that, or exits non-zero
+ * — the one outcome it must never produce is a green run that quietly executed
+ * the deterministic provider, because that would look like proof while proving
+ * nothing.
  */
 
 export const PAID_CALL_WARNING =
-  "WARNING: this command makes a paid Anthropic API call using your ANTHROPIC_API_KEY.";
+  `WARNING: this command makes up to ${MAX_PROVIDER_TURNS} paid Anthropic API calls using your ANTHROPIC_API_KEY.`;
 
 // Deliberately small. The smoke proves the contract holds end to end; it is
 // not a quality evaluation, and a large budget would only make it cost more.
 export const SMOKE_MAX_OUTPUT_TOKENS = 1024;
 
-// A caller-owned deadline covering Anthropic provider calls across the run.
+// A caller-owned aggregate deadline covering Anthropic provider calls across
+// the run.
 //
 // Scope matters: the signal is threaded to every provider turn, so it bounds
-// the Anthropic calls across both of them. It is NOT a strict deadline for the
-// whole agent run — tool, retrieval, and persistence cancellation are not wired
-// in this milestone. Per-attempt timeouts and the retry ceiling are enforced by
-// the SDK, while backoff and any retry-after delay it honours add time on top.
+// the calls across all of them (up to MAX_PROVIDER_TURNS provider turns under
+// the #57 bound). This aggregate deadline is intentionally unchanged by the #57
+// MINOR closure fix — max provider turns increased, the deadline did not. It is
+// NOT a strict deadline for the whole agent run — tool, retrieval, and
+// persistence cancellation are not wired in this milestone. Per-attempt
+// timeouts and the retry ceiling are enforced by the SDK, while backoff and any
+// retry-after delay it honours add time on top.
 export const SMOKE_TOTAL_DEADLINE_MS = 120_000;
 
 export interface SmokeGateFailure {
