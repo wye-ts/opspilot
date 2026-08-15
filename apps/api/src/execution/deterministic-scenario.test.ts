@@ -115,9 +115,10 @@ describe("createDeterministicScenario", () => {
 interface DeterministicReportShape {
   readonly category: string;
   readonly summary: string;
-  readonly rootCause: string;
+  readonly rootCause: string | null;
   readonly customerImpact: string;
   readonly recommendedResolution: string;
+  readonly evidenceState: string;
   readonly evidence: ReadonlyArray<{ readonly evidenceId: string; readonly sourceType: string; readonly finding: string }>;
 }
 
@@ -206,15 +207,19 @@ describe("report content does not overclaim what the persisted trace/evidence co
     expect(reportText).not.toContain("captured in this run's trace");
   });
 
-  it("states the tool completed successfully, that no root cause or customer impact was established, that the returned status is not persisted, and that further action needs a diagnostic workflow", () => {
+  it("declares INSUFFICIENT evidence with a null rootCause, states that no customer impact was established, that the returned status is not persisted, and that further action needs a diagnostic workflow", () => {
     const job = buildJob({ ticketContext: { ticketId: "T-9", summary: "billing errors reported" } });
     const report = extractReport(job);
 
-    expect(report.rootCause.toLowerCase()).toContain("completed successfully");
-    expect(report.rootCause.toLowerCase()).toContain("no root cause could be established");
+    // Issue #58 (P1-1): this scenario never evaluates the tool's returned
+    // status, so its evidence is truthfully INSUFFICIENT and the report carries
+    // no root cause — conveyed structurally (rootCause null + evidenceState),
+    // not by the old sentinel prose.
+    expect(report.evidenceState).toBe("INSUFFICIENT");
+    expect(report.rootCause).toBeNull();
     expect(report.customerImpact.toLowerCase()).toContain("no customer impact could be established");
 
-    const notPersistedText = [report.rootCause, report.customerImpact, report.recommendedResolution, ...report.evidence.map((e) => e.finding)]
+    const notPersistedText = [report.customerImpact, report.recommendedResolution, ...report.evidence.map((e) => e.finding)]
       .join(" ")
       .toLowerCase();
     expect(notPersistedText).toContain("not persisted");

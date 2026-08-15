@@ -98,6 +98,7 @@ const APPROVAL_ELIGIBLE_REPORT = {
   recommendedResolution: "Resolution.",
   confidence: 0.5,
   evidence: [{ evidenceId: "e-1", sourceType: "TOOL_EXECUTION" as const, finding: "f" }],
+  evidenceState: "SUFFICIENT" as const,
   suggestedActions: [
     { type: "DRAFT_CUSTOMER_REPLY" as const, payload: { subject: "Update", body: "A human will follow up." } },
   ],

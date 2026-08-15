@@ -45,6 +45,7 @@ function buildDemoScenario(): FakeAgentScenario {
         finding: "notification-service reported status DEGRADED.",
       },
     ],
+    evidenceState: "SUFFICIENT",
     suggestedActions: [
       {
         type: "CREATE_ESCALATION",

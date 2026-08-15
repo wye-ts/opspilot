@@ -101,7 +101,7 @@ export const SUBMIT_RESOLUTION_REPORT_TOOL_NAME = "submit_resolution_report";
 export const SUBMIT_RESOLUTION_REPORT_TOOL: Anthropic.Tool = {
   name: SUBMIT_RESOLUTION_REPORT_TOOL_NAME,
   description:
-    "Submit the final resolution report for this ticket investigation once you have sufficient evidence. This ends the investigation — do not call any other tool in the same turn as this one. Every evidence entry with sourceType TOOL_EXECUTION must cite the exact tool_use id of the diagnostic tool call whose result it references.",
+    "Submit the final resolution report for this ticket investigation (Issue #58). Set evidenceState to your model-declared judgment of the gathered evidence: SUFFICIENT when you have enough grounded evidence for a conclusion, INSUFFICIENT when you are ending without enough, or CONFLICTING when the evidence disagrees. rootCause must be null whenever evidenceState is not SUFFICIENT. When evidenceState is SUFFICIENT, rootCause may be null for a grounded non-causal conclusion (for example, no fault observed) — do not invent a cause merely because evidenceState is SUFFICIENT. This ends the investigation — do not call any other tool in the same turn as this one. Every evidence entry with sourceType TOOL_EXECUTION must cite the exact tool_use id of the diagnostic tool call whose result it references.",
   strict: true,
   input_schema: toStrictInputSchema(ResolutionReportSchema),
 };

@@ -8,7 +8,7 @@ import type {
   EvidenceReference,
   InvestigationEventRecord,
   RecordApprovalDecisionInput,
-  ResolutionReport,
+  StoredResolutionReport,
   SuggestedAction,
 } from "@opspilot/contracts";
 
@@ -18,7 +18,7 @@ export type {
   EvidenceReference,
   InvestigationEventRecord,
   RecordApprovalDecisionInput,
-  ResolutionReport,
+  StoredResolutionReport,
   SuggestedAction,
 };
 
@@ -59,9 +59,15 @@ export interface AgentRunRecordView {
 // run.status/outcome.code are typed string, not narrowed unions — the API
 // mappers forward them as string, so narrowing here would assert a
 // guarantee the wire format does not make.
+//
+// The COMPLETED report is the StoredResolutionReport (evidenceState optional):
+// the API's fromReportRead revalidates stored rows against that schema, so a
+// pre-#58 report without evidenceState can legitimately arrive here. The web
+// layer renders it evidence-state-aware (ReportPanel.tsx) rather than
+// re-validating.
 export type AgentRunOutcomeView =
   | { readonly type: "RUNNING" }
-  | { readonly type: "COMPLETED"; readonly report: ResolutionReport }
+  | { readonly type: "COMPLETED"; readonly report: StoredResolutionReport }
   | { readonly type: "FAILED"; readonly code: string; readonly message: string };
 
 export interface AgentRunDetail {

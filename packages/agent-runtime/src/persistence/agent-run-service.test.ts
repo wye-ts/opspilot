@@ -43,6 +43,7 @@ const VALID_REPORT: ResolutionReport = {
   confidence: 0.8,
   evidence: [{ evidenceId: TOOL_CALL_ID, sourceType: "TOOL_EXECUTION", finding: "Finding" }],
   suggestedActions: [],
+  evidenceState: "SUFFICIENT",
 };
 
 const JOB_ID = "job-1";

@@ -7,6 +7,7 @@ import {
   ToolCompletedTraceEventSchema,
   ToolRequestedTraceEventSchema,
 } from "./agent-trace-event";
+import { EvidenceAssessmentSchema } from "./evidence-assessment";
 import {
   InvestigationExecutionStageSchema,
   type InvestigationExecutionStage,
@@ -139,6 +140,31 @@ const NEW_WRITE_EVENT_BRANCHES = [
   RunFailedEventSchema,
 ] as const;
 
+// Shared TOOL_REQUESTED field shape for the canonical write/record split
+// (Issue #58 §5.3, resolves P1-5). Defined once so the two canonical-only
+// schemas below cannot drift from each other or from the legacy trace object.
+const TOOL_REQUESTED_BASE_SHAPE = {
+  toolCallId: z.string().min(1).max(128),
+  toolName: z.string().min(1).max(128),
+};
+
+// RECORD/READ only (Checkpoint A): assessment OPTIONAL so every #57-and-earlier
+// TOOL_REQUESTED row, which never carried one, stays readable. The WRITE side
+// (NEW_WRITE_EVENT_BRANCHES) deliberately still uses the unchanged
+// ToolRequestedTraceEventSchema until Checkpoint B, when the orchestrator
+// starts supplying `assessment` on every emission — the write-required schema
+// and the producer change can only land together.
+export const ToolRequestedRecordEventSchema = z
+  .object({
+    type: z.literal("TOOL_REQUESTED"),
+    ...TOOL_REQUESTED_BASE_SHAPE,
+    assessment: EvidenceAssessmentSchema.optional(),
+  })
+  .strict()
+  .readonly();
+
+export type ToolRequestedRecordEvent = z.infer<typeof ToolRequestedRecordEventSchema>;
+
 // The write-eligible payload contract: exactly the 12 new-write types.
 // REPORT_GENERATED is deliberately NOT a member — an orchestrator/service
 // emitting a new canonical event stream can never construct one (see
@@ -159,10 +185,35 @@ export type InvestigationEventType = InvestigationEventPayload["type"];
 // never by InvestigationEventPayloadSchema — because a persisted/read
 // record may legitimately be a pre-#37 legacy row, but nothing should ever
 // construct a fresh REPORT_GENERATED payload going forward.
-export const InvestigationEventRecordPayloadSchema = z.discriminatedUnion("type", [
-  ...NEW_WRITE_EVENT_BRANCHES,
+//
+// The read-side TOOL_REQUESTED slot uses ToolRequestedRecordEventSchema
+// (assessment OPTIONAL, Issue #58 Checkpoint A) — a stored record may carry an
+// assessment from a future write, and a pre-#58 row without one stays readable
+// because the field is optional. The WRITE side (NEW_WRITE_EVENT_BRANCHES,
+// InvestigationEventPayloadSchema) keeps the unchanged legacy trace object
+// until Checkpoint B. Every other slot references the exact shared objects
+// from NEW_WRITE_EVENT_BRANCHES / agent-trace-event.ts, so the two unions
+// cannot drift except in the deliberately-different TOOL_REQUESTED slot.
+const INVESTIGATION_EVENT_RECORD_BRANCHES = [
+  RunCreatedEventSchema,
+  AgentStartedEventSchema,
+  RetrievalCompletedTraceEventSchema,
+  ToolRequestedRecordEventSchema,
+  ToolCompletedTraceEventSchema,
+  ToolFailedEventSchema,
+  ReportGenerationStartedEventSchema,
+  ReportSubmittedEventSchema,
+  ReportValidatedEventSchema,
+  ReportValidationFailedEventSchema,
+  RunCompletedEventSchema,
+  RunFailedEventSchema,
   ReportGeneratedTraceEventSchema,
-]);
+] as const;
+
+export const InvestigationEventRecordPayloadSchema = z.discriminatedUnion(
+  "type",
+  INVESTIGATION_EVENT_RECORD_BRANCHES,
+);
 
 export type InvestigationEventRecordPayload = z.infer<
   typeof InvestigationEventRecordPayloadSchema

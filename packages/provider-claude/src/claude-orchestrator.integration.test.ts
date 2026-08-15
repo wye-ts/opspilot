@@ -64,6 +64,7 @@ const REPORT: ResolutionReport = {
       finding: "get_service_status returned DEGRADED for notification-service.",
     },
   ],
+  evidenceState: "SUFFICIENT",
   suggestedActions: [],
 };
 
@@ -83,6 +84,7 @@ function reportCiting(...evidenceIds: string[]): ResolutionReport {
       sourceType: "TOOL_EXECUTION",
       finding: `get_service_status returned DEGRADED for notification-service (${evidenceId}).`,
     })),
+    evidenceState: "SUFFICIENT",
     suggestedActions: [],
   };
 }

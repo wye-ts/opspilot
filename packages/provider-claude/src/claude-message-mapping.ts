@@ -148,13 +148,30 @@ required, in addition to whatever the tool schema shows:
 - category: exactly one of SERVICE_DEGRADATION, RATE_LIMITING,
   AUTHENTICATION, CONFIGURATION, DATA_QUALITY, UNKNOWN.
 - summary: 1-1000 characters.
-- rootCause: 1-1500 characters.
+- rootCause: ALWAYS a key, but either a 1-1500 character string or null.
+  It MUST be null whenever evidenceState is not SUFFICIENT (you may not
+  name a definitive root cause without sufficient evidence). When
+  evidenceState is SUFFICIENT:
+  - use a non-null rootCause only when the evidence supports a causal conclusion;
+  - rootCause: null is valid and preferred for a grounded non-causal conclusion
+    (for example, "no fault observed" — an operational-state conclusion).
+  Do not invent a cause merely because evidenceState is SUFFICIENT.
 - customerImpact: 1-1000 characters.
 - recommendedResolution: 1-2000 characters.
 - confidence: a decimal fraction between 0 and 1 inclusive (for example 0.7).
   Never a percentage (never 70) and never a value outside 0-1.
-- evidence: an array of 1 to 10 entries. At least one is required; never
-  submit more than ten. Each entry is { evidenceId, sourceType, finding }:
+- evidenceState: ALWAYS required, exactly one of SUFFICIENT, INSUFFICIENT,
+  or CONFLICTING — your model-declared judgment of the gathered evidence.
+  This is distinct from evidence.length: state your judgment, do not count.
+- evidence: an array of 0 to 10 entries, each { evidenceId, sourceType,
+  finding }, with cardinality conditioned on evidenceState:
+  - SUFFICIENT requires at least one entry (never submit zero).
+  - CONFLICTING requires at least two DISTINCT entries — evidence that
+    genuinely disagrees (never two entries about the same single
+    observation).
+  - INSUFFICIENT allows zero to ten: zero is truthful when nothing was
+    gathered; do not pad an empty investigation with invented entries.
+  Never submit more than ten entries total. Each entry:
   - evidenceId: 1-128 characters.
   - sourceType: exactly "RAG_CHUNK" or "TOOL_EXECUTION".
   - finding: 1-500 characters.
@@ -179,8 +196,26 @@ Example of a minimally valid input:
   "customerImpact": "Delayed notification delivery for a subset of users.",
   "recommendedResolution": "Scale the notification service and monitor error rate.",
   "confidence": 0.7,
+  "evidenceState": "SUFFICIENT",
   "evidence": [
     { "evidenceId": "<copied exactly from the tool_result>", "sourceType": "TOOL_EXECUTION", "finding": "get_service_status reported DEGRADED." }
+  ],
+  "suggestedActions": []
+}
+
+A grounded NON-causal conclusion under SUFFICIENT evidence still uses
+"rootCause": null — the observed state is the finding, and inventing a cause
+would be fabrication:
+{
+  "category": "UNKNOWN",
+  "summary": "get_service_status reported OPERATIONAL for the checked service.",
+  "rootCause": null,
+  "customerImpact": "No customer impact observed.",
+  "recommendedResolution": "No action required; monitor for regression.",
+  "confidence": 0.8,
+  "evidenceState": "SUFFICIENT",
+  "evidence": [
+    { "evidenceId": "<copied exactly from the tool_result>", "sourceType": "TOOL_EXECUTION", "finding": "get_service_status reported OPERATIONAL." }
   ],
   "suggestedActions": []
 }`;

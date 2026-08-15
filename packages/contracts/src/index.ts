@@ -15,9 +15,21 @@ import {
   MAX_PROVIDER_TURNS as _MAX_PROVIDER_TURNS,
 } from "./agent-run-bounds";
 import {
+  countDistinctEvidenceLocators as _countDistinctEvidenceLocators,
+  EvidenceLocatorSchema as _EvidenceLocatorSchema,
+  EvidenceSourceTypeSchema as _EvidenceSourceTypeSchema,
+} from "./evidence";
+import {
+  ContinuationReasonSchema as _ContinuationReasonSchema,
+  deriveInvestigationStopReason as _deriveInvestigationStopReason,
+  EvidenceAssessmentSchema as _EvidenceAssessmentSchema,
+  EvidenceStateSchema as _EvidenceStateSchema,
+} from "./evidence-assessment";
+import {
   EvidenceReferenceSchema as _EvidenceReferenceSchema,
   IncidentCategorySchema as _IncidentCategorySchema,
   ResolutionReportSchema as _ResolutionReportSchema,
+  StoredResolutionReportSchema as _StoredResolutionReportSchema,
   SuggestedActionSchema as _SuggestedActionSchema,
 } from "./resolution-report";
 import { summarizeReportValidationIssues as _summarizeReportValidationIssues } from "./resolution-report-validation";
@@ -63,6 +75,7 @@ import {
   InvestigationEventRecordSchema as _InvestigationEventRecordSchema,
   ReportValidationFailureCodeSchema as _ReportValidationFailureCodeSchema,
   ToolFailureCodeSchema as _ToolFailureCodeSchema,
+  ToolRequestedRecordEventSchema as _ToolRequestedRecordEventSchema,
   mapInvestigationEventToExecutionStage as _mapInvestigationEventToExecutionStage,
 } from "./investigation-event";
 import {
@@ -78,9 +91,17 @@ export const ApprovalDecisionSchema = _ApprovalDecisionSchema;
 export const RecordApprovalDecisionInputSchema = _RecordApprovalDecisionInputSchema;
 export const MAX_PROVIDER_TURNS = _MAX_PROVIDER_TURNS;
 export const MAX_DIAGNOSTIC_TOOL_CALLS = _MAX_DIAGNOSTIC_TOOL_CALLS;
+export const countDistinctEvidenceLocators = _countDistinctEvidenceLocators;
+export const EvidenceLocatorSchema = _EvidenceLocatorSchema;
+export const EvidenceSourceTypeSchema = _EvidenceSourceTypeSchema;
+export const ContinuationReasonSchema = _ContinuationReasonSchema;
+export const deriveInvestigationStopReason = _deriveInvestigationStopReason;
+export const EvidenceAssessmentSchema = _EvidenceAssessmentSchema;
+export const EvidenceStateSchema = _EvidenceStateSchema;
 export const EvidenceReferenceSchema = _EvidenceReferenceSchema;
 export const IncidentCategorySchema = _IncidentCategorySchema;
 export const ResolutionReportSchema = _ResolutionReportSchema;
+export const StoredResolutionReportSchema = _StoredResolutionReportSchema;
 export const SuggestedActionSchema = _SuggestedActionSchema;
 export const summarizeReportValidationIssues = _summarizeReportValidationIssues;
 export const AgentProtocolErrorCodeSchema = _AgentProtocolErrorCodeSchema;
@@ -114,6 +135,7 @@ export const InvestigationEventRecordPayloadSchema = _InvestigationEventRecordPa
 export const InvestigationEventRecordSchema = _InvestigationEventRecordSchema;
 export const INVESTIGATION_EVENT_NEW_WRITE_TYPE_COUNT = _INVESTIGATION_EVENT_NEW_WRITE_TYPE_COUNT;
 export const INVESTIGATION_EVENT_LEGACY_TYPE_COUNT = _INVESTIGATION_EVENT_LEGACY_TYPE_COUNT;
+export const ToolRequestedRecordEventSchema = _ToolRequestedRecordEventSchema;
 export const mapInvestigationEventToExecutionStage = _mapInvestigationEventToExecutionStage;
 export const hasCanonicalInvestigationLifecycleMarker = _hasCanonicalInvestigationLifecycleMarker;
 export const projectToLegacyAgentTraceEvent = _projectToLegacyAgentTraceEvent;
@@ -121,10 +143,18 @@ export const deriveExecutionStageProgress = _deriveExecutionStageProgress;
 export const InvestigationEventContractError = _InvestigationEventContractError;
 
 export type { ApprovalDecision, RecordApprovalDecisionInput } from "./agent-run-approval";
+export type { EvidenceLocator } from "./evidence";
+export type {
+  ContinuationReason,
+  EvidenceAssessment,
+  EvidenceState,
+  InvestigationStopReason,
+} from "./evidence-assessment";
 export type {
   EvidenceReference,
   IncidentCategory,
   ResolutionReport,
+  StoredResolutionReport,
   SuggestedAction,
 } from "./resolution-report";
 export type { ReportValidationIssue } from "./resolution-report-validation";
@@ -151,6 +181,7 @@ export type {
   InvestigationEventType,
   ReportValidationFailureCode,
   ToolFailureCode,
+  ToolRequestedRecordEvent,
 } from "./investigation-event";
 export type {
   DeriveExecutionStageProgressInput,

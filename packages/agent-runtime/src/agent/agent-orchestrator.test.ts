@@ -57,6 +57,7 @@ const validReport = {
     },
   ],
   suggestedActions: [],
+  evidenceState: "SUFFICIENT",
 };
 
 const validReportWithRagEvidence = {
@@ -380,6 +381,14 @@ describe("runAgentOrchestrator", () => {
         path: ["suggestedActions"],
         code: "invalid_type",
         expectedType: "array",
+        receivedType: "undefined",
+      },
+      // Issue #58: evidenceState is now a required new-write key, so a
+      // malformed report reports its absence too.
+      {
+        path: ["evidenceState"],
+        code: "invalid_value",
+        expectedType: "enum",
         receivedType: "undefined",
       },
     ]);

@@ -7,6 +7,7 @@ import {
   InvestigationEventPayloadSchema,
   InvestigationEventRecordPayloadSchema,
   InvestigationEventRecordSchema,
+  ToolRequestedRecordEventSchema,
   mapInvestigationEventToExecutionStage,
 } from "./investigation-event";
 import {
@@ -327,5 +328,80 @@ describe("overlapping legacy branch schemas remain byte-compatible", () => {
     for (const fixture of legacyFixtures) {
       expect(InvestigationEventRecordSchema.safeParse(baseRecord(fixture)).success).toBe(true);
     }
+  });
+});
+
+describe("TOOL_REQUESTED assessment on the record/read side (Issue #58 Checkpoint A)", () => {
+  // A pre-#58 TOOL_REQUESTED row never carried an `assessment`.
+  const assessmentLessToolRequested = {
+    type: "TOOL_REQUESTED",
+    toolCallId: "call-1",
+    toolName: "check_status",
+  } as const;
+
+  const groundedAssessment = {
+    evidenceState: "INSUFFICIENT",
+    continuationReason: "STATUS_UNRESOLVED",
+    supportedBy: [{ evidenceId: "tool-execution-001", sourceType: "TOOL_EXECUTION" }],
+  } as const;
+
+  it("parses an assessment-less TOOL_REQUESTED record (pre-#58 read compat)", () => {
+    expect(
+      InvestigationEventRecordPayloadSchema.safeParse(assessmentLessToolRequested).success,
+    ).toBe(true);
+    expect(
+      InvestigationEventRecordSchema.safeParse(baseRecord(assessmentLessToolRequested)).success,
+    ).toBe(true);
+  });
+
+  it("parses a TOOL_REQUESTED record carrying a valid assessment", () => {
+    expect(
+      InvestigationEventRecordSchema.safeParse(
+        baseRecord({ ...assessmentLessToolRequested, assessment: groundedAssessment }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("rejects a TOOL_REQUESTED record carrying an invalid assessment", () => {
+    const invalidAssessment = {
+      ...groundedAssessment,
+      evidenceState: "SUFFICIENT", // cannot accompany another diagnostic
+    };
+    expect(
+      InvestigationEventRecordSchema.safeParse(
+        baseRecord({ ...assessmentLessToolRequested, assessment: invalidAssessment }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("the record-side schema itself rejects assessment-bearing TOOL_REQUESTED with an invalid assessment", () => {
+    expect(
+      ToolRequestedRecordEventSchema.safeParse({
+        type: "TOOL_REQUESTED",
+        toolCallId: "call-1",
+        toolName: "check_status",
+        assessment: {
+          evidenceState: "CONFLICTING",
+          continuationReason: "SCOPE_NOT_COVERED",
+          supportedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("the new-write side still rejects `assessment` on TOOL_REQUESTED (unchanged until Checkpoint B)", () => {
+    // InvestigationEventPayloadSchema keeps ToolRequestedTraceEventSchema —
+    // write-required assessment and the producer change land together in B.
+    expect(
+      InvestigationEventPayloadSchema.safeParse({
+        ...assessmentLessToolRequested,
+        assessment: groundedAssessment,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("the new-write TOOL_REQUESTED branch stays structurally identical to the legacy trace event", () => {
+    const writeToolRequested = InvestigationEventPayloadSchema.parse(assessmentLessToolRequested);
+    expect(Object.keys(writeToolRequested).sort()).toEqual(["toolCallId", "toolName", "type"]);
   });
 });

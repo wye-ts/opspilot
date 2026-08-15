@@ -203,7 +203,14 @@ describe("buildSystemPrompt", () => {
 
       // Top-level string fields.
       expect(prompt).toContain("summary: 1-1000 characters");
-      expect(prompt).toContain("rootCause: 1-1500 characters");
+      expect(prompt).toContain("rootCause: ALWAYS a key, but either a 1-1500 character string or null");
+      expect(prompt).toContain("MUST be null whenever evidenceState is not SUFFICIENT");
+      // Issue #58 closure (Fix 1): the report contract teaches BOTH
+      // directions — non-SUFFICIENT => rootCause null (above), and SUFFICIENT
+      // may still carry rootCause null for a grounded non-causal conclusion.
+      expect(prompt).toContain("use a non-null rootCause only when the evidence supports a causal");
+      expect(prompt).toContain("rootCause: null is valid and preferred for a grounded non-causal conclusion");
+      expect(prompt).toContain("Do not invent a cause merely because evidenceState is SUFFICIENT");
       expect(prompt).toContain("customerImpact: 1-1000 characters");
       expect(prompt).toContain("recommendedResolution: 1-2000 characters");
 
@@ -211,8 +218,15 @@ describe("buildSystemPrompt", () => {
       expect(prompt).toContain("a decimal fraction between 0 and 1 inclusive");
       expect(prompt).toContain("Never a percentage (never 70)");
 
-      // evidence: array count plus every nested field.
-      expect(prompt).toContain("an array of 1 to 10 entries");
+      // evidenceState: the new #58 declaration, always required.
+      expect(prompt).toContain("evidenceState: ALWAYS required, exactly one of SUFFICIENT, INSUFFICIENT,");
+      expect(prompt).toContain("state your judgment, do not count");
+
+      // evidence: array count (now conditioned on evidenceState) plus nested fields.
+      expect(prompt).toContain("an array of 0 to 10 entries");
+      expect(prompt).toContain("SUFFICIENT requires at least one entry");
+      expect(prompt).toContain("CONFLICTING requires at least two DISTINCT entries");
+      expect(prompt).toContain("INSUFFICIENT allows zero to ten");
       expect(prompt).toContain("evidenceId: 1-128 characters");
       expect(prompt).toContain("finding: 1-500 characters");
 

@@ -56,6 +56,7 @@ function completedReport(callIds: readonly string[]): ResolutionReport {
       sourceType: "TOOL_EXECUTION",
       finding: `Tool call ${callId} completed successfully.`,
     })),
+    evidenceState: "SUFFICIENT",
     suggestedActions: [],
   };
 }

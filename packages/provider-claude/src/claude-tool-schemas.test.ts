@@ -67,7 +67,7 @@ describe("toStrictInputSchema", () => {
       properties: {
         category: { enum: string[] };
         confidence: { type: string };
-        evidence: { type: string; minItems: number; items: Record<string, unknown> };
+        evidence: { type: string; items: Record<string, unknown> };
       };
     };
 
@@ -82,6 +82,7 @@ describe("toStrictInputSchema", () => {
       "confidence",
       "evidence",
       "suggestedActions",
+      "evidenceState",
     ]);
     expect(schema.properties.category.enum).toEqual([
       "SERVICE_DEGRADATION",
@@ -93,7 +94,11 @@ describe("toStrictInputSchema", () => {
     ]);
     expect(schema.properties.confidence.type).toBe("number");
     expect(schema.properties.evidence.type).toBe("array");
-    expect(schema.properties.evidence.minItems).toBe(1);
+    // Issue #58 (P1-3): no minItems — a truthful zero-evidence INSUFFICIENT
+    // report is valid. Cardinality is conditional on evidenceState, which the
+    // JSON-Schema subset cannot express, so the prose in REPORT_FIELD_BOUNDS
+    // carries those rules (asserted in claude-llm-provider.test.ts).
+    expect("minItems" in schema.properties.evidence).toBe(false);
   });
 
   // Separate from the full `required` equality above, and deliberately
@@ -160,5 +165,33 @@ describe("SUBMIT_RESOLUTION_REPORT_TOOL", () => {
     expect(SUBMIT_RESOLUTION_REPORT_TOOL.input_schema).toEqual(
       toStrictInputSchema(ResolutionReportSchema),
     );
+  });
+
+  // Issue #58 closure (Fix 1): asserted on the ACTUAL emitted strict report
+  // tool schema, never a hand-written approximation. These are the three
+  // facts the model-facing contract needs: rootCause stays required, it
+  // accepts string OR null, and evidenceState is required.
+  it("encodes rootCause as a required string-or-null field and evidenceState as a required enum in the generated strict schema", () => {
+    const schema = SUBMIT_RESOLUTION_REPORT_TOOL.input_schema as {
+      required: string[];
+      properties: {
+        rootCause: { anyOf: Array<{ type: string }> };
+        evidenceState: { type: string; enum: string[] };
+      };
+    };
+
+    // rootCause stays in required[] — the model must always supply the key;
+    // a null is an explicit declaration, never an omission.
+    expect(schema.required).toContain("rootCause");
+
+    // rootCause accepts string OR null — the nullable union is encoded by the
+    // generated schema itself (anyOf string/null).
+    expect(schema.properties.rootCause.anyOf).toContainEqual({ type: "string" });
+    expect(schema.properties.rootCause.anyOf).toContainEqual({ type: "null" });
+
+    // evidenceState stays in required[] and is exactly the three-valued enum.
+    expect(schema.required).toContain("evidenceState");
+    expect(schema.properties.evidenceState.type).toBe("string");
+    expect(schema.properties.evidenceState.enum).toEqual(["SUFFICIENT", "INSUFFICIENT", "CONFLICTING"]);
   });
 });

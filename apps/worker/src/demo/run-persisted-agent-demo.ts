@@ -47,6 +47,7 @@ function buildDemoScenario(): FakeAgentScenario {
         finding: "billing-service reported status OUTAGE.",
       },
     ],
+    evidenceState: "SUFFICIENT",
     suggestedActions: [
       {
         type: "CREATE_ESCALATION",

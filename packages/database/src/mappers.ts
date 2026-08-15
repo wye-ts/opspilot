@@ -7,11 +7,13 @@ import {
   projectToLegacyAgentTraceEvent,
   RecordApprovalDecisionInputSchema,
   ResolutionReportSchema,
+  StoredResolutionReportSchema,
   type AgentOrchestratorErrorCode,
   type AgentTraceEvent,
   type InvestigationEventPayload,
   type InvestigationEventRecord,
   type ResolutionReport,
+  type StoredResolutionReport,
 } from "@opspilot/contracts";
 
 import { PersistenceError } from "./errors";
@@ -230,8 +232,14 @@ export function toReportWrite(value: unknown): ResolutionReport {
   return validateOrThrow(ResolutionReportSchema, value, "Resolution report");
 }
 
-export function fromReportRead(value: unknown): ResolutionReport {
-  return validateOrThrow(ResolutionReportSchema, value, "Stored resolution report");
+// The READ boundary (Issue #58 Checkpoint A): revalidates stored reports
+// against StoredResolutionReportSchema, NOT the strict new-write
+// ResolutionReportSchema. evidenceState is optional so every pre-#58 row
+// (which never carried it) stays readable — while the schema's fail-closed
+// legacy branch still enforces the exact old contract (non-null string
+// rootCause, >= 1 evidence entry) on rows without one.
+export function fromReportRead(value: unknown): StoredResolutionReport {
+  return validateOrThrow(StoredResolutionReportSchema, value, "Stored resolution report");
 }
 
 export function toFailureCodeWrite(value: unknown): AgentOrchestratorErrorCode {

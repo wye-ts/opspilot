@@ -18,6 +18,7 @@ const validReport = {
     },
   ],
   suggestedActions: [],
+  evidenceState: "SUFFICIENT",
 } as const;
 
 function parseInvalid(overrides: Record<string, unknown>) {

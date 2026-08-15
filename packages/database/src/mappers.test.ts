@@ -31,6 +31,20 @@ const VALID_REPORT = {
   confidence: 0.8,
   evidence: [{ evidenceId: "chunk-1", sourceType: "RAG_CHUNK", finding: "Finding" }],
   suggestedActions: [],
+  evidenceState: "SUFFICIENT",
+};
+
+// A pre-#58 stored report: no evidenceState, always non-null rootCause and
+// >= 1 evidence entry. Must keep reading under the fail-closed legacy branch.
+const LEGACY_REPORT = {
+  category: "SERVICE_DEGRADATION",
+  summary: "Summary",
+  rootCause: "Root cause",
+  customerImpact: "Impact",
+  recommendedResolution: "Resolution",
+  confidence: 0.8,
+  evidence: [{ evidenceId: "chunk-1", sourceType: "RAG_CHUNK", finding: "Finding" }],
+  suggestedActions: [],
 };
 
 describe("toTicketContextWrite / fromTicketContextRead", () => {
@@ -431,6 +445,18 @@ describe("toReportWrite / fromReportRead", () => {
 
   it("rejects an invalid report", () => {
     expect(() => toReportWrite({ summary: "missing required fields" })).toThrow(PersistenceError);
+  });
+
+  it("fromReportRead keeps reading a pre-#58 legacy report (no evidenceState)", () => {
+    expect(fromReportRead(LEGACY_REPORT)).toEqual(LEGACY_REPORT);
+  });
+
+  it("fromReportRead fails closed on a corrupt legacy report (rootCause null)", () => {
+    expect(() => fromReportRead({ ...LEGACY_REPORT, rootCause: null })).toThrow(PersistenceError);
+  });
+
+  it("fromReportRead fails closed on a corrupt legacy report (empty evidence)", () => {
+    expect(() => fromReportRead({ ...LEGACY_REPORT, evidence: [] })).toThrow(PersistenceError);
   });
 });
 

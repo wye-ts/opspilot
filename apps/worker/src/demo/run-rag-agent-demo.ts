@@ -66,6 +66,7 @@ function buildDemoScenario(): FakeAgentScenario {
         finding: "Runbook confirms notification-service degradation is a known failure mode.",
       },
     ],
+    evidenceState: "SUFFICIENT",
     suggestedActions: [
       {
         type: "CREATE_ESCALATION",

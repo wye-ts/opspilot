@@ -29,6 +29,7 @@ const CASE_1_REPORT: ResolutionReport = {
       finding: "Runbook confirms this is a known notification-service degradation pattern.",
     },
   ],
+  evidenceState: "SUFFICIENT",
   suggestedActions: [
     {
       type: "UPDATE_TICKET_STATUS",
@@ -62,6 +63,7 @@ const CASE_2_REPORT: ResolutionReport = {
       finding: "Runbook remediation steps for a notification queue backlog.",
     },
   ],
+  evidenceState: "SUFFICIENT",
   suggestedActions: [
     {
       type: "UPDATE_TICKET_STATUS",
@@ -95,6 +97,7 @@ const CASE_3_REPORT: ResolutionReport = {
       finding: "Runbook describes authentication failure root causes.",
     },
   ],
+  evidenceState: "SUFFICIENT",
   suggestedActions: [
     {
       type: "CREATE_ESCALATION",
@@ -127,6 +130,7 @@ const CASE_4_REPORT: ResolutionReport = {
       finding: "Runbook describes database connection pool saturation.",
     },
   ],
+  evidenceState: "SUFFICIENT",
   suggestedActions: [],
 };
 
@@ -149,6 +153,7 @@ const CASE_5_REPORT: ResolutionReport = {
       finding: "Runbook describes billing invoice PDF formatting issues.",
     },
   ],
+  evidenceState: "SUFFICIENT",
   suggestedActions: [
     {
       type: "DRAFT_CUSTOMER_REPLY",
@@ -163,7 +168,10 @@ const CASE_5_REPORT: ResolutionReport = {
 const CASE_6_REPORT: ResolutionReport = {
   category: "UNKNOWN",
   summary: "No known runbook matches this query; status could not be determined from available evidence.",
-  rootCause: "Unable to determine a root cause from available evidence.",
+  // Issue #58 (P1-1): non-sufficient evidence carries no root cause. The old
+  // sentinel sentence only stated what could not be established — the schema
+  // now conveys that structurally via INSUFFICIENT + rootCause null.
+  rootCause: null,
   customerImpact: "Impact could not be determined from available evidence.",
   recommendedResolution: "Escalate for manual investigation.",
   confidence: 0.2,
@@ -174,6 +182,7 @@ const CASE_6_REPORT: ResolutionReport = {
       finding: "unclassified-service status could not be confirmed (UNKNOWN).",
     },
   ],
+  evidenceState: "INSUFFICIENT",
   suggestedActions: [],
 };
 

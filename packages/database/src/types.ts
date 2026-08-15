@@ -4,7 +4,7 @@ import type {
   ApprovalDecision,
   InvestigationEventRecord,
   RecordApprovalDecisionInput,
-  ResolutionReport,
+  StoredResolutionReport,
   TicketContext,
 } from "@opspilot/contracts";
 
@@ -60,7 +60,10 @@ export interface AgentRunRecord {
 
 export type AgentRunOutcome =
   | { readonly type: "RUNNING" }
-  | { readonly type: "COMPLETED"; readonly report: ResolutionReport }
+  // Read side only: a stored report may be a pre-#58 row (no evidenceState),
+  // so the COMPLETED report is the StoredResolutionReport — see
+  // fromReportRead in mappers.ts (Issue #58 Checkpoint A).
+  | { readonly type: "COMPLETED"; readonly report: StoredResolutionReport }
   | {
       readonly type: "FAILED";
       readonly code: AgentOrchestratorErrorCode;

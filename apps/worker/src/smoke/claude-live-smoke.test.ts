@@ -247,6 +247,7 @@ describe("live smoke bounded multi-step run (MINOR closure fix)", () => {
                   finding: "notification-service reported status DEGRADED.",
                 },
               ],
+              evidenceState: "SUFFICIENT",
               suggestedActions: [],
             },
           };

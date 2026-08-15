@@ -24,6 +24,7 @@ const validReport: ResolutionReport = {
   evidence: [
     { evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "notification-service reported DEGRADED." },
   ],
+  evidenceState: "SUFFICIENT",
   suggestedActions: [],
 };
 
