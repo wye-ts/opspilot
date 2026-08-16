@@ -186,10 +186,24 @@ required, in addition to whatever the tool schema shows:
   - evidenceId: 1-128 characters.
   - sourceType: exactly "RAG_CHUNK" or "TOOL_EXECUTION".
   - finding: 1-500 characters.
-- suggestedActions: an array of 0 to 3 entries, and ALWAYS required. Never
-  omit this field: when no action is appropriate, submit it as an empty array
-  ("suggestedActions": []) rather than leaving it out. Never submit more than
-  three. Each entry's payload has its own length bounds:
+- recommendationDisposition: ALWAYS required, exactly one of ACTIONABLE or
+  ADVISORY — your model-declared judgment of the recommended resolution.
+  ACTIONABLE when it is a concrete next step a human/operator can take;
+  ADVISORY when it is informational, explanatory, or monitoring-only ("no
+  action required; monitor for regression"). Independent of evidenceState:
+  INSUFFICIENT may still be ACTIONABLE when a grounded communication action is
+  appropriate, and CONFLICTING may still be ACTIONABLE when a grounded
+  escalation/adjudication action is appropriate — but a CONFLICTING action
+  must not state either conflicting side as resolved.
+- suggestedActions: an array of 0 to 3 entries, and ALWAYS required.
+  ACTIONABLE requires at least one suggested action; ADVISORY requires exactly
+  zero ("suggestedActions": []). Never omit this field. Never submit more than
+  three. Each entry carries its payload fields (below) AND a groundedBy array
+  of 1 to 10 evidence locators. Every groundedBy entry must be
+  { evidenceId, sourceType } copied exactly, character-for-character, from an
+  entry already present in this same report's "evidence" array — never
+  invented, never derived from prose, and never repeated (all locators
+  distinct). Each entry's payload has its own length bounds:
   - type UPDATE_TICKET_STATUS: payload.reason is 1-500 characters.
   - type CREATE_ESCALATION: payload.team is 1-100 characters;
     payload.reason is 1-500 characters.
@@ -199,23 +213,30 @@ required, in addition to whatever the tool schema shows:
 Call submit_resolution_report with only the report fields above — no
 surrounding prose, markdown, or extra wrapper object.
 
-Example of a minimally valid input:
+Example of an ACTIONABLE report (SUFFICIENT, causal, grounded action):
 {
   "category": "SERVICE_DEGRADATION",
   "summary": "Notification service returned elevated error rates.",
   "rootCause": "Upstream dependency timeout under load.",
   "customerImpact": "Delayed notification delivery for a subset of users.",
-  "recommendedResolution": "Scale the notification service and monitor error rate.",
+  "recommendedResolution": "Update the ticket to IN_PROGRESS while the notification-service degradation is investigated.",
   "confidence": 0.7,
   "evidenceState": "SUFFICIENT",
+  "recommendationDisposition": "ACTIONABLE",
   "evidence": [
     { "evidenceId": "<copied exactly from the tool_result>", "sourceType": "TOOL_EXECUTION", "finding": "get_service_status reported DEGRADED." }
   ],
-  "suggestedActions": []
+  "suggestedActions": [
+    {
+      "type": "UPDATE_TICKET_STATUS",
+      "payload": { "status": "IN_PROGRESS", "reason": "Notification service is degraded and investigation is ongoing." },
+      "groundedBy": [{ "evidenceId": "<copied exactly from the tool_result>", "sourceType": "TOOL_EXECUTION" }]
+    }
+  ]
 }
 
-A grounded NON-causal conclusion under SUFFICIENT evidence still uses
-"rootCause": null — the observed state is the finding, and inventing a cause
+A grounded NON-causal conclusion under SUFFICIENT evidence is ADVISORY with
+zero actions — "rootCause": null is the observed state, and inventing a cause
 would be fabrication:
 {
   "category": "UNKNOWN",
@@ -225,10 +246,34 @@ would be fabrication:
   "recommendedResolution": "No action required; monitor for regression.",
   "confidence": 0.8,
   "evidenceState": "SUFFICIENT",
+  "recommendationDisposition": "ADVISORY",
   "evidence": [
     { "evidenceId": "<copied exactly from the tool_result>", "sourceType": "TOOL_EXECUTION", "finding": "get_service_status reported OPERATIONAL." }
   ],
   "suggestedActions": []
+}
+
+INSUFFICIENT evidence may still be ACTIONABLE when a grounded communication
+action is appropriate (no sufficiency gate):
+{
+  "category": "UNKNOWN",
+  "summary": "Evidence did not confirm the incident scope.",
+  "rootCause": null,
+  "customerImpact": "Impact remains unknown.",
+  "recommendedResolution": "Continue investigating; meanwhile inform the customer.",
+  "confidence": 0.4,
+  "evidenceState": "INSUFFICIENT",
+  "recommendationDisposition": "ACTIONABLE",
+  "evidence": [
+    { "evidenceId": "<copied exactly from the tool_result>", "sourceType": "TOOL_EXECUTION", "finding": "get_service_status reported UNKNOWN." }
+  ],
+  "suggestedActions": [
+    {
+      "type": "DRAFT_CUSTOMER_REPLY",
+      "payload": { "subject": "Update on your ticket", "body": "We are still investigating." },
+      "groundedBy": [{ "evidenceId": "<copied exactly from the tool_result>", "sourceType": "TOOL_EXECUTION" }]
+    }
+  ]
 }`;
 
 const FINALIZATION_SUFFIX = `

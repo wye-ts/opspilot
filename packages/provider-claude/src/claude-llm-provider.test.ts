@@ -9,6 +9,7 @@ import {
   RateLimitError,
 } from "@anthropic-ai/sdk";
 import { LlmProviderError, getServiceStatusTool } from "@opspilot/agent-runtime";
+import { ResolutionReportSchema } from "@opspilot/contracts";
 import type { AgentTurnInput, RawProviderTurnContext } from "@opspilot/agent-runtime";
 import { describe, expect, it, vi } from "vitest";
 
@@ -327,26 +328,70 @@ describe("buildSystemPrompt", () => {
       expect(prompt).toContain("payload.reason is 1-500 characters");
       expect(prompt).toContain("type DRAFT_CUSTOMER_REPLY: payload.subject is 1-200 characters");
       expect(prompt).toContain("payload.body is 1-4000 characters");
+
+      // Issue #60: the model-declared disposition, its cardinality rules, and
+      // the per-action grounding contract — the three things the strict JSON
+      // Schema subset cannot express (cross-field semantics), so the prose must.
+      expect(prompt).toContain("recommendationDisposition: ALWAYS required, exactly one of ACTIONABLE or");
+      expect(prompt).toContain("ACTIONABLE requires at least one suggested action; ADVISORY requires exactly");
+      expect(prompt).toContain('zero ("suggestedActions": [])');
+      expect(prompt).toContain("Independent of evidenceState");
+      expect(prompt).toContain("INSUFFICIENT may still be ACTIONABLE when a grounded communication action is");
+      expect(prompt).toContain("CONFLICTING may still be ACTIONABLE when a grounded");
+      expect(prompt).toContain("must not state either conflicting side as resolved");
+      expect(prompt).toContain("a groundedBy array\n  of 1 to 10 evidence locators");
+      expect(prompt).toContain("copied exactly, character-for-character, from an");
+      expect(prompt).toContain("never\n  invented, never derived from prose, and never repeated");
     }
   });
 
   // The prompt half of the defense in depth behind the LIVE incident: the tool
   // schema already marked suggestedActions required and Claude still omitted
-  // it, so the prose must state the requirement AND name the value to send
-  // when there is nothing to suggest. Asserted on both phases because
+  // it, so the prose must state the requirement AND tie the empty value to the
+  // ADVISORY disposition (Issue #60). Asserted on both phases because
   // submit_resolution_report is offered as a tool on both.
-  it("requires suggestedActions explicitly and names [] as the empty value, rather than merely permitting it", () => {
+  it("requires suggestedActions explicitly, names [] for ADVISORY, and ties ACTIONABLE to at least one action", () => {
     for (const phase of ["INVESTIGATION", "FINALIZATION"] as const) {
       const prompt = buildSystemPrompt(phase, 3);
 
       expect(prompt).toContain("ALWAYS required");
-      expect(prompt).toContain("Never\n  omit this field");
-      expect(prompt).toContain('submit it as an empty array\n  ("suggestedActions": [])');
+      expect(prompt).toContain("ACTIONABLE requires at least one suggested action; ADVISORY requires exactly");
+      expect(prompt).toContain('zero ("suggestedActions": [])');
       // The worked example carries the same shape, so the two cannot drift.
       expect(prompt).toContain('"suggestedActions": []');
       // The old permissive wording is what the model was free to read as
       // optional; it must not come back.
       expect(prompt).not.toContain("Empty is allowed");
+    }
+  });
+
+  // Issue #60 §5b/§8: the prompt carries three worked examples proving (a) the
+  // ACTIONABLE grounding shape, (b) the ADVISORY non-causal [] shape, and (c)
+  // that INSUFFICIENT evidence does not force ADVISORY — a grounded
+  // DRAFT_CUSTOMER_REPLY is valid. Asserted on both phases.
+  it("carries the three #60 worked examples — ACTIONABLE grounded, ADVISORY non-causal, INSUFFICIENT ACTIONABLE reply", () => {
+    for (const phase of ["INVESTIGATION", "FINALIZATION"] as const) {
+      const prompt = buildSystemPrompt(phase, 3);
+
+      // SUFFICIENT + ACTIONABLE + grounded UPDATE_TICKET_STATUS.
+      expect(prompt).toContain('"evidenceState": "SUFFICIENT"');
+      expect(prompt).toContain('"recommendationDisposition": "ACTIONABLE"');
+      expect(prompt).toContain('"type": "UPDATE_TICKET_STATUS"');
+      // HQ closure fix: the recommendation prose itself must map cleanly to the
+      // structured action — an unsupported operational recommendation ("scale
+      // the service") must never be paired with a different structured action.
+      expect(prompt).toContain(
+        '"recommendedResolution": "Update the ticket to IN_PROGRESS while the notification-service degradation is investigated."',
+      );
+      expect(prompt).toContain('"reason": "Notification service is degraded and investigation is ongoing."');
+      expect(prompt).not.toContain("Scale the notification service and monitor error rate.");
+      // SUFFICIENT non-causal + ADVISORY + [].
+      expect(prompt).toContain('"recommendationDisposition": "ADVISORY"');
+      expect(prompt).toContain('"suggestedActions": []');
+      // INSUFFICIENT + ACTIONABLE + grounded DRAFT_CUSTOMER_REPLY (no gate).
+      expect(prompt).toContain('"evidenceState": "INSUFFICIENT"');
+      expect(prompt).toContain('"type": "DRAFT_CUSTOMER_REPLY"');
+      expect(prompt).toContain('"groundedBy": [{ "evidenceId": "<copied exactly from the tool_result>"');
     }
   });
 
@@ -572,6 +617,64 @@ describe("normalizeClaudeMessage", () => {
       category: "SERVICE_DEGRADATION",
       suggestedActions: [],
     });
+  });
+
+  // Issue #60 §9: the boundary repair is scoped to the ONE semantically-identical
+  // case (omission == []). recommendationDisposition and groundedBy are
+  // model-owned declarations — inventing them here would be fabrication — so a
+  // report that omits them passes through untouched and still fails the
+  // authoritative ResolutionReportSchema downstream; an ACTIONABLE report whose
+  // missing suggestedActions normalized to [] must never be silently "repaired".
+  it("never manufactures recommendationDisposition or groundedBy (Issue #60 §9)", () => {
+    // An ungrounded action is forwarded verbatim — no groundedBy is invented.
+    const ungroundedAction = {
+      category: "SERVICE_DEGRADATION",
+      suggestedActions: [
+        { type: "UPDATE_TICKET_STATUS", payload: { status: "IN_PROGRESS", reason: "Investigating." } },
+      ],
+    };
+    expect(normalizeReportInput(ungroundedAction)).toEqual(ungroundedAction);
+
+    // A declared disposition is forwarded verbatim — never dropped or replaced.
+    const withDisposition = {
+      category: "SERVICE_DEGRADATION",
+      recommendationDisposition: "ACTIONABLE",
+      suggestedActions: [],
+    };
+    expect(normalizeReportInput(withDisposition)).toEqual(withDisposition);
+
+    // Missing suggestedActions still normalizes to [] — and nothing else is added.
+    expect(normalizeReportInput({ category: "SERVICE_DEGRADATION" })).toEqual({
+      category: "SERVICE_DEGRADATION",
+      suggestedActions: [],
+    });
+
+    // Interplay with the write schema: a missing suggestedActions on an
+    // otherwise-valid ADVISORY report normalizes to [] and stays VALID, while
+    // the same repair on an ACTIONABLE report must still FAIL the schema — the
+    // normalizer never repairs a disposition/cardinality mismatch.
+    const advisoryBase = {
+      category: "SERVICE_DEGRADATION",
+      summary: "Notification delivery is delayed.",
+      rootCause: null,
+      customerImpact: "Some customers are delayed.",
+      recommendedResolution: "No action required; monitor.",
+      confidence: 0.7,
+      evidenceState: "SUFFICIENT",
+      evidence: [
+        { evidenceId: "tool-execution-001", sourceType: "TOOL_EXECUTION", finding: "Reports DEGRADED." },
+      ],
+      recommendationDisposition: "ADVISORY",
+    };
+    const normalizedAdvisory = normalizeReportInput(advisoryBase);
+    expect(normalizedAdvisory).toEqual({ ...advisoryBase, suggestedActions: [] });
+    expect(ResolutionReportSchema.safeParse(normalizedAdvisory).success).toBe(true);
+
+    const normalizedActionable = normalizeReportInput({
+      ...advisoryBase,
+      recommendationDisposition: "ACTIONABLE",
+    });
+    expect(ResolutionReportSchema.safeParse(normalizedActionable).success).toBe(false);
   });
 
   it("leaves a non-object tool input untouched rather than inventing a report", () => {

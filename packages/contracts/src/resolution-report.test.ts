@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { ResolutionReportSchema, StoredResolutionReportSchema } from "./resolution-report";
+import { summarizeReportValidationIssues } from "./resolution-report-validation";
 
-// A grounded, causal SUFFICIENT report — the pre-#58 "happy path" plus the new
-// required evidenceState field.
+// A grounded, causal SUFFICIENT report — the pre-#58 "happy path" plus the #58
+// required evidenceState field and the #60 recommendationDisposition +
+// groundedBy fields.
 const causalSufficientReport = {
   category: "SERVICE_DEGRADATION",
   summary: "Notification delivery is delayed for some customers.",
@@ -35,14 +37,134 @@ const causalSufficientReport = {
         reason: "Sustained upstream rate limiting is affecting customers.",
         priority: "HIGH",
       },
+      groundedBy: [{ evidenceId: "tool-execution-001", sourceType: "TOOL_EXECUTION" }],
     },
   ],
   evidenceState: "SUFFICIENT",
+  recommendationDisposition: "ACTIONABLE",
 } as const;
 
+// A #58-era stored row that never saw #60: disposition absent, action
+// groundedBy absent. Used as the base for the G1/G1b/G2/G3 read-path cases.
+const storedRowBase = {
+  category: "SERVICE_DEGRADATION",
+  summary: "Notification delivery is delayed for some customers.",
+  rootCause: "The notification service is degraded after repeated upstream rate-limit responses.",
+  customerImpact: "Some password-reset and account-verification emails are delayed.",
+  recommendedResolution: "Monitor the upstream provider and reduce retry pressure.",
+  confidence: 0.9,
+  evidenceState: "SUFFICIENT",
+  evidence: [
+    {
+      evidenceId: "tool-execution-001",
+      sourceType: "TOOL_EXECUTION",
+      finding: "The notification service currently reports DEGRADED.",
+    },
+  ],
+  suggestedActions: [
+    {
+      type: "UPDATE_TICKET_STATUS",
+      payload: { status: "IN_PROGRESS", reason: "Investigation is continuing." },
+    },
+  ],
+};
+
+const groundedUpdateTicketAction = {
+  type: "UPDATE_TICKET_STATUS",
+  payload: { status: "IN_PROGRESS", reason: "Investigation is continuing." },
+  groundedBy: [{ evidenceId: "tool-execution-001", sourceType: "TOOL_EXECUTION" }],
+};
+
+const groundedDraftReplyAction = {
+  type: "DRAFT_CUSTOMER_REPLY",
+  payload: {
+    subject: "Update on your ticket",
+    body: "We are still investigating the delayed notifications.",
+  },
+  groundedBy: [{ evidenceId: "tool-execution-001", sourceType: "TOOL_EXECUTION" }],
+};
+
+// B — an ADVISORY report: informational/monitoring-only, zero actions.
+const advisoryReport = {
+  ...causalSufficientReport,
+  recommendedResolution: "No action required; monitor for regression.",
+  recommendationDisposition: "ADVISORY",
+  suggestedActions: [],
+};
+
+// C — no sufficiency gate: INSUFFICIENT evidence can still be ACTIONABLE when
+// a grounded communication action is appropriate.
+const insufficientActionableDraftReply = {
+  ...causalSufficientReport,
+  category: "UNKNOWN",
+  evidenceState: "INSUFFICIENT",
+  rootCause: null,
+  evidence: causalSufficientReport.evidence.slice(1),
+  recommendationDisposition: "ACTIONABLE",
+  suggestedActions: [groundedDraftReplyAction],
+};
+
+// D — no sufficiency gate: CONFLICTING evidence can still be ACTIONABLE when a
+// grounded escalation/adjudication action is appropriate. The escalation does
+// not assert either conflicting side as resolved.
+const conflictingActionableEscalation = {
+  ...causalSufficientReport,
+  category: "UNKNOWN",
+  evidenceState: "CONFLICTING",
+  rootCause: null,
+  evidence: [
+    {
+      evidenceId: "call-1",
+      sourceType: "TOOL_EXECUTION",
+      finding: "Probe reported DEGRADED.",
+    },
+    {
+      evidenceId: "call-2",
+      sourceType: "TOOL_EXECUTION",
+      finding: "Probe reported OPERATIONAL for the same claim.",
+    },
+  ],
+  recommendationDisposition: "ACTIONABLE",
+  suggestedActions: [
+    {
+      type: "CREATE_ESCALATION",
+      payload: {
+        team: "Messaging Platform",
+        reason: "Evidence conflicts; escalate for adjudication.",
+        priority: "HIGH",
+      },
+      groundedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+    },
+  ],
+};
+
+// E — SUFFICIENT non-causal conclusion: rootCause null, ADVISORY, zero actions.
+const sufficientNonCausalAdvisory = {
+  ...causalSufficientReport,
+  rootCause: null,
+  recommendationDisposition: "ADVISORY",
+  suggestedActions: [],
+};
+
 describe("ResolutionReportSchema (strict new-write contract)", () => {
-  it("accepts a valid grounded SUFFICIENT report with a causal rootCause", () => {
+  it("accepts a valid grounded SUFFICIENT report with a causal rootCause (A)", () => {
     expect(ResolutionReportSchema.safeParse(causalSufficientReport).success).toBe(true);
+  });
+
+  it("accepts an ADVISORY report with zero suggested actions (B)", () => {
+    expect(ResolutionReportSchema.safeParse(advisoryReport).success).toBe(true);
+  });
+
+  it("accepts INSUFFICIENT + ACTIONABLE grounded DRAFT_CUSTOMER_REPLY — no sufficiency gate (C)", () => {
+    expect(ResolutionReportSchema.safeParse(insufficientActionableDraftReply).success).toBe(true);
+  });
+
+  it("accepts CONFLICTING + ACTIONABLE grounded CREATE_ESCALATION — no sufficiency gate (D)", () => {
+    expect(ResolutionReportSchema.safeParse(conflictingActionableEscalation).success).toBe(true);
+  });
+
+  it("accepts SUFFICIENT non-causal + ADVISORY with zero actions (E)", () => {
+    expect(ResolutionReportSchema.safeParse(sufficientNonCausalAdvisory).success).toBe(true);
   });
 
   it("accepts SUFFICIENT + rootCause null (a grounded non-causal conclusion)", () => {
@@ -76,6 +198,8 @@ describe("ResolutionReportSchema (strict new-write contract)", () => {
         evidenceState: "INSUFFICIENT",
         rootCause: null,
         evidence: [],
+        recommendationDisposition: "ADVISORY",
+        suggestedActions: [],
       }).success,
     ).toBe(true);
   });
@@ -122,29 +246,6 @@ describe("ResolutionReportSchema (strict new-write contract)", () => {
     ).toBe(false);
   });
 
-  it("accepts a CONFLICTING report citing both disagreeing sides (D)", () => {
-    expect(
-      ResolutionReportSchema.safeParse({
-        ...causalSufficientReport,
-        category: "UNKNOWN",
-        evidenceState: "CONFLICTING",
-        rootCause: null,
-        evidence: [
-          {
-            evidenceId: "call-1",
-            sourceType: "TOOL_EXECUTION",
-            finding: "Probe reported DEGRADED.",
-          },
-          {
-            evidenceId: "call-2",
-            sourceType: "TOOL_EXECUTION",
-            finding: "Probe reported OPERATIONAL for the same claim.",
-          },
-        ],
-      }).success,
-    ).toBe(true);
-  });
-
   it("rejects a missing evidenceState key", () => {
     const { evidenceState: _evidenceState, ...withoutEvidenceState } = causalSufficientReport;
     expect(ResolutionReportSchema.safeParse(withoutEvidenceState).success).toBe(false);
@@ -182,6 +283,7 @@ describe("ResolutionReportSchema (strict new-write contract)", () => {
         status: "IN_PROGRESS",
         reason: "Investigation is continuing.",
       },
+      groundedBy: [{ evidenceId: "tool-execution-001", sourceType: "TOOL_EXECUTION" }],
     } as const;
 
     const result = ResolutionReportSchema.safeParse({
@@ -190,6 +292,100 @@ describe("ResolutionReportSchema (strict new-write contract)", () => {
     });
 
     expect(result.success).toBe(false);
+  });
+
+  // Issue #60 disposition ↔ action cardinality negatives (write path, F-negatives).
+  it("rejects ACTIONABLE with an empty suggestedActions array (F1)", () => {
+    const result = ResolutionReportSchema.safeParse({
+      ...causalSufficientReport,
+      suggestedActions: [],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(summarizeReportValidationIssues(result.error)).toContainEqual({
+        path: ["suggestedActions"],
+        code: "custom",
+      });
+    }
+  });
+
+  it("rejects ADVISORY with non-empty suggested actions (F2)", () => {
+    const result = ResolutionReportSchema.safeParse({
+      ...advisoryReport,
+      suggestedActions: [groundedUpdateTicketAction],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(summarizeReportValidationIssues(result.error)).toContainEqual({
+        path: ["suggestedActions"],
+        code: "custom",
+      });
+    }
+  });
+
+  it("rejects a new-write action with a missing groundedBy key (F3)", () => {
+    const result = ResolutionReportSchema.safeParse({
+      ...causalSufficientReport,
+      suggestedActions: [
+        {
+          type: "UPDATE_TICKET_STATUS",
+          payload: { status: "IN_PROGRESS", reason: "Investigation is continuing." },
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(summarizeReportValidationIssues(result.error)).toContainEqual(
+        expect.objectContaining({ path: ["suggestedActions", 0, "groundedBy"] }),
+      );
+    }
+  });
+
+  it("rejects a new-write action with an empty groundedBy array (F3 — min(1))", () => {
+    const result = ResolutionReportSchema.safeParse({
+      ...causalSufficientReport,
+      suggestedActions: [{ ...groundedUpdateTicketAction, groundedBy: [] }],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(summarizeReportValidationIssues(result.error)).toContainEqual(
+        expect.objectContaining({ path: ["suggestedActions", 0, "groundedBy"] }),
+      );
+    }
+  });
+
+  it("rejects a groundedBy with a duplicated locator (F4)", () => {
+    const duplicate = { evidenceId: "tool-execution-001", sourceType: "TOOL_EXECUTION" } as const;
+    const result = ResolutionReportSchema.safeParse({
+      ...causalSufficientReport,
+      suggestedActions: [{ ...groundedUpdateTicketAction, groundedBy: [duplicate, duplicate] }],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(summarizeReportValidationIssues(result.error)).toContainEqual({
+        path: ["suggestedActions", 0, "groundedBy"],
+        code: "custom",
+      });
+    }
+  });
+
+  it("rejects a groundedBy locator absent from report.evidence (F5)", () => {
+    const result = ResolutionReportSchema.safeParse({
+      ...causalSufficientReport,
+      suggestedActions: [
+        {
+          ...groundedUpdateTicketAction,
+          groundedBy: [{ evidenceId: "call-99", sourceType: "TOOL_EXECUTION" }],
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(summarizeReportValidationIssues(result.error)).toContainEqual({
+        path: ["suggestedActions", 0, "groundedBy", 0],
+        code: "custom",
+      });
+    }
   });
 });
 
@@ -248,5 +444,117 @@ describe("StoredResolutionReportSchema (fail-closed legacy read compat)", () => 
         rootCause: null,
       }).success,
     ).toBe(true);
+  });
+
+  // G1 — #58-era stored row, disposition absent, action without groundedBy:
+  // legacy read compatibility, missing grounding normalizes to [].
+  it("normalizes a legacy action's missing groundedBy to [] and leaves disposition undefined (G1)", () => {
+    const result = StoredResolutionReportSchema.safeParse(storedRowBase);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.suggestedActions[0]?.groundedBy).toEqual([]);
+      expect(result.data.recommendationDisposition).toBeUndefined();
+    }
+  });
+
+  // G1b — legacy row with explicit non-empty corrupt grounding: duplicate/subset
+  // checks run for every parsed action REGARDLESS of the #60 marker, so a legacy
+  // row never escapes grounding validation.
+  it("rejects a legacy row with a duplicated groundedBy locator (G1b)", () => {
+    const duplicate = { evidenceId: "tool-execution-001", sourceType: "TOOL_EXECUTION" };
+    const result = StoredResolutionReportSchema.safeParse({
+      ...storedRowBase,
+      suggestedActions: [
+        {
+          type: "UPDATE_TICKET_STATUS",
+          payload: { status: "IN_PROGRESS", reason: "Investigation is continuing." },
+          groundedBy: [duplicate, duplicate],
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a legacy row with an out-of-report groundedBy locator (G1b)", () => {
+    const result = StoredResolutionReportSchema.safeParse({
+      ...storedRowBase,
+      suggestedActions: [
+        {
+          type: "UPDATE_TICKET_STATUS",
+          payload: { status: "IN_PROGRESS", reason: "Investigation is continuing." },
+          groundedBy: [{ evidenceId: "call-99", sourceType: "TOOL_EXECUTION" }],
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  // G2 — #60-era stored row (disposition present, evidenceState present) with an
+  // ungrounded action: structural [] normalization alone never lets it pass.
+  it("rejects a modern row whose action grounding is missing (G2)", () => {
+    const result = StoredResolutionReportSchema.safeParse({
+      ...storedRowBase,
+      recommendationDisposition: "ACTIONABLE",
+      suggestedActions: [
+        {
+          type: "UPDATE_TICKET_STATUS",
+          payload: { status: "IN_PROGRESS", reason: "Investigation is continuing." },
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(summarizeReportValidationIssues(result.error)).toContainEqual(
+        expect.objectContaining({ path: ["suggestedActions", 0, "groundedBy"] }),
+      );
+    }
+  });
+
+  it("rejects a modern row with an explicitly empty groundedBy array (G2)", () => {
+    const result = StoredResolutionReportSchema.safeParse({
+      ...storedRowBase,
+      recommendationDisposition: "ACTIONABLE",
+      suggestedActions: [
+        {
+          type: "UPDATE_TICKET_STATUS",
+          payload: { status: "IN_PROGRESS", reason: "Investigation is continuing." },
+          groundedBy: [],
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  // G3 — impossible hybrid: recommendationDisposition present + evidenceState
+  // absent cannot be produced by any valid #60 write path and is rejected
+  // directly and unconditionally. The strong fixture is ADVISORY + [] with
+  // otherwise legacy-valid rootCause/evidence, so the marker combination alone
+  // is the ONLY reason for rejection.
+  it("rejects the impossible hybrid — disposition present without evidenceState — unconditionally (G3)", () => {
+    const strongHybrid = {
+      category: "SERVICE_DEGRADATION",
+      summary: "Notification delivery is delayed for some customers.",
+      rootCause: "The notification service is degraded after repeated upstream rate-limit responses.",
+      customerImpact: "Some password-reset and account-verification emails are delayed.",
+      recommendedResolution: "Monitor the upstream provider and reduce retry pressure.",
+      confidence: 0.9,
+      evidence: [
+        {
+          evidenceId: "tool-execution-001",
+          sourceType: "TOOL_EXECUTION",
+          finding: "The notification service currently reports DEGRADED.",
+        },
+      ],
+      suggestedActions: [],
+      recommendationDisposition: "ADVISORY",
+      // evidenceState deliberately ABSENT.
+    };
+
+    const result = StoredResolutionReportSchema.safeParse(strongHybrid);
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error("expected the impossible hybrid to be rejected");
+    expect(summarizeReportValidationIssues(result.error)).toEqual([
+      { path: ["evidenceState"], code: "custom" },
+    ]);
   });
 });
