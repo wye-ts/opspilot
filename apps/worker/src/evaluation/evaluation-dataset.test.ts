@@ -6,7 +6,7 @@ import { validateEvaluationDataset } from "./dataset-validation";
 import { EVALUATION_CASES } from "./evaluation-dataset";
 import { runEvaluationSuite } from "./evaluation-runner";
 import { LocalEvaluationScorer } from "./evaluation-scorer";
-import { buildEvaluationSuiteInputV1, EVALUATION_DATASET_ID } from "./v1-types";
+import { buildEvaluationSuiteInputV2, EVALUATION_DATASET_ID } from "./v2-types";
 
 const EXPECTED_CASE_IDS = [
   "notification-service-degradation",
@@ -134,7 +134,7 @@ describe("EVALUATION_CASES", () => {
       defaultCorpus: corpusLoad.chunks,
       injectionProbeChunk: INJECTION_PROBE_CHUNK,
     });
-    const suiteInput = buildEvaluationSuiteInputV1(EVALUATION_DATASET_ID, caseInputs);
+    const suiteInput = buildEvaluationSuiteInputV2(EVALUATION_DATASET_ID, caseInputs);
     const suiteResult = new LocalEvaluationScorer().score(suiteInput);
 
     const failures = suiteResult.cases.filter((result) => !result.passed);

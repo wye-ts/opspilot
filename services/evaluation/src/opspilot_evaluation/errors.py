@@ -20,6 +20,12 @@ ERROR_CATALOG: dict[str, ErrorCatalogEntry] = {
     "REQUEST_BODY_INVALID": ErrorCatalogEntry(422, "The request body failed validation."),
     "ROUTE_PARAMETER_INVALID": ErrorCatalogEntry(400, "The request path contained an invalid identifier."),
     "EVALUATION_NOT_FOUND": ErrorCatalogEntry(404, "The requested evaluation was not found."),
+    # Raised by GET /evaluations/{id} when the persisted run predates the v2
+    # cutover (contract_version 1) and therefore cannot be served through the
+    # v2-only resource model without an unsafe cast.
+    "CONTRACT_VERSION_UNSUPPORTED": ErrorCatalogEntry(
+        409, "The stored evaluation uses an unsupported contract version."
+    ),
     "PERSISTENCE_FAILED": ErrorCatalogEntry(500, "The evaluation could not be persisted."),
     "INTERNAL_ERROR": ErrorCatalogEntry(500, "An unexpected internal error occurred."),
 }

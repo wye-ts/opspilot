@@ -12,15 +12,15 @@ import {
 import { createHttpEvaluationScorer } from "./evaluation-service-client";
 import { LocalEvaluationScorer } from "./evaluation-scorer";
 import { formatEvaluationReport } from "./evaluation-formatter";
-import type { ParityFixtureV1 } from "./parity-vectors";
+import type { ParityFixtureV2 } from "./parity-vectors";
 import {
-  buildEvaluationSuiteInputV1,
-  type EvaluationSuiteInputV1,
-} from "./v1-types";
+  buildEvaluationSuiteInputV2,
+  type EvaluationSuiteInputV2,
+} from "./v2-types";
 
 // ---------------------------------------------------------------------------
 // The authoritative cross-service parity proof (OpsPilot #61 Phase 3): a
-// REAL Python/FastAPI service consumes the exact same normalized v1 suite as
+// REAL Python/FastAPI service consumes the exact same normalized v2 suite as
 // the local TypeScript scorer, and the extracted scorer results must be
 // semantically identical — check names, check order, passed, reasonCode,
 // case verdict, case totals, and all six metrics. Nothing here fakes the
@@ -57,14 +57,14 @@ const serviceIsReachable = await (async (): Promise<boolean> => {
   });
 })();
 
-const fixturePath = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "ts-parity-v1.json");
-const fixture: ParityFixtureV1 = JSON.parse(readFileSync(fixturePath, "utf8")) as ParityFixtureV1;
+const fixturePath = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "ts-parity-v2.json");
+const fixture: ParityFixtureV2 = JSON.parse(readFileSync(fixturePath, "utf8")) as ParityFixtureV2;
 
-// Reconstructs the exact v1 wire request from the single TS-owned fixture,
+// Reconstructs the exact v2 wire request from the single TS-owned fixture,
 // dropping only the fixture's TS-only `expected`/`expectedMetrics` echoes —
 // the same reconstruction the Python fixture_loader.py performs.
-function suiteInputFromFixture(): EvaluationSuiteInputV1 {
-  return buildEvaluationSuiteInputV1(
+function suiteInputFromFixture(): EvaluationSuiteInputV2 {
+  return buildEvaluationSuiteInputV2(
     fixture.datasetId,
     fixture.cases.map((caseFixture) => ({
       caseId: caseFixture.caseId,
@@ -85,8 +85,8 @@ describe.skipIf(!serviceIsReachable)("cross-service parity — real Python/FastA
   it("scores the frozen 15-case suite remotely with semantic identity to the local parity oracle", async () => {
     const suiteInput = suiteInputFromFixture();
     expect(suiteInput.cases).toHaveLength(15);
-    expect(suiteInput.datasetId).toBe("opspilot-deterministic-v1");
-    expect(suiteInput.contractVersion).toBe(1);
+    expect(suiteInput.datasetId).toBe("opspilot-deterministic-v2");
+    expect(suiteInput.contractVersion).toBe(2);
 
     const local = new LocalEvaluationScorer().score(suiteInput);
     const remote = await remoteScorer().score(suiteInput);

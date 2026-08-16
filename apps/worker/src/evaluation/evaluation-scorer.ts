@@ -1,10 +1,10 @@
 import { evaluateCase } from "./evaluation-evaluator";
 import { aggregateMetrics } from "./evaluation-metrics";
 import {
-  toEvaluationCaseResultV1,
-  type EvaluationSuiteInputV1,
-  type EvaluationSuiteResultV1,
-} from "./v1-types";
+  toEvaluationCaseResultV2,
+  type EvaluationSuiteInputV2,
+  type EvaluationSuiteResultV2,
+} from "./v2-types";
 import { createHttpEvaluationScorer } from "./evaluation-service-client";
 import {
   MAX_EVALUATION_SERVICE_TIMEOUT_MS,
@@ -19,34 +19,33 @@ import {
 // scorer serializes `input` to JSON, POSTs it to FastAPI, and returns the
 // parsed JSON response (see the OpsPilot #61 Phase 1 HQ targeted
 // corrections, correction 5). Two implementations: LocalEvaluationScorer,
-// the frozen v1 migration/parity oracle, and HttpEvaluationScorer, the
+// the active in-process v2 scorer, and HttpEvaluationScorer, the
 // Python/FastAPI service client and default, authoritative scorer as of
 // Phase 4 (see DEFAULT_EVALUATION_SCORER_SELECTION and
 // resolveScorerSelectionFromEnv). There is deliberately no automatic
 // fallback between them, in either direction (see
-// service-unavailable.test.ts).
+// service-unavailable.test.ts). The historical v1 scorer survives only as
+// the frozen offline oracle in legacy-v1/ (never on this active path).
 export interface EvaluationScorer {
-  score(input: EvaluationSuiteInputV1): EvaluationSuiteResultV1 | Promise<EvaluationSuiteResultV1>;
+  score(input: EvaluationSuiteInputV2): EvaluationSuiteResultV2 | Promise<EvaluationSuiteResultV2>;
 }
 
-// LocalEvaluationScorer = frozen v1 migration/parity oracle.
+// LocalEvaluationScorer = the active in-process v2 scorer.
 //
 // As of OpsPilot #61 Phase 4, the Python/FastAPI evaluation service is the
 // default, authoritative scorer (HttpEvaluationScorer, selected via
-// EVALUATION_SCORER=service or the unset/empty default). This class is kept
-// only as an explicit EVALUATION_SCORER=local opt-in: a deterministic,
-// in-process v1 regression/parity oracle for post-merge comparison against
-// the service, not a second authoritative scoring path. Its v1 scoring
-// semantics are frozen and must not change.
-//
-// Revisit trigger: when the evaluation contract advances beyond v1, this
-// oracle must be explicitly revisited/removed/upgraded as part of that
-// change — it must never silently continue to stand in as a second
-// authoritative scorer for a newer contract version.
+// EVALUATION_SCORER=service or the unset/empty default). This class is the
+// explicit EVALUATION_SCORER=local opt-in: a deterministic, in-process v2
+// regression/parity scorer for comparison against the service. At
+// Checkpoint A it implements only the existing low-level checks (PASS/FAIL)
+// and the six existing metrics — the nine #59 metric rules belong to
+// Checkpoint B. The frozen v1 migration/parity oracle that previously lived
+// here has moved to legacy-v1/local-scorer-v1.ts (see the OpsPilot #59
+// Revision 5 plan §5).
 export class LocalEvaluationScorer implements EvaluationScorer {
-  score(input: EvaluationSuiteInputV1): EvaluationSuiteResultV1 {
+  score(input: EvaluationSuiteInputV2): EvaluationSuiteResultV2 {
     const results = input.cases.map((caseInput) => evaluateCase(caseInput));
-    const cases = results.map(toEvaluationCaseResultV1);
+    const cases = results.map(toEvaluationCaseResultV2);
     const metrics = aggregateMetrics(cases);
 
     return {
@@ -59,8 +58,8 @@ export class LocalEvaluationScorer implements EvaluationScorer {
 }
 
 // Selection discriminated union, mirroring LlmProviderSelection. "LOCAL" runs
-// LocalEvaluationScorer in-process (the frozen v1 oracle, explicit opt-in
-// only as of Phase 4); "SERVICE" posts the same normalized v1 suite to the
+// LocalEvaluationScorer in-process (the active v2 scorer, explicit opt-in
+// only as of Phase 4); "SERVICE" posts the same normalized v2 suite to the
 // Python/FastAPI evaluation service over HTTP (the default, authoritative
 // scorer as of Phase 4 — see resolveScorerSelectionFromEnv). There is no
 // silent fallback between the two modes in either direction — an unreachable

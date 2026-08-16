@@ -3,18 +3,18 @@ import { describe, expect, it } from "vitest";
 import { CHECK_REASON_MESSAGES, type CheckReasonCode } from "./check-reason-codes";
 import { formatEvaluationReport } from "./evaluation-formatter";
 import { aggregateMetrics } from "./evaluation-metrics";
-import type { EvaluationCaseResultV1, EvaluationCheckV1 } from "./v1-types";
+import type { EvaluationCaseResultV2, EvaluationCheckV2 } from "./v2-types";
 
-function passingCheck(name: string): EvaluationCheckV1 {
-  return { name, passed: true, reasonCode: null };
+function passingCheck(name: string): EvaluationCheckV2 {
+  return { name, status: "PASS", reasonCode: null };
 }
 
-function failingCheck(name: string, reasonCode: CheckReasonCode): EvaluationCheckV1 {
-  return { name, passed: false, reasonCode };
+function failingCheck(name: string, reasonCode: CheckReasonCode): EvaluationCheckV2 {
+  return { name, status: "FAIL", reasonCode };
 }
 
-function makeResult(caseId: string, checks: readonly EvaluationCheckV1[]): EvaluationCaseResultV1 {
-  return { caseId, passed: checks.every((check) => check.passed), checks };
+function makeResult(caseId: string, checks: readonly EvaluationCheckV2[]): EvaluationCaseResultV2 {
+  return { caseId, passed: checks.every((check) => check.status !== "FAIL"), checks };
 }
 
 describe("formatEvaluationReport", () => {
@@ -50,18 +50,18 @@ describe("formatEvaluationReport", () => {
   });
 
   it("a failing check with a null reasonCode is a compile-time error — there is no 'check failed' fallback to test", () => {
-    // @ts-expect-error — EvaluationCheckV1 is a discriminated union; a
-    // failing check (passed: false) must carry a real CheckReasonCode.
+    // @ts-expect-error — EvaluationCheckV2 is a discriminated union; a
+    // failing check (status: "FAIL") must carry a real CheckReasonCode.
     // This exact shape is the one the independent review found the
     // formatter silently rendering as the generic "check failed" fallback.
-    const invalid: EvaluationCheckV1 = { name: "status", passed: false, reasonCode: null };
-    expect(invalid.passed).toBe(false);
+    const invalid: EvaluationCheckV2 = { name: "status", status: "FAIL", reasonCode: null };
+    expect(invalid.status).toBe("FAIL");
   });
 
   it("a passing check with a non-null reasonCode is also a compile-time error", () => {
     // @ts-expect-error — a passing check must carry reasonCode: null.
-    const invalid: EvaluationCheckV1 = { name: "status", passed: true, reasonCode: "STATUS_MISMATCH" };
-    expect(invalid.passed).toBe(true);
+    const invalid: EvaluationCheckV2 = { name: "status", status: "PASS", reasonCode: "STATUS_MISMATCH" };
+    expect(invalid.status).toBe("PASS");
   });
 
   it("formats zero-denominator metrics deterministically without NaN", () => {
@@ -75,14 +75,14 @@ describe("formatEvaluationReport", () => {
   });
 
   describe("sanitization", () => {
-    // EvaluationCaseResultV1/EvaluationCheckV1 have no expected/observed
-    // fields at all (see v1-types.ts, correction 3) — formatEvaluationReport
+    // EvaluationCaseResultV2/EvaluationCheckV2 have no expected/observed
+    // fields at all (see v2-types.ts, correction 3) — formatEvaluationReport
     // therefore cannot leak them even in principle; there is no way to even
     // construct a fixture that plants a sentinel there. What remains
     // checkable at this layer is that every fixed reason-code message is
     // itself free of stack-trace-shaped content, checked exhaustively below.
     // The "no expected/observed keys survive serialization" proof lives in
-    // v1-types.test.ts, at the actual internal→wire conversion boundary.
+    // v2-types.test.ts, at the actual internal→wire conversion boundary.
     it("every fixed reason-code message renders verbatim, none of them stack-trace-shaped", () => {
       for (const [code, message] of Object.entries(CHECK_REASON_MESSAGES) as [CheckReasonCode, string][]) {
         const results = [makeResult("case-d", [failingCheck("some-check", code)])];

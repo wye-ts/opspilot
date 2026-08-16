@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { AgentOrchestratorResult } from "@opspilot/agent-runtime";
 import type { AgentOrchestratorErrorCode, ResolutionReport } from "@opspilot/contracts";
-import { resolveCheckReasonMessage } from "./check-reason-codes";
+import { isCheckReasonCode, resolveCheckReasonMessage } from "./check-reason-codes";
 import {
   evaluateCase,
   evaluateFailure,
@@ -15,7 +15,7 @@ import { toJsonValue } from "./json-value";
 import { buildObservedFacts, type ObservedFacts } from "./observed-facts";
 import type { RecordedToolExecution } from "./recording-tool-registry";
 import type { EvaluationCase, EvaluationExpectations } from "./types";
-import { buildEvaluationCaseInputV1, type EvaluationCaseInputV1 } from "./v1-types";
+import { buildEvaluationCaseInputV2, type EvaluationCaseInputV2 } from "./v2-types";
 
 const VALID_REPORT: ResolutionReport = {
   category: "SERVICE_DEGRADATION",
@@ -63,8 +63,8 @@ function caseInputFrom(
   evaluationCase: EvaluationCase,
   agentResult: AgentOrchestratorResult,
   executedTools: readonly RecordedToolExecution[] = [],
-): EvaluationCaseInputV1 {
-  return buildEvaluationCaseInputV1(
+): EvaluationCaseInputV2 {
+  return buildEvaluationCaseInputV2(
     evaluationCase.id,
     evaluationCase.expectations,
     buildObservedFacts(agentResult, executedTools),
@@ -77,7 +77,12 @@ function check(result: ReturnType<typeof evaluateRetrieval>, name: string) {
 
 function reasonMessage(result: ReturnType<typeof evaluateRetrieval>, name: string): string | undefined {
   const reasonCode = check(result, name)?.reasonCode;
-  return reasonCode ? resolveCheckReasonMessage(reasonCode) : undefined;
+  // v2 reasonCode is CheckReasonCode | NotApplicableCode; the retrieval checks
+  // only ever emit a CheckReasonCode (Checkpoint A), so narrow before
+  // resolving the fixed message.
+  return reasonCode !== undefined && isCheckReasonCode(reasonCode)
+    ? resolveCheckReasonMessage(reasonCode)
+    : undefined;
 }
 
 describe("evaluateRetrieval", () => {
@@ -90,7 +95,7 @@ describe("evaluateRetrieval", () => {
       { expectedTop1: "a" },
       { completed: false, chunkIds: [] },
     );
-    expect(check(result, "retrieval-top1")?.passed).toBe(false);
+    expect(check(result, "retrieval-top1")?.status).toBe("FAIL");
     expect(check(result, "retrieval-top1")?.reasonCode).toBe("RETRIEVAL_NOT_OBSERVED");
     expect(reasonMessage(result, "retrieval-top1")).toBe("No retrieval result was observed for this case.");
   });
@@ -101,7 +106,7 @@ describe("evaluateRetrieval", () => {
       { completed: true, chunkIds: ["SENTINEL-observed-chunk"] },
     );
     const failure = check(result, "retrieval-top1");
-    expect(failure?.passed).toBe(false);
+    expect(failure?.status).toBe("FAIL");
     expect(failure?.reasonCode).toBe("RETRIEVAL_TOP1_MISMATCH");
     expect(reasonMessage(result, "retrieval-top1")).toBe("The expected top-ranked chunk was not observed.");
     expect(reasonMessage(result, "retrieval-top1")).not.toContain("SENTINEL");
@@ -112,7 +117,7 @@ describe("evaluateRetrieval", () => {
       { expectedTop1: "a" },
       { completed: true, chunkIds: ["a", "b"] },
     );
-    expect(check(result, "retrieval-top1")?.passed).toBe(true);
+    expect(check(result, "retrieval-top1")?.status).toBe("PASS");
   });
 
   it("fails retrieval-top1 when the top-ranked chunk does not match", () => {
@@ -120,7 +125,7 @@ describe("evaluateRetrieval", () => {
       { expectedTop1: "a" },
       { completed: true, chunkIds: ["b", "a"] },
     );
-    expect(check(result, "retrieval-top1")?.passed).toBe(false);
+    expect(check(result, "retrieval-top1")?.status).toBe("FAIL");
   });
 
   it("fails retrieval-hit3 with a missing-observation reason when RETRIEVAL_COMPLETED was never observed", () => {
@@ -128,7 +133,7 @@ describe("evaluateRetrieval", () => {
       { expectedInTopK: ["a", "b"] },
       { completed: false, chunkIds: [] },
     );
-    expect(check(result, "retrieval-hit3")?.passed).toBe(false);
+    expect(check(result, "retrieval-hit3")?.status).toBe("FAIL");
   });
 
   it("passes retrieval-hit3 when every expected id appears within the observed top-K", () => {
@@ -136,7 +141,7 @@ describe("evaluateRetrieval", () => {
       { expectedInTopK: ["a", "b"] },
       { completed: true, chunkIds: ["a", "b", "c"] },
     );
-    expect(check(result, "retrieval-hit3")?.passed).toBe(true);
+    expect(check(result, "retrieval-hit3")?.status).toBe("PASS");
   });
 
   it("fails retrieval-hit3 when an expected id is missing from the observed top-K", () => {
@@ -144,7 +149,7 @@ describe("evaluateRetrieval", () => {
       { expectedInTopK: ["a", "b"] },
       { completed: true, chunkIds: ["a"] },
     );
-    expect(check(result, "retrieval-hit3")?.passed).toBe(false);
+    expect(check(result, "retrieval-hit3")?.status).toBe("FAIL");
   });
 
   it("fails retrieval-no-results with a distinct missing-observation reason when RETRIEVAL_COMPLETED was never observed", () => {
@@ -152,7 +157,7 @@ describe("evaluateRetrieval", () => {
       { expectedNoResults: true },
       { completed: false, chunkIds: [] },
     );
-    expect(check(result, "retrieval-no-results")?.passed).toBe(false);
+    expect(check(result, "retrieval-no-results")?.status).toBe("FAIL");
     expect(reasonMessage(result, "retrieval-no-results")).toBe(
       "No retrieval result was observed for this case.",
     );
@@ -163,7 +168,7 @@ describe("evaluateRetrieval", () => {
       { expectedNoResults: true },
       { completed: true, chunkIds: [] },
     );
-    expect(check(result, "retrieval-no-results")?.passed).toBe(true);
+    expect(check(result, "retrieval-no-results")?.status).toBe("PASS");
   });
 
   it("fails retrieval-no-results when chunks were actually retrieved", () => {
@@ -171,7 +176,7 @@ describe("evaluateRetrieval", () => {
       { expectedNoResults: true },
       { completed: true, chunkIds: ["a"] },
     );
-    expect(check(result, "retrieval-no-results")?.passed).toBe(false);
+    expect(check(result, "retrieval-no-results")?.status).toBe("FAIL");
   });
 
   it("passes retrieval-forbidden when no forbidden chunk id was retrieved", () => {
@@ -179,7 +184,7 @@ describe("evaluateRetrieval", () => {
       { forbiddenChunkIds: ["x"] },
       { completed: true, chunkIds: ["y"] },
     );
-    expect(check(result, "retrieval-forbidden")?.passed).toBe(true);
+    expect(check(result, "retrieval-forbidden")?.status).toBe("PASS");
   });
 
   it("fails retrieval-forbidden when a forbidden chunk id was retrieved", () => {
@@ -187,7 +192,7 @@ describe("evaluateRetrieval", () => {
       { forbiddenChunkIds: ["x"] },
       { completed: true, chunkIds: ["x"] },
     );
-    expect(check(result, "retrieval-forbidden")?.passed).toBe(false);
+    expect(check(result, "retrieval-forbidden")?.status).toBe("FAIL");
   });
 });
 
@@ -207,7 +212,7 @@ describe("evaluateTool", () => {
       { expectedRequested: [{ toolName: "t", toolCallId: "c1" }] },
       { requested: [], executed: [], completed: [] },
     );
-    expect(check(result, "tool-requested")?.passed).toBe(false);
+    expect(check(result, "tool-requested")?.status).toBe("FAIL");
   });
 
   it("fails tool-requested with a fixed reason that never echoes a sentinel-valued tool name or toolCallId", () => {
@@ -230,7 +235,7 @@ describe("evaluateTool", () => {
         completed: [],
       },
     );
-    expect(check(result, "tool-requested")?.passed).toBe(true);
+    expect(check(result, "tool-requested")?.status).toBe("PASS");
   });
 
   it("fails tool-executed when the recorder never captured the expected execution attempt", () => {
@@ -238,7 +243,7 @@ describe("evaluateTool", () => {
       { expectedExecuted: [{ toolName: "t", input: { a: 1 } }] },
       { requested: [], executed: [], completed: [] },
     );
-    expect(check(result, "tool-executed")?.passed).toBe(false);
+    expect(check(result, "tool-executed")?.status).toBe("FAIL");
   });
 
   it("passes tool-executed when the recorder captured the exact input", () => {
@@ -247,7 +252,7 @@ describe("evaluateTool", () => {
       { expectedExecuted: [{ toolName: "t", input: { a: 1 } }] },
       { requested: [], executed: executedTools, completed: [] },
     );
-    expect(check(result, "tool-executed")?.passed).toBe(true);
+    expect(check(result, "tool-executed")?.status).toBe("PASS");
   });
 
   it("passes tool-executed when a normalized observed input containing an own __proto__ key matches the same expected input", () => {
@@ -258,7 +263,7 @@ describe("evaluateTool", () => {
       { expectedExecuted: [{ toolName: "t", input: normalizedInput }] },
       { requested: [], executed: executedTools, completed: [] },
     );
-    expect(check(result, "tool-executed")?.passed).toBe(true);
+    expect(check(result, "tool-executed")?.status).toBe("PASS");
   });
 
   it("fails tool-completed when an execution was attempted but no TOOL_COMPLETED id was observed (mirrors case 13)", () => {
@@ -267,7 +272,7 @@ describe("evaluateTool", () => {
       { expectedCompleted: [{ toolName: "always_fails", toolCallId: "c1" }] },
       { requested: [], executed: executedTools, completed: [] },
     );
-    expect(check(result, "tool-completed")?.passed).toBe(false);
+    expect(check(result, "tool-completed")?.status).toBe("FAIL");
   });
 
   it("fails tool-completed with a fixed reason that never echoes a sentinel-valued toolCallId", () => {
@@ -287,10 +292,10 @@ describe("evaluateTool", () => {
       {
         requested: [],
         executed: [],
-        completed: [{ toolName: "t", toolCallId: "c1" }],
+        completed: [{ toolName: "t", toolCallId: "c1", output: { status: "OK" } }],
       },
     );
-    expect(check(result, "tool-completed")?.passed).toBe(true);
+    expect(check(result, "tool-completed")?.status).toBe("PASS");
   });
 
   it("passes tool-forbidden-executed when the forbidden tool name never executed", () => {
@@ -298,7 +303,7 @@ describe("evaluateTool", () => {
       { forbiddenExecutedToolNames: ["t"] },
       { requested: [], executed: [], completed: [] },
     );
-    expect(check(result, "tool-forbidden-executed")?.passed).toBe(true);
+    expect(check(result, "tool-forbidden-executed")?.status).toBe("PASS");
   });
 
   it("fails tool-forbidden-executed when the forbidden tool name did execute", () => {
@@ -307,7 +312,7 @@ describe("evaluateTool", () => {
       { forbiddenExecutedToolNames: ["t"] },
       { requested: [], executed: executedTools, completed: [] },
     );
-    expect(check(result, "tool-forbidden-executed")?.passed).toBe(false);
+    expect(check(result, "tool-forbidden-executed")?.status).toBe("FAIL");
   });
 
   it("case 13's exact shape passes forbiddenCompletedToolCallIds (executed, never completed)", () => {
@@ -319,8 +324,8 @@ describe("evaluateTool", () => {
       },
       { requested: [], executed: executedTools, completed: [] },
     );
-    expect(check(result, "tool-executed")?.passed).toBe(true);
-    expect(check(result, "tool-forbidden-completed")?.passed).toBe(true);
+    expect(check(result, "tool-executed")?.status).toBe("PASS");
+    expect(check(result, "tool-forbidden-completed")?.status).toBe("PASS");
   });
 
   it("fails tool-forbidden-completed when the forbidden toolCallId did complete", () => {
@@ -329,102 +334,102 @@ describe("evaluateTool", () => {
       {
         requested: [],
         executed: [],
-        completed: [{ toolName: "t", toolCallId: "c1" }],
+        completed: [{ toolName: "t", toolCallId: "c1", output: { status: "OK" } }],
       },
     );
-    expect(check(result, "tool-forbidden-completed")?.passed).toBe(false);
+    expect(check(result, "tool-forbidden-completed")?.status).toBe("FAIL");
   });
 });
 
 describe("evaluateReport — stage expectations", () => {
   it("passes schema-handling for schemaExpectation VALID on a completed run", () => {
     const result = evaluateReport({ schemaExpectation: "VALID" }, completed());
-    expect(check(result, "schema-handling")?.passed).toBe(true);
+    expect(check(result, "schema-handling")?.status).toBe("PASS");
   });
 
   it("passes schema-handling for schemaExpectation VALID when the run failed with REPORT_EVIDENCE_INVALID", () => {
     const result = evaluateReport({ schemaExpectation: "VALID" }, failed("REPORT_EVIDENCE_INVALID"));
-    expect(check(result, "schema-handling")?.passed).toBe(true);
+    expect(check(result, "schema-handling")?.status).toBe("PASS");
   });
 
   it("fails schema-handling for schemaExpectation VALID when the run failed with an unrelated code", () => {
     const result = evaluateReport({ schemaExpectation: "VALID" }, failed("TOOL_NOT_FOUND"));
-    expect(check(result, "schema-handling")?.passed).toBe(false);
+    expect(check(result, "schema-handling")?.status).toBe("FAIL");
   });
 
   it("passes schema-handling for schemaExpectation INVALID when the run failed with REPORT_SCHEMA_INVALID", () => {
     const result = evaluateReport({ schemaExpectation: "INVALID" }, failed("REPORT_SCHEMA_INVALID"));
-    expect(check(result, "schema-handling")?.passed).toBe(true);
+    expect(check(result, "schema-handling")?.status).toBe("PASS");
   });
 
   it("fails schema-handling for schemaExpectation INVALID when the run actually completed", () => {
     const result = evaluateReport({ schemaExpectation: "INVALID" }, completed());
-    expect(check(result, "schema-handling")?.passed).toBe(false);
+    expect(check(result, "schema-handling")?.status).toBe("FAIL");
   });
 
   it("passes evidence-grounding for groundingExpectation VALID on a completed run", () => {
     const result = evaluateReport({ groundingExpectation: "VALID" }, completed());
-    expect(check(result, "evidence-grounding")?.passed).toBe(true);
+    expect(check(result, "evidence-grounding")?.status).toBe("PASS");
   });
 
   it("fails evidence-grounding for groundingExpectation VALID when the run failed with an unrelated, non-grounding code", () => {
     const result = evaluateReport({ groundingExpectation: "VALID" }, failed("TOOL_NOT_FOUND"));
-    expect(check(result, "evidence-grounding")?.passed).toBe(false);
+    expect(check(result, "evidence-grounding")?.status).toBe("FAIL");
   });
 
   it("passes evidence-grounding for groundingExpectation INVALID when the run failed with REPORT_EVIDENCE_INVALID", () => {
     const result = evaluateReport({ groundingExpectation: "INVALID" }, failed("REPORT_EVIDENCE_INVALID"));
-    expect(check(result, "evidence-grounding")?.passed).toBe(true);
+    expect(check(result, "evidence-grounding")?.status).toBe("PASS");
   });
 
   it("fails evidence-grounding for groundingExpectation INVALID when the run failed with an unrelated code", () => {
     const result = evaluateReport({ groundingExpectation: "INVALID" }, failed("TOOL_NOT_FOUND"));
-    expect(check(result, "evidence-grounding")?.passed).toBe(false);
+    expect(check(result, "evidence-grounding")?.status).toBe("FAIL");
   });
 });
 
 describe("evaluateReport — payload expectations", () => {
   it("fails evidence-types with the payload missing-observation reason when the run did not complete", () => {
     const result = evaluateReport({ requiredEvidenceTypes: ["TOOL_EXECUTION"] }, failed("TOOL_NOT_FOUND"));
-    expect(check(result, "evidence-types")?.passed).toBe(false);
+    expect(check(result, "evidence-types")?.status).toBe("FAIL");
     expect(reasonMessage(result, "evidence-types")).toMatch(/did not complete/);
   });
 
   it("passes evidence-types when the completed report contains the required type", () => {
     const result = evaluateReport({ requiredEvidenceTypes: ["TOOL_EXECUTION"] }, completed());
-    expect(check(result, "evidence-types")?.passed).toBe(true);
+    expect(check(result, "evidence-types")?.status).toBe("PASS");
   });
 
   it("fails evidence-types when the completed report is missing the required type", () => {
     const result = evaluateReport({ requiredEvidenceTypes: ["RAG_CHUNK"] }, completed());
-    expect(check(result, "evidence-types")?.passed).toBe(false);
+    expect(check(result, "evidence-types")?.status).toBe("FAIL");
   });
 
   it("fails evidence-ids with the payload missing-observation reason when the run did not complete", () => {
     const result = evaluateReport({ requiredEvidenceIds: ["e1"] }, failed("TOOL_NOT_FOUND"));
-    expect(check(result, "evidence-ids")?.passed).toBe(false);
+    expect(check(result, "evidence-ids")?.status).toBe("FAIL");
     expect(reasonMessage(result, "evidence-ids")).toMatch(/did not complete/);
   });
 
   it("passes evidence-ids when required ids are present and forbidden ids are absent", () => {
     const result = evaluateReport({ requiredEvidenceIds: ["e1"], forbiddenEvidenceIds: ["e2"] }, completed());
-    expect(check(result, "evidence-ids")?.passed).toBe(true);
+    expect(check(result, "evidence-ids")?.status).toBe("PASS");
   });
 
   it("fails evidence-ids when a required id is missing", () => {
     const result = evaluateReport({ requiredEvidenceIds: ["missing-id"] }, completed());
-    expect(check(result, "evidence-ids")?.passed).toBe(false);
+    expect(check(result, "evidence-ids")?.status).toBe("FAIL");
   });
 
   it("fails evidence-ids when a forbidden id is present", () => {
     const result = evaluateReport({ forbiddenEvidenceIds: ["e1"] }, completed());
-    expect(check(result, "evidence-ids")?.passed).toBe(false);
+    expect(check(result, "evidence-ids")?.status).toBe("FAIL");
   });
 
   it("fails evidence-ids with a fixed reason that never echoes a sentinel-valued evidence id", () => {
     const result = evaluateReport({ requiredEvidenceIds: ["SENTINEL-evidence-id"] }, completed());
     const failure = check(result, "evidence-ids");
-    expect(failure?.passed).toBe(false);
+    expect(failure?.status).toBe("FAIL");
     expect(failure?.reasonCode).toBe("EVIDENCE_IDS_MISMATCH");
     expect(reasonMessage(result, "evidence-ids")).toBe(
       "The submitted report did not satisfy the required or forbidden evidence id expectations.",
@@ -434,18 +439,18 @@ describe("evaluateReport — payload expectations", () => {
 
   it("fails action-types with the payload missing-observation reason when the run did not complete", () => {
     const result = evaluateReport({ requiredActionTypes: ["UPDATE_TICKET_STATUS"] }, failed("TOOL_NOT_FOUND"));
-    expect(check(result, "action-types")?.passed).toBe(false);
+    expect(check(result, "action-types")?.status).toBe("FAIL");
     expect(reasonMessage(result, "action-types")).toMatch(/did not complete/);
   });
 
   it("passes action-types when the completed report contains the required action type", () => {
     const result = evaluateReport({ requiredActionTypes: ["UPDATE_TICKET_STATUS"] }, completed());
-    expect(check(result, "action-types")?.passed).toBe(true);
+    expect(check(result, "action-types")?.status).toBe("PASS");
   });
 
   it("fails action-types when the completed report is missing the required action type", () => {
     const result = evaluateReport({ requiredActionTypes: ["CREATE_ESCALATION"] }, completed());
-    expect(check(result, "action-types")?.passed).toBe(false);
+    expect(check(result, "action-types")?.status).toBe("FAIL");
   });
 });
 
@@ -456,19 +461,19 @@ describe("evaluateFailure", () => {
 
   it("fails failure-code with a fixed reason when the run actually completed", () => {
     const result = evaluateFailure({ expectedCode: "TOOL_NOT_FOUND" }, completed());
-    expect(check(result, "failure-code")?.passed).toBe(false);
+    expect(check(result, "failure-code")?.status).toBe("FAIL");
     expect(check(result, "failure-code")?.reasonCode).toBe("FAILURE_CODE_RUN_COMPLETED");
     expect(reasonMessage(result, "failure-code")).toBe("The run completed, but a failure was expected.");
   });
 
   it("passes failure-code when the observed code matches", () => {
     const result = evaluateFailure({ expectedCode: "TOOL_NOT_FOUND" }, failed("TOOL_NOT_FOUND"));
-    expect(check(result, "failure-code")?.passed).toBe(true);
+    expect(check(result, "failure-code")?.status).toBe("PASS");
   });
 
   it("fails failure-code with a fixed reason when the observed code does not match", () => {
     const result = evaluateFailure({ expectedCode: "TOOL_NOT_FOUND" }, failed("TOOL_INPUT_INVALID"));
-    expect(check(result, "failure-code")?.passed).toBe(false);
+    expect(check(result, "failure-code")?.status).toBe("FAIL");
     expect(reasonMessage(result, "failure-code")).toBe(
       "The observed failure code did not match the expected failure code.",
     );
@@ -482,12 +487,12 @@ describe("evaluateStatus", () => {
 
   it("passes when the observed status matches", () => {
     const result = evaluateStatus(expectations("completed"), completed());
-    expect(check(result, "status")?.passed).toBe(true);
+    expect(check(result, "status")?.status).toBe("PASS");
   });
 
   it("fails with a fixed reason when the observed status does not match", () => {
     const result = evaluateStatus(expectations("completed"), failed("TOOL_NOT_FOUND"));
-    expect(check(result, "status")?.passed).toBe(false);
+    expect(check(result, "status")?.status).toBe("FAIL");
     expect(reasonMessage(result, "status")).toBe("The observed run status did not match the expected run status.");
   });
 });
@@ -541,7 +546,7 @@ describe("evaluateCase", () => {
   });
 
   it("operates only on caseInput.expectations/.observed — evaluateCase's own parameter list makes any other input structurally unreachable", () => {
-    // Structural proof for correction 1: EvaluationCaseInputV1 has exactly
+    // Structural proof for correction 1: EvaluationCaseInputV2 has exactly
     // caseId/expectations/observed. There is no AgentOrchestratorResult,
     // trace, or tool-recorder parameter for a caller to (mis)use.
     const evaluationCase = buildCase();
@@ -574,7 +579,7 @@ describe("wire-level edge cases (independent-review finding F)", () => {
 
     it("emits and evaluates a retrieval-no-results check when expectedNoResults is true (already covered elsewhere; included here for the truthiness table)", () => {
       const result = evaluateRetrieval({ expectedNoResults: true }, { completed: true, chunkIds: [] });
-      expect(check(result, "retrieval-no-results")?.passed).toBe(true);
+      expect(check(result, "retrieval-no-results")?.status).toBe("PASS");
     });
   });
 
@@ -604,32 +609,32 @@ describe("wire-level edge cases (independent-review finding F)", () => {
   describe("present-but-empty required/expected lists vacuously pass (current, intentional behavior — locked down explicitly)", () => {
     it("retrieval.expectedInTopK: [] vacuously passes retrieval-hit3 once retrieval has completed", () => {
       const result = evaluateRetrieval({ expectedInTopK: [] }, { completed: true, chunkIds: [] });
-      expect(check(result, "retrieval-hit3")?.passed).toBe(true);
+      expect(check(result, "retrieval-hit3")?.status).toBe("PASS");
     });
 
     it("tool.expectedRequested: [] vacuously passes tool-requested", () => {
       const result = evaluateTool({ expectedRequested: [] }, { requested: [], executed: [], completed: [] });
-      expect(check(result, "tool-requested")?.passed).toBe(true);
+      expect(check(result, "tool-requested")?.status).toBe("PASS");
     });
 
     it("tool.expectedExecuted: [] vacuously passes tool-executed", () => {
       const result = evaluateTool({ expectedExecuted: [] }, { requested: [], executed: [], completed: [] });
-      expect(check(result, "tool-executed")?.passed).toBe(true);
+      expect(check(result, "tool-executed")?.status).toBe("PASS");
     });
 
     it("tool.expectedCompleted: [] vacuously passes tool-completed", () => {
       const result = evaluateTool({ expectedCompleted: [] }, { requested: [], executed: [], completed: [] });
-      expect(check(result, "tool-completed")?.passed).toBe(true);
+      expect(check(result, "tool-completed")?.status).toBe("PASS");
     });
 
     it("report.requiredEvidenceTypes: [] vacuously passes evidence-types on a completed run", () => {
       const result = evaluateReport({ requiredEvidenceTypes: [] }, completed());
-      expect(check(result, "evidence-types")?.passed).toBe(true);
+      expect(check(result, "evidence-types")?.status).toBe("PASS");
     });
 
     it("report.requiredActionTypes: [] vacuously passes action-types on a completed run", () => {
       const result = evaluateReport({ requiredActionTypes: [] }, completed());
-      expect(check(result, "action-types")?.passed).toBe(true);
+      expect(check(result, "action-types")?.status).toBe("PASS");
     });
   });
 });

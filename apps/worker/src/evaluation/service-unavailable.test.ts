@@ -8,7 +8,7 @@ import type { StoredRunbookChunk } from "@opspilot/agent-runtime";
 import { renderEvaluationResolution, resolveEvaluationRun } from "./run-eval";
 import { resolveScorerSelectionFromEnv } from "./evaluation-scorer-config";
 import type { EvaluationCase } from "./types";
-import type { EvaluationCaseInputV1 } from "./v1-types";
+import type { EvaluationCaseInputV2 } from "./v2-types";
 
 // The critical migration invariant (OpsPilot #61 Phase 3): with the service
 // scorer selected, an unreachable service FAILS the evaluation command —
@@ -44,7 +44,7 @@ function validCase(id: string): EvaluationCase {
 // Agrees with validCase's expectations (failed/TOOL_NOT_FOUND), so the local
 // scorer would mark it PASSED — proving the negative result below is NOT
 // because the case itself is bad.
-function dummyCaseInput(id: string): EvaluationCaseInputV1 {
+function dummyCaseInput(id: string): EvaluationCaseInputV2 {
   return {
     caseId: id,
     expectations: { runStatus: "failed", failure: { expectedCode: "TOOL_NOT_FOUND" } },
@@ -54,6 +54,17 @@ function dummyCaseInput(id: string): EvaluationCaseInputV1 {
       retrieval: { completed: false, chunkIds: [] },
       tools: { requested: [], executed: [], completed: [] },
       report: null,
+      investigation: {
+        providerTurnsUsed: 0,
+        diagnosticRequestCount: 0,
+        forcedFinalization: false,
+        stopReason: null,
+        assessments: [],
+        toolFailures: [],
+        bounds: { maxProviderTurns: 4, maxDiagnosticToolCalls: 3 },
+        usage: { inputTokens: 0, outputTokens: 0, providerCalls: 0 },
+      },
+      failedStage: "DIAGNOSTIC_EXECUTION",
     },
   };
 }
@@ -81,14 +92,14 @@ async function closedPortUrl(): Promise<string> {
 // closed (no exit code 0) demonstrates the semantic validator sits between the
 // wire and the formatter/exit-code.
 const CONTRADICTORY_RESOURCE = {
-  contractVersion: 1,
-  datasetId: "opspilot-deterministic-v1",
+  contractVersion: 2,
+  datasetId: "opspilot-deterministic-v2",
   id: "eval-11",
   cases: [
     {
       caseId: "synthetic-1",
       passed: false,
-      checks: [{ name: "status", passed: false, reasonCode: "STATUS_MISMATCH" }],
+      checks: [{ name: "status", status: "FAIL", reasonCode: "STATUS_MISMATCH" }],
     },
   ],
   metrics: {

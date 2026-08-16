@@ -6,6 +6,10 @@ const { InMemoryToolRegistry } = opspilotAgentRuntime;
 export interface RecordedToolExecution {
   readonly toolName: string;
   readonly input: unknown;
+  // Present only when the wrapped execute() returned successfully — a thrown
+  // execute leaves the attempt output-less, so a failed execution is never
+  // fabricated into a completed tool with output (see observed-facts.ts §4.3).
+  readonly output?: unknown;
 }
 
 function wrapForRecording(
@@ -18,9 +22,14 @@ function wrapForRecording(
     outputSchema: tool.outputSchema,
     async execute(input: unknown): Promise<unknown> {
       // Recorded before delegating, so an attempt is captured even when the
-      // real execute() then throws — never converted into a success.
-      recorder.push({ toolName: tool.name, input });
-      return tool.execute(input);
+      // real execute() then throws — never converted into a success. The
+      // mutable local keeps the capture-before-delegate ordering while still
+      // attaching `output` only after a successful return.
+      const entry: { toolName: string; input: unknown; output?: unknown } = { toolName: tool.name, input };
+      recorder.push(entry);
+      const output = await tool.execute(input);
+      entry.output = output;
+      return output;
     },
   };
 }

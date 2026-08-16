@@ -21,7 +21,7 @@ import {
   type EvaluationRunResolution,
 } from "./run-eval";
 import type { EvaluationCase } from "./types";
-import type { EvaluationCaseInputV1, EvaluationCaseResultV1 } from "./v1-types";
+import type { EvaluationCaseInputV2, EvaluationCaseResultV2 } from "./v2-types";
 
 const FIXTURE_CORPUS: readonly StoredRunbookChunk[] = [
   { chunkId: "fixture-chunk-1", runbookId: "fixture-runbook", title: "Fixture", content: "fixture content" },
@@ -52,7 +52,7 @@ function validCase(id: string): EvaluationCase {
 // stubScorer(), which ignores its input and returns a canned suite result.
 // This is only here so deps.runSuite has something type-correct to resolve
 // to.
-function dummyCaseInput(id: string): EvaluationCaseInputV1 {
+function dummyCaseInput(id: string): EvaluationCaseInputV2 {
   return {
     caseId: id,
     expectations: { runStatus: "failed", failure: { expectedCode: "TOOL_NOT_FOUND" } },
@@ -62,11 +62,22 @@ function dummyCaseInput(id: string): EvaluationCaseInputV1 {
       retrieval: { completed: false, chunkIds: [] },
       tools: { requested: [], executed: [], completed: [] },
       report: null,
+      investigation: {
+        providerTurnsUsed: 0,
+        diagnosticRequestCount: 0,
+        forcedFinalization: false,
+        stopReason: null,
+        assessments: [],
+        toolFailures: [],
+        bounds: { maxProviderTurns: 4, maxDiagnosticToolCalls: 3 },
+        usage: { inputTokens: 0, outputTokens: 0, providerCalls: 0 },
+      },
+      failedStage: "DIAGNOSTIC_EXECUTION",
     },
   };
 }
 
-function stubScorer(cases: readonly EvaluationCaseResultV1[]): EvaluationScorer {
+function stubScorer(cases: readonly EvaluationCaseResultV2[]): EvaluationScorer {
   return {
     score: (input) => ({
       contractVersion: input.contractVersion,
@@ -77,12 +88,12 @@ function stubScorer(cases: readonly EvaluationCaseResultV1[]): EvaluationScorer 
   };
 }
 
-function passingResult(caseId: string): EvaluationCaseResultV1 {
-  return { caseId, passed: true, checks: [{ name: "status", passed: true, reasonCode: null }] };
+function passingResult(caseId: string): EvaluationCaseResultV2 {
+  return { caseId, passed: true, checks: [{ name: "status", status: "PASS", reasonCode: null }] };
 }
 
-function failingResult(caseId: string): EvaluationCaseResultV1 {
-  return { caseId, passed: false, checks: [{ name: "status", passed: false, reasonCode: "STATUS_MISMATCH" }] };
+function failingResult(caseId: string): EvaluationCaseResultV2 {
+  return { caseId, passed: false, checks: [{ name: "status", status: "FAIL", reasonCode: "STATUS_MISMATCH" }] };
 }
 
 describe("runEvaluation", () => {

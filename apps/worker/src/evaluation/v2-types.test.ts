@@ -3,15 +3,20 @@ import { describe, expect, it } from "vitest";
 import { evaluateCase } from "./evaluation-evaluator";
 import { LocalEvaluationScorer } from "./evaluation-scorer";
 import { NonJsonSafeValueError, type JsonValue } from "./json-value";
+import type { NotApplicableCode } from "./not-applicable-codes";
 import type { ObservedFacts } from "./observed-facts";
 import type { EvaluationCaseResult, EvaluationExpectations } from "./types";
 import {
-  buildEvaluationCaseInputV1,
-  buildEvaluationSuiteInputV1,
-  toEvaluationCaseResultV1,
-  type EvaluationSuiteInputV1,
-} from "./v1-types";
+  buildEvaluationCaseInputV2,
+  buildEvaluationSuiteInputV2,
+  toEvaluationCaseResultV2,
+  type EvaluationCheckV2,
+  type EvaluationSuiteInputV2,
+} from "./v2-types";
 
+// v2 completed-run observed facts with a full Milestone-11 investigation.
+// Never used by scoring here — only to give buildEvaluationCaseInputV2 the
+// normalized observed half of a case.
 function observedWithExecuted(
   executed: readonly { readonly toolName: string; readonly input: JsonValue }[] = [],
 ): ObservedFacts {
@@ -20,24 +25,44 @@ function observedWithExecuted(
     errorCode: null,
     retrieval: { completed: false, chunkIds: [] },
     tools: { requested: [], executed, completed: [] },
-    report: { evidence: [], suggestedActionTypes: [] },
+    report: {
+      evidence: [],
+      suggestedActionTypes: [],
+      category: "SERVICE_DEGRADATION",
+      rootCausePresent: true,
+      confidence: 0.5,
+      evidenceState: "SUFFICIENT",
+      recommendationDisposition: "ADVISORY",
+      suggestedActions: [],
+    },
+    investigation: {
+      providerTurnsUsed: 0,
+      diagnosticRequestCount: 0,
+      forcedFinalization: false,
+      stopReason: "SUFFICIENT_EVIDENCE",
+      assessments: [],
+      toolFailures: [],
+      bounds: { maxProviderTurns: 4, maxDiagnosticToolCalls: 3 },
+      usage: { inputTokens: 0, outputTokens: 0, providerCalls: 0 },
+    },
+    failedStage: null,
   };
 }
 
 // Correction 3 (OpsPilot #61 Phase 1 HQ targeted corrections): the wire/parity
 // result must not expose EvaluationCheckResult's internal expected/observed
 // echoes. This is the exact boundary where that stripping happens —
-// toEvaluationCaseResultV1 — so this is where the "no expected/observed
+// toEvaluationCaseResultV2 — so this is where the "no expected/observed
 // leaks into the serialized wire shape" proof belongs.
-describe("toEvaluationCaseResultV1 — wire boundary strips expected/observed", () => {
+describe("toEvaluationCaseResultV2 — wire boundary strips expected/observed", () => {
   const internalResult: EvaluationCaseResult = {
     caseId: "sentinel-case",
     passed: false,
     checks: [
-      { name: "status", passed: true, expected: "completed", observed: "completed" },
+      { name: "status", status: "PASS", expected: "completed", observed: "completed" },
       {
         name: "retrieval-top1",
-        passed: false,
+        status: "FAIL",
         expected: "SENTINEL-expected-chunk-id",
         observed: { rawPrompt: "SENTINEL_RAW_PROMPT", path: "/private/tmp/sentinel/should-not-appear" },
         reasonCode: "RETRIEVAL_TOP1_MISMATCH",
@@ -48,12 +73,32 @@ describe("toEvaluationCaseResultV1 — wire boundary strips expected/observed", 
       errorCode: null,
       retrieval: { completed: true, chunkIds: ["a"] },
       tools: { requested: [], executed: [], completed: [] },
-      report: { evidence: [], suggestedActionTypes: [] },
+      report: {
+        evidence: [],
+        suggestedActionTypes: [],
+        category: "SERVICE_DEGRADATION",
+        rootCausePresent: true,
+        confidence: 0.5,
+        evidenceState: "SUFFICIENT",
+        recommendationDisposition: "ADVISORY",
+        suggestedActions: [],
+      },
+      investigation: {
+        providerTurnsUsed: 0,
+        diagnosticRequestCount: 0,
+        forcedFinalization: false,
+        stopReason: "SUFFICIENT_EVIDENCE",
+        assessments: [],
+        toolFailures: [],
+        bounds: { maxProviderTurns: 4, maxDiagnosticToolCalls: 3 },
+        usage: { inputTokens: 0, outputTokens: 0, providerCalls: 0 },
+      },
+      failedStage: null,
     },
   };
 
   it("the mapped result has no expected/observed key anywhere, at any level", () => {
-    const wireResult = toEvaluationCaseResultV1(internalResult);
+    const wireResult = toEvaluationCaseResultV2(internalResult);
 
     expect(wireResult).not.toHaveProperty("observed");
     for (const check of wireResult.checks) {
@@ -63,7 +108,7 @@ describe("toEvaluationCaseResultV1 — wire boundary strips expected/observed", 
   });
 
   it("the serialized JSON string contains no 'expected' or 'observed' key and no planted sentinel value", () => {
-    const wireResult = toEvaluationCaseResultV1(internalResult);
+    const wireResult = toEvaluationCaseResultV2(internalResult);
     const serialized = JSON.stringify(wireResult);
 
     expect(serialized).not.toContain('"expected"');
@@ -72,23 +117,108 @@ describe("toEvaluationCaseResultV1 — wire boundary strips expected/observed", 
     expect(serialized).not.toContain("/private/tmp/sentinel");
   });
 
-  it("preserves caseId, passed, and per-check name/passed/reasonCode exactly", () => {
-    const wireResult = toEvaluationCaseResultV1(internalResult);
+  it("preserves caseId, passed, and per-check name/status/reasonCode exactly", () => {
+    const wireResult = toEvaluationCaseResultV2(internalResult);
 
     expect(wireResult).toEqual({
       caseId: "sentinel-case",
       passed: false,
       checks: [
-        { name: "status", passed: true, reasonCode: null },
-        { name: "retrieval-top1", passed: false, reasonCode: "RETRIEVAL_TOP1_MISMATCH" },
+        { name: "status", status: "PASS", reasonCode: null },
+        { name: "retrieval-top1", status: "FAIL", reasonCode: "RETRIEVAL_TOP1_MISMATCH" },
       ],
     });
   });
 
   it("a passing check maps reasonCode to null, never undefined — a stable wire representation across languages", () => {
-    const wireResult = toEvaluationCaseResultV1(internalResult);
+    const wireResult = toEvaluationCaseResultV2(internalResult);
     expect(wireResult.checks[0]?.reasonCode).toBeNull();
     expect("reasonCode" in wireResult.checks[0]!).toBe(true);
+  });
+});
+
+// OpsPilot #59 Checkpoint A test 6: EvaluationCheckV2 structurally supports
+// NOT_APPLICABLE — the third state is representable in the discriminated
+// union (with a closed NotApplicableCode), survives the internal→wire
+// conversion, and the union still rejects a mismatched status/reason pairing
+// at compile time. The active scorer at Checkpoint A emits PASS/FAIL only;
+// this proves the *contract* is ready for the NOT_APPLICABLE state the
+// Checkpoint-B checks will emit, without implementing any of them.
+describe("EvaluationCheckV2 — NOT_APPLICABLE structural support", () => {
+  const notApplicableResult: EvaluationCaseResult = {
+    caseId: "na-case",
+    passed: true,
+    checks: [
+      {
+        name: "approval-gate",
+        status: "NOT_APPLICABLE",
+        expected: "APPROVAL_ELIGIBILITY",
+        observed: { suggestionCount: 0 },
+        reasonCode: "NA_RUN_DID_NOT_COMPLETE",
+      },
+    ],
+    observed: {
+      runStatus: "completed",
+      errorCode: null,
+      retrieval: { completed: false, chunkIds: [] },
+      tools: { requested: [], executed: [], completed: [] },
+      report: {
+        evidence: [],
+        suggestedActionTypes: [],
+        category: "SERVICE_DEGRADATION",
+        rootCausePresent: true,
+        confidence: 0.5,
+        evidenceState: "SUFFICIENT",
+        recommendationDisposition: "ADVISORY",
+        suggestedActions: [],
+      },
+      investigation: {
+        providerTurnsUsed: 0,
+        diagnosticRequestCount: 0,
+        forcedFinalization: false,
+        stopReason: "SUFFICIENT_EVIDENCE",
+        assessments: [],
+        toolFailures: [],
+        bounds: { maxProviderTurns: 4, maxDiagnosticToolCalls: 3 },
+        usage: { inputTokens: 0, outputTokens: 0, providerCalls: 0 },
+      },
+      failedStage: null,
+    },
+  };
+
+  it("maps an internal NOT_APPLICABLE check to the wire NOT_APPLICABLE shape with its closed code, and never fails the case", () => {
+    const wireResult = toEvaluationCaseResultV2(notApplicableResult);
+
+    expect(wireResult.checks).toEqual([
+      { name: "approval-gate", status: "NOT_APPLICABLE", reasonCode: "NA_RUN_DID_NOT_COMPLETE" },
+    ]);
+    expect(wireResult.passed).toBe(true);
+  });
+
+  it("compile-time: every one of the three NotApplicableCode members is a valid NOT_APPLICABLE reasonCode", () => {
+    const codes: readonly NotApplicableCode[] = [
+      "NA_RUN_DID_NOT_COMPLETE",
+      "NA_EXPECTATION_NOT_DECLARED",
+      "NA_NO_RECOVERY_PATH_EXERCISED",
+    ];
+    for (const code of codes) {
+      // Each member constructs the discriminated NOT_APPLICABLE variant.
+      const check: EvaluationCheckV2 = { name: "some-check", status: "NOT_APPLICABLE", reasonCode: code };
+      expect(check.status).toBe("NOT_APPLICABLE");
+    }
+  });
+
+  it("compile-time: a NOT_APPLICABLE check with a CheckReasonCode is rejected by the union", () => {
+    // @ts-expect-error — a NOT_APPLICABLE check must carry a NotApplicableCode,
+    // never a CheckReasonCode like RETRIEVAL_TOP1_MISMATCH.
+    const invalid: EvaluationCheckV2 = { name: "retrieval-top1", status: "NOT_APPLICABLE", reasonCode: "RETRIEVAL_TOP1_MISMATCH" };
+    expect(invalid.status).toBe("NOT_APPLICABLE");
+  });
+
+  it("compile-time: a PASS check with a NotApplicableCode is rejected by the union", () => {
+    // @ts-expect-error — a PASS check must carry reasonCode null.
+    const invalid: EvaluationCheckV2 = { name: "approval-gate", status: "PASS", reasonCode: "NA_EXPECTATION_NOT_DECLARED" };
+    expect(invalid.status).toBe("PASS");
   });
 });
 
@@ -98,9 +228,9 @@ describe("toEvaluationCaseResultV1 — wire boundary strips expected/observed", 
 // not — a dataset literal typed as JsonValue can still carry a runtime
 // value (e.g. NaN) that isn't actually JSON-safe, so the same case could
 // score differently in TypeScript than after a real JSON round-trip. This
-// is the fix at buildEvaluationCaseInputV1, the one explicit construction
-// boundary for EvaluationCaseInputV1.
-describe("buildEvaluationCaseInputV1 — normalizes expectedExecuted inputs through the JSON-safe boundary", () => {
+// is the fix at buildEvaluationCaseInputV2, the one explicit construction
+// boundary for EvaluationCaseInputV2.
+describe("buildEvaluationCaseInputV2 — normalizes expectedExecuted inputs through the JSON-safe boundary", () => {
   it("a valid nested expectedExecuted input survives the builder and a JSON round-trip unchanged", () => {
     const input = { a: 1, nested: { b: [1, "x", null, true] } };
     const expectations: EvaluationExpectations = {
@@ -108,7 +238,7 @@ describe("buildEvaluationCaseInputV1 — normalizes expectedExecuted inputs thro
       tool: { expectedExecuted: [{ toolName: "t", input }] },
     };
 
-    const caseInput = buildEvaluationCaseInputV1("case-1", expectations, observedWithExecuted());
+    const caseInput = buildEvaluationCaseInputV2("case-1", expectations, observedWithExecuted());
 
     expect(caseInput.expectations.tool?.expectedExecuted).toEqual([{ toolName: "t", input }]);
     const roundTripped: unknown = JSON.parse(JSON.stringify(caseInput));
@@ -123,7 +253,7 @@ describe("buildEvaluationCaseInputV1 — normalizes expectedExecuted inputs thro
       tool: { expectedExecuted: [{ toolName: "t", input: { value: Number.NaN } }] },
     };
 
-    expect(() => buildEvaluationCaseInputV1("case-1", expectations, observedWithExecuted())).toThrow(
+    expect(() => buildEvaluationCaseInputV2("case-1", expectations, observedWithExecuted())).toThrow(
       NonJsonSafeValueError,
     );
   });
@@ -134,7 +264,7 @@ describe("buildEvaluationCaseInputV1 — normalizes expectedExecuted inputs thro
       tool: { expectedExecuted: [{ toolName: "t", input: { value: Number.POSITIVE_INFINITY } }] },
     };
 
-    expect(() => buildEvaluationCaseInputV1("case-1", expectations, observedWithExecuted())).toThrow(
+    expect(() => buildEvaluationCaseInputV2("case-1", expectations, observedWithExecuted())).toThrow(
       NonJsonSafeValueError,
     );
   });
@@ -144,7 +274,7 @@ describe("buildEvaluationCaseInputV1 — normalizes expectedExecuted inputs thro
       runStatus: "completed",
       tool: { expectedExecuted: [{ toolName: "t", input: { count: 1n } }] },
     } as unknown as EvaluationExpectations;
-    expect(() => buildEvaluationCaseInputV1("case-1", bigintExpectations, observedWithExecuted())).toThrow(
+    expect(() => buildEvaluationCaseInputV2("case-1", bigintExpectations, observedWithExecuted())).toThrow(
       NonJsonSafeValueError,
     );
 
@@ -152,7 +282,7 @@ describe("buildEvaluationCaseInputV1 — normalizes expectedExecuted inputs thro
       runStatus: "completed",
       tool: { expectedExecuted: [{ toolName: "t", input: { a: undefined } }] },
     } as unknown as EvaluationExpectations;
-    expect(() => buildEvaluationCaseInputV1("case-1", undefinedExpectations, observedWithExecuted())).toThrow(
+    expect(() => buildEvaluationCaseInputV2("case-1", undefinedExpectations, observedWithExecuted())).toThrow(
       NonJsonSafeValueError,
     );
   });
@@ -168,13 +298,13 @@ describe("buildEvaluationCaseInputV1 — normalizes expectedExecuted inputs thro
     // produced from that same hole ([null]). Before this fix, the sparse
     // expected array would survive normalization unchanged and only
     // diverge from the observed value's dense [null] once one side (but not
-    // the other) had been through a real JSON boundary. buildEvaluationCaseInputV1
+    // the other) had been through a real JSON boundary. buildEvaluationCaseInputV2
     // now throws before that expected input can ever reach evaluateCase, so
     // the sparse value never reaches local scoring at all — there is no
     // "local verdict" to diverge from a "serialized verdict" because the
     // sparse input is rejected outright, deterministically, at construction.
     expect(() =>
-      buildEvaluationCaseInputV1(
+      buildEvaluationCaseInputV2(
         "case-1",
         sparseExpectations,
         observedWithExecuted([{ toolName: "t", input: { items: [null] } }]),
@@ -189,7 +319,7 @@ describe("buildEvaluationCaseInputV1 — normalizes expectedExecuted inputs thro
       tool: { expectedExecuted },
     };
 
-    buildEvaluationCaseInputV1("case-1", expectations, observedWithExecuted());
+    buildEvaluationCaseInputV2("case-1", expectations, observedWithExecuted());
 
     expect(expectations.tool?.expectedExecuted).toBe(expectedExecuted);
   });
@@ -202,10 +332,10 @@ describe("buildEvaluationCaseInputV1 — normalizes expectedExecuted inputs thro
     };
     const observed = observedWithExecuted([{ toolName: "t", input }]);
 
-    const caseInput = buildEvaluationCaseInputV1("case-1", expectations, observed);
+    const caseInput = buildEvaluationCaseInputV2("case-1", expectations, observed);
     const result = evaluateCase(caseInput);
 
-    expect(result.checks.find((check) => check.name === "tool-executed")?.passed).toBe(true);
+    expect(result.checks.find((check) => check.name === "tool-executed")?.status).toBe("PASS");
   });
 
   it("LocalEvaluationScorer produces an identical result before and after a JSON round-trip for a case with expectedExecuted", () => {
@@ -216,9 +346,9 @@ describe("buildEvaluationCaseInputV1 — normalizes expectedExecuted inputs thro
     };
     const observed = observedWithExecuted([{ toolName: "t", input }]);
 
-    const caseInput = buildEvaluationCaseInputV1("case-1", expectations, observed);
-    const suiteInput = buildEvaluationSuiteInputV1("test-dataset", [caseInput]);
-    const roundTripped: EvaluationSuiteInputV1 = JSON.parse(JSON.stringify(suiteInput));
+    const caseInput = buildEvaluationCaseInputV2("case-1", expectations, observed);
+    const suiteInput = buildEvaluationSuiteInputV2("test-dataset", [caseInput]);
+    const roundTripped: EvaluationSuiteInputV2 = JSON.parse(JSON.stringify(suiteInput));
 
     expect(new LocalEvaluationScorer().score(suiteInput)).toEqual(
       new LocalEvaluationScorer().score(roundTripped),

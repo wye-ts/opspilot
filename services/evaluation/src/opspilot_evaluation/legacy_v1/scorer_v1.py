@@ -1,103 +1,85 @@
-"""Deterministic scorer with semantic parity to the TypeScript v2 scorer.
-
-Ports apps/worker/src/evaluation/evaluation-evaluator.ts function-for-
-function: same check names, same check order per case (status, retrieval,
-tool, report, failure), same pass/fail logic, same reason-code selection.
-At Checkpoint A the active scorer emits PASS/FAIL only; NOT_APPLICABLE is
-structurally supported by CheckOutcome but never emitted yet (OpsPilot #59
-Checkpoint A §3). A case passes iff no check has status FAIL.
-
-Unlike the TS scorer, there is no TS-internal EvaluationCheckResult carrying
-expected/observed echoes: the wire contract (EvaluationCheckV2) never exposes
-them (see the task spec, "Do not expose per-check internal expected/observed
-echoes"), so the internal CheckOutcome shape below only ever carries what the
-wire needs.
+"""FROZEN v1 oracle artifact (OpsPilot #59 Checkpoint A §5/§6): the historical
+v1 evaluator, preserved so the offline v1 regression oracle can re-score the
+frozen ts-parity-v1.json fixture forever. A byte-for-byte port of the
+pre-#59 scoring/scorer.py. Unwired from the active runtime — the active
+scorer is the v2 status-based model in scoring/scorer.py; this module must
+never change. Its scoring semantics are the historical ones: a check either
+passed or failed, and a case passed iff every emitted check passed.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from opspilot_evaluation.schemas import (
-    CheckStatus,
-    EvaluationCaseInputV2,
+from opspilot_evaluation.legacy_v1.reason_codes_v1 import CheckReasonCode
+from opspilot_evaluation.legacy_v1.schemas_v1 import (
+    EvaluationCaseInputV1,
     EvaluationExpectations,
     JsonValue,
-    ObservedFactsCompleted,
-    ObservedFactsFailed,
+    ObservedFactsCompletedV1,
+    ObservedFactsFailedV1,
     ReportExpectations,
     RetrievalExpectations,
     RetrievalFacts,
     ToolExpectations,
-    ToolFacts,
+    ToolFactsV1,
 )
-from opspilot_evaluation.scoring.not_applicable_codes import NotApplicableCode
-from opspilot_evaluation.scoring.reason_codes import CheckReasonCode
 
-ObservedFactsUnion = ObservedFactsCompleted | ObservedFactsFailed
+ObservedFactsUnionV1 = ObservedFactsCompletedV1 | ObservedFactsFailedV1
 
 
 @dataclass(frozen=True)
-class CheckOutcome:
+class CheckOutcomeV1:
     name: str
-    status: CheckStatus
-    reason_code: CheckReasonCode | NotApplicableCode | None = None
+    passed: bool
+    reason_code: CheckReasonCode | None = None
 
     def __post_init__(self) -> None:
-        # Mirrors the EvaluationCheckV2 discriminated-union invariant in
-        # v2-types.ts: a PASS check carries reasonCode null, a FAIL check
-        # carries a CheckReasonCode, and a NOT_APPLICABLE check carries a
-        # NotApplicableCode.
-        if self.status is CheckStatus.PASS:
-            if self.reason_code is not None:
-                raise ValueError(f'Invariant violated: passing check "{self.name}" carries a reasonCode')
-        elif self.status is CheckStatus.FAIL:
-            if not isinstance(self.reason_code, CheckReasonCode):
-                raise ValueError(f'Invariant violated: failing check "{self.name}" has no valid CheckReasonCode')
-        elif self.status is CheckStatus.NOT_APPLICABLE:
-            if not isinstance(self.reason_code, NotApplicableCode):
-                raise ValueError(
-                    f'Invariant violated: not-applicable check "{self.name}" has no valid NotApplicableCode'
-                )
+        # Mirrors the EvaluationCheckV1 discriminated-union invariant: reasonCode
+        # is present iff passed is False.
+        if self.passed and self.reason_code is not None:
+            raise ValueError(f'Invariant violated: passing check "{self.name}" carries a reasonCode')
+        if not self.passed and self.reason_code is None:
+            raise ValueError(f'Invariant violated: failing check "{self.name}" has no reasonCode')
 
 
 @dataclass(frozen=True)
-class CaseScoreResult:
+class CaseScoreResultV1:
     case_id: str
     passed: bool
-    checks: list[CheckOutcome] = field(default_factory=list)
+    checks: list[CheckOutcomeV1] = field(default_factory=list)
 
 
-def _pass(name: str) -> CheckOutcome:
-    return CheckOutcome(name=name, status=CheckStatus.PASS)
+def _pass(name: str) -> CheckOutcomeV1:
+    return CheckOutcomeV1(name=name, passed=True)
 
 
-def _fail(name: str, reason_code: CheckReasonCode) -> CheckOutcome:
-    return CheckOutcome(name=name, status=CheckStatus.FAIL, reason_code=reason_code)
+def _fail(name: str, reason_code: CheckReasonCode) -> CheckOutcomeV1:
+    return CheckOutcomeV1(name=name, passed=False, reason_code=reason_code)
 
 
-def _check(name: str, passed: bool, fail_reason: CheckReasonCode) -> CheckOutcome:
+def _check(name: str, passed: bool, fail_reason: CheckReasonCode) -> CheckOutcomeV1:
     return _pass(name) if passed else _fail(name, fail_reason)
 
 
-def evaluate_status(
+def evaluate_status_v1(
     expectations: EvaluationExpectations,
-    observed: ObservedFactsUnion,
-) -> list[CheckOutcome]:
+    observed: ObservedFactsUnionV1,
+) -> list[CheckOutcomeV1]:
     expected = expectations.runStatus.value
     if observed.runStatus.value == expected:
         return [_pass("status")]
     return [_fail("status", CheckReasonCode.STATUS_MISMATCH)]
 
 
-def evaluate_retrieval(
+def evaluate_retrieval_v1(
     expectations: RetrievalExpectations | None,
     observed: RetrievalFacts,
-) -> list[CheckOutcome]:
+) -> list[CheckOutcomeV1]:
     if expectations is None:
         return []
 
-    checks: list[CheckOutcome] = []
+    checks: list[CheckOutcomeV1] = []
     retrieval_completed = observed.completed
     retrieved_chunk_ids = observed.chunkIds
 
@@ -155,14 +137,14 @@ def json_values_equal(a: JsonValue, b: JsonValue) -> bool:
     return type(a) is type(b) and a == b
 
 
-def evaluate_tool(
+def evaluate_tool_v1(
     expectations: ToolExpectations | None,
-    observed: ToolFacts,
-) -> list[CheckOutcome]:
+    observed: ToolFactsV1,
+) -> list[CheckOutcomeV1]:
     if expectations is None:
         return []
 
-    checks: list[CheckOutcome] = []
+    checks: list[CheckOutcomeV1] = []
 
     if expectations.expectedRequested is not None:
         missing_requested = [
@@ -216,14 +198,14 @@ def evaluate_tool(
     return checks
 
 
-def evaluate_report(
+def evaluate_report_v1(
     expectations: ReportExpectations | None,
-    observed: ObservedFactsUnion,
-) -> list[CheckOutcome]:
+    observed: ObservedFactsUnionV1,
+) -> list[CheckOutcomeV1]:
     if expectations is None:
         return []
 
-    checks: list[CheckOutcome] = []
+    checks: list[CheckOutcomeV1] = []
     observed_status = observed.runStatus.value
     observed_error_code = observed.errorCode.value if observed.errorCode is not None else None
     report = observed.report
@@ -281,10 +263,10 @@ def evaluate_report(
     return checks
 
 
-def evaluate_failure(
+def evaluate_failure_v1(
     expectations: EvaluationExpectations,
-    observed: ObservedFactsUnion,
-) -> list[CheckOutcome]:
+    observed: ObservedFactsUnionV1,
+) -> list[CheckOutcomeV1]:
     failure = expectations.failure
     if failure is None:
         return []
@@ -299,25 +281,24 @@ def evaluate_failure(
     return [_fail("failure-code", CheckReasonCode.FAILURE_CODE_MISMATCH)]
 
 
-def evaluate_case(case_input: EvaluationCaseInputV2) -> CaseScoreResult:
+def evaluate_case_v1(case_input: EvaluationCaseInputV1) -> CaseScoreResultV1:
     expectations = case_input.expectations
     observed = case_input.observed
 
-    checks: list[CheckOutcome] = [
-        *evaluate_status(expectations, observed),
-        *evaluate_retrieval(expectations.retrieval, observed.retrieval),
-        *evaluate_tool(expectations.tool, observed.tools),
-        *evaluate_report(expectations.report, observed),
-        *evaluate_failure(expectations, observed),
+    checks: list[CheckOutcomeV1] = [
+        *evaluate_status_v1(expectations, observed),
+        *evaluate_retrieval_v1(expectations.retrieval, observed.retrieval),
+        *evaluate_tool_v1(expectations.tool, observed.tools),
+        *evaluate_report_v1(expectations.report, observed),
+        *evaluate_failure_v1(expectations, observed),
     ]
 
-    return CaseScoreResult(
+    return CaseScoreResultV1(
         case_id=case_input.caseId,
-        # A case passes iff no check has status FAIL (OpsPilot #59 Checkpoint A §3).
-        passed=all(check.status != CheckStatus.FAIL for check in checks),
+        passed=all(check.passed for check in checks),
         checks=checks,
     )
 
 
-def score_cases(cases: list[EvaluationCaseInputV2]) -> list[CaseScoreResult]:
-    return [evaluate_case(case) for case in cases]
+def score_cases_v1(cases: list[EvaluationCaseInputV1]) -> list[CaseScoreResultV1]:
+    return [evaluate_case_v1(case) for case in cases]

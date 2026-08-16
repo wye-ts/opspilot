@@ -40,7 +40,7 @@ class EvaluationRun(Base):
     id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     contract_version: Mapped[int] = mapped_column(Integer, nullable=False)
     # Unbounded text, not varchar(255) — the approved plan places no length
-    # cap on datasetId at the API boundary (schemas.py's EvaluationSuiteInputV1
+    # cap on datasetId at the API boundary (schemas.py's EvaluationSuiteInputV2
     # only requires min_length=1), so persistence must not silently impose one.
     dataset_id: Mapped[str] = mapped_column(Text, nullable=False)
     # No async execution/lifecycle in Phase 2 (scoring happens synchronously
@@ -91,9 +91,17 @@ class EvaluationCheck(Base):
     __tablename__ = "evaluation_checks"
     __table_args__ = (
         UniqueConstraint("case_result_id", "check_index", name="uq_checks_case_result_index"),
+        # The v2 three-state status domain (OpsPilot #59 Checkpoint A §3).
         CheckConstraint(
-            "(passed IS TRUE AND reason_code IS NULL) OR (passed IS FALSE AND reason_code IS NOT NULL)",
-            name="ck_checks_passed_reason_code",
+            "status IN ('PASS', 'FAIL', 'NOT_APPLICABLE')",
+            name="ck_checks_status_domain",
+        ),
+        # The status/reason invariant mirroring EvaluationCheckV2: a PASS
+        # check carries no reason_code; a FAIL/NOT_APPLICABLE check must.
+        CheckConstraint(
+            "(status = 'PASS' AND reason_code IS NULL)"
+            " OR (status IN ('FAIL', 'NOT_APPLICABLE') AND reason_code IS NOT NULL)",
+            name="ck_checks_status_reason_code",
         ),
     )
 
@@ -103,7 +111,10 @@ class EvaluationCheck(Base):
     )
     check_index: Mapped[int] = mapped_column(Integer, nullable=False)
     name: Mapped[str] = mapped_column(String(64), nullable=False)
-    passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    # Single source of truth for the check outcome: "PASS" | "FAIL" |
+    # "NOT_APPLICABLE". The old boolean `passed` column was dropped in the
+    # three-state migration (alembic version ... #59 Checkpoint A §7).
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
     reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     case_result: Mapped[EvaluationCaseResult] = relationship(back_populates="checks")

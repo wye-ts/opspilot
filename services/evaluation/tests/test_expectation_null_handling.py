@@ -44,6 +44,19 @@ def _full_expectations() -> dict:
     }
 
 
+def _investigation() -> dict:
+    return {
+        "providerTurnsUsed": 0,
+        "diagnosticRequestCount": 0,
+        "forcedFinalization": False,
+        "stopReason": None,
+        "assessments": [],
+        "toolFailures": [],
+        "bounds": {"maxProviderTurns": 4, "maxDiagnosticToolCalls": 3},
+        "usage": {"inputTokens": 0, "outputTokens": 0, "providerCalls": 0},
+    }
+
+
 def _valid_observed_completed() -> dict:
     return {
         "runStatus": "completed",
@@ -52,18 +65,28 @@ def _valid_observed_completed() -> dict:
         "tools": {
             "requested": [{"toolName": "get_service_status", "toolCallId": "call-1"}],
             "executed": [{"toolName": "get_service_status", "input": {"x": 1}}],
-            "completed": [{"toolName": "get_service_status", "toolCallId": "call-1"}],
+            # v2 observed completed entries carry a JSON-safe output; these
+            # tests never compare outputs, so null is a valid placeholder.
+            "completed": [{"toolName": "get_service_status", "toolCallId": "call-1", "output": None}],
         },
         "report": {
             "evidence": [{"evidenceId": "ev-1", "sourceType": "RAG_CHUNK"}],
             "suggestedActionTypes": ["CREATE_ESCALATION"],
+            "category": "UNKNOWN",
+            "rootCausePresent": False,
+            "confidence": 0.0,
+            "evidenceState": "INSUFFICIENT",
+            "recommendationDisposition": "ADVISORY",
+            "suggestedActions": [],
         },
+        "investigation": _investigation(),
+        "failedStage": None,
     }
 
 
 def _suite(expectations: dict, observed: dict, dataset_id: str = "null-handling") -> dict:
     return {
-        "contractVersion": 1,
+        "contractVersion": 2,
         "datasetId": dataset_id,
         "cases": [{"caseId": "case-1", "expectations": expectations, "observed": observed}],
     }
@@ -148,7 +171,7 @@ async def test_contradictory_completed_failed_shapes_still_rejected(client: Asyn
 
 def _strip_checks_ids(body: dict) -> list:
     return [
-        [(c["name"], c["passed"], c["reasonCode"]) for c in case["checks"]] for case in body["cases"]
+        [(c["name"], c["status"], c["reasonCode"]) for c in case["checks"]] for case in body["cases"]
     ]
 
 
@@ -178,6 +201,8 @@ async def test_failed_omitted_report_equivalent_to_explicit_null(client: AsyncCl
         "retrieval": {"completed": False, "chunkIds": []},
         "tools": {"requested": [], "executed": [], "completed": []},
         "report": None,
+        "investigation": _investigation(),
+        "failedStage": "DIAGNOSTIC_EXECUTION",
     }
     observed_omitted = copy.deepcopy(observed_with_null)
     del observed_omitted["report"]

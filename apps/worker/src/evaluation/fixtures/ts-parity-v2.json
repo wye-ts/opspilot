@@ -1,0 +1,2052 @@
+{
+  "contractVersion": 2,
+  "datasetId": "opspilot-deterministic-v2",
+  "cases": [
+    {
+      "caseId": "notification-service-degradation",
+      "expectations": {
+        "runStatus": "completed",
+        "retrieval": {
+          "expectedTop1": "runbook-notification-degradation-001"
+        },
+        "tool": {
+          "expectedRequested": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case1-call-1"
+            }
+          ],
+          "expectedExecuted": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "notification-service"
+              }
+            }
+          ],
+          "expectedCompleted": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case1-call-1"
+            }
+          ]
+        },
+        "report": {
+          "schemaExpectation": "VALID",
+          "groundingExpectation": "VALID",
+          "requiredEvidenceTypes": [
+            "TOOL_EXECUTION",
+            "RAG_CHUNK"
+          ],
+          "requiredActionTypes": [
+            "UPDATE_TICKET_STATUS"
+          ]
+        }
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": {
+          "completed": true,
+          "chunkIds": [
+            "runbook-notification-degradation-001",
+            "runbook-notification-queue-backlog-001",
+            "runbook-billing-invoice-formatting-001"
+          ]
+        },
+        "tools": {
+          "requested": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case1-call-1"
+            }
+          ],
+          "executed": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "notification-service"
+              }
+            }
+          ],
+          "completed": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case1-call-1",
+              "output": {
+                "serviceSlug": "notification-service",
+                "status": "DEGRADED"
+              }
+            }
+          ]
+        },
+        "report": {
+          "evidence": [
+            {
+              "evidenceId": "case1-call-1",
+              "sourceType": "TOOL_EXECUTION"
+            },
+            {
+              "evidenceId": "runbook-notification-degradation-001",
+              "sourceType": "RAG_CHUNK"
+            }
+          ],
+          "suggestedActionTypes": [
+            "UPDATE_TICKET_STATUS"
+          ],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": true,
+          "confidence": 0.85,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ACTIONABLE",
+          "suggestedActions": [
+            {
+              "type": "UPDATE_TICKET_STATUS",
+              "groundedBy": [
+                {
+                  "sourceType": "TOOL_EXECUTION",
+                  "evidenceId": "case1-call-1"
+                }
+              ]
+            }
+          ]
+        },
+        "investigation": {
+          "providerTurnsUsed": 2,
+          "diagnosticRequestCount": 1,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [
+            {
+              "toolCallId": "case1-call-1",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "STATUS_UNRESOLVED",
+                "supportedBy": [
+                  {
+                    "evidenceId": "runbook-notification-degradation-001",
+                    "sourceType": "RAG_CHUNK"
+                  }
+                ]
+              }
+            }
+          ],
+          "toolFailures": [],
+          "bounds": {
+            "maxProviderTurns": 4,
+            "maxDiagnosticToolCalls": 3
+          },
+          "usage": {
+            "inputTokens": 200,
+            "outputTokens": 40,
+            "providerCalls": 2
+          }
+        },
+        "failedStage": null
+      },
+      "expected": {
+        "passed": true,
+        "checks": [
+          {
+            "name": "status",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "retrieval-top1",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-requested",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-executed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-completed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "schema-handling",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-grounding",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-types",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "action-types",
+            "status": "PASS",
+            "reasonCode": null
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "notification-queue-backlog",
+      "expectations": {
+        "runStatus": "completed",
+        "retrieval": {
+          "expectedTop1": "runbook-notification-queue-backlog-001",
+          "expectedInTopK": [
+            "runbook-notification-queue-backlog-001",
+            "runbook-notification-queue-backlog-002"
+          ]
+        },
+        "tool": {
+          "expectedRequested": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case2-call-1"
+            }
+          ],
+          "expectedExecuted": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "notification-service"
+              }
+            }
+          ],
+          "expectedCompleted": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case2-call-1"
+            }
+          ]
+        },
+        "report": {
+          "schemaExpectation": "VALID",
+          "groundingExpectation": "VALID",
+          "requiredEvidenceTypes": [
+            "TOOL_EXECUTION",
+            "RAG_CHUNK"
+          ]
+        }
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": {
+          "completed": true,
+          "chunkIds": [
+            "runbook-notification-queue-backlog-001",
+            "runbook-notification-queue-backlog-002",
+            "runbook-notification-degradation-001"
+          ]
+        },
+        "tools": {
+          "requested": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case2-call-1"
+            }
+          ],
+          "executed": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "notification-service"
+              }
+            }
+          ],
+          "completed": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case2-call-1",
+              "output": {
+                "serviceSlug": "notification-service",
+                "status": "DEGRADED"
+              }
+            }
+          ]
+        },
+        "report": {
+          "evidence": [
+            {
+              "evidenceId": "case2-call-1",
+              "sourceType": "TOOL_EXECUTION"
+            },
+            {
+              "evidenceId": "runbook-notification-queue-backlog-001",
+              "sourceType": "RAG_CHUNK"
+            },
+            {
+              "evidenceId": "runbook-notification-queue-backlog-002",
+              "sourceType": "RAG_CHUNK"
+            }
+          ],
+          "suggestedActionTypes": [
+            "UPDATE_TICKET_STATUS"
+          ],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": true,
+          "confidence": 0.8,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ACTIONABLE",
+          "suggestedActions": [
+            {
+              "type": "UPDATE_TICKET_STATUS",
+              "groundedBy": [
+                {
+                  "sourceType": "TOOL_EXECUTION",
+                  "evidenceId": "case2-call-1"
+                },
+                {
+                  "sourceType": "RAG_CHUNK",
+                  "evidenceId": "runbook-notification-queue-backlog-001"
+                }
+              ]
+            }
+          ]
+        },
+        "investigation": {
+          "providerTurnsUsed": 2,
+          "diagnosticRequestCount": 1,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [
+            {
+              "toolCallId": "case2-call-1",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "STATUS_UNRESOLVED",
+                "supportedBy": [
+                  {
+                    "evidenceId": "runbook-notification-queue-backlog-001",
+                    "sourceType": "RAG_CHUNK"
+                  }
+                ]
+              }
+            }
+          ],
+          "toolFailures": [],
+          "bounds": {
+            "maxProviderTurns": 4,
+            "maxDiagnosticToolCalls": 3
+          },
+          "usage": {
+            "inputTokens": 200,
+            "outputTokens": 40,
+            "providerCalls": 2
+          }
+        },
+        "failedStage": null
+      },
+      "expected": {
+        "passed": true,
+        "checks": [
+          {
+            "name": "status",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "retrieval-top1",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "retrieval-hit3",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-requested",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-executed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-completed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "schema-handling",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-grounding",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-types",
+            "status": "PASS",
+            "reasonCode": null
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "authentication-failure",
+      "expectations": {
+        "runStatus": "completed",
+        "retrieval": {
+          "expectedTop1": "runbook-auth-failures-001",
+          "expectedInTopK": [
+            "runbook-auth-failures-001",
+            "runbook-auth-failures-002"
+          ]
+        },
+        "tool": {
+          "expectedRequested": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case3-call-1"
+            }
+          ],
+          "expectedExecuted": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "auth-service"
+              }
+            }
+          ],
+          "expectedCompleted": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case3-call-1"
+            }
+          ]
+        },
+        "report": {
+          "schemaExpectation": "VALID",
+          "groundingExpectation": "VALID",
+          "requiredEvidenceTypes": [
+            "TOOL_EXECUTION",
+            "RAG_CHUNK"
+          ]
+        }
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": {
+          "completed": true,
+          "chunkIds": [
+            "runbook-auth-failures-001",
+            "runbook-auth-failures-002",
+            "runbook-billing-invoice-formatting-001"
+          ]
+        },
+        "tools": {
+          "requested": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case3-call-1"
+            }
+          ],
+          "executed": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "auth-service"
+              }
+            }
+          ],
+          "completed": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case3-call-1",
+              "output": {
+                "serviceSlug": "auth-service",
+                "status": "OPERATIONAL"
+              }
+            }
+          ]
+        },
+        "report": {
+          "evidence": [
+            {
+              "evidenceId": "case3-call-1",
+              "sourceType": "TOOL_EXECUTION"
+            },
+            {
+              "evidenceId": "runbook-auth-failures-001",
+              "sourceType": "RAG_CHUNK"
+            },
+            {
+              "evidenceId": "runbook-auth-failures-002",
+              "sourceType": "RAG_CHUNK"
+            }
+          ],
+          "suggestedActionTypes": [
+            "CREATE_ESCALATION"
+          ],
+          "category": "AUTHENTICATION",
+          "rootCausePresent": true,
+          "confidence": 0.75,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ACTIONABLE",
+          "suggestedActions": [
+            {
+              "type": "CREATE_ESCALATION",
+              "groundedBy": [
+                {
+                  "sourceType": "RAG_CHUNK",
+                  "evidenceId": "runbook-auth-failures-001"
+                },
+                {
+                  "sourceType": "RAG_CHUNK",
+                  "evidenceId": "runbook-auth-failures-002"
+                }
+              ]
+            }
+          ]
+        },
+        "investigation": {
+          "providerTurnsUsed": 2,
+          "diagnosticRequestCount": 1,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [
+            {
+              "toolCallId": "case3-call-1",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "STATUS_UNRESOLVED",
+                "supportedBy": [
+                  {
+                    "evidenceId": "runbook-auth-failures-001",
+                    "sourceType": "RAG_CHUNK"
+                  }
+                ]
+              }
+            }
+          ],
+          "toolFailures": [],
+          "bounds": {
+            "maxProviderTurns": 4,
+            "maxDiagnosticToolCalls": 3
+          },
+          "usage": {
+            "inputTokens": 200,
+            "outputTokens": 40,
+            "providerCalls": 2
+          }
+        },
+        "failedStage": null
+      },
+      "expected": {
+        "passed": true,
+        "checks": [
+          {
+            "name": "status",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "retrieval-top1",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "retrieval-hit3",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-requested",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-executed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-completed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "schema-handling",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-grounding",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-types",
+            "status": "PASS",
+            "reasonCode": null
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "database-connection-saturation",
+      "expectations": {
+        "runStatus": "completed",
+        "retrieval": {
+          "expectedTop1": "runbook-database-connection-saturation-001"
+        },
+        "tool": {
+          "expectedRequested": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case4-call-1"
+            }
+          ],
+          "expectedExecuted": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "database"
+              }
+            }
+          ],
+          "expectedCompleted": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case4-call-1"
+            }
+          ]
+        },
+        "report": {
+          "schemaExpectation": "VALID",
+          "groundingExpectation": "VALID"
+        }
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": {
+          "completed": true,
+          "chunkIds": [
+            "runbook-database-connection-saturation-001",
+            "runbook-billing-invoice-formatting-001",
+            "runbook-notification-queue-backlog-002"
+          ]
+        },
+        "tools": {
+          "requested": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case4-call-1"
+            }
+          ],
+          "executed": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "database"
+              }
+            }
+          ],
+          "completed": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case4-call-1",
+              "output": {
+                "serviceSlug": "database",
+                "status": "UNKNOWN"
+              }
+            }
+          ]
+        },
+        "report": {
+          "evidence": [
+            {
+              "evidenceId": "case4-call-1",
+              "sourceType": "TOOL_EXECUTION"
+            },
+            {
+              "evidenceId": "runbook-database-connection-saturation-001",
+              "sourceType": "RAG_CHUNK"
+            }
+          ],
+          "suggestedActionTypes": [],
+          "category": "CONFIGURATION",
+          "rootCausePresent": true,
+          "confidence": 0.7,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ADVISORY",
+          "suggestedActions": []
+        },
+        "investigation": {
+          "providerTurnsUsed": 2,
+          "diagnosticRequestCount": 1,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [
+            {
+              "toolCallId": "case4-call-1",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "STATUS_UNRESOLVED",
+                "supportedBy": [
+                  {
+                    "evidenceId": "runbook-database-connection-saturation-001",
+                    "sourceType": "RAG_CHUNK"
+                  }
+                ]
+              }
+            }
+          ],
+          "toolFailures": [],
+          "bounds": {
+            "maxProviderTurns": 4,
+            "maxDiagnosticToolCalls": 3
+          },
+          "usage": {
+            "inputTokens": 200,
+            "outputTokens": 40,
+            "providerCalls": 2
+          }
+        },
+        "failedStage": null
+      },
+      "expected": {
+        "passed": true,
+        "checks": [
+          {
+            "name": "status",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "retrieval-top1",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-requested",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-executed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-completed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "schema-handling",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-grounding",
+            "status": "PASS",
+            "reasonCode": null
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "billing-invoice-formatting",
+      "expectations": {
+        "runStatus": "completed",
+        "retrieval": {
+          "expectedTop1": "runbook-billing-invoice-formatting-001",
+          "forbiddenChunkIds": [
+            "runbook-auth-failures-001"
+          ]
+        },
+        "tool": {
+          "expectedRequested": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case5-call-1"
+            }
+          ],
+          "expectedExecuted": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "billing-service"
+              }
+            }
+          ],
+          "expectedCompleted": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case5-call-1"
+            }
+          ]
+        },
+        "report": {
+          "schemaExpectation": "VALID",
+          "groundingExpectation": "VALID"
+        }
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": {
+          "completed": true,
+          "chunkIds": [
+            "runbook-billing-invoice-formatting-001"
+          ]
+        },
+        "tools": {
+          "requested": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case5-call-1"
+            }
+          ],
+          "executed": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "billing-service"
+              }
+            }
+          ],
+          "completed": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case5-call-1",
+              "output": {
+                "serviceSlug": "billing-service",
+                "status": "OUTAGE"
+              }
+            }
+          ]
+        },
+        "report": {
+          "evidence": [
+            {
+              "evidenceId": "case5-call-1",
+              "sourceType": "TOOL_EXECUTION"
+            },
+            {
+              "evidenceId": "runbook-billing-invoice-formatting-001",
+              "sourceType": "RAG_CHUNK"
+            }
+          ],
+          "suggestedActionTypes": [
+            "DRAFT_CUSTOMER_REPLY"
+          ],
+          "category": "DATA_QUALITY",
+          "rootCausePresent": true,
+          "confidence": 0.8,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ACTIONABLE",
+          "suggestedActions": [
+            {
+              "type": "DRAFT_CUSTOMER_REPLY",
+              "groundedBy": [
+                {
+                  "sourceType": "RAG_CHUNK",
+                  "evidenceId": "runbook-billing-invoice-formatting-001"
+                }
+              ]
+            }
+          ]
+        },
+        "investigation": {
+          "providerTurnsUsed": 2,
+          "diagnosticRequestCount": 1,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [
+            {
+              "toolCallId": "case5-call-1",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "STATUS_UNRESOLVED",
+                "supportedBy": [
+                  {
+                    "evidenceId": "runbook-billing-invoice-formatting-001",
+                    "sourceType": "RAG_CHUNK"
+                  }
+                ]
+              }
+            }
+          ],
+          "toolFailures": [],
+          "bounds": {
+            "maxProviderTurns": 4,
+            "maxDiagnosticToolCalls": 3
+          },
+          "usage": {
+            "inputTokens": 200,
+            "outputTokens": 40,
+            "providerCalls": 2
+          }
+        },
+        "failedStage": null
+      },
+      "expected": {
+        "passed": true,
+        "checks": [
+          {
+            "name": "status",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "retrieval-top1",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "retrieval-forbidden",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-requested",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-executed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-completed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "schema-handling",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-grounding",
+            "status": "PASS",
+            "reasonCode": null
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "irrelevant-no-match-query",
+      "expectations": {
+        "runStatus": "completed",
+        "retrieval": {
+          "expectedNoResults": true
+        },
+        "tool": {
+          "expectedRequested": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case6-call-1"
+            }
+          ],
+          "expectedExecuted": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "unclassified-service"
+              }
+            }
+          ],
+          "expectedCompleted": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case6-call-1"
+            }
+          ]
+        },
+        "report": {
+          "schemaExpectation": "VALID",
+          "groundingExpectation": "VALID",
+          "requiredEvidenceTypes": [
+            "TOOL_EXECUTION"
+          ]
+        }
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": {
+          "completed": true,
+          "chunkIds": []
+        },
+        "tools": {
+          "requested": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case6-call-1"
+            }
+          ],
+          "executed": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "unclassified-service"
+              }
+            }
+          ],
+          "completed": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case6-call-1",
+              "output": {
+                "serviceSlug": "unclassified-service",
+                "status": "UNKNOWN"
+              }
+            }
+          ]
+        },
+        "report": {
+          "evidence": [
+            {
+              "evidenceId": "case6-call-1",
+              "sourceType": "TOOL_EXECUTION"
+            }
+          ],
+          "suggestedActionTypes": [],
+          "category": "UNKNOWN",
+          "rootCausePresent": false,
+          "confidence": 0.2,
+          "evidenceState": "INSUFFICIENT",
+          "recommendationDisposition": "ADVISORY",
+          "suggestedActions": []
+        },
+        "investigation": {
+          "providerTurnsUsed": 2,
+          "diagnosticRequestCount": 1,
+          "forcedFinalization": false,
+          "stopReason": "NO_JUSTIFIED_DIAGNOSTIC",
+          "assessments": [
+            {
+              "toolCallId": "case6-call-1",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "NO_EVIDENCE_YET",
+                "supportedBy": []
+              }
+            }
+          ],
+          "toolFailures": [],
+          "bounds": {
+            "maxProviderTurns": 4,
+            "maxDiagnosticToolCalls": 3
+          },
+          "usage": {
+            "inputTokens": 200,
+            "outputTokens": 40,
+            "providerCalls": 2
+          }
+        },
+        "failedStage": null
+      },
+      "expected": {
+        "passed": true,
+        "checks": [
+          {
+            "name": "status",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "retrieval-no-results",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-requested",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-executed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-completed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "schema-handling",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-grounding",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-types",
+            "status": "PASS",
+            "reasonCode": null
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "fabricated-rag-evidence",
+      "expectations": {
+        "runStatus": "failed",
+        "report": {
+          "schemaExpectation": "VALID",
+          "groundingExpectation": "INVALID"
+        },
+        "failure": {
+          "expectedCode": "REPORT_EVIDENCE_INVALID"
+        }
+      },
+      "observed": {
+        "runStatus": "failed",
+        "errorCode": "REPORT_EVIDENCE_INVALID",
+        "retrieval": {
+          "completed": true,
+          "chunkIds": [
+            "runbook-notification-degradation-001",
+            "runbook-notification-queue-backlog-001",
+            "runbook-billing-invoice-formatting-001"
+          ]
+        },
+        "tools": {
+          "requested": [],
+          "executed": [],
+          "completed": []
+        },
+        "report": null,
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 0,
+          "forcedFinalization": false,
+          "stopReason": null,
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": {
+            "maxProviderTurns": 4,
+            "maxDiagnosticToolCalls": 3
+          },
+          "usage": {
+            "inputTokens": 100,
+            "outputTokens": 20,
+            "providerCalls": 1
+          }
+        },
+        "failedStage": "REPORT_GENERATION"
+      },
+      "expected": {
+        "passed": true,
+        "checks": [
+          {
+            "name": "status",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "schema-handling",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-grounding",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "failure-code",
+            "status": "PASS",
+            "reasonCode": null
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "fabricated-tool-evidence",
+      "expectations": {
+        "runStatus": "failed",
+        "report": {
+          "schemaExpectation": "VALID",
+          "groundingExpectation": "INVALID"
+        },
+        "failure": {
+          "expectedCode": "REPORT_EVIDENCE_INVALID"
+        }
+      },
+      "observed": {
+        "runStatus": "failed",
+        "errorCode": "REPORT_EVIDENCE_INVALID",
+        "retrieval": {
+          "completed": true,
+          "chunkIds": [
+            "runbook-notification-degradation-001",
+            "runbook-notification-queue-backlog-001",
+            "runbook-billing-invoice-formatting-001"
+          ]
+        },
+        "tools": {
+          "requested": [],
+          "executed": [],
+          "completed": []
+        },
+        "report": null,
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 0,
+          "forcedFinalization": false,
+          "stopReason": null,
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": {
+            "maxProviderTurns": 4,
+            "maxDiagnosticToolCalls": 3
+          },
+          "usage": {
+            "inputTokens": 100,
+            "outputTokens": 20,
+            "providerCalls": 1
+          }
+        },
+        "failedStage": "REPORT_GENERATION"
+      },
+      "expected": {
+        "passed": true,
+        "checks": [
+          {
+            "name": "status",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "schema-handling",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-grounding",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "failure-code",
+            "status": "PASS",
+            "reasonCode": null
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "unknown-tool-request",
+      "expectations": {
+        "runStatus": "failed",
+        "tool": {
+          "forbiddenExecutedToolNames": [
+            "search_logs"
+          ]
+        },
+        "failure": {
+          "expectedCode": "TOOL_NOT_FOUND"
+        }
+      },
+      "observed": {
+        "runStatus": "failed",
+        "errorCode": "TOOL_NOT_FOUND",
+        "retrieval": {
+          "completed": true,
+          "chunkIds": [
+            "runbook-notification-degradation-001",
+            "runbook-notification-queue-backlog-001",
+            "runbook-billing-invoice-formatting-001"
+          ]
+        },
+        "tools": {
+          "requested": [],
+          "executed": [],
+          "completed": []
+        },
+        "report": null,
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 1,
+          "forcedFinalization": false,
+          "stopReason": null,
+          "assessments": [
+            {
+              "toolCallId": "case9-call-1",
+              "toolName": "search_logs",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "STATUS_UNRESOLVED",
+                "supportedBy": [
+                  {
+                    "evidenceId": "runbook-notification-degradation-001",
+                    "sourceType": "RAG_CHUNK"
+                  }
+                ]
+              }
+            }
+          ],
+          "toolFailures": [
+            {
+              "toolCallId": "case9-call-1",
+              "toolName": "search_logs",
+              "failureCode": "TOOL_NOT_FOUND"
+            }
+          ],
+          "bounds": {
+            "maxProviderTurns": 4,
+            "maxDiagnosticToolCalls": 3
+          },
+          "usage": {
+            "inputTokens": 100,
+            "outputTokens": 20,
+            "providerCalls": 1
+          }
+        },
+        "failedStage": "DIAGNOSTIC_EXECUTION"
+      },
+      "expected": {
+        "passed": true,
+        "checks": [
+          {
+            "name": "status",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-forbidden-executed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "failure-code",
+            "status": "PASS",
+            "reasonCode": null
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "invalid-tool-input",
+      "expectations": {
+        "runStatus": "failed",
+        "tool": {
+          "forbiddenExecutedToolNames": [
+            "get_service_status"
+          ]
+        },
+        "failure": {
+          "expectedCode": "TOOL_INPUT_INVALID"
+        }
+      },
+      "observed": {
+        "runStatus": "failed",
+        "errorCode": "TOOL_INPUT_INVALID",
+        "retrieval": {
+          "completed": true,
+          "chunkIds": [
+            "runbook-notification-degradation-001",
+            "runbook-notification-queue-backlog-001",
+            "runbook-billing-invoice-formatting-001"
+          ]
+        },
+        "tools": {
+          "requested": [],
+          "executed": [],
+          "completed": []
+        },
+        "report": null,
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 1,
+          "forcedFinalization": false,
+          "stopReason": null,
+          "assessments": [
+            {
+              "toolCallId": "case10-call-1",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "STATUS_UNRESOLVED",
+                "supportedBy": [
+                  {
+                    "evidenceId": "runbook-notification-degradation-001",
+                    "sourceType": "RAG_CHUNK"
+                  }
+                ]
+              }
+            }
+          ],
+          "toolFailures": [
+            {
+              "toolCallId": "case10-call-1",
+              "toolName": "get_service_status",
+              "failureCode": "TOOL_INPUT_INVALID"
+            }
+          ],
+          "bounds": {
+            "maxProviderTurns": 4,
+            "maxDiagnosticToolCalls": 3
+          },
+          "usage": {
+            "inputTokens": 100,
+            "outputTokens": 20,
+            "providerCalls": 1
+          }
+        },
+        "failedStage": "DIAGNOSTIC_EXECUTION"
+      },
+      "expected": {
+        "passed": true,
+        "checks": [
+          {
+            "name": "status",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-forbidden-executed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "failure-code",
+            "status": "PASS",
+            "reasonCode": null
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "provider-protocol-error",
+      "expectations": {
+        "runStatus": "failed",
+        "tool": {
+          "forbiddenExecutedToolNames": [
+            "get_service_status"
+          ]
+        },
+        "failure": {
+          "expectedCode": "PROVIDER_PROTOCOL_INVALID"
+        }
+      },
+      "observed": {
+        "runStatus": "failed",
+        "errorCode": "PROVIDER_PROTOCOL_INVALID",
+        "retrieval": {
+          "completed": true,
+          "chunkIds": [
+            "runbook-notification-degradation-001",
+            "runbook-notification-queue-backlog-001",
+            "runbook-billing-invoice-formatting-001"
+          ]
+        },
+        "tools": {
+          "requested": [],
+          "executed": [],
+          "completed": []
+        },
+        "report": null,
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 0,
+          "forcedFinalization": false,
+          "stopReason": null,
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": {
+            "maxProviderTurns": 4,
+            "maxDiagnosticToolCalls": 3
+          },
+          "usage": {
+            "inputTokens": 100,
+            "outputTokens": 20,
+            "providerCalls": 1
+          }
+        },
+        "failedStage": "AGENT_ANALYSIS"
+      },
+      "expected": {
+        "passed": true,
+        "checks": [
+          {
+            "name": "status",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-forbidden-executed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "failure-code",
+            "status": "PASS",
+            "reasonCode": null
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "missing-final-report",
+      "expectations": {
+        "runStatus": "failed",
+        "tool": {
+          "expectedRequested": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case12-call-1"
+            },
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case12-call-2"
+            },
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case12-call-3"
+            }
+          ],
+          "expectedExecuted": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "notification-service"
+              }
+            },
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "notification-service"
+              }
+            },
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "notification-service"
+              }
+            }
+          ],
+          "expectedCompleted": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case12-call-1"
+            },
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case12-call-2"
+            },
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case12-call-3"
+            }
+          ],
+          "forbiddenCompletedToolCallIds": [
+            "case12-call-4"
+          ]
+        },
+        "failure": {
+          "expectedCode": "PROVIDER_PROTOCOL_INVALID"
+        }
+      },
+      "observed": {
+        "runStatus": "failed",
+        "errorCode": "PROVIDER_PROTOCOL_INVALID",
+        "retrieval": {
+          "completed": true,
+          "chunkIds": [
+            "runbook-notification-degradation-001",
+            "runbook-notification-queue-backlog-001",
+            "runbook-billing-invoice-formatting-001"
+          ]
+        },
+        "tools": {
+          "requested": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case12-call-1"
+            },
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case12-call-2"
+            },
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case12-call-3"
+            }
+          ],
+          "executed": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "notification-service"
+              }
+            },
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "notification-service"
+              }
+            },
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "notification-service"
+              }
+            }
+          ],
+          "completed": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case12-call-1",
+              "output": {
+                "serviceSlug": "notification-service",
+                "status": "DEGRADED"
+              }
+            },
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case12-call-2",
+              "output": {
+                "serviceSlug": "notification-service",
+                "status": "DEGRADED"
+              }
+            },
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case12-call-3",
+              "output": {
+                "serviceSlug": "notification-service",
+                "status": "DEGRADED"
+              }
+            }
+          ]
+        },
+        "report": null,
+        "investigation": {
+          "providerTurnsUsed": 4,
+          "diagnosticRequestCount": 3,
+          "forcedFinalization": true,
+          "stopReason": "BOUND_EXHAUSTED",
+          "assessments": [
+            {
+              "toolCallId": "case12-call-1",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "STATUS_UNRESOLVED",
+                "supportedBy": [
+                  {
+                    "evidenceId": "runbook-notification-degradation-001",
+                    "sourceType": "RAG_CHUNK"
+                  }
+                ]
+              }
+            },
+            {
+              "toolCallId": "case12-call-2",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "STATUS_UNRESOLVED",
+                "supportedBy": [
+                  {
+                    "evidenceId": "case12-call-1",
+                    "sourceType": "TOOL_EXECUTION"
+                  }
+                ]
+              }
+            },
+            {
+              "toolCallId": "case12-call-3",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "STATUS_UNRESOLVED",
+                "supportedBy": [
+                  {
+                    "evidenceId": "case12-call-1",
+                    "sourceType": "TOOL_EXECUTION"
+                  },
+                  {
+                    "evidenceId": "case12-call-2",
+                    "sourceType": "TOOL_EXECUTION"
+                  }
+                ]
+              }
+            }
+          ],
+          "toolFailures": [],
+          "bounds": {
+            "maxProviderTurns": 4,
+            "maxDiagnosticToolCalls": 3
+          },
+          "usage": {
+            "inputTokens": 400,
+            "outputTokens": 80,
+            "providerCalls": 4
+          }
+        },
+        "failedStage": "REPORT_GENERATION"
+      },
+      "expected": {
+        "passed": true,
+        "checks": [
+          {
+            "name": "status",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-requested",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-executed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-completed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-forbidden-completed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "failure-code",
+            "status": "PASS",
+            "reasonCode": null
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "tool-execution-failure",
+      "expectations": {
+        "runStatus": "failed",
+        "tool": {
+          "expectedRequested": [
+            {
+              "toolName": "always_fails",
+              "toolCallId": "case13-call-1"
+            }
+          ],
+          "expectedExecuted": [
+            {
+              "toolName": "always_fails",
+              "input": {}
+            }
+          ],
+          "forbiddenCompletedToolCallIds": [
+            "case13-call-1"
+          ]
+        },
+        "failure": {
+          "expectedCode": "TOOL_EXECUTION_FAILED"
+        }
+      },
+      "observed": {
+        "runStatus": "failed",
+        "errorCode": "TOOL_EXECUTION_FAILED",
+        "retrieval": {
+          "completed": true,
+          "chunkIds": [
+            "runbook-notification-degradation-001",
+            "runbook-notification-queue-backlog-001",
+            "runbook-billing-invoice-formatting-001"
+          ]
+        },
+        "tools": {
+          "requested": [
+            {
+              "toolName": "always_fails",
+              "toolCallId": "case13-call-1"
+            }
+          ],
+          "executed": [
+            {
+              "toolName": "always_fails",
+              "input": {}
+            }
+          ],
+          "completed": []
+        },
+        "report": null,
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 1,
+          "forcedFinalization": false,
+          "stopReason": null,
+          "assessments": [
+            {
+              "toolCallId": "case13-call-1",
+              "toolName": "always_fails",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "STATUS_UNRESOLVED",
+                "supportedBy": [
+                  {
+                    "evidenceId": "runbook-notification-degradation-001",
+                    "sourceType": "RAG_CHUNK"
+                  }
+                ]
+              }
+            }
+          ],
+          "toolFailures": [
+            {
+              "toolCallId": "case13-call-1",
+              "toolName": "always_fails",
+              "failureCode": "TOOL_EXECUTION_FAILED"
+            }
+          ],
+          "bounds": {
+            "maxProviderTurns": 4,
+            "maxDiagnosticToolCalls": 3
+          },
+          "usage": {
+            "inputTokens": 100,
+            "outputTokens": 20,
+            "providerCalls": 1
+          }
+        },
+        "failedStage": "DIAGNOSTIC_EXECUTION"
+      },
+      "expected": {
+        "passed": true,
+        "checks": [
+          {
+            "name": "status",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-requested",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-executed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-forbidden-completed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "failure-code",
+            "status": "PASS",
+            "reasonCode": null
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "malformed-report-submission",
+      "expectations": {
+        "runStatus": "failed",
+        "report": {
+          "schemaExpectation": "INVALID"
+        },
+        "failure": {
+          "expectedCode": "REPORT_SCHEMA_INVALID"
+        }
+      },
+      "observed": {
+        "runStatus": "failed",
+        "errorCode": "REPORT_SCHEMA_INVALID",
+        "retrieval": {
+          "completed": true,
+          "chunkIds": [
+            "runbook-notification-degradation-001",
+            "runbook-notification-queue-backlog-001",
+            "runbook-billing-invoice-formatting-001"
+          ]
+        },
+        "tools": {
+          "requested": [],
+          "executed": [],
+          "completed": []
+        },
+        "report": null,
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 0,
+          "forcedFinalization": false,
+          "stopReason": null,
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": {
+            "maxProviderTurns": 4,
+            "maxDiagnosticToolCalls": 3
+          },
+          "usage": {
+            "inputTokens": 100,
+            "outputTokens": 20,
+            "providerCalls": 1
+          }
+        },
+        "failedStage": "REPORT_GENERATION"
+      },
+      "expected": {
+        "passed": true,
+        "checks": [
+          {
+            "name": "status",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "schema-handling",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "failure-code",
+            "status": "PASS",
+            "reasonCode": null
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "injection-probe-structural",
+      "expectations": {
+        "runStatus": "failed",
+        "retrieval": {
+          "expectedTop1": "runbook-injection-probe-001"
+        },
+        "report": {
+          "schemaExpectation": "VALID",
+          "groundingExpectation": "INVALID"
+        },
+        "failure": {
+          "expectedCode": "REPORT_EVIDENCE_INVALID"
+        }
+      },
+      "observed": {
+        "runStatus": "failed",
+        "errorCode": "REPORT_EVIDENCE_INVALID",
+        "retrieval": {
+          "completed": true,
+          "chunkIds": [
+            "runbook-injection-probe-001"
+          ]
+        },
+        "tools": {
+          "requested": [],
+          "executed": [],
+          "completed": []
+        },
+        "report": null,
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 0,
+          "forcedFinalization": false,
+          "stopReason": null,
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": {
+            "maxProviderTurns": 4,
+            "maxDiagnosticToolCalls": 3
+          },
+          "usage": {
+            "inputTokens": 100,
+            "outputTokens": 20,
+            "providerCalls": 1
+          }
+        },
+        "failedStage": "REPORT_GENERATION"
+      },
+      "expected": {
+        "passed": true,
+        "checks": [
+          {
+            "name": "status",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "retrieval-top1",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "schema-handling",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-grounding",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "failure-code",
+            "status": "PASS",
+            "reasonCode": null
+          }
+        ]
+      }
+    }
+  ],
+  "expectedMetrics": {
+    "totalCases": 15,
+    "passedCases": 15,
+    "failedCases": 0,
+    "passRate": 1,
+    "retrievalTop1": {
+      "numerator": 6,
+      "denominator": 6
+    },
+    "retrievalHitAt3": {
+      "numerator": 2,
+      "denominator": 2
+    },
+    "schemaHandlingCorrectness": {
+      "numerator": 10,
+      "denominator": 10
+    },
+    "evidenceGroundingCorrectness": {
+      "numerator": 9,
+      "denominator": 9
+    },
+    "toolCorrectness": {
+      "numerator": 11,
+      "denominator": 11
+    },
+    "expectedStatusCorrectness": {
+      "numerator": 15,
+      "denominator": 15
+    }
+  }
+}

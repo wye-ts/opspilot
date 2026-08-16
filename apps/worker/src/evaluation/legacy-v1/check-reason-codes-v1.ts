@@ -1,9 +1,15 @@
+// FROZEN v1 oracle artifact (OpsPilot #59 Checkpoint A §5): a byte-for-byte
+// snapshot of the historical v1 check-failure vocabulary, preserved so the
+// offline v1 regression oracle (parity-v1.test.ts) keeps reproducing the
+// frozen ts-parity-v1.json fixture forever. The active contract's reason
+// codes live in ../check-reason-codes.ts; this module is unwired from the
+// active runtime and must never change.
+//
 // A closed, application-authored set of reasons a check can fail for. Every
-// evaluate* function in evaluation-evaluator.ts selects one of these codes
-// instead of authoring reason prose inline; the fixed display text for each
-// code lives only here, in CHECK_REASON_MESSAGES, so the CLI-visible string
-// for a given failure can never drift between call sites (see
-// docs/07-evaluation-plan.md and the OpsPilot #61 Phase 1 plan).
+// evaluate* function in evaluator-v1.ts selects one of these codes instead of
+// authoring reason prose inline; the fixed display text for each code lives
+// only here, in CHECK_REASON_MESSAGES, so the CLI-visible string for a given
+// failure can never drift between call sites.
 export type CheckReasonCode =
   | "RETRIEVAL_NOT_OBSERVED"
   | "RETRIEVAL_TOP1_MISMATCH"
@@ -25,12 +31,6 @@ export type CheckReasonCode =
   | "FAILURE_CODE_MISMATCH"
   | "STATUS_MISMATCH";
 
-// Total by construction: TypeScript rejects this object literal unless every
-// member of CheckReasonCode has an entry, and rejects any key that is not a
-// member. Every value is byte-identical to the historical inline reason
-// string it replaces — none ever interpolates a chunk id, tool name,
-// toolCallId, evidence id, or error code (see
-// evaluation-evaluator.ts's prior inline constants).
 export const CHECK_REASON_MESSAGES: Record<CheckReasonCode, string> = {
   RETRIEVAL_NOT_OBSERVED: "No retrieval result was observed for this case.",
   RETRIEVAL_TOP1_MISMATCH: "The expected top-ranked chunk was not observed.",
@@ -56,8 +56,4 @@ export const CHECK_REASON_MESSAGES: Record<CheckReasonCode, string> = {
 
 export function resolveCheckReasonMessage(code: CheckReasonCode): string {
   return CHECK_REASON_MESSAGES[code];
-}
-
-export function isCheckReasonCode(value: unknown): value is CheckReasonCode {
-  return typeof value === "string" && value in CHECK_REASON_MESSAGES;
 }

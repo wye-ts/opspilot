@@ -1,5 +1,9 @@
-import type { EvaluationMetrics } from "./types";
-import type { EvaluationCaseResultV2 } from "./v2-types";
+// FROZEN v1 oracle artifact (OpsPilot #59 Checkpoint A §5): the historical
+// v1 aggregate metrics, preserved so the offline v1 regression oracle can
+// reproduce the frozen ts-parity-v1.json fixture's expectedMetrics. The
+// active metrics (../evaluation-metrics.ts) operate on the v2 status model —
+// this module is unwired from the active runtime and must never change.
+import type { EvaluationMetricsV1, EvaluationCaseResultV1 } from "./v1-types";
 
 const TOOL_CHECK_NAMES = [
   "tool-requested",
@@ -9,20 +13,16 @@ const TOOL_CHECK_NAMES = [
   "tool-forbidden-completed",
 ] as const;
 
-function hasCheck(result: EvaluationCaseResultV2, name: string): boolean {
+function hasCheck(result: EvaluationCaseResultV1, name: string): boolean {
   return result.checks.some((check) => check.name === name);
 }
 
-// A check counts as passing iff its status is exactly "PASS" — a
-// NOT_APPLICABLE check does not count toward a ratio's numerator (at
-// Checkpoint A the scorer emits PASS/FAIL only, so this distinction is not
-// yet observable, but the metric semantics are fixed here for v2).
-function checkPassed(result: EvaluationCaseResultV2, name: string): boolean {
-  return result.checks.find((check) => check.name === name)?.status === "PASS";
+function checkPassed(result: EvaluationCaseResultV1, name: string): boolean {
+  return result.checks.find((check) => check.name === name)?.passed === true;
 }
 
 function simpleRatio(
-  results: readonly EvaluationCaseResultV2[],
+  results: readonly EvaluationCaseResultV1[],
   checkName: string,
 ): { readonly numerator: number; readonly denominator: number } {
   const declaring = results.filter((result) => hasCheck(result, checkName));
@@ -31,7 +31,7 @@ function simpleRatio(
 }
 
 function toolCorrectnessRatio(
-  results: readonly EvaluationCaseResultV2[],
+  results: readonly EvaluationCaseResultV1[],
 ): { readonly numerator: number; readonly denominator: number } {
   const declaring = results.filter((result) =>
     result.checks.some((check) => (TOOL_CHECK_NAMES as readonly string[]).includes(check.name)),
@@ -39,12 +39,12 @@ function toolCorrectnessRatio(
   const passing = declaring.filter((result) =>
     result.checks
       .filter((check) => (TOOL_CHECK_NAMES as readonly string[]).includes(check.name))
-      .every((check) => check.status === "PASS"),
+      .every((check) => check.passed),
   );
   return { numerator: passing.length, denominator: declaring.length };
 }
 
-export function aggregateMetrics(results: readonly EvaluationCaseResultV2[]): EvaluationMetrics {
+export function aggregateMetricsV1(results: readonly EvaluationCaseResultV1[]): EvaluationMetricsV1 {
   const totalCases = results.length;
   const passedCases = results.filter((result) => result.passed).length;
   const failedCases = totalCases - passedCases;

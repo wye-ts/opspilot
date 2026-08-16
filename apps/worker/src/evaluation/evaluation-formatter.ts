@@ -1,6 +1,6 @@
 import { resolveCheckReasonMessage } from "./check-reason-codes";
 import type { EvaluationMetrics } from "./types";
-import type { EvaluationCaseResultV1 } from "./v1-types";
+import type { EvaluationCaseResultV2 } from "./v2-types";
 
 function formatRatio(ratio: { readonly numerator: number; readonly denominator: number }): string {
   return `${ratio.numerator}/${ratio.denominator}`;
@@ -12,15 +12,16 @@ function formatPercent(rate: number): string {
 
 // Prints only the case id, PASS/FAIL, the fixed check name, and the fixed
 // message resolved from the check's reasonCode. Operates on the wire-safe
-// EvaluationCaseResultV1 shape — there is no expected/observed field to
-// accidentally read here even in principle (see v1-types.ts, correction 3).
-// EvaluationCheckV1 is a discriminated union: a failing check is
-// type-guaranteed to carry a non-null reasonCode, so there is no
-// "check failed" fallback to author here — that state is unrepresentable
-// (see independent-review finding "EvaluationCheckV1 does not enforce the
-// frozen reason-code invariant").
+// EvaluationCaseResultV2 shape — there is no expected/observed field to
+// accidentally read here even in principle (see v2-types.ts, correction 3).
+// EvaluationCheckV2 is a discriminated union: a FAIL check is
+// type-guaranteed to carry a non-null CheckReasonCode, so there is no
+// "check failed" fallback to author here — that state is unrepresentable.
+// A NOT_APPLICABLE check never renders as a failure (it is not a FAIL), so
+// the Checkpoint-A output — which emits PASS/FAIL only — is byte-identical
+// to the v1 formatter.
 export function formatEvaluationReport(
-  results: readonly EvaluationCaseResultV1[],
+  results: readonly EvaluationCaseResultV2[],
   metrics: EvaluationMetrics,
 ): string {
   const lines: string[] = ["OpsPilot Evaluation", ""];
@@ -29,7 +30,7 @@ export function formatEvaluationReport(
     lines.push(`${result.passed ? "PASS" : "FAIL"} ${result.caseId}`);
     if (!result.passed) {
       for (const check of result.checks) {
-        if (!check.passed) {
+        if (check.status === "FAIL") {
           lines.push(`  - ${check.name}: ${resolveCheckReasonMessage(check.reasonCode)}`);
         }
       }

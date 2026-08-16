@@ -1,18 +1,21 @@
-import type { CheckReasonCode } from "./check-reason-codes";
-import type { ObservedFacts } from "./observed-facts";
-import type { EvaluationCaseInputV2 } from "./v2-types";
-import type { EvaluationCaseResult, EvaluationCheckResult, EvaluationExpectations } from "./types";
+// FROZEN v1 oracle artifact (OpsPilot #59 Checkpoint A §5): the historical
+// v1 evaluator, preserved so the offline v1 regression oracle can re-score
+// the frozen ts-parity-v1.json fixture. The active evaluator
+// (../evaluation-evaluator.ts) is the v2 status-based model — this module is
+// unwired from the active runtime and must never change. Its scoring
+// semantics are the historical ones: a check either passed or failed, and a
+// case passed iff every emitted check passed.
+import type { CheckReasonCode } from "./check-reason-codes-v1";
+import type { ObservedFactsV1 } from "./observed-facts-v1";
+import type { EvaluationCaseInputV1 } from "./v1-types";
+import type { EvaluationCheckResultV1, EvaluationCaseResultV1Internal, EvaluationExpectations } from "./types-v1";
 
 // Every evaluate* function below operates ONLY on EvaluationExpectations and
-// ObservedFacts (or a narrow slice of it) — never on a raw
+// ObservedFactsV1 (or a narrow slice of it) — never on a raw
 // AgentOrchestratorResult, trace event, or ResolutionReport, and never on
-// anything but the exact nested v2 shape ObservedFacts now is (see
-// observed-facts.ts, HQ final contract-shape correction). Scoring cannot
-// tell whether `observed` came from the agent runtime, JSON loaded from the
-// parity fixture, or a future HTTP request — that is the whole point of
-// freezing this boundary.
-function passCheck(name: string, expected: unknown, observed: unknown): EvaluationCheckResult {
-  return { name, status: "PASS", expected, observed };
+// anything but the exact nested v1 shape ObservedFactsV1 is.
+function passCheck(name: string, expected: unknown, observed: unknown): EvaluationCheckResultV1 {
+  return { name, passed: true, expected, observed };
 }
 
 function failCheck(
@@ -20,8 +23,8 @@ function failCheck(
   expected: unknown,
   observed: unknown,
   reasonCode: CheckReasonCode,
-): EvaluationCheckResult {
-  return { name, status: "FAIL", expected, observed, reasonCode };
+): EvaluationCheckResultV1 {
+  return { name, passed: false, expected, observed, reasonCode };
 }
 
 function deepEqual(a: unknown, b: unknown): boolean {
@@ -43,15 +46,15 @@ function deepEqual(a: unknown, b: unknown): boolean {
   );
 }
 
-type RetrievalObservation = ObservedFacts["retrieval"];
+type RetrievalObservation = ObservedFactsV1["retrieval"];
 
-export function evaluateRetrieval(
+export function evaluateRetrievalV1(
   expectations: EvaluationExpectations["retrieval"],
   observed: RetrievalObservation,
-): EvaluationCheckResult[] {
+): EvaluationCheckResultV1[] {
   if (!expectations) return [];
 
-  const checks: EvaluationCheckResult[] = [];
+  const checks: EvaluationCheckResultV1[] = [];
   const { completed: retrievalCompleted, chunkIds: retrievedChunkIds } = observed;
 
   if (expectations.expectedTop1 !== undefined) {
@@ -110,15 +113,15 @@ export function evaluateRetrieval(
   return checks;
 }
 
-type ToolObservation = ObservedFacts["tools"];
+type ToolObservation = ObservedFactsV1["tools"];
 
-export function evaluateTool(
+export function evaluateToolV1(
   expectations: EvaluationExpectations["tool"],
   observed: ToolObservation,
-): EvaluationCheckResult[] {
+): EvaluationCheckResultV1[] {
   if (!expectations) return [];
 
-  const checks: EvaluationCheckResult[] = [];
+  const checks: EvaluationCheckResultV1[] = [];
 
   if (expectations.expectedRequested !== undefined) {
     const expected = expectations.expectedRequested;
@@ -184,8 +187,6 @@ export function evaluateTool(
     expectations.forbiddenCompletedToolCallIds.length > 0
   ) {
     const forbidden = expectations.forbiddenCompletedToolCallIds;
-    // Derived at point of use — a completedToolCallIds list is not stored on
-    // ObservedFacts because it is fully redundant with tools.completed.
     const completedToolCallIds = observed.completed.map((entry) => entry.toolCallId);
     const present = forbidden.filter((id) => completedToolCallIds.includes(id));
     checks.push(
@@ -203,13 +204,13 @@ export function evaluateTool(
   return checks;
 }
 
-export function evaluateReport(
+export function evaluateReportV1(
   expectations: EvaluationExpectations["report"],
-  observed: ObservedFacts,
-): EvaluationCheckResult[] {
+  observed: ObservedFactsV1,
+): EvaluationCheckResultV1[] {
   if (!expectations) return [];
 
-  const checks: EvaluationCheckResult[] = [];
+  const checks: EvaluationCheckResultV1[] = [];
   const observedStatusAndCode =
     observed.report !== null ? "completed" : `failed:${observed.errorCode}`;
 
@@ -305,10 +306,10 @@ export function evaluateReport(
   return checks;
 }
 
-export function evaluateFailure(
+export function evaluateFailureV1(
   expectations: EvaluationExpectations["failure"],
-  observed: ObservedFacts,
-): EvaluationCheckResult[] {
+  observed: ObservedFactsV1,
+): EvaluationCheckResultV1[] {
   if (!expectations) return [];
 
   const expected = expectations.expectedCode;
@@ -323,10 +324,10 @@ export function evaluateFailure(
   ];
 }
 
-export function evaluateStatus(
+export function evaluateStatusV1(
   expectations: EvaluationExpectations,
-  observed: ObservedFacts,
-): EvaluationCheckResult[] {
+  observed: ObservedFactsV1,
+): EvaluationCheckResultV1[] {
   const expected = expectations.runStatus;
   return [
     observed.runStatus === expected
@@ -335,26 +336,22 @@ export function evaluateStatus(
   ];
 }
 
-// The v2-native scorer entry point: operates only on the normalized
-// EvaluationCaseInputV2 (expectations + ObservedFacts) — no raw
-// AgentOrchestratorResult, executedTools recorder, or trace ever reaches
-// this function or anything it calls. At Checkpoint A every check emits
-// PASS/FAIL only; a case passes iff no check has status === "FAIL" (see
-// the OpsPilot #59 Revision 5 plan §3.1).
-export function evaluateCase(caseInput: EvaluationCaseInputV2): EvaluationCaseResult {
+// The v1-native scorer entry point: operates only on the normalized
+// EvaluationCaseInputV1 (expectations + ObservedFactsV1).
+export function evaluateCaseV1(caseInput: EvaluationCaseInputV1): EvaluationCaseResultV1Internal {
   const { caseId, expectations, observed } = caseInput;
 
-  const checks: EvaluationCheckResult[] = [
-    ...evaluateStatus(expectations, observed),
-    ...evaluateRetrieval(expectations.retrieval, observed.retrieval),
-    ...evaluateTool(expectations.tool, observed.tools),
-    ...evaluateReport(expectations.report, observed),
-    ...evaluateFailure(expectations.failure, observed),
+  const checks: EvaluationCheckResultV1[] = [
+    ...evaluateStatusV1(expectations, observed),
+    ...evaluateRetrievalV1(expectations.retrieval, observed.retrieval),
+    ...evaluateToolV1(expectations.tool, observed.tools),
+    ...evaluateReportV1(expectations.report, observed),
+    ...evaluateFailureV1(expectations.failure, observed),
   ];
 
   return {
     caseId,
-    passed: checks.every((check) => check.status !== "FAIL"),
+    passed: checks.every((check) => check.passed),
     checks,
     observed,
   };

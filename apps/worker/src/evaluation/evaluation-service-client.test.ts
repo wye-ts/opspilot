@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createHttpEvaluationScorer,
   HttpEvaluationScorer,
-  type PersistedEvaluationRunV1,
+  type PersistedEvaluationRunV2,
 } from "./evaluation-service-client";
 import {
   EvaluationServiceHttpError,
@@ -15,7 +15,7 @@ import {
   EvaluationServiceUnavailableError,
   EvaluationServiceUnsupportedVersionError,
 } from "./evaluation-service-errors";
-import type { EvaluationSuiteInputV1, EvaluationSuiteResultV1 } from "./v1-types";
+import type { EvaluationSuiteInputV2, EvaluationSuiteResultV2 } from "./v2-types";
 
 // ---------------------------------------------------------------------------
 // A tiny, dependency-free HTTP server harness for the client unit tests.
@@ -53,9 +53,12 @@ function respondJson(res: ServerResponse, status: number, body: unknown): void {
 // Fixtures
 // ---------------------------------------------------------------------------
 
-const MINIMAL_INPUT: EvaluationSuiteInputV1 = {
-  contractVersion: 1,
-  datasetId: "test-dataset",
+// The v2 active wire contract (see v2-types.ts): contractVersion 2, the
+// canonical v2 dataset id, and a failed-branch ObservedFacts carrying the v2
+// investigation facts and a real failedStage.
+const MINIMAL_INPUT: EvaluationSuiteInputV2 = {
+  contractVersion: 2,
+  datasetId: "opspilot-deterministic-v2",
   cases: [
     {
       caseId: "c1",
@@ -66,6 +69,17 @@ const MINIMAL_INPUT: EvaluationSuiteInputV1 = {
         retrieval: { completed: false, chunkIds: [] },
         tools: { requested: [], executed: [], completed: [] },
         report: null,
+        investigation: {
+          providerTurnsUsed: 0,
+          diagnosticRequestCount: 0,
+          forcedFinalization: false,
+          stopReason: null,
+          assessments: [],
+          toolFailures: [],
+          bounds: { maxProviderTurns: 4, maxDiagnosticToolCalls: 3 },
+          usage: { inputTokens: 0, outputTokens: 0, providerCalls: 0 },
+        },
+        failedStage: "DIAGNOSTIC_EXECUTION",
       },
     },
   ],
@@ -75,7 +89,7 @@ const EVALUATION_ID = "11111111-2222-3333-4444-555555555555";
 
 // Loose, fully-mutable fixture type. Tests deliberately build broken variants
 // (wrong primitives, bogus reason codes, missing fields) that would not
-// typecheck against PersistedEvaluationRunV1 — the client must reject those
+// typecheck against PersistedEvaluationRunV2 — the client must reject those
 // at runtime, so the fixtures are intentionally untyped at the leaves. The
 // client only ever sees the raw JSON, never these fixtures.
 interface MutableResource {
@@ -85,21 +99,21 @@ interface MutableResource {
   cases: Array<{
     caseId: unknown;
     passed: unknown;
-    checks: Array<{ name: unknown; passed: unknown; reasonCode: unknown }>;
+    checks: Array<{ name: unknown; status: unknown; reasonCode: unknown }>;
   }>;
   metrics: unknown;
 }
 
 function validResourceJson(id: string = EVALUATION_ID): MutableResource {
   return {
-    contractVersion: 1,
-    datasetId: "test-dataset",
+    contractVersion: 2,
+    datasetId: "opspilot-deterministic-v2",
     id,
     cases: [
       {
         caseId: "c1",
         passed: true,
-        checks: [{ name: "status", passed: true, reasonCode: null }],
+        checks: [{ name: "status", status: "PASS", reasonCode: null }],
       },
     ],
     metrics: {
@@ -125,14 +139,14 @@ function validResourceJson(id: string = EVALUATION_ID): MutableResource {
 // validation now correctly rejects (see the semantic-consistency describe).
 function failingResourceJson(): MutableResource {
   return {
-    contractVersion: 1,
-    datasetId: "test-dataset",
+    contractVersion: 2,
+    datasetId: "opspilot-deterministic-v2",
     id: EVALUATION_ID,
     cases: [
       {
         caseId: "c1",
         passed: false,
-        checks: [{ name: "status", passed: false, reasonCode: "STATUS_MISMATCH" }],
+        checks: [{ name: "status", status: "FAIL", reasonCode: "STATUS_MISMATCH" }],
       },
     ],
     metrics: {
@@ -152,12 +166,12 @@ function failingResourceJson(): MutableResource {
 
 // The scorer result that score() is expected to extract from the persisted
 // resource above (the persisted id is stripped, not included).
-function expectedScorerResult(): EvaluationSuiteResultV1 {
+function expectedScorerResult(): EvaluationSuiteResultV2 {
   return {
-    contractVersion: 1,
-    datasetId: "test-dataset",
+    contractVersion: 2,
+    datasetId: "opspilot-deterministic-v2",
     cases: [
-      { caseId: "c1", passed: true, checks: [{ name: "status", passed: true, reasonCode: null }] },
+      { caseId: "c1", passed: true, checks: [{ name: "status", status: "PASS", reasonCode: null }] },
     ],
     metrics: {
       totalCases: 1,
@@ -190,8 +204,8 @@ describe("HttpEvaluationScorer — valid responses", () => {
       const result = await scorer.score(MINIMAL_INPUT);
 
       expect(result).toEqual(expectedScorerResult());
-      expect(result.contractVersion).toBe(1);
-      expect(result.datasetId).toBe("test-dataset");
+      expect(result.contractVersion).toBe(2);
+      expect(result.datasetId).toBe("opspilot-deterministic-v2");
     });
   });
 
@@ -229,7 +243,7 @@ describe("HttpEvaluationScorer — valid responses", () => {
     await withServer((_req, res) => respondJson(res, 201, failingResourceJson()), async (scorer) => {
       const result = await scorer.score(MINIMAL_INPUT);
       expect(result.cases[0]!.passed).toBe(false);
-      expect(result.cases[0]!.checks[0]).toEqual({ name: "status", passed: false, reasonCode: "STATUS_MISMATCH" });
+      expect(result.cases[0]!.checks[0]).toEqual({ name: "status", status: "FAIL", reasonCode: "STATUS_MISMATCH" });
       expect(result.metrics.passedCases).toBe(0);
       expect(result.metrics.failedCases).toBe(1);
     });
@@ -276,7 +290,7 @@ describe("HttpEvaluationScorer — fail closed on malformed responses", () => {
   it("rejects an unknown/invalid reason code", async () => {
     const resource = validResourceJson();
     resource.cases[0]!.passed = false;
-    resource.cases[0]!.checks[0] = { name: "status", passed: false, reasonCode: "BOGUS_CODE" };
+    resource.cases[0]!.checks[0] = { name: "status", status: "FAIL", reasonCode: "BOGUS_CODE" };
 
     await withServer((_req, res) => respondJson(res, 201, resource), async (scorer) => {
       await expect(scorer.score(MINIMAL_INPUT)).rejects.toBeInstanceOf(EvaluationServiceMalformedResponseError);
@@ -285,25 +299,25 @@ describe("HttpEvaluationScorer — fail closed on malformed responses", () => {
 
   it("rejects a passing check that contradicts the discriminated union by carrying a reason code", async () => {
     const resource = validResourceJson();
-    resource.cases[0]!.checks[0] = { name: "status", passed: true, reasonCode: "STATUS_MISMATCH" };
+    resource.cases[0]!.checks[0] = { name: "status", status: "PASS", reasonCode: "STATUS_MISMATCH" };
 
     await withServer((_req, res) => respondJson(res, 201, resource), async (scorer) => {
       await expect(scorer.score(MINIMAL_INPUT)).rejects.toBeInstanceOf(EvaluationServiceMalformedResponseError);
     });
   });
 
-  it("rejects a non-1 contract version as UNSUPPORTED_VERSION", async () => {
+  it("rejects a non-2 contract version (v1) as UNSUPPORTED_VERSION", async () => {
     const resource = validResourceJson();
-    (resource as { contractVersion: unknown }).contractVersion = 2;
+    (resource as { contractVersion: unknown }).contractVersion = 1;
 
     await withServer((_req, res) => respondJson(res, 201, resource), async (scorer) => {
       await expect(scorer.score(MINIMAL_INPUT)).rejects.toBeInstanceOf(EvaluationServiceUnsupportedVersionError);
     });
   });
 
-  it("treats a wrong primitive contract version ('1' as a string) as malformed, not as supported", async () => {
+  it("treats a wrong primitive contract version ('2' as a string) as malformed, not as supported", async () => {
     const resource = validResourceJson();
-    (resource as { contractVersion: unknown }).contractVersion = "1";
+    (resource as { contractVersion: unknown }).contractVersion = "2";
 
     await withServer((_req, res) => respondJson(res, 201, resource), async (scorer) => {
       await expect(scorer.score(MINIMAL_INPUT)).rejects.toBeInstanceOf(EvaluationServiceMalformedResponseError);
@@ -314,7 +328,7 @@ describe("HttpEvaluationScorer — fail closed on malformed responses", () => {
 // A two-case request so identity/ordering violations can be exercised; the
 // response below is structurally valid and internally consistent, only its
 // case order disagrees with this request.
-function twoCaseInput(): EvaluationSuiteInputV1 {
+function twoCaseInput(): EvaluationSuiteInputV2 {
   return {
     ...MINIMAL_INPUT,
     cases: [MINIMAL_INPUT.cases[0]!, { ...MINIMAL_INPUT.cases[0]!, caseId: "c2" }],
@@ -323,12 +337,12 @@ function twoCaseInput(): EvaluationSuiteInputV1 {
 
 function twoCaseAllPassedResource(): Record<string, unknown> {
   return {
-    contractVersion: 1,
-    datasetId: "test-dataset",
+    contractVersion: 2,
+    datasetId: "opspilot-deterministic-v2",
     id: EVALUATION_ID,
     cases: [
-      { caseId: "c1", passed: true, checks: [{ name: "status", passed: true, reasonCode: null }] },
-      { caseId: "c2", passed: true, checks: [{ name: "status", passed: true, reasonCode: null }] },
+      { caseId: "c1", passed: true, checks: [{ name: "status", status: "PASS", reasonCode: null }] },
+      { caseId: "c2", passed: true, checks: [{ name: "status", status: "PASS", reasonCode: null }] },
     ],
     metrics: {
       totalCases: 2,
@@ -438,8 +452,8 @@ describe("HttpEvaluationScorer — fail closed on semantically inconsistent pers
     // case order [c2, c1] disagrees with the submitted [c1, c2].
     const resource = twoCaseAllPassedResource();
     resource.cases = [
-      { caseId: "c2", passed: true, checks: [{ name: "status", passed: true, reasonCode: null }] },
-      { caseId: "c1", passed: true, checks: [{ name: "status", passed: true, reasonCode: null }] },
+      { caseId: "c2", passed: true, checks: [{ name: "status", status: "PASS", reasonCode: null }] },
+      { caseId: "c1", passed: true, checks: [{ name: "status", status: "PASS", reasonCode: null }] },
     ];
 
     await withServer((_req, res) => respondJson(res, 201, resource), async (scorer) => {

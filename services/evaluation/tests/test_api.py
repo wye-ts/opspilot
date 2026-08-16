@@ -15,28 +15,60 @@ from opspilot_evaluation.db.models import (
     EvaluationRun,
 )
 from opspilot_evaluation.db.session import get_sessionmaker
-from opspilot_evaluation.schemas import EvaluationCaseInputV1
-from tests.fixture_loader import build_wire_request, load_fixture
+from opspilot_evaluation.schemas import EvaluationCaseInputV2
+from tests.fixture_loader import build_wire_request, load_fixture_v2
 
 pytestmark = pytest.mark.asyncio
+
+
+def _minimal_investigation() -> dict:
+    return {
+        "providerTurnsUsed": 0,
+        "diagnosticRequestCount": 0,
+        "forcedFinalization": False,
+        "stopReason": None,
+        "assessments": [],
+        "toolFailures": [],
+        "bounds": {"maxProviderTurns": 4, "maxDiagnosticToolCalls": 3},
+        "usage": {"inputTokens": 0, "outputTokens": 0, "providerCalls": 0},
+    }
+
+
+def _minimal_completed_report() -> dict:
+    return {
+        "evidence": [],
+        "suggestedActionTypes": [],
+        "category": "UNKNOWN",
+        "rootCausePresent": False,
+        "confidence": 0.0,
+        "evidenceState": "INSUFFICIENT",
+        "recommendationDisposition": "ADVISORY",
+        "suggestedActions": [],
+    }
+
+
+def _minimal_completed_observed() -> dict:
+    return {
+        "runStatus": "completed",
+        "errorCode": None,
+        "retrieval": {"completed": False, "chunkIds": []},
+        "tools": {"requested": [], "executed": [], "completed": []},
+        "report": _minimal_completed_report(),
+        "investigation": _minimal_investigation(),
+        "failedStage": None,
+    }
 
 
 def _minimal_case(case_id: str = "case-one") -> dict:
     return {
         "caseId": case_id,
         "expectations": {"runStatus": "completed"},
-        "observed": {
-            "runStatus": "completed",
-            "errorCode": None,
-            "retrieval": {"completed": False, "chunkIds": []},
-            "tools": {"requested": [], "executed": [], "completed": []},
-            "report": {"evidence": [], "suggestedActionTypes": []},
-        },
+        "observed": _minimal_completed_observed(),
     }
 
 
 def _minimal_suite(cases: list[dict], dataset_id: str = "test-dataset") -> dict:
-    return {"contractVersion": 1, "datasetId": dataset_id, "cases": cases}
+    return {"contractVersion": 2, "datasetId": dataset_id, "cases": cases}
 
 
 async def test_health_does_not_touch_the_database(client: AsyncClient) -> None:
@@ -51,7 +83,7 @@ async def test_post_creates_and_get_retrieves(client: AsyncClient) -> None:
     post_response = await client.post("/evaluations", json=suite)
     assert post_response.status_code == 201
     body = post_response.json()
-    assert body["contractVersion"] == 1
+    assert body["contractVersion"] == 2
     assert body["datasetId"] == "test-dataset"
     assert len(body["cases"]) == 2
     evaluation_id = body["id"]
@@ -65,8 +97,8 @@ async def test_post_creates_and_get_retrieves(client: AsyncClient) -> None:
 async def test_response_is_the_persisted_resource_not_the_bare_scorer_shape(client: AsyncClient) -> None:
     # HQ-adjudicated (Phase 2 review): POST/GET intentionally return the
     # persisted HTTP evaluation resource, a superset of TS's
-    # EvaluationSuiteResultV1 scorer-result shape that also carries the
-    # persisted `id` — see EvaluationRunResultV1 in schemas.py. Per-case
+    # EvaluationSuiteResultV2 scorer-result shape that also carries the
+    # persisted `id` — see EvaluationRunResultV2 in schemas.py. Per-case
     # `checks`/`passed` still match the scorer shape exactly (proven
     # separately by test_scorer_parity.py and test_full_ts_fixture_parity_via_api).
     response = await client.post("/evaluations", json=_minimal_suite([_minimal_case()]))
@@ -118,8 +150,10 @@ async def test_long_dataset_id_persists_and_round_trips(client: AsyncClient, len
 
 
 async def test_unsupported_contract_version_rejected(client: AsyncClient) -> None:
+    # The active v2 contract accepts contractVersion 2 only — v1 is unwired
+    # from the runtime and survives solely as the frozen offline oracle.
     suite = _minimal_suite([_minimal_case()])
-    suite["contractVersion"] = 2
+    suite["contractVersion"] = 1
     response = await client.post("/evaluations", json=suite)
     assert response.status_code == 422
 
@@ -133,7 +167,9 @@ async def test_unsupported_contract_version_rejected(client: AsyncClient) -> Non
             "errorCode": "TOOL_NOT_FOUND",
             "retrieval": {"completed": False, "chunkIds": []},
             "tools": {"requested": [], "executed": [], "completed": []},
-            "report": {"evidence": [], "suggestedActionTypes": []},
+            "report": _minimal_completed_report(),
+            "investigation": _minimal_investigation(),
+            "failedStage": None,
         },
         # runStatus completed but report is null.
         {
@@ -142,6 +178,8 @@ async def test_unsupported_contract_version_rejected(client: AsyncClient) -> Non
             "retrieval": {"completed": False, "chunkIds": []},
             "tools": {"requested": [], "executed": [], "completed": []},
             "report": None,
+            "investigation": _minimal_investigation(),
+            "failedStage": None,
         },
         # runStatus failed but errorCode is null.
         {
@@ -150,6 +188,8 @@ async def test_unsupported_contract_version_rejected(client: AsyncClient) -> Non
             "retrieval": {"completed": False, "chunkIds": []},
             "tools": {"requested": [], "executed": [], "completed": []},
             "report": None,
+            "investigation": _minimal_investigation(),
+            "failedStage": "DIAGNOSTIC_EXECUTION",
         },
         # runStatus failed but report is non-null.
         {
@@ -157,7 +197,9 @@ async def test_unsupported_contract_version_rejected(client: AsyncClient) -> Non
             "errorCode": "TOOL_NOT_FOUND",
             "retrieval": {"completed": False, "chunkIds": []},
             "tools": {"requested": [], "executed": [], "completed": []},
-            "report": {"evidence": [], "suggestedActionTypes": []},
+            "report": _minimal_completed_report(),
+            "investigation": _minimal_investigation(),
+            "failedStage": "DIAGNOSTIC_EXECUTION",
         },
     ],
 )
@@ -197,7 +239,7 @@ async def test_invalid_route_parameter(client: AsyncClient) -> None:
 
 
 async def test_check_order_and_expectations_observed_persist(client: AsyncClient) -> None:
-    fixture = load_fixture()
+    fixture = load_fixture_v2()
     request = build_wire_request(fixture)
     # Use the richest case (most checks) for this assertion.
     richest_case = max(fixture["cases"], key=lambda c: len(c["expected"]["checks"]))
@@ -210,8 +252,8 @@ async def test_check_order_and_expectations_observed_persist(client: AsyncClient
 
     expected_checks = richest_case["expected"]["checks"]
     got_checks = body["cases"][0]["checks"]
-    assert [(c["name"], c["passed"], c["reasonCode"]) for c in got_checks] == [
-        (c["name"], c["passed"], c["reasonCode"]) for c in expected_checks
+    assert [(c["name"], c["status"], c["reasonCode"]) for c in got_checks] == [
+        (c["name"], c["status"], c["reasonCode"]) for c in expected_checks
     ]
 
     # Reload via GET to confirm order survives persistence + reload.
@@ -221,7 +263,7 @@ async def test_check_order_and_expectations_observed_persist(client: AsyncClient
     # The persisted JSONB is the validated model's own canonical form (every
     # optional field present, explicit nulls for absent ones) — not a byte
     # copy of the wire JSON, which omits absent optional keys entirely.
-    parsed_case = EvaluationCaseInputV1.model_validate(case)
+    parsed_case = EvaluationCaseInputV2.model_validate(case)
 
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as session:
@@ -274,7 +316,7 @@ async def test_persistence_failure_leaves_no_partial_rows(client: AsyncClient) -
 
 
 async def test_full_ts_fixture_parity_via_api(client: AsyncClient) -> None:
-    fixture = load_fixture()
+    fixture = load_fixture_v2()
     request = build_wire_request(fixture)
 
     response = await client.post("/evaluations", json=request)
@@ -285,8 +327,8 @@ async def test_full_ts_fixture_parity_via_api(client: AsyncClient) -> None:
         expected = fixture_case["expected"]
         assert case_body["caseId"] == fixture_case["caseId"]
         assert case_body["passed"] == expected["passed"]
-        assert [(c["name"], c["passed"], c["reasonCode"]) for c in case_body["checks"]] == [
-            (c["name"], c["passed"], c["reasonCode"]) for c in expected["checks"]
+        assert [(c["name"], c["status"], c["reasonCode"]) for c in case_body["checks"]] == [
+            (c["name"], c["status"], c["reasonCode"]) for c in expected["checks"]
         ]
 
     for name, expected_value in fixture["expectedMetrics"].items():

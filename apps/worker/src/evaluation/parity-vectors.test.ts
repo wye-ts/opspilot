@@ -5,11 +5,12 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import type { StoredRunbookChunk } from "@opspilot/agent-runtime";
+import type { ObservedFacts } from "./observed-facts";
 import { buildParityFixture, computeParityFixture, InvalidParityDatasetError } from "./parity-vectors";
-import { buildEvaluationSuiteInputV1 } from "./v1-types";
+import { buildEvaluationSuiteInputV2 } from "./v2-types";
 import type { EvaluationCase } from "./types";
 
-const FIXTURE_PATH = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "ts-parity-v1.json");
+const FIXTURE_PATH = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "ts-parity-v2.json");
 
 const FIXTURE_INJECTION_PROBE_CHUNK: StoredRunbookChunk = {
   chunkId: "fixture-injection-probe",
@@ -32,7 +33,7 @@ function fixtureCase(overrides: Partial<EvaluationCase> = {}): EvaluationCase {
   };
 }
 
-describe("parity fixture — TS-owned (fixtures/ts-parity-v1.json)", () => {
+describe("parity fixture — TS-owned (fixtures/ts-parity-v2.json)", () => {
   it("regenerates byte-identically from the real 15-case dataset — fails if the committed fixture has drifted", async () => {
     const regenerated = await computeParityFixture();
     const committedRaw = readFileSync(FIXTURE_PATH, "utf8");
@@ -44,11 +45,11 @@ describe("parity fixture — TS-owned (fixtures/ts-parity-v1.json)", () => {
     expect(`${JSON.stringify(regenerated, null, 2)}\n`).toBe(committedRaw);
   });
 
-  it("uses numeric contractVersion 1 and the approved datasetId", async () => {
+  it("uses numeric contractVersion 2 and the approved datasetId", async () => {
     const fixture = await computeParityFixture();
-    expect(fixture.contractVersion).toBe(1);
+    expect(fixture.contractVersion).toBe(2);
     expect(typeof fixture.contractVersion).toBe("number");
-    expect(fixture.datasetId).toBe("opspilot-deterministic-v1");
+    expect(fixture.datasetId).toBe("opspilot-deterministic-v2");
   });
 
   it("covers all 15 cases, in the fixed dataset order, each with normalized input AND expected scored output", async () => {
@@ -93,26 +94,55 @@ describe("parity fixture — TS-owned (fixtures/ts-parity-v1.json)", () => {
       expect(Object.keys(parityCase.expected).sort()).toEqual(["checks", "passed"]);
       // No expected/observed leaking into the wire-shaped check list itself.
       for (const check of parityCase.expected.checks) {
-        expect(Object.keys(check).sort()).toEqual(["name", "passed", "reasonCode"]);
+        expect(Object.keys(check).sort()).toEqual(["name", "reasonCode", "status"]);
       }
     }
   });
 
-  it("uses the exact nested v1 observed shape — retrieval.completed/chunkIds, tools.requested/executed/completed, report.evidence/suggestedActionTypes, errorCode explicit null", async () => {
+  it("uses the exact nested v2 observed shape — retrieval.completed/chunkIds, tools.requested/executed/completed with output, the 8-field report, and investigation + failedStage on both branches", async () => {
     const fixture = await computeParityFixture();
     for (const parityCase of fixture.cases) {
       const { observed } = parityCase;
-      expect(Object.keys(observed).sort()).toEqual(["errorCode", "report", "retrieval", "runStatus", "tools"]);
+      expect(Object.keys(observed).sort()).toEqual([
+        "errorCode",
+        "failedStage",
+        "investigation",
+        "report",
+        "retrieval",
+        "runStatus",
+        "tools",
+      ]);
       expect(Object.keys(observed.retrieval).sort()).toEqual(["chunkIds", "completed"]);
       expect(Object.keys(observed.tools).sort()).toEqual(["completed", "executed", "requested"]);
+      expect(Object.keys(observed.investigation).sort()).toEqual([
+        "assessments",
+        "bounds",
+        "diagnosticRequestCount",
+        "forcedFinalization",
+        "providerTurnsUsed",
+        "stopReason",
+        "toolFailures",
+        "usage",
+      ]);
       expect("errorCode" in observed).toBe(true);
       if (observed.runStatus === "completed") {
         expect(observed.errorCode).toBeNull();
         expect(observed.report).not.toBeNull();
-        expect(Object.keys(observed.report!).sort()).toEqual(["evidence", "suggestedActionTypes"]);
+        expect(observed.failedStage).toBeNull();
+        expect(Object.keys(observed.report!).sort()).toEqual([
+          "category",
+          "confidence",
+          "evidence",
+          "evidenceState",
+          "recommendationDisposition",
+          "rootCausePresent",
+          "suggestedActionTypes",
+          "suggestedActions",
+        ]);
       } else {
         expect(observed.errorCode).not.toBeNull();
         expect(observed.report).toBeNull();
+        expect(typeof observed.failedStage).toBe("string");
       }
     }
   });
@@ -199,7 +229,7 @@ describe("computeParityFixture — validates the dataset before execution", () =
 // avoid collapsing two distinct cases that happen to share a caseId.
 describe("buildParityFixture — fails closed on a duplicate caseId even when called directly", () => {
   it("throws rather than silently pairing one case's expectations/observed with a different case's scored result", () => {
-    const suiteInput = buildEvaluationSuiteInputV1("test-dataset", [
+    const suiteInput = buildEvaluationSuiteInputV2("test-dataset", [
       { caseId: "dup-case", expectations: { runStatus: "completed" }, observed: sentinelObserved() },
       { caseId: "dup-case", expectations: { runStatus: "completed" }, observed: sentinelObserved() },
     ]);
@@ -207,7 +237,7 @@ describe("buildParityFixture — fails closed on a duplicate caseId even when ca
       contractVersion: suiteInput.contractVersion,
       datasetId: suiteInput.datasetId,
       cases: [
-        { caseId: "dup-case", passed: true, checks: [{ name: "status", passed: true, reasonCode: null }] as const },
+        { caseId: "dup-case", passed: true, checks: [{ name: "status", status: "PASS", reasonCode: null }] as const },
       ],
       metrics: {
         totalCases: 1,
@@ -227,13 +257,33 @@ describe("buildParityFixture — fails closed on a duplicate caseId even when ca
   });
 });
 
-function sentinelObserved() {
+function sentinelObserved(): ObservedFacts {
   return {
-    runStatus: "completed" as const,
+    runStatus: "completed",
     errorCode: null,
     retrieval: { completed: false, chunkIds: [] },
     tools: { requested: [], executed: [], completed: [] },
-    report: { evidence: [], suggestedActionTypes: [] },
+    report: {
+      evidence: [],
+      suggestedActionTypes: [],
+      category: "SERVICE_DEGRADATION",
+      rootCausePresent: true,
+      confidence: 0.5,
+      evidenceState: "SUFFICIENT",
+      recommendationDisposition: "ADVISORY",
+      suggestedActions: [],
+    },
+    investigation: {
+      providerTurnsUsed: 0,
+      diagnosticRequestCount: 0,
+      forcedFinalization: false,
+      stopReason: "SUFFICIENT_EVIDENCE",
+      assessments: [],
+      toolFailures: [],
+      bounds: { maxProviderTurns: 4, maxDiagnosticToolCalls: 3 },
+      usage: { inputTokens: 0, outputTokens: 0, providerCalls: 0 },
+    },
+    failedStage: null,
   };
 }
 

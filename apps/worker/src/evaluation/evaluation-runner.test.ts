@@ -8,7 +8,7 @@ import { PROTOCOL_AND_FAILURE_CASES } from "./cases/protocol-and-failure-cases";
 import { EVALUATION_CASES } from "./evaluation-dataset";
 import { runEvaluationSuite } from "./evaluation-runner";
 import { LocalEvaluationScorer } from "./evaluation-scorer";
-import { buildEvaluationSuiteInputV1, EVALUATION_DATASET_ID, type EvaluationCaseInputV1 } from "./v1-types";
+import { buildEvaluationSuiteInputV2, EVALUATION_DATASET_ID, type EvaluationCaseInputV2 } from "./v2-types";
 
 let defaultCorpus: readonly StoredRunbookChunk[];
 
@@ -17,12 +17,12 @@ beforeAll(async () => {
   defaultCorpus = corpusLoad.chunks;
 });
 
-function byCaseId(results: readonly EvaluationCaseInputV1[]): Map<string, EvaluationCaseInputV1> {
+function byCaseId(results: readonly EvaluationCaseInputV2[]): Map<string, EvaluationCaseInputV2> {
   return new Map(results.map((result) => [result.caseId, result]));
 }
 
-function scoreAll(caseInputs: readonly EvaluationCaseInputV1[]) {
-  const suiteInput = buildEvaluationSuiteInputV1(EVALUATION_DATASET_ID, caseInputs);
+function scoreAll(caseInputs: readonly EvaluationCaseInputV2[]) {
+  const suiteInput = buildEvaluationSuiteInputV2(EVALUATION_DATASET_ID, caseInputs);
   return new LocalEvaluationScorer().score(suiteInput);
 }
 

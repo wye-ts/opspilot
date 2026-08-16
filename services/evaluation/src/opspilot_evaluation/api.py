@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime
-from typing import Literal, cast
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
@@ -27,11 +26,12 @@ from opspilot_evaluation.db.models import (
 from opspilot_evaluation.db.session import get_session
 from opspilot_evaluation.errors import EvaluationApiError
 from opspilot_evaluation.schemas import (
-    EvaluationCaseResultV1,
-    EvaluationCheckV1,
+    CheckStatus,
+    EvaluationCaseResultV2,
+    EvaluationCheckV2,
     EvaluationMetrics,
-    EvaluationRunResultV1,
-    EvaluationSuiteInputV1,
+    EvaluationRunResultV2,
+    EvaluationSuiteInputV2,
     MetricRatio,
 )
 from opspilot_evaluation.scoring.metrics import aggregate_metrics
@@ -67,7 +67,7 @@ def _metric_ratio(metrics: EvaluationMetrics, name: str) -> MetricRatio:
 
 async def _persist_evaluation(
     session: AsyncSession,
-    suite_input: EvaluationSuiteInputV1,
+    suite_input: EvaluationSuiteInputV2,
     case_results: list[CaseScoreResult],
     metrics: EvaluationMetrics,
 ) -> uuid.UUID:
@@ -108,7 +108,7 @@ async def _persist_evaluation(
                     case_result_id=case_result_id,
                     check_index=check_index,
                     name=check.name,
-                    passed=check.passed,
+                    status=check.status.value,
                     reason_code=check.reason_code.value if check.reason_code is not None else None,
                 )
             )
@@ -131,9 +131,9 @@ async def _persist_evaluation(
 
 @router.post("/evaluations", status_code=201)
 async def create_evaluation(
-    suite_input: EvaluationSuiteInputV1,
+    suite_input: EvaluationSuiteInputV2,
     session: AsyncSession = Depends(get_session),
-) -> EvaluationRunResultV1:
+) -> EvaluationRunResultV2:
     # 1. validate request — done by FastAPI/Pydantic before this body runs.
     # 2. score the whole suite in memory.
     case_results = score_cases(suite_input.cases)
@@ -160,21 +160,21 @@ async def create_evaluation(
         },
     )
 
-    # 5. return the persisted representation — EvaluationRunResultV1, the
+    # 5. return the persisted representation — EvaluationRunResultV2, the
     # persisted HTTP resource (see schemas.py), not CaseScoreResult, the
     # deterministic scorer/parity shape `case_results` already is.
-    return EvaluationRunResultV1(
+    return EvaluationRunResultV2(
         contractVersion=suite_input.contractVersion,
         datasetId=suite_input.datasetId,
         id=str(run_id),
         cases=[
-            EvaluationCaseResultV1(
+            EvaluationCaseResultV2(
                 caseId=result.case_id,
                 passed=result.passed,
                 checks=[
-                    EvaluationCheckV1(
+                    EvaluationCheckV2(
                         name=check.name,
-                        passed=check.passed,
+                        status=check.status,
                         reasonCode=check.reason_code.value if check.reason_code is not None else None,
                     )
                     for check in result.checks
@@ -190,7 +190,7 @@ async def create_evaluation(
 async def get_evaluation(
     evaluation_id: str,
     session: AsyncSession = Depends(get_session),
-) -> EvaluationRunResultV1:
+) -> EvaluationRunResultV2:
     try:
         parsed_id = uuid.UUID(evaluation_id)
     except ValueError:
@@ -209,23 +209,33 @@ async def get_evaluation(
     if run is None:
         raise EvaluationApiError("EVALUATION_NOT_FOUND")
 
+    # Validated v2 read (replaces the v1-era unsafe cast): POST accepts only
+    # contractVersion 2 at the boundary, but a pre-migration row persisted with
+    # contract_version 1 can still exist after an in-place upgrade. Serving it
+    # through the v2-only resource model would require a blind cast, so it is
+    # refused with a stable error instead of being silently relabeled.
+    if run.contract_version != 2:
+        raise EvaluationApiError("CONTRACT_VERSION_UNSUPPORTED")
+
     metrics_by_name = {
         metric.name: MetricRatio(numerator=metric.numerator, denominator=metric.denominator)
         for metric in run.metrics
     }
 
-    return EvaluationRunResultV1(
-        # Phase 2 accepts only contractVersion 1 at the POST boundary (see
-        # EvaluationSuiteInputV1), so any persisted run's value is always 1.
-        contractVersion=cast(Literal[1], run.contract_version),
+    return EvaluationRunResultV2(
+        contractVersion=2,
         datasetId=run.dataset_id,
         id=str(run.id),
         cases=[
-            EvaluationCaseResultV1(
+            EvaluationCaseResultV2(
                 caseId=case_result.case_id,
                 passed=case_result.passed,
                 checks=[
-                    EvaluationCheckV1(name=check.name, passed=check.passed, reasonCode=check.reason_code)
+                    EvaluationCheckV2(
+                        name=check.name,
+                        status=CheckStatus(check.status),
+                        reasonCode=check.reason_code,
+                    )
                     for check in case_result.checks
                 ],
             )
