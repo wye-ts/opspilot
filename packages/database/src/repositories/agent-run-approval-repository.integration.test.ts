@@ -8,21 +8,34 @@ import { appendDirectSuccessPrefix, appendFailurePrefix } from "../test/canonica
 import { createJob, finalizeCompleted, finalizeFailed, startRun } from "./agent-run-repository";
 import { getApprovalDecision, recordApprovalDecision } from "./agent-run-approval-repository";
 
+// Issue #60 Checkpoint B (§6): approval fixtures carry the full new-write #60
+// contract. The eligible report is ACTIONABLE with a grounded DRAFT_CUSTOMER_REPLY
+// action (groundedBy cites e-1, present in report.evidence); the ineligible
+// variant is ADVISORY with zero actions.
 const ELIGIBLE_REPORT = {
   category: "UNKNOWN",
   summary: "A diagnostic check was performed.",
   rootCause: "Root cause.",
   customerImpact: "Impact.",
-  recommendedResolution: "Resolution.",
+  recommendedResolution: "Draft a customer-facing reply acknowledging the diagnostic check for a human to review.",
   confidence: 0.5,
   evidence: [{ evidenceId: "e-1", sourceType: "TOOL_EXECUTION", finding: "f" }],
   evidenceState: "SUFFICIENT",
+  recommendationDisposition: "ACTIONABLE",
   suggestedActions: [
-    { type: "DRAFT_CUSTOMER_REPLY", payload: { subject: "Update", body: "A human will follow up." } },
+    {
+      type: "DRAFT_CUSTOMER_REPLY",
+      payload: { subject: "Update", body: "A human will follow up." },
+      groundedBy: [{ evidenceId: "e-1", sourceType: "TOOL_EXECUTION" }],
+    },
   ],
 };
 
-const EMPTY_ACTIONS_REPORT = { ...ELIGIBLE_REPORT, suggestedActions: [] };
+const EMPTY_ACTIONS_REPORT = {
+  ...ELIGIBLE_REPORT,
+  suggestedActions: [],
+  recommendationDisposition: "ADVISORY",
+};
 
 
 let handle: PrismaClientHandle;

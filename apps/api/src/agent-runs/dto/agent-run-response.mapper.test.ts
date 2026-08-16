@@ -47,6 +47,9 @@ const REPORT: ResolutionReport = {
   evidence: [{ evidenceId: "run-1-call-1", sourceType: "TOOL_EXECUTION", finding: "f" }],
   suggestedActions: [],
   evidenceState: "SUFFICIENT",
+  // Issue #60 Checkpoint B: the new-write ResolutionReport contract requires
+  // recommendationDisposition; zero suggested actions => ADVISORY.
+  recommendationDisposition: "ADVISORY",
 };
 
 describe("mapAgentRunResponse", () => {

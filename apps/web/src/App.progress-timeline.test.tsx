@@ -373,7 +373,7 @@ describe("Investigation progress timeline (#34/#35)", () => {
               recommendedResolution: "rr",
               confidence: 0.5,
               evidence: [],
-              suggestedActions: [{ type: "DRAFT_CUSTOMER_REPLY", payload: { subject: "Update", body: "We'll follow up." } }],
+              suggestedActions: [{ type: "DRAFT_CUSTOMER_REPLY", payload: { subject: "Update", body: "We'll follow up." }, groundedBy: [] }],
             },
           },
         }),

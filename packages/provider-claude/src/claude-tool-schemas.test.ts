@@ -83,6 +83,7 @@ describe("toStrictInputSchema", () => {
       "evidence",
       "suggestedActions",
       "evidenceState",
+      "recommendationDisposition",
     ]);
     expect(schema.properties.category.enum).toEqual([
       "SERVICE_DEGRADATION",
@@ -135,6 +136,39 @@ describe("toStrictInputSchema", () => {
       "CREATE_ESCALATION",
       "DRAFT_CUSTOMER_REPLY",
     ]);
+  });
+
+  // Issue #60 §4b/§7: the write action's groundedBy is structurally required
+  // (1..10) with NO `.default([])`, so every anyOf branch carries it in both
+  // properties and required. minItems: 1 survives the strict subset because
+  // the sanitizer only strips minItems > 1 — Anthropic's strict-tool JSON
+  // Schema subset accepts minItems 0 and 1 (verified against the official
+  // structured-outputs docs; maxItems is always stripped).
+  it("exposes groundedBy on every suggested-action branch — in properties AND required, with minItems: 1", () => {
+    const schema = toStrictInputSchema(ResolutionReportSchema) as {
+      properties: {
+        suggestedActions: {
+          items: {
+            anyOf?: Array<{
+              required: string[];
+              properties: {
+                type: { const: string };
+                groundedBy?: { type?: string; minItems?: number };
+              };
+            }>;
+          };
+        };
+      };
+    };
+
+    const branches = schema.properties.suggestedActions.items.anyOf;
+    expect(branches).toBeDefined();
+    expect(branches?.length).toBe(3);
+    for (const branch of branches ?? []) {
+      expect(branch.properties.groundedBy?.type).toBe("array");
+      expect(branch.properties.groundedBy?.minItems).toBe(1);
+      expect(branch.required).toContain("groundedBy");
+    }
   });
 
   it("produces a get_service_status input schema with no unsupported keywords", () => {
@@ -237,6 +271,34 @@ describe("SUBMIT_RESOLUTION_REPORT_TOOL", () => {
     expect(SUBMIT_RESOLUTION_REPORT_TOOL.input_schema).toEqual(
       toStrictInputSchema(ResolutionReportSchema),
     );
+  });
+
+  // Issue #60 §5a: the tool description teaches the disposition rule and the
+  // grounding cardinality, because the strict JSON Schema subset cannot express
+  // the cross-field disposition↔action and groundedBy⊆evidence semantics.
+  it("teaches the disposition and grounding rules in the tool description", () => {
+    const description = SUBMIT_RESOLUTION_REPORT_TOOL.description;
+    expect(description).toContain(
+      "recommendationDisposition: ACTIONABLE when the recommended resolution is a concrete next step a human can take",
+    );
+    expect(description).toContain("or ADVISORY when it is informational or monitoring-only");
+    expect(description).toContain("1 to 10 groundedBy evidence locators");
+    expect(description).toContain("copied exactly from an entry already present in the same report's `evidence` array");
+    expect(description).toContain("Never invent a locator for groundedBy");
+  });
+
+  // Issue #60 §4a/§4b: recommendationDisposition is structurally required at the
+  // top level (write-required) — asserted on the ACTUAL emitted strict schema.
+  it("exposes recommendationDisposition to Claude as a required top-level enum", () => {
+    const schema = SUBMIT_RESOLUTION_REPORT_TOOL.input_schema as {
+      required: string[];
+      properties: { recommendationDisposition?: { type: string; enum: string[] } };
+    };
+
+    expect(schema.properties.recommendationDisposition).toBeDefined();
+    expect(schema.properties.recommendationDisposition?.type).toBe("string");
+    expect(schema.properties.recommendationDisposition?.enum).toEqual(["ACTIONABLE", "ADVISORY"]);
+    expect(schema.required).toContain("recommendationDisposition");
   });
 
   // Issue #58 closure (Fix 1): asserted on the ACTUAL emitted strict report

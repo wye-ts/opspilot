@@ -26,8 +26,13 @@ const VALID_REPORT: ResolutionReport = {
   confidence: 0.5,
   evidence: [{ evidenceId: "e1", sourceType: "TOOL_EXECUTION", finding: "finding" }],
   evidenceState: "SUFFICIENT",
+  recommendationDisposition: "ACTIONABLE",
   suggestedActions: [
-    { type: "UPDATE_TICKET_STATUS", payload: { status: "IN_PROGRESS", reason: "reason" } },
+    {
+      type: "UPDATE_TICKET_STATUS",
+      payload: { status: "IN_PROGRESS", reason: "reason" },
+      groundedBy: [{ evidenceId: "e1", sourceType: "TOOL_EXECUTION" }],
+    },
   ],
 };
 

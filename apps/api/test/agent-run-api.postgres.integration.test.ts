@@ -90,20 +90,35 @@ async function createTestApiApp(): Promise<TestApp> {
 // createJob/startRun/finalizeCompleted/finalizeFailed exports directly to
 // reach run states (RUNNING, FAILED) that the synchronous, FAKE-provider-only
 // HTTP API cannot itself produce. This does not modify packages/database.
+// Issue #60 Checkpoint B (§5): these approval fixtures now carry the full
+// new-write #60 contract. The eligible report is ACTIONABLE with a grounded
+// DRAFT_CUSTOMER_REPLY action (groundedBy cites e-1, present in report.evidence);
+// the ineligible variant is ADVISORY with zero actions, so the existing
+// approval eligibility predicate (status COMPLETED && suggestedActions.length
+// >= 1, agent-run-approval-repository.ts) stays the untouched source of truth.
 const APPROVAL_ELIGIBLE_REPORT = {
   category: "UNKNOWN" as const,
   summary: "A diagnostic check was performed.",
   rootCause: "Root cause.",
   customerImpact: "Impact.",
-  recommendedResolution: "Resolution.",
+  recommendedResolution: "Draft a customer-facing reply acknowledging the diagnostic check for a human to review.",
   confidence: 0.5,
   evidence: [{ evidenceId: "e-1", sourceType: "TOOL_EXECUTION" as const, finding: "f" }],
   evidenceState: "SUFFICIENT" as const,
+  recommendationDisposition: "ACTIONABLE" as const,
   suggestedActions: [
-    { type: "DRAFT_CUSTOMER_REPLY" as const, payload: { subject: "Update", body: "A human will follow up." } },
+    {
+      type: "DRAFT_CUSTOMER_REPLY" as const,
+      payload: { subject: "Update", body: "A human will follow up." },
+      groundedBy: [{ evidenceId: "e-1" as const, sourceType: "TOOL_EXECUTION" as const }],
+    },
   ],
 };
-const APPROVAL_EMPTY_ACTIONS_REPORT = { ...APPROVAL_ELIGIBLE_REPORT, suggestedActions: [] };
+const APPROVAL_EMPTY_ACTIONS_REPORT = {
+  ...APPROVAL_ELIGIBLE_REPORT,
+  suggestedActions: [],
+  recommendationDisposition: "ADVISORY" as const,
+};
 /**
  * The canonical lifecycle prefix a direct (no-tool) run must already carry
  * before terminal finalization will accept it (issue #37 Phase B): terminal
@@ -481,7 +496,7 @@ describe("approval", () => {
     }
   });
 
-  it("an ordinary deterministic ticket completes with an empty suggestedActions report, and GET .../approval returns NOT_ELIGIBLE", async () => {
+  it("an ordinary deterministic ticket completes with an ADVISORY, empty-suggestedActions report, and GET .../approval returns NOT_ELIGIBLE", async () => {
     const jobRes = await request(testApp.app.getHttpServer())
       .post("/v1/agent-jobs")
       .send({ ticketId: "TICKET-API-APPROVAL-ORDINARY", summary: "billing errors reported" });
@@ -489,15 +504,20 @@ describe("approval", () => {
 
     const runRes = await request(testApp.app.getHttpServer()).post(`/v1/agent-jobs/${jobId}/runs`).send();
     expect(runRes.status).toBe(201);
+    // Issue #60 Checkpoint B: an ordinary deterministic report stays
+    // ADVISORY + [] through persistence and readback.
+    expect(runRes.body.data.outcome.report.recommendationDisposition).toBe("ADVISORY");
     expect(runRes.body.data.outcome.report.suggestedActions).toEqual([]);
     const runId = runRes.body.data.run.id as string;
 
     const approvalRes = await request(testApp.app.getHttpServer()).get(`/v1/agent-runs/${runId}/approval`);
     expect(approvalRes.status).toBe(200);
+    // The existing eligibility source of truth (agent-run-approval-repository)
+    // reports NOT_ELIGIBLE for zero suggested actions.
     expect(approvalRes.body.data.status).toBe("NOT_ELIGIBLE");
   });
 
-  it("TICKET-APPROVAL-DEMO completes with one DRAFT_CUSTOMER_REPLY suggested action; GET is PENDING, POST approves it, GET is then APPROVED", async () => {
+  it("TICKET-APPROVAL-DEMO completes with one ACTIONABLE grounded DRAFT_CUSTOMER_REPLY; GET is PENDING, POST approves it, GET is then APPROVED", async () => {
     const jobRes = await request(testApp.app.getHttpServer())
       .post("/v1/agent-jobs")
       .send({ ticketId: "TICKET-APPROVAL-DEMO", summary: "Approval workflow demo" });
@@ -505,12 +525,22 @@ describe("approval", () => {
 
     const runRes = await request(testApp.app.getHttpServer()).post(`/v1/agent-jobs/${jobId}/runs`).send();
     expect(runRes.status).toBe(201);
+    // Issue #60 Checkpoint B (§5): the completed report persists
+    // recommendationDisposition ACTIONABLE, >= 1 suggested action, and the
+    // action's groundedBy is a real report evidence locator (the demo run's
+    // completed tool call, `<jobId>-call-1`).
+    expect(runRes.body.data.outcome.report.recommendationDisposition).toBe("ACTIONABLE");
     expect(runRes.body.data.outcome.report.suggestedActions).toHaveLength(1);
     expect(runRes.body.data.outcome.report.suggestedActions[0].type).toBe("DRAFT_CUSTOMER_REPLY");
+    expect(runRes.body.data.outcome.report.evidence[0].evidenceId).toBe(`${jobId}-call-1`);
+    expect(runRes.body.data.outcome.report.suggestedActions[0].groundedBy).toEqual([
+      { evidenceId: `${jobId}-call-1`, sourceType: "TOOL_EXECUTION" },
+    ]);
     const runId = runRes.body.data.run.id as string;
 
     const pendingRes = await request(testApp.app.getHttpServer()).get(`/v1/agent-runs/${runId}/approval`);
     expect(pendingRes.status).toBe(200);
+    // The existing approval path reports the run as eligible / pending.
     expect(pendingRes.body.data.status).toBe("PENDING");
 
     const postRes = await request(testApp.app.getHttpServer())

@@ -976,12 +976,24 @@ Defines:
 `AgentRun.promptVersion` stores a logical version such as:
 
 ```text
-opspilot-agent-v2
+opspilot-agent-v3
 ```
 
-`opspilot-agent-v2` supersedes `opspilot-agent-v1`: Issue #58 Checkpoint B
+`opspilot-agent-v3` supersedes `opspilot-agent-v2`: Issue #60 (Checkpoint A)
+changed final-report behavior in the model-facing contract
+(`claude-message-mapping.ts` `REPORT_FIELD_BOUNDS` and the generated
+`submit_resolution_report` tool schema):
+
+- `recommendationDisposition` is explicit (`ACTIONABLE` | `ADVISORY`);
+- ACTIONABLE/ADVISORY ↔ `suggestedActions` cardinality is explicit;
+- Suggested Actions carry evidence grounding (`groundedBy`, 1..10 locators);
+- model guidance allows grounded actions under INSUFFICIENT/CONFLICTING
+  evidence (no sufficiency gate);
+- human approval semantics themselves are unchanged.
+
+`opspilot-agent-v2` superseded `opspilot-agent-v1`: Issue #58 Checkpoint B
 added the investigation-only evidence-assessment guidance
-(claude-message-mapping.ts), a behavior-changing prompt update that warrants a
+(claude-message-mapping.ts), a behavior-changing prompt update that warranted a
 new logical version.
 
 A behavior-changing prompt update requires:
@@ -989,6 +1001,26 @@ A behavior-changing prompt update requires:
 - a new logical prompt version;
 - agent eval regression;
 - recorded comparison before changing the production-demo default.
+
+#### Issue #60 v3 agent-eval regression (before/after)
+
+Per the §20.4 policy, the v3 bump required an agent-eval regression recorded
+before changing the production-demo default.
+
+- **BEFORE ref:** `5cc6b98e9000ea472561fbb61ae0a20e47e07f01` (merged pre-#60 baseline)
+- **AFTER identity:** Checkpoint-C working tree on `feat/60-suggested-action-alignment`
+  at HEAD `e72bf95e705f05c230830f9f187d48793d63203` plus the uncommitted C changes.
+- **Command:** `EVALUATION_SCORER=local pnpm --filter @opspilot/worker eval`
+  (run in a detached worktree for BEFORE; in the C working tree for AFTER).
+- **Result summary:** all 15 existing evaluation cases pass identically
+  (score unchanged) on both BEFORE and AFTER.
+- **Limitation:** the deterministic eval drives the fake provider from typed
+  fixtures and the observed-facts contract reads only `suggestedActions[].type`;
+  it does **not** score `groundedBy` or any other new #60 field. The prompt text
+  itself cannot influence these results, so this regression does **not** prove
+  grounding quality or any behavioral model-quality change — it detects
+  regressions in the existing evaluation contract only. Grounding correctness
+  is proven by the deterministic contract/provider/runtime/persistence tests.
 
 ---
 
@@ -1166,7 +1198,7 @@ Examples:
 
 ```text
 RUN_STARTED
-"Investigation started using prompt version opspilot-agent-v2."
+"Investigation started using prompt version opspilot-agent-v3."
 
 TOOL_REQUESTED
 "Checking the current status of notification-service."

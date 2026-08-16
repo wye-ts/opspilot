@@ -68,7 +68,7 @@ function demoRunDetail(overrides: Partial<AgentRunDetail> = {}): AgentRunDetail 
         recommendedResolution: "rr",
         confidence: 0.5,
         evidence: [],
-        suggestedActions: [{ type: "DRAFT_CUSTOMER_REPLY", payload: { subject: "Update", body: "We'll follow up." } }],
+        suggestedActions: [{ type: "DRAFT_CUSTOMER_REPLY", payload: { subject: "Update", body: "We'll follow up." }, groundedBy: [] }],
       },
     },
     ...overrides,

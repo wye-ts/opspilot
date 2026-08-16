@@ -37,6 +37,7 @@ const VALID_REPORT: ResolutionReport = {
   confidence: 0.5,
   evidence: [{ evidenceId: "e1", sourceType: "TOOL_EXECUTION", finding: "finding" }],
   evidenceState: "SUFFICIENT",
+  recommendationDisposition: "ADVISORY",
   suggestedActions: [],
 };
 

@@ -28,9 +28,11 @@ import {
 import {
   EvidenceReferenceSchema as _EvidenceReferenceSchema,
   IncidentCategorySchema as _IncidentCategorySchema,
+  RecommendationDispositionSchema as _RecommendationDispositionSchema,
   ResolutionReportSchema as _ResolutionReportSchema,
   StoredResolutionReportSchema as _StoredResolutionReportSchema,
   SuggestedActionSchema as _SuggestedActionSchema,
+  SuggestedActionWriteSchema as _SuggestedActionWriteSchema,
 } from "./resolution-report";
 import { summarizeReportValidationIssues as _summarizeReportValidationIssues } from "./resolution-report-validation";
 import {
@@ -101,9 +103,11 @@ export const EvidenceAssessmentSchema = _EvidenceAssessmentSchema;
 export const EvidenceStateSchema = _EvidenceStateSchema;
 export const EvidenceReferenceSchema = _EvidenceReferenceSchema;
 export const IncidentCategorySchema = _IncidentCategorySchema;
+export const RecommendationDispositionSchema = _RecommendationDispositionSchema;
 export const ResolutionReportSchema = _ResolutionReportSchema;
 export const StoredResolutionReportSchema = _StoredResolutionReportSchema;
 export const SuggestedActionSchema = _SuggestedActionSchema;
+export const SuggestedActionWriteSchema = _SuggestedActionWriteSchema;
 export const summarizeReportValidationIssues = _summarizeReportValidationIssues;
 export const AgentProtocolErrorCodeSchema = _AgentProtocolErrorCodeSchema;
 export const AgentTurnResultSchema = _AgentTurnResultSchema;
@@ -155,9 +159,11 @@ export type {
 export type {
   EvidenceReference,
   IncidentCategory,
+  RecommendationDisposition,
   ResolutionReport,
   StoredResolutionReport,
   SuggestedAction,
+  SuggestedActionWrite,
 } from "./resolution-report";
 export type { ReportValidationIssue } from "./resolution-report-validation";
 export type {

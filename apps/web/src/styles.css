@@ -1312,6 +1312,15 @@ dd {
   gap: var(--space-2);
 }
 
+/* Issue #60 Checkpoint C — the compact muted grounding line on each card:
+   "Grounded in: Tool execution call-1, Rag chunk runbook-001". Muted text,
+   small, so it reads as attribution rather than competing with the payload. */
+.suggested-action-card__grounding {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+}
+
 .suggested-action-icon {
   flex: none;
   display: inline-flex;

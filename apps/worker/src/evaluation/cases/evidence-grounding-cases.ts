@@ -22,6 +22,11 @@ const CASE_7_REPORT: ResolutionReport = {
     },
   ],
   evidenceState: "SUFFICIENT",
+  // Issue #60 Checkpoint C: no structured action, so the truthful disposition
+  // is ADVISORY. The case remains a schema-VALID / grounding-INVALID fixture
+  // (the fabricated evidence locator fails findInvalidEvidence, not the
+  // disposition/cardinality rule).
+  recommendationDisposition: "ADVISORY",
   suggestedActions: [],
 };
 
@@ -43,6 +48,8 @@ const CASE_8_REPORT: ResolutionReport = {
     },
   ],
   evidenceState: "SUFFICIENT",
+  // Issue #60 Checkpoint C: ADVISORY — see CASE_7 comment.
+  recommendationDisposition: "ADVISORY",
   suggestedActions: [],
 };
 
@@ -64,6 +71,8 @@ const CASE_15_REPORT: ResolutionReport = {
     },
   ],
   evidenceState: "SUFFICIENT",
+  // Issue #60 Checkpoint C: ADVISORY — see CASE_7 comment.
+  recommendationDisposition: "ADVISORY",
   suggestedActions: [],
 };
 

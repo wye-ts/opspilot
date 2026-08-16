@@ -81,8 +81,12 @@ const validReport = {
       finding: "notification-service reported status DEGRADED.",
     },
   ],
+  // Issue #60 Checkpoint B: the accepted Checkpoint-A write contract requires
+  // recommendationDisposition on every new-write report. This base fixture is
+  // ADVISORY + [] — a monitoring-only recommendation with no suggested action.
   suggestedActions: [],
   evidenceState: "SUFFICIENT",
+  recommendationDisposition: "ADVISORY",
 };
 
 const validReportWithRagEvidence = {
@@ -440,6 +444,14 @@ describe("runAgentOrchestrator", () => {
         expectedType: "enum",
         receivedType: "undefined",
       },
+      // Issue #60: recommendationDisposition is now a required new-write key,
+      // so a malformed report reports its absence too (Checkpoint A contract).
+      {
+        path: ["recommendationDisposition"],
+        code: "invalid_value",
+        expectedType: "enum",
+        receivedType: "undefined",
+      },
     ]);
   });
 
@@ -469,6 +481,156 @@ describe("runAgentOrchestrator", () => {
       { path: ["confidence"], code: "too_big", origin: "number", bound: 1 },
     ]);
     expect(JSON.stringify(result.reportValidationIssues)).not.toContain("70");
+  });
+
+  // Issue #60 Checkpoint B (§3): minimal runtime-boundary proof that the
+  // accepted Checkpoint-A write contract (recommendationDisposition ↔ action
+  // cardinality, and groundedBy ⊆ report.evidence) reaches the existing
+  // report-validation path. The full disposition/grounding matrix is pinned in
+  // contracts (resolution-report.test.ts); here we prove only the high-value
+  // runtime boundary — two positives and two negatives. No production
+  // orchestrator change exists: the source-aware run-grounding oracle
+  // (findInvalidEvidence) is reused as-is because groundedBy ⊆ report.evidence
+  // was already enforced by the schema in Checkpoint A.
+  describe("Issue #60 — Checkpoint-A contract reaches the report-validation path", () => {
+    function recordingEmitter() {
+      const emitted: InvestigationEventPayload[] = [];
+      return {
+        emitted,
+        emitLifecycleEvent: async (payload: InvestigationEventPayload) => {
+          emitted.push(payload);
+        },
+      };
+    }
+
+    const types = (emitted: readonly InvestigationEventPayload[]) => emitted.map((e) => e.type);
+
+    it("ACTIONABLE with a grounded suggested action -> REPORT_VALIDATED", async () => {
+      const groundedActionableReport = {
+        ...validReport,
+        recommendationDisposition: "ACTIONABLE",
+        suggestedActions: [
+          {
+            type: "UPDATE_TICKET_STATUS",
+            payload: { status: "IN_PROGRESS", reason: "Investigating delayed notifications." },
+            groundedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+          },
+        ],
+      };
+      const { emitted, emitLifecycleEvent } = recordingEmitter();
+      const provider = new FakeLlmProvider({
+        id: "actionable-grounded",
+        turns: [
+          {
+            kind: "diagnostic_tool_requests",
+            usage,
+            requests: [
+              { toolCallId: "call-1", toolName: "get_service_status", input: { serviceSlug: "notification-service" }, rawAssessment: NO_EVIDENCE_YET_ASSESSMENT },
+            ],
+          },
+          { kind: "report_submission", usage, rawInput: groundedActionableReport },
+        ],
+      });
+
+      const result = await runAgentOrchestrator({
+        provider,
+        toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+        initialConversation: [ticketContext],
+        emitLifecycleEvent,
+      });
+
+      expect(result.status).toBe("completed");
+      if (result.status !== "completed") throw new Error("unreachable");
+      expect(result.report.recommendationDisposition).toBe("ACTIONABLE");
+      expect(result.report.suggestedActions).toHaveLength(1);
+      expect(result.report.suggestedActions[0]?.groundedBy).toEqual([
+        { evidenceId: "call-1", sourceType: "TOOL_EXECUTION" },
+      ]);
+      expect(types(emitted)).toContain("REPORT_VALIDATED");
+    });
+
+    it("ADVISORY with no suggested actions -> REPORT_VALIDATED", async () => {
+      const { emitted, emitLifecycleEvent } = recordingEmitter();
+      const provider = new FakeLlmProvider(
+        buildToolRequestScenario("advisory-empty", "notification-service"),
+      );
+
+      const result = await runAgentOrchestrator({
+        provider,
+        toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+        initialConversation: [ticketContext],
+        emitLifecycleEvent,
+      });
+
+      expect(result.status).toBe("completed");
+      if (result.status !== "completed") throw new Error("unreachable");
+      expect(result.report.recommendationDisposition).toBe("ADVISORY");
+      expect(result.report.suggestedActions).toEqual([]);
+      expect(types(emitted)).toContain("REPORT_VALIDATED");
+    });
+
+    it("ACTIONABLE with no suggested actions -> REPORT_SCHEMA_INVALID (disposition/cardinality fails closed)", async () => {
+      const provider = new FakeLlmProvider({
+        id: "actionable-empty-actions",
+        turns: [
+          {
+            kind: "report_submission",
+            usage,
+            rawInput: { ...validReport, recommendationDisposition: "ACTIONABLE", suggestedActions: [] },
+          },
+        ],
+      });
+
+      const result = await runAgentOrchestrator({
+        provider,
+        toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+        initialConversation: [ticketContext],
+      });
+
+      expect(result.status).toBe("failed");
+      if (result.status !== "failed") throw new Error("unreachable");
+      expect(result.code).toBe("REPORT_SCHEMA_INVALID");
+      // The disposition ↔ action cardinality invariant (F1) is the sole
+      // failure — the sanitized diagnostic surfaces exactly that.
+      expect(result.reportValidationIssues).toEqual([{ path: ["suggestedActions"], code: "custom" }]);
+    });
+
+    it("ACTIONABLE with an ungrounded suggested action -> REPORT_SCHEMA_INVALID (grounding fails closed)", async () => {
+      const provider = new FakeLlmProvider({
+        id: "actionable-ungrounded-action",
+        turns: [
+          {
+            kind: "report_submission",
+            usage,
+            rawInput: {
+              ...validReport,
+              recommendationDisposition: "ACTIONABLE",
+              suggestedActions: [
+                {
+                  type: "DRAFT_CUSTOMER_REPLY",
+                  payload: { subject: "Update", body: "A human will follow up." },
+                  groundedBy: [],
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      const result = await runAgentOrchestrator({
+        provider,
+        toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+        initialConversation: [ticketContext],
+      });
+
+      expect(result.status).toBe("failed");
+      if (result.status !== "failed") throw new Error("unreachable");
+      expect(result.code).toBe("REPORT_SCHEMA_INVALID");
+      // Never repair missing/empty grounding into validity (no
+      // normalizeSubmittedReportInput repair — this is the orchestrator's own
+      // fail-closed write path).
+      expect(result.trace).toEqual([]);
+    });
   });
 
   it("fails with PROVIDER_PROTOCOL_INVALID when a fourth diagnostic tool request replaces the required report on the forced finalization turn", async () => {
@@ -2161,6 +2323,11 @@ describe("runAgentOrchestrator — evidence-aware continuation (issue #58 Checkp
       evidenceState: args.evidenceState,
       rootCause: args.rootCause,
       suggestedActions: [],
+      // Issue #60 Checkpoint B: every variant has zero suggested actions, so
+      // the write contract requires an ADVISORY disposition (ACTIONABLE
+      // demands >= 1 suggested action, which these evidence-state variants do
+      // not exercise — #60 action tests live in the dedicated block below).
+      recommendationDisposition: "ADVISORY",
     };
   }
 
@@ -2621,6 +2788,9 @@ describe("runAgentOrchestrator — genuine current-run conflict (issue #58 Check
       evidenceState: "CONFLICTING",
       rootCause: null,
       suggestedActions: [],
+      // Issue #60 Checkpoint B: zero suggested actions means ADVISORY under the
+      // disposition ↔ action-cardinality invariant.
+      recommendationDisposition: "ADVISORY",
     };
   }
 

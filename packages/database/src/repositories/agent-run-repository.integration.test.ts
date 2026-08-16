@@ -30,6 +30,9 @@ const VALID_REPORT = {
   evidence: [{ evidenceId: "chunk-1", sourceType: "RAG_CHUNK", finding: "Finding" }],
   evidenceState: "SUFFICIENT",
   suggestedActions: [],
+  // Issue #60 Checkpoint B: the new-write contract requires
+  // recommendationDisposition; zero suggested actions => ADVISORY.
+  recommendationDisposition: "ADVISORY",
 };
 
 const SAMPLE_TRACE = [

@@ -19,6 +19,9 @@ const validReport = {
   ],
   suggestedActions: [],
   evidenceState: "SUFFICIENT",
+  // Issue #60: the write contract now requires the model-declared disposition.
+  // This fixture's empty suggestedActions is consistent only with ADVISORY.
+  recommendationDisposition: "ADVISORY",
 } as const;
 
 function parseInvalid(overrides: Record<string, unknown>) {
@@ -99,11 +102,20 @@ describe("summarizeReportValidationIssues", () => {
   });
 
   it("reports a too_big issue for suggestedActions beyond the stripped maxItems bound", () => {
+    // Each action carries a groundedBy locator (Issue #60), and the disposition
+    // is flipped to ACTIONABLE, so the ONLY failure is the count bound — the
+    // array's own .max(3) — not an unrelated min(1) grounding issue on every
+    // element or an ADVISORY cardinality issue (superRefine still runs on a
+    // "dirty" over-count array and would otherwise see a non-empty action list).
     const action = {
       type: "UPDATE_TICKET_STATUS",
       payload: { status: "IN_PROGRESS", reason: "Investigation is continuing." },
+      groundedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
     } as const;
-    const issues = parseInvalid({ suggestedActions: [action, action, action, action] });
+    const issues = parseInvalid({
+      recommendationDisposition: "ACTIONABLE",
+      suggestedActions: [action, action, action, action],
+    });
 
     expect(issues).toEqual([{ path: ["suggestedActions"], code: "too_big", origin: "array", bound: 3 }]);
   });

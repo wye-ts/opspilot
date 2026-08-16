@@ -78,7 +78,17 @@ export function createDeterministicScenario(job: AgentJobRecord): FakeAgentScena
     // new schema's job to convey structurally.
     rootCause: null,
     customerImpact: "No customer impact could be established: the tool's returned status value is not persisted by this milestone.",
-    recommendedResolution: `Further operational action requires a diagnostic workflow that records and evaluates the returned status for ${serviceSlug}; this milestone does not implement one.`,
+    // Issue #60 Checkpoint B: the recommendation prose is aligned with the
+    // structured suggested actions. Ordinary tickets keep the advisory,
+    // status-agnostic wording — no Suggested Action exists, so the
+    // recommendation must not read like a concrete approvable operation.
+    // TICKET-APPROVAL-DEMO aligns with its DRAFT_CUSTOMER_REPLY action / human
+    // follow-up, while staying status-agnostic (it never asserts a specific
+    // status value this scripted scenario cannot know).
+    recommendedResolution:
+      job.ticketContext.ticketId === APPROVAL_DEMO_TICKET_ID
+        ? `A customer-facing reply should be drafted to acknowledge the diagnostic check for ${serviceSlug} and to set the expectation that a human will review this run and follow up; the DRAFT_CUSTOMER_REPLY suggested action provides that draft for review.`
+        : `Further operational action requires a diagnostic workflow that records and evaluates the returned status for ${serviceSlug}; this milestone does not implement one.`,
     confidence: 0.5,
     evidence: [
       {
@@ -95,7 +105,17 @@ export function createDeterministicScenario(job: AgentJobRecord): FakeAgentScena
     // on the tool's returned status, which this scenario never evaluates
     // (see the report fields above). Every other ticketId keeps
     // suggestedActions: [] exactly as shipped in Milestone 6B.
+    //
+    // Issue #60 Checkpoint B: the demo is intentionally the positive Human
+    // Approval path — INSUFFICIENT evidence does not imply ADVISORY / no
+    // action. A grounded customer communication is still ACTIONABLE under the
+    // owner-approved grounding-only gate, so this ticket declares
+    // recommendationDisposition ACTIONABLE and grounds the action on the
+    // already-completed deterministic tool call (the locator is present in
+    // this same report's evidence). Ordinary tickets declare ADVISORY.
     evidenceState: "INSUFFICIENT",
+    recommendationDisposition:
+      job.ticketContext.ticketId === APPROVAL_DEMO_TICKET_ID ? "ACTIONABLE" : "ADVISORY",
     suggestedActions:
       job.ticketContext.ticketId === APPROVAL_DEMO_TICKET_ID
         ? [
@@ -105,6 +125,7 @@ export function createDeterministicScenario(job: AgentJobRecord): FakeAgentScena
                 subject: `Update on your report — ${truncatedSummary}`,
                 body: `Thanks for reaching out about ${serviceSlug}. A diagnostic check ran, but this milestone does not evaluate or persist the tool's returned status, so no specific finding can be shared yet. A human will follow up after reviewing this run.`,
               },
+              groundedBy: [{ evidenceId: toolCallId, sourceType: "TOOL_EXECUTION" }],
             },
           ]
         : [],

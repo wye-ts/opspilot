@@ -32,6 +32,49 @@ const VALID_REPORT = {
   evidence: [{ evidenceId: "chunk-1", sourceType: "RAG_CHUNK", finding: "Finding" }],
   suggestedActions: [],
   evidenceState: "SUFFICIENT",
+  // Issue #60 Checkpoint B: the new-write contract requires
+  // recommendationDisposition. Zero suggested actions => ADVISORY.
+  recommendationDisposition: "ADVISORY",
+};
+
+// A modern new-write report carrying the full #60 contract: an ACTIONABLE
+// disposition and a suggested action whose groundedBy cites an evidence
+// locator present in the same report (Issue #60 Checkpoint B §4).
+const MODERN_ACTIONABLE_REPORT = {
+  category: "SERVICE_DEGRADATION",
+  summary: "Summary",
+  rootCause: "Root cause",
+  customerImpact: "Impact",
+  recommendedResolution: "Update the customer with the diagnostic outcome.",
+  confidence: 0.8,
+  evidence: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "Finding" }],
+  suggestedActions: [
+    {
+      type: "DRAFT_CUSTOMER_REPLY",
+      payload: { subject: "Update", body: "A human will follow up." },
+      groundedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+    },
+  ],
+  evidenceState: "SUFFICIENT",
+  recommendationDisposition: "ACTIONABLE",
+};
+
+// A #58-era stored report: evidenceState present, recommendationDisposition
+// ABSENT, and a suggested action WITHOUT groundedBy (Issue #60 Checkpoint B
+// §4, G1). Reads must succeed with groundedBy normalized to [] and the
+// disposition left undefined — never invented from prose.
+const LEGACY_ACTIONS_REPORT = {
+  category: "SERVICE_DEGRADATION",
+  summary: "Summary",
+  rootCause: "Root cause",
+  customerImpact: "Impact",
+  recommendedResolution: "Resolution",
+  confidence: 0.8,
+  evidence: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "Finding" }],
+  evidenceState: "SUFFICIENT",
+  suggestedActions: [
+    { type: "DRAFT_CUSTOMER_REPLY", payload: { subject: "Update", body: "A human will follow up." } },
+  ],
 };
 
 // A pre-#58 stored report: no evidenceState, always non-null rootCause and
@@ -465,6 +508,83 @@ describe("toReportWrite / fromReportRead", () => {
 
   it("fromReportRead fails closed on a corrupt legacy report (empty evidence)", () => {
     expect(() => fromReportRead({ ...LEGACY_REPORT, evidence: [] })).toThrow(PersistenceError);
+  });
+
+  // Issue #60 Checkpoint B (§4): a valid modern report carrying the full #60
+  // contract survives toReportWrite -> stored JSON -> fromReportRead without
+  // loss or invention.
+  it("round-trips a modern report carrying recommendationDisposition and a grounded action, preserving every field exactly", () => {
+    const written = toReportWrite(MODERN_ACTIONABLE_REPORT);
+    // Simulate the jsonb round trip: plain JSON, then read back.
+    const storedJson = JSON.parse(JSON.stringify(written)) as unknown;
+    const read = fromReportRead(storedJson);
+
+    expect(read).toEqual(written);
+    expect(read.recommendationDisposition).toBe("ACTIONABLE");
+    expect(read.suggestedActions).toHaveLength(1);
+    expect(read.suggestedActions[0]?.type).toBe("DRAFT_CUSTOMER_REPLY");
+    expect(read.suggestedActions[0]?.payload).toEqual({ subject: "Update", body: "A human will follow up." });
+    expect(read.suggestedActions[0]?.groundedBy).toEqual([
+      { evidenceId: "call-1", sourceType: "TOOL_EXECUTION" },
+    ]);
+  });
+
+  // G1 — #58-era legacy compatibility: no recommendationDisposition marker and
+  // an action without groundedBy must read back successfully, normalizing
+  // groundedBy to [] and leaving the disposition undefined (never invented
+  // from prose).
+  it("G1 — a #58-era report with an action lacking groundedBy reads back normalized (groundedBy [], disposition undefined)", () => {
+    const read = fromReportRead(LEGACY_ACTIONS_REPORT);
+
+    expect(read.recommendationDisposition).toBeUndefined();
+    expect(read.suggestedActions[0]?.type).toBe("DRAFT_CUSTOMER_REPLY");
+    expect(read.suggestedActions[0]?.groundedBy).toEqual([]);
+  });
+
+  // G1b — a #58-era row (marker absent) with EXPLICIT non-empty corrupt
+  // grounding must still fail closed: duplicate/subset checks run for every
+  // parsed action regardless of the #60 marker.
+  it.each([
+    [
+      "a duplicate locator",
+      [
+        { evidenceId: "call-1", sourceType: "TOOL_EXECUTION" },
+        { evidenceId: "call-1", sourceType: "TOOL_EXECUTION" },
+      ],
+    ],
+    ["a locator absent from report.evidence", [{ evidenceId: "call-999", sourceType: "TOOL_EXECUTION" }]],
+  ])("G1b — a #58-era report with explicit non-empty corrupt grounding (%s) rejects on fromReportRead", (_label, groundedBy) => {
+    const corrupt = {
+      ...LEGACY_ACTIONS_REPORT,
+      suggestedActions: [
+        { type: "DRAFT_CUSTOMER_REPLY", payload: { subject: "Update", body: "A human will follow up." }, groundedBy },
+      ],
+    };
+    expect(() => fromReportRead(corrupt)).toThrow(PersistenceError);
+  });
+
+  // G2 — #60-era corrupt modern row: recommendationDisposition present,
+  // evidenceState present, action groundedBy absent/[] — structural
+  // normalization to [] must NOT let it pass; the report-level non-empty
+  // grounding rule rejects.
+  it("G2 — a #60-era report with an ungrounded action rejects on fromReportRead", () => {
+    const corrupt = {
+      ...LEGACY_ACTIONS_REPORT,
+      recommendationDisposition: "ACTIONABLE",
+    };
+    expect(() => fromReportRead(corrupt)).toThrow(PersistenceError);
+  });
+
+  // G3 — impossible hybrid: recommendationDisposition present + evidenceState
+  // absent must reject UNCONDITIONALLY. The strong fixture is ADVISORY + []
+  // with otherwise legacy-valid rootCause/evidence — every other #60/#58 rule
+  // is satisfied, so the marker-combination invariant alone causes rejection.
+  it("G3 — a report with recommendationDisposition present but evidenceState absent rejects unconditionally on fromReportRead", () => {
+    const hybrid = {
+      ...LEGACY_REPORT,
+      recommendationDisposition: "ADVISORY",
+    };
+    expect(() => fromReportRead(hybrid)).toThrow(PersistenceError);
   });
 });
 

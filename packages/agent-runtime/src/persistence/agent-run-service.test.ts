@@ -44,6 +44,9 @@ const VALID_REPORT: ResolutionReport = {
   evidence: [{ evidenceId: TOOL_CALL_ID, sourceType: "TOOL_EXECUTION", finding: "Finding" }],
   suggestedActions: [],
   evidenceState: "SUFFICIENT",
+  // Issue #60 Checkpoint B: the new-write contract requires
+  // recommendationDisposition; zero suggested actions => ADVISORY.
+  recommendationDisposition: "ADVISORY",
 };
 
 const JOB_ID = "job-1";

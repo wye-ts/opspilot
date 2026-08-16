@@ -97,7 +97,7 @@ function approvalView(status: ApprovalView["status"]): ApprovalView {
 }
 
 const APPROVAL_ACTION: SuggestedAction[] = [
-  { type: "DRAFT_CUSTOMER_REPLY", payload: { subject: "Update", body: "We'll follow up." } },
+  { type: "DRAFT_CUSTOMER_REPLY", payload: { subject: "Update", body: "We'll follow up." }, groundedBy: [] },
 ];
 
 /**
