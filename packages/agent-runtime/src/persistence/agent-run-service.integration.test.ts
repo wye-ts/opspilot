@@ -62,6 +62,7 @@ function completedReport(callIds: readonly string[]): ResolutionReport {
     })),
     evidenceState: "SUFFICIENT",
     suggestedActions: [],
+    recommendationDisposition: "ADVISORY",
   };
 }
 

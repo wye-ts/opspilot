@@ -134,6 +134,7 @@ interface DeterministicReportShape {
   readonly customerImpact: string;
   readonly recommendedResolution: string;
   readonly evidenceState: string;
+  readonly recommendationDisposition: string;
   readonly evidence: ReadonlyArray<{ readonly evidenceId: string; readonly sourceType: string; readonly finding: string }>;
 }
 
@@ -243,7 +244,7 @@ describe("report content does not overclaim what the persisted trace/evidence co
     expect(report.recommendedResolution.toLowerCase()).toContain("records and evaluates the returned status");
   });
 
-  it("keeps the required unchanged shape: category UNKNOWN, confidence 0.5, one TOOL_EXECUTION evidence entry citing the tool-call id, and no suggested actions", () => {
+  it("keeps the required unchanged shape: category UNKNOWN, confidence 0.5, one TOOL_EXECUTION evidence entry citing the tool-call id, no suggested actions, and an ADVISORY disposition", () => {
     const job = buildJob({ id: "dddddddd-dddd-dddd-dddd-dddddddddddd", ticketContext: { ticketId: "T-10", summary: "billing errors reported" } });
     const scenario = createDeterministicScenario(job);
     const firstTurn = expectToolRequestTurn(scenario.turns[0]);
@@ -257,25 +258,67 @@ describe("report content does not overclaim what the persisted trace/evidence co
     expect(report.evidence[0]?.evidenceId).toBe(toolCallId);
     expect(report.evidence[0]?.sourceType).toBe("TOOL_EXECUTION");
     expect(report.suggestedActions).toEqual([]);
+    // Issue #60 Checkpoint B: an ordinary deterministic ticket stays
+    // ADVISORY with no suggested actions — INSUFFICIENT does not imply a
+    // concrete approvable operation.
+    expect(report.recommendationDisposition).toBe("ADVISORY");
   });
 });
 
 describe("opt-in TICKET-APPROVAL-DEMO suggested action (docs/13-approval-workflow.md §14)", () => {
-  it("returns suggestedActions: [] for an ordinary ticketId — unchanged from today's shipped behavior", () => {
+  it("returns suggestedActions: [] with an ADVISORY disposition for an ordinary ticketId — unchanged from today's shipped behavior", () => {
     const job = buildJob({ ticketContext: { ticketId: "TICKET-2001", summary: "billing errors reported" } });
-    const report = extractReport(job) as unknown as { suggestedActions: unknown[] };
+    const report = extractReport(job) as unknown as { suggestedActions: unknown[]; recommendationDisposition: string };
     expect(report.suggestedActions).toEqual([]);
+    // Issue #60 Checkpoint B: an ordinary ticket carries no Suggested Action,
+    // so its recommendation stays ADVISORY — it must not read like a concrete
+    // approvable operation.
+    expect(report.recommendationDisposition).toBe("ADVISORY");
   });
 
-  it("returns exactly one DRAFT_CUSTOMER_REPLY suggested action when ticketId is exactly TICKET-APPROVAL-DEMO", () => {
-    const job = buildJob({ ticketContext: { ticketId: "TICKET-APPROVAL-DEMO", summary: "Approval workflow demo" } });
-    const report = extractReport(job) as unknown as {
-      suggestedActions: Array<{ type: string; payload: { subject: string; body: string } }>;
+  it("returns exactly one grounded DRAFT_CUSTOMER_REPLY suggested action with an ACTIONABLE disposition when ticketId is exactly TICKET-APPROVAL-DEMO", () => {
+    const job = buildJob({ id: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", ticketContext: { ticketId: "TICKET-APPROVAL-DEMO", summary: "Approval workflow demo" } });
+    const scenario = createDeterministicScenario(job);
+    const firstTurn = expectToolRequestTurn(scenario.turns[0]);
+    const secondTurn = expectReportSubmissionTurn(scenario.turns[1]);
+    const toolCallId = firstTurn.requests[0]?.toolCallId;
+    const report = secondTurn.rawInput as DeterministicReportShape & {
+      suggestedActions: Array<{
+        type: string;
+        payload: { subject: string; body: string };
+        groundedBy: Array<{ evidenceId: string; sourceType: string }>;
+      }>;
     };
+
+    // Issue #60 Checkpoint B: the demo is intentionally the positive Human
+    // Approval path — INSUFFICIENT evidence does not imply ADVISORY / no
+    // action. A grounded customer communication is ACTIONABLE.
+    expect(report.recommendationDisposition).toBe("ACTIONABLE");
     expect(report.suggestedActions).toHaveLength(1);
     expect(report.suggestedActions[0]?.type).toBe("DRAFT_CUSTOMER_REPLY");
     expect(report.suggestedActions[0]?.payload.subject).toBeTruthy();
     expect(report.suggestedActions[0]?.payload.body).toBeTruthy();
+    // The action's grounding is the already-completed deterministic tool call,
+    // and that same locator is present in this report's evidence.
+    expect(report.suggestedActions[0]?.groundedBy).toEqual([
+      { evidenceId: toolCallId, sourceType: "TOOL_EXECUTION" },
+    ]);
+    const evidenceLocators = report.evidence.map((e) => ({ evidenceId: e.evidenceId, sourceType: e.sourceType }));
+    expect(evidenceLocators).toContainEqual({ evidenceId: toolCallId, sourceType: "TOOL_EXECUTION" });
+  });
+
+  it("TICKET-APPROVAL-DEMO recommendation prose semantically aligns with the DRAFT_CUSTOMER_REPLY action / human follow-up, staying status-agnostic", () => {
+    const job = buildJob({ ticketContext: { ticketId: "TICKET-APPROVAL-DEMO", summary: "Approval workflow demo" } });
+    const report = extractReport(job);
+
+    const prose = report.recommendedResolution.toLowerCase();
+    expect(prose).toContain("customer-facing reply");
+    expect(prose).toContain("draft");
+    expect(prose).toContain("human");
+    // The demo recommendation stays status-agnostic: it never claims a
+    // specific tool-returned status/finding this scripted scenario cannot know.
+    expect(prose).not.toContain("service_degradation");
+    expect(prose).not.toContain("operational");
   });
 
   it("treats the opt-in ticketId as an exact, case-sensitive match — a substring or case mismatch does not activate it", () => {

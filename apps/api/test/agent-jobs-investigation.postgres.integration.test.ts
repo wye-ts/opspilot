@@ -98,6 +98,7 @@ function completedReport(callIds: readonly string[]): ResolutionReport {
     })),
     evidenceState: "SUFFICIENT",
     suggestedActions: [],
+    recommendationDisposition: "ADVISORY",
   };
 }
 
@@ -175,6 +176,7 @@ function insufficientReport(callIds: readonly string[]): ResolutionReport {
     })),
     evidenceState: "INSUFFICIENT",
     suggestedActions: [],
+    recommendationDisposition: "ADVISORY",
   };
 }
 
@@ -193,6 +195,7 @@ function conflictingReport(callIds: readonly string[]): ResolutionReport {
     })),
     evidenceState: "CONFLICTING",
     suggestedActions: [],
+    recommendationDisposition: "ADVISORY",
   };
 }
 
@@ -211,6 +214,7 @@ function sufficientNonCausalReport(callIds: readonly string[]): ResolutionReport
     })),
     evidenceState: "SUFFICIENT",
     suggestedActions: [],
+    recommendationDisposition: "ADVISORY",
   };
 }
 
