@@ -287,7 +287,11 @@ conversation.`;
 // behavior-changing prompt update, so it records the logical prompt-version
 // bump to opspilot-agent-v2 (docs/04-agent-design.md §20.4; the repo's
 // AGENT_PROMPT_VERSION default in docs/03-technical-design.md is updated to
-// match). Deliberately appended on the INVESTIGATION phase only: the
+// match). Issue #60 Checkpoint A's disposition/grounding report guidance
+// (REPORT_FIELD_BOUNDS above) is a further behavior-changing prompt update
+// that advances the logical prompt version to opspilot-agent-v3 (§20.4; the
+// AGENT_PROMPT_VERSION default is updated to match).
+// Deliberately appended on the INVESTIGATION phase only: the
 // FINALIZATION turn is a forced report submission with no diagnostic decision
 // to guide. It teaches structure and decision rules — never hidden reasoning
 // requirements, and it never asks the model to reveal chain-of-thought.

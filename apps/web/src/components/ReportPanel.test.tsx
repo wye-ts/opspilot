@@ -38,7 +38,7 @@ describe("ReportPanel", () => {
   it("never renders anything about suggested actions, regardless of the report's own data", () => {
     const report: StoredResolutionReport = {
       ...baseReport,
-      suggestedActions: [{ type: "UPDATE_TICKET_STATUS", payload: { status: "RESOLVED", reason: "Fixed." } }],
+      suggestedActions: [{ type: "UPDATE_TICKET_STATUS", payload: { status: "RESOLVED", reason: "Fixed." }, groundedBy: [] }],
     };
     render(<ReportPanel outcome={{ type: "COMPLETED", report }} />);
 

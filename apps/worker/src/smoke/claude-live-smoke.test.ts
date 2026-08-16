@@ -238,7 +238,7 @@ describe("live smoke bounded multi-step run (MINOR closure fix)", () => {
               customerImpact:
                 "Some customers are experiencing delayed notification emails.",
               recommendedResolution:
-                "Escalate to the messaging platform team to investigate notification-service degradation.",
+                "Continue manual review of the notification-service degradation before proposing a structured next action.",
               confidence: 0.9,
               evidence: [
                 {
@@ -248,6 +248,7 @@ describe("live smoke bounded multi-step run (MINOR closure fix)", () => {
                 },
               ],
               evidenceState: "SUFFICIENT",
+              recommendationDisposition: "ADVISORY",
               suggestedActions: [],
             },
           };
@@ -334,6 +335,16 @@ describe("live smoke bounded multi-step run (MINOR closure fix)", () => {
     expect(requestedToolCallIds).toEqual(["call-a", "call-b", "call-c"]);
     // The accepted report references an executed tool-call evidence id.
     expect(result.report.evidence[0]?.evidenceId).toBe("call-c");
+
+    // Issue #60 Checkpoint C closure fix — this bounded finalization report is
+    // a deliberate ADVISORY/no-action fixture (the test measures provider-turn
+    // bounds, not action execution), so its recommendation must not read like
+    // a concrete escalation command.
+    expect(result.report.recommendationDisposition).toBe("ADVISORY");
+    expect(result.report.suggestedActions).toEqual([]);
+    expect(result.report.recommendedResolution).toBe(
+      "Continue manual review of the notification-service degradation before proposing a structured next action.",
+    );
   });
 
   it("advertises the same max provider-call bound the orchestrator enforces before any call", () => {

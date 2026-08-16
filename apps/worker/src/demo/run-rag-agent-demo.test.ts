@@ -25,6 +25,7 @@ function buildReport(
     confidence: 0.5,
     evidence: [],
     suggestedActions: [],
+    recommendationDisposition: "ADVISORY",
     evidenceState,
   };
 }

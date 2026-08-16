@@ -7,9 +7,9 @@ import { SuggestedActionsPanel } from "./SuggestedActionsPanel";
 describe("SuggestedActionsPanel", () => {
   it("renders one card per suggested action, all three variants", () => {
     const actions: SuggestedAction[] = [
-      { type: "UPDATE_TICKET_STATUS", payload: { status: "RESOLVED", reason: "Fixed." } },
-      { type: "CREATE_ESCALATION", payload: { team: "platform", reason: "Needs attention.", priority: "HIGH" } },
-      { type: "DRAFT_CUSTOMER_REPLY", payload: { subject: "Update", body: "We are looking into it." } },
+      { type: "UPDATE_TICKET_STATUS", payload: { status: "RESOLVED", reason: "Fixed." }, groundedBy: [] },
+      { type: "CREATE_ESCALATION", payload: { team: "platform", reason: "Needs attention.", priority: "HIGH" }, groundedBy: [] },
+      { type: "DRAFT_CUSTOMER_REPLY", payload: { subject: "Update", body: "We are looking into it." }, groundedBy: [] },
     ];
     render(<SuggestedActionsPanel actions={actions} />);
 
@@ -25,7 +25,7 @@ describe("SuggestedActionsPanel", () => {
   });
 
   it("its heading is focusable via tabindex=-1, matching the other top-level sections", () => {
-    render(<SuggestedActionsPanel actions={[{ type: "UPDATE_TICKET_STATUS", payload: { status: "RESOLVED", reason: "Fixed." } }]} />);
+    render(<SuggestedActionsPanel actions={[{ type: "UPDATE_TICKET_STATUS", payload: { status: "RESOLVED", reason: "Fixed." }, groundedBy: [] }]} />);
     expect(screen.getByRole("heading", { name: "Suggested actions" })).toHaveAttribute("tabindex", "-1");
   });
 

@@ -307,7 +307,7 @@ describe("App investigation workflow", () => {
           recommendedResolution: "rr",
           confidence: 0.5,
           evidence: [{ evidenceId: "e1", sourceType: "TOOL_EXECUTION", finding: "f" }],
-          suggestedActions: [{ type: "DRAFT_CUSTOMER_REPLY", payload: { subject: "Update", body: "We'll follow up." } }],
+          suggestedActions: [{ type: "DRAFT_CUSTOMER_REPLY", payload: { subject: "Update", body: "We'll follow up." }, groundedBy: [] }],
         },
       },
     });

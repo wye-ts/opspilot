@@ -15,6 +15,7 @@ const VALID_REPORT: ResolutionReport = {
   confidence: 0.5,
   evidence: [{ evidenceId: "e1", sourceType: "TOOL_EXECUTION", finding: "finding" }],
   evidenceState: "SUFFICIENT",
+  recommendationDisposition: "ADVISORY",
   suggestedActions: [],
 };
 
@@ -129,8 +130,16 @@ describe("buildObservedFacts", () => {
       status: "completed",
       report: {
         ...VALID_REPORT,
+        // Issue #60 Checkpoint C: the override promotes the report to a
+        // grounded ACTIONABLE so the fixture stays disposition-consistent
+        // (a non-empty action under ADVISORY would violate the contract).
+        recommendationDisposition: "ACTIONABLE",
         suggestedActions: [
-          { type: "UPDATE_TICKET_STATUS", payload: { status: "IN_PROGRESS", reason: "reason" } },
+          {
+            type: "UPDATE_TICKET_STATUS",
+            payload: { status: "IN_PROGRESS", reason: "reason" },
+            groundedBy: [{ evidenceId: "e1", sourceType: "TOOL_EXECUTION" }],
+          },
         ],
       },
       trace: [],

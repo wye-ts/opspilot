@@ -21,6 +21,7 @@ function buildReport(rootCause: string | null, evidenceState: EvidenceState): Re
     confidence: 0.5,
     evidence: [],
     suggestedActions: [],
+    recommendationDisposition: "ADVISORY",
     evidenceState,
   };
 }

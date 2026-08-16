@@ -48,6 +48,9 @@ function buildDemoScenario(): FakeAgentScenario {
       },
     ],
     evidenceState: "SUFFICIENT",
+    // Issue #60 Checkpoint C: grounded ACTIONABLE — the escalation is grounded
+    // on the completed get_service_status call cited in this report's evidence.
+    recommendationDisposition: "ACTIONABLE",
     suggestedActions: [
       {
         type: "CREATE_ESCALATION",
@@ -56,6 +59,7 @@ function buildDemoScenario(): FakeAgentScenario {
           reason: "billing-service is reporting an outage.",
           priority: "URGENT",
         },
+        groundedBy: [{ evidenceId: DEMO_TOOL_CALL_ID, sourceType: "TOOL_EXECUTION" }],
       },
     ],
   };

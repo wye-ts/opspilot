@@ -15,7 +15,7 @@ const CASE_1_REPORT: ResolutionReport = {
   rootCause: "notification-service is reporting a DEGRADED status.",
   customerImpact: "Customers may experience delayed notification emails and push notifications.",
   recommendedResolution:
-    "Monitor notification-service and follow the degradation runbook until status recovers.",
+    "Update the ticket to IN_PROGRESS while the notification-service degradation is investigated per the runbook.",
   confidence: 0.85,
   evidence: [
     {
@@ -30,10 +30,15 @@ const CASE_1_REPORT: ResolutionReport = {
     },
   ],
   evidenceState: "SUFFICIENT",
+  // Issue #60 Checkpoint C: new-write fixtures declare the disposition and
+  // ground each action on a locator already present in this report's evidence
+  // (the completed get_service_status call for the degraded service).
+  recommendationDisposition: "ACTIONABLE",
   suggestedActions: [
     {
       type: "UPDATE_TICKET_STATUS",
       payload: { status: "IN_PROGRESS", reason: "Investigating notification-service degradation." },
+      groundedBy: [{ evidenceId: "case1-call-1", sourceType: "TOOL_EXECUTION" }],
     },
   ],
 };
@@ -44,7 +49,7 @@ const CASE_2_REPORT: ResolutionReport = {
   rootCause: "notification-service reported DEGRADED while a queue backlog builds up.",
   customerImpact: "Customers are experiencing delayed emails and push notifications.",
   recommendedResolution:
-    "Scale the notification worker pool and monitor downstream provider status per the queue-backlog runbook.",
+    "Update the ticket to IN_PROGRESS while the notification queue backlog is investigated per the runbook.",
   confidence: 0.8,
   evidence: [
     {
@@ -64,10 +69,20 @@ const CASE_2_REPORT: ResolutionReport = {
     },
   ],
   evidenceState: "SUFFICIENT",
+  // Issue #60 Checkpoint C: grounded ACTIONABLE — see CASE_1 comment.
+  recommendationDisposition: "ACTIONABLE",
   suggestedActions: [
     {
       type: "UPDATE_TICKET_STATUS",
-      payload: { status: "IN_PROGRESS", reason: "Scaling notification workers to clear the backlog." },
+      // Final source-grounding closure: the reason describes the ticket-status
+      // action / observed investigation state — it must not claim an
+      // unrepresented scaling operation.
+      payload: { status: "IN_PROGRESS", reason: "Notification queue backlog and service degradation are under investigation." },
+      // Grounded in evidence that supports the backlog/degradation context.
+      groundedBy: [
+        { evidenceId: "case2-call-1", sourceType: "TOOL_EXECUTION" },
+        { evidenceId: "runbook-notification-queue-backlog-001", sourceType: "RAG_CHUNK" },
+      ],
     },
   ],
 };
@@ -78,7 +93,7 @@ const CASE_3_REPORT: ResolutionReport = {
   rootCause: "Elevated 401 responses correlated with a recent auth-service deploy.",
   customerImpact: "Customers are unable to log in.",
   recommendedResolution:
-    "Correlate the failures with the most recent auth-service deploy and check for signing-key or clock-drift issues per the runbook.",
+    "Create an escalation to the Identity team to investigate the elevated authentication failures per the runbook.",
   confidence: 0.75,
   evidence: [
     {
@@ -98,6 +113,8 @@ const CASE_3_REPORT: ResolutionReport = {
     },
   ],
   evidenceState: "SUFFICIENT",
+  // Issue #60 Checkpoint C: grounded ACTIONABLE — see CASE_1 comment.
+  recommendationDisposition: "ACTIONABLE",
   suggestedActions: [
     {
       type: "CREATE_ESCALATION",
@@ -106,6 +123,14 @@ const CASE_3_REPORT: ResolutionReport = {
         reason: "Investigate elevated authentication failures.",
         priority: "HIGH",
       },
+      // Final source-grounding closure: the tool result reports auth-service
+      // OPERATIONAL, which alone does not substantiate an escalation for
+      // authentication failures — ground the escalation in the runbook
+      // evidence that describes the incident/investigation context.
+      groundedBy: [
+        { evidenceId: "runbook-auth-failures-001", sourceType: "RAG_CHUNK" },
+        { evidenceId: "runbook-auth-failures-002", sourceType: "RAG_CHUNK" },
+      ],
     },
   ],
 };
@@ -131,6 +156,11 @@ const CASE_4_REPORT: ResolutionReport = {
     },
   ],
   evidenceState: "SUFFICIENT",
+  // Issue #60 Checkpoint C: this case deliberately carries no structured
+  // action — the recommendation is monitoring/investigation guidance for the
+  // operator (check the connection count, inspect long-running queries), so
+  // the truthful disposition is ADVISORY with zero suggested actions.
+  recommendationDisposition: "ADVISORY",
   suggestedActions: [],
 };
 
@@ -139,7 +169,8 @@ const CASE_5_REPORT: ResolutionReport = {
   summary: "Billing invoice PDFs are misformatted.",
   rootCause: "A template version mismatch after a billing-service deploy.",
   customerImpact: "Customers are receiving invoices with misaligned totals or missing line items.",
-  recommendedResolution: "Roll back or fix the invoice template version per the runbook.",
+  recommendedResolution:
+    "Draft a customer-facing reply acknowledging the invoice formatting issue; the DRAFT_CUSTOMER_REPLY suggested action provides that draft for review.",
   confidence: 0.8,
   evidence: [
     {
@@ -154,13 +185,23 @@ const CASE_5_REPORT: ResolutionReport = {
     },
   ],
   evidenceState: "SUFFICIENT",
+  // Issue #60 Checkpoint C: grounded ACTIONABLE — see CASE_1 comment.
+  recommendationDisposition: "ACTIONABLE",
   suggestedActions: [
     {
       type: "DRAFT_CUSTOMER_REPLY",
       payload: {
         subject: "Invoice formatting issue",
-        body: "We are aware of an issue affecting invoice PDF formatting and are working on a fix.",
+        // Final source-grounding closure: status-neutral wording — the fixture
+        // evidence does not support claiming remediation progress ("working on
+        // a fix"), so the reply only acknowledges the incident and sets the
+        // expectation of human follow-up.
+        body: "We are aware of an issue affecting invoice PDF formatting. A human will follow up after reviewing the incident.",
       },
+      // Grounded in the evidence that actually describes the invoice-formatting
+      // issue (the runbook), not the OUTAGE tool result about billing-service
+      // availability.
+      groundedBy: [{ evidenceId: "runbook-billing-invoice-formatting-001", sourceType: "RAG_CHUNK" }],
     },
   ],
 };
@@ -173,7 +214,8 @@ const CASE_6_REPORT: ResolutionReport = {
   // now conveys that structurally via INSUFFICIENT + rootCause null.
   rootCause: null,
   customerImpact: "Impact could not be determined from available evidence.",
-  recommendedResolution: "Escalate for manual investigation.",
+  recommendedResolution:
+    "Manual investigation is required before a structured next action can be recommended.",
   confidence: 0.2,
   evidence: [
     {
@@ -183,6 +225,12 @@ const CASE_6_REPORT: ResolutionReport = {
     },
   ],
   evidenceState: "INSUFFICIENT",
+  // Issue #60 Checkpoint C closure fix: this no-match case deliberately
+  // carries no structured action. CREATE_ESCALATION is a supported action
+  // type, but this run's evidence does not yet justify one — the
+  // recommendation is manual investigation before any structured next action,
+  // so the truthful disposition is ADVISORY with zero suggested actions.
+  recommendationDisposition: "ADVISORY",
   suggestedActions: [],
 };
 

@@ -5,9 +5,29 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SuggestedAction } from "../api/types";
 import { SuggestedActionCard } from "./SuggestedActionCard";
 
+// Legacy-normalized read shape: groundedBy is [] for pre-#60 stored actions,
+// and the card must render no grounding line for it.
 const replyAction: SuggestedAction = {
   type: "DRAFT_CUSTOMER_REPLY",
   payload: { subject: "Update on password reset issue", body: "We've identified the root cause." },
+  groundedBy: [],
+};
+
+// Modern #60 read shape: a grounded action carries 1..10 evidence locators.
+const groundedReplyAction: SuggestedAction = {
+  type: "DRAFT_CUSTOMER_REPLY",
+  payload: { subject: "Update on password reset issue", body: "We've identified the root cause." },
+  groundedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+};
+
+// Multiple locators render compactly on one muted line.
+const multiLocatorAction: SuggestedAction = {
+  type: "CREATE_ESCALATION",
+  payload: { team: "Email Platform Engineering", priority: "MEDIUM", reason: "Needs verification." },
+  groundedBy: [
+    { evidenceId: "call-1", sourceType: "TOOL_EXECUTION" },
+    { evidenceId: "runbook-email-001", sourceType: "RAG_CHUNK" },
+  ],
 };
 
 // `userEvent.setup()` installs its own jsdom Clipboard stub on
@@ -97,9 +117,42 @@ describe("SuggestedActionCard — Draft customer reply Copy CTA", () => {
     const escalation: SuggestedAction = {
       type: "CREATE_ESCALATION",
       payload: { team: "Email Platform Engineering", priority: "MEDIUM", reason: "Needs verification." },
+      groundedBy: [],
     };
     render(<SuggestedActionCard action={escalation} />);
 
     expect(screen.queryByRole("button", { name: /copy/i })).toBeNull();
+  });
+});
+
+// Issue #60 Checkpoint C — the grounding line on Suggested Action cards.
+describe("SuggestedActionCard — grounding line", () => {
+  it("renders 'Grounded in:' with the humanized source and evidenceId for a grounded modern action", () => {
+    render(<SuggestedActionCard action={groundedReplyAction} />);
+
+    expect(screen.getByText(/Grounded in:/)).toBeInTheDocument();
+    expect(screen.getByText(/Tool execution call-1/)).toBeInTheDocument();
+  });
+
+  it("renders multiple locators compactly on one line", () => {
+    render(<SuggestedActionCard action={multiLocatorAction} />);
+
+    const grounding = screen.getByText(/Grounded in:/);
+    expect(grounding).toBeInTheDocument();
+    expect(screen.getByText(/Tool execution call-1/)).toBeInTheDocument();
+    expect(screen.getByText(/Rag chunk runbook-email-001/)).toBeInTheDocument();
+  });
+
+  it("omits the grounding line for a legacy normalized action with groundedBy: []", () => {
+    render(<SuggestedActionCard action={replyAction} />);
+
+    expect(screen.queryByText(/Grounded in:/)).toBeNull();
+  });
+
+  it("keeps the existing card payload behavior intact alongside the grounding line", () => {
+    render(<SuggestedActionCard action={multiLocatorAction} />);
+
+    expect(screen.getByText("Email Platform Engineering")).toBeInTheDocument();
+    expect(screen.getByText("Needs verification.")).toBeInTheDocument();
   });
 });

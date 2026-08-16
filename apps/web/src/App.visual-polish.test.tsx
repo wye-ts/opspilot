@@ -98,7 +98,7 @@ function demoRunDetail(): AgentRunDetail {
       type: "COMPLETED",
       report: {
         ...COMPLETED.report,
-        suggestedActions: [{ type: "DRAFT_CUSTOMER_REPLY", payload: { subject: "Update", body: "We'll follow up." } }],
+        suggestedActions: [{ type: "DRAFT_CUSTOMER_REPLY", payload: { subject: "Update", body: "We'll follow up." }, groundedBy: [] }],
       },
     },
   });

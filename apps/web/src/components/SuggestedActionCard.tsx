@@ -130,6 +130,30 @@ function CopyReplyButton({ subject, body }: { readonly subject: string; readonly
   );
 }
 
+// Issue #60 Checkpoint C: the compact muted grounding line shown on each card.
+// Renders one span per locator and is omitted entirely for legacy rows whose
+// groundedBy normalized to [] (the empty case is required for stored pre-#60
+// actions). The evidenceId is part of the report evidence locator contract and
+// already visible in ReportPanel, so surfacing it here exposes no new content.
+function GroundingLine({
+  locators,
+}: {
+  readonly locators: readonly SuggestedAction["groundedBy"][number][];
+}) {
+  if (locators.length === 0) return null;
+  return (
+    <p className="suggested-action-card__grounding">
+      Grounded in:{" "}
+      {locators.map((locator, index) => (
+        <span key={`${locator.sourceType}:${locator.evidenceId}`}>
+          {index > 0 && ", "}
+          {humanizeEnum(locator.sourceType)} {locator.evidenceId}
+        </span>
+      ))}
+    </p>
+  );
+}
+
 // Renders every SuggestedAction variant exhaustively — a new contract
 // variant would be caught by the exhaustive switch failing to compile.
 export function SuggestedActionCard({ action }: SuggestedActionCardProps) {
@@ -155,6 +179,7 @@ export function SuggestedActionCard({ action }: SuggestedActionCardProps) {
               <dd>{action.payload.reason}</dd>
             </div>
           </dl>
+          <GroundingLine locators={action.groundedBy} />
         </article>
       );
     case "CREATE_ESCALATION":
@@ -182,6 +207,7 @@ export function SuggestedActionCard({ action }: SuggestedActionCardProps) {
               <dd>{action.payload.reason}</dd>
             </div>
           </dl>
+          <GroundingLine locators={action.groundedBy} />
         </article>
       );
     case "DRAFT_CUSTOMER_REPLY":
@@ -203,6 +229,7 @@ export function SuggestedActionCard({ action }: SuggestedActionCardProps) {
           {/* Bounded rendering, not truncation — the full body (up to 4000
               chars per ResolutionReportSchema) stays readable so a reviewer
               can see exactly what they would be approving. */}
+          <GroundingLine locators={action.groundedBy} />
           <div className="suggested-action-body">{action.payload.body}</div>
         </article>
       );
