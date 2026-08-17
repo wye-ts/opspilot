@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 import { computeParityFixture } from "./parity-vectors";
 
 // Regenerates the committed apps/worker/src/evaluation/fixtures/ts-parity-v2.json
-// from the real 15-case dataset. Run directly via:
+// from the real 20-case dataset (15 original Phase 1 cases + five Issue #59
+// Checkpoint B additions). Run directly via:
 //   pnpm --filter @opspilot/worker exec tsx src/evaluation/export-parity-vectors.ts
 // parity-vectors.test.ts is the gate that fails if this file drifts from
 // what's committed — this script is only how a maintainer regenerates it

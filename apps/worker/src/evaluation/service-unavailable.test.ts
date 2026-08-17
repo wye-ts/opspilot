@@ -37,7 +37,14 @@ function validCase(id: string): EvaluationCase {
     corpusProfile: "default",
     toolProfile: "default",
     scenario: { id, turns: [] },
-    expectations: { runStatus: "failed", failure: { expectedCode: "TOOL_NOT_FOUND" } },
+    // Issue #59 Checkpoint B rule 12: a failed case must declare
+    // expectedRecovery (this test's focus is service-unavailable handling, so
+    // the synthetic case stays minimally dataset-valid).
+    expectations: {
+      runStatus: "failed",
+      failure: { expectedCode: "TOOL_NOT_FOUND" },
+      expectedRecovery: { failedStage: "DIAGNOSTIC_EXECUTION", reportProduced: false },
+    },
   };
 }
 

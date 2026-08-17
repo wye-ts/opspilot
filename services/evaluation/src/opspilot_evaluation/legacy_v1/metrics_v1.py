@@ -8,7 +8,7 @@ model; this module must never change.
 
 from __future__ import annotations
 
-from opspilot_evaluation.legacy_v1.schemas_v1 import EvaluationMetrics, MetricRatio
+from opspilot_evaluation.legacy_v1.schemas_v1 import EvaluationMetricsV1, MetricRatio
 from opspilot_evaluation.legacy_v1.scorer_v1 import CaseScoreResultV1
 
 TOOL_CHECK_NAMES = frozenset(
@@ -48,13 +48,13 @@ def _tool_correctness_ratio(results: list[CaseScoreResultV1]) -> MetricRatio:
     return MetricRatio(numerator=len(passing), denominator=len(declaring))
 
 
-def aggregate_metrics_v1(results: list[CaseScoreResultV1]) -> EvaluationMetrics:
+def aggregate_metrics_v1(results: list[CaseScoreResultV1]) -> EvaluationMetricsV1:
     total_cases = len(results)
     passed_cases = len([result for result in results if result.passed])
     failed_cases = total_cases - passed_cases
     pass_rate = 0.0 if total_cases == 0 else passed_cases / total_cases
 
-    return EvaluationMetrics(
+    return EvaluationMetricsV1(
         totalCases=total_cases,
         passedCases=passed_cases,
         failedCases=failed_cases,

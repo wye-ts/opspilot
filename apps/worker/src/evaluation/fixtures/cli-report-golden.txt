@@ -1,30 +1,140 @@
 OpsPilot Evaluation
 
 PASS notification-service-degradation
+  ~ unknown-telemetry-handling: No expectation was declared for this check.
+  ~ deterministic-recovery: No recovery path was exercised in this run.
 PASS notification-queue-backlog
+  ~ root-cause-discipline: No expectation was declared for this check.
+  ~ evidence-support: No expectation was declared for this check.
+  ~ unknown-telemetry-handling: No expectation was declared for this check.
+  ~ diagnostic-justification: No expectation was declared for this check.
+  ~ confidence-calibration: No expectation was declared for this check.
+  ~ action-grounding: No expectation was declared for this check.
+  ~ approval-gate: No expectation was declared for this check.
+  ~ deterministic-recovery: No recovery path was exercised in this run.
 PASS authentication-failure
+  ~ root-cause-discipline: No expectation was declared for this check.
+  ~ evidence-support: No expectation was declared for this check.
+  ~ unknown-telemetry-handling: No expectation was declared for this check.
+  ~ diagnostic-justification: No expectation was declared for this check.
+  ~ confidence-calibration: No expectation was declared for this check.
+  ~ action-grounding: No expectation was declared for this check.
+  ~ approval-gate: No expectation was declared for this check.
+  ~ deterministic-recovery: No recovery path was exercised in this run.
 PASS database-connection-saturation
+  ~ diagnostic-justification: No expectation was declared for this check.
+  ~ action-grounding: No expectation was declared for this check.
+  ~ deterministic-recovery: No recovery path was exercised in this run.
 PASS billing-invoice-formatting
+  ~ root-cause-discipline: No expectation was declared for this check.
+  ~ evidence-support: No expectation was declared for this check.
+  ~ unknown-telemetry-handling: No expectation was declared for this check.
+  ~ diagnostic-justification: No expectation was declared for this check.
+  ~ confidence-calibration: No expectation was declared for this check.
+  ~ action-grounding: No expectation was declared for this check.
+  ~ approval-gate: No expectation was declared for this check.
+  ~ deterministic-recovery: No recovery path was exercised in this run.
 PASS irrelevant-no-match-query
+  ~ action-grounding: No expectation was declared for this check.
+  ~ deterministic-recovery: No recovery path was exercised in this run.
 PASS fabricated-rag-evidence
+  ~ root-cause-discipline: The run did not complete, so this check cannot be evaluated.
+  ~ evidence-support: The run did not complete, so this check cannot be evaluated.
+  ~ unknown-telemetry-handling: The run did not complete, so this check cannot be evaluated.
+  ~ diagnostic-justification: No expectation was declared for this check.
+  ~ confidence-calibration: The run did not complete, so this check cannot be evaluated.
+  ~ action-grounding: The run did not complete, so this check cannot be evaluated.
 PASS fabricated-tool-evidence
+  ~ root-cause-discipline: The run did not complete, so this check cannot be evaluated.
+  ~ evidence-support: The run did not complete, so this check cannot be evaluated.
+  ~ unknown-telemetry-handling: The run did not complete, so this check cannot be evaluated.
+  ~ diagnostic-justification: No expectation was declared for this check.
+  ~ confidence-calibration: The run did not complete, so this check cannot be evaluated.
+  ~ action-grounding: The run did not complete, so this check cannot be evaluated.
 PASS unknown-tool-request
+  ~ root-cause-discipline: The run did not complete, so this check cannot be evaluated.
+  ~ evidence-support: The run did not complete, so this check cannot be evaluated.
+  ~ unknown-telemetry-handling: The run did not complete, so this check cannot be evaluated.
+  ~ diagnostic-justification: No expectation was declared for this check.
+  ~ confidence-calibration: The run did not complete, so this check cannot be evaluated.
+  ~ action-grounding: The run did not complete, so this check cannot be evaluated.
 PASS invalid-tool-input
+  ~ root-cause-discipline: The run did not complete, so this check cannot be evaluated.
+  ~ evidence-support: The run did not complete, so this check cannot be evaluated.
+  ~ unknown-telemetry-handling: The run did not complete, so this check cannot be evaluated.
+  ~ diagnostic-justification: No expectation was declared for this check.
+  ~ confidence-calibration: The run did not complete, so this check cannot be evaluated.
+  ~ action-grounding: The run did not complete, so this check cannot be evaluated.
 PASS provider-protocol-error
+  ~ root-cause-discipline: The run did not complete, so this check cannot be evaluated.
+  ~ evidence-support: The run did not complete, so this check cannot be evaluated.
+  ~ unknown-telemetry-handling: The run did not complete, so this check cannot be evaluated.
+  ~ diagnostic-justification: No expectation was declared for this check.
+  ~ confidence-calibration: The run did not complete, so this check cannot be evaluated.
+  ~ action-grounding: The run did not complete, so this check cannot be evaluated.
 PASS missing-final-report
+  ~ root-cause-discipline: The run did not complete, so this check cannot be evaluated.
+  ~ evidence-support: The run did not complete, so this check cannot be evaluated.
+  ~ unknown-telemetry-handling: The run did not complete, so this check cannot be evaluated.
+  ~ confidence-calibration: The run did not complete, so this check cannot be evaluated.
+  ~ action-grounding: The run did not complete, so this check cannot be evaluated.
 PASS tool-execution-failure
+  ~ root-cause-discipline: The run did not complete, so this check cannot be evaluated.
+  ~ evidence-support: The run did not complete, so this check cannot be evaluated.
+  ~ unknown-telemetry-handling: The run did not complete, so this check cannot be evaluated.
+  ~ diagnostic-justification: No expectation was declared for this check.
+  ~ confidence-calibration: The run did not complete, so this check cannot be evaluated.
+  ~ action-grounding: The run did not complete, so this check cannot be evaluated.
 PASS malformed-report-submission
+  ~ root-cause-discipline: The run did not complete, so this check cannot be evaluated.
+  ~ evidence-support: The run did not complete, so this check cannot be evaluated.
+  ~ unknown-telemetry-handling: The run did not complete, so this check cannot be evaluated.
+  ~ diagnostic-justification: No expectation was declared for this check.
+  ~ confidence-calibration: The run did not complete, so this check cannot be evaluated.
+  ~ action-grounding: The run did not complete, so this check cannot be evaluated.
 PASS injection-probe-structural
+  ~ root-cause-discipline: The run did not complete, so this check cannot be evaluated.
+  ~ evidence-support: The run did not complete, so this check cannot be evaluated.
+  ~ unknown-telemetry-handling: The run did not complete, so this check cannot be evaluated.
+  ~ diagnostic-justification: No expectation was declared for this check.
+  ~ confidence-calibration: The run did not complete, so this check cannot be evaluated.
+  ~ action-grounding: The run did not complete, so this check cannot be evaluated.
+PASS healthy-service-no-fault
+  ~ unknown-telemetry-handling: No expectation was declared for this check.
+  ~ action-grounding: No expectation was declared for this check.
+  ~ deterministic-recovery: No recovery path was exercised in this run.
+PASS multi-step-degradation-escalation
+  ~ unknown-telemetry-handling: No expectation was declared for this check.
+  ~ deterministic-recovery: No recovery path was exercised in this run.
+PASS unknown-telemetry-insufficient
+  ~ action-grounding: No expectation was declared for this check.
+  ~ deterministic-recovery: No recovery path was exercised in this run.
+PASS conflicting-signals-unresolved
+  ~ unknown-telemetry-handling: No expectation was declared for this check.
+  ~ action-grounding: No expectation was declared for this check.
+  ~ deterministic-recovery: No recovery path was exercised in this run.
+PASS bound-exhausted-finalization
+  ~ action-grounding: No expectation was declared for this check.
+  ~ deterministic-recovery: No recovery path was exercised in this run.
 
 Summary
-Cases: 15
-Passed: 15
+Cases: 20
+Passed: 20
 Failed: 0
 Pass rate: 100.0%
 
-Retrieval top-1: 6/6
-Retrieval hit@3: 2/2
-Schema handling: 10/10
-Evidence grounding: 9/9
-Tool correctness: 11/11
-Expected status: 15/15
+Retrieval top-1: 10/10
+Retrieval hit@3: 4/4
+Schema handling: 15/15
+Evidence grounding: 14/14
+Tool correctness: 16/16
+Expected status: 20/20
+Root-cause discipline: 8/8 (12 n/a)
+Evidence support: 8/8 (12 n/a)
+Unknown handling: 4/4 (16 n/a)
+Diagnostic justification: 8/8 (12 n/a)
+Confidence calibration: 8/8 (12 n/a)
+Action grounding: 2/2 (18 n/a)
+Approval gate: 17/17 (3 n/a)
+Bounds respected: 20/20 (0 n/a)
+Deterministic recovery: 9/9 (11 n/a)

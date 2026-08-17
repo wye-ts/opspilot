@@ -15,6 +15,7 @@ import {
   EvaluationServiceUnavailableError,
   EvaluationServiceUnsupportedVersionError,
 } from "./evaluation-service-errors";
+import { METRIC_CHECK_NAMES } from "./evaluation-evaluator";
 import type { EvaluationSuiteInputV2, EvaluationSuiteResultV2 } from "./v2-types";
 
 // ---------------------------------------------------------------------------
@@ -87,6 +88,54 @@ const MINIMAL_INPUT: EvaluationSuiteInputV2 = {
 
 const EVALUATION_ID = "11111111-2222-3333-4444-555555555555";
 
+// Issue #59 Checkpoint B — the nine metric checks (see METRIC_CHECK_NAMES in
+// evaluation-evaluator.ts). A valid POST response's every case must carry
+// exactly one outcome for each, in this fixed order, so the fixtures build
+// PASS and NOT_APPLICABLE variants and set the nine ratio metrics to match
+// what aggregateMetrics recomputes (PASS → {1,1}; NOT_APPLICABLE → {0,0}).
+const NINE_PASS_METRIC_CHECKS: ReadonlyArray<{
+  readonly name: string;
+  readonly status: "PASS";
+  readonly reasonCode: null;
+}> = METRIC_CHECK_NAMES.map((name) => ({ name, status: "PASS", reasonCode: null }));
+
+const NINE_NOT_APPLICABLE_METRIC_CHECKS: ReadonlyArray<{
+  readonly name: string;
+  readonly status: "NOT_APPLICABLE";
+  readonly reasonCode: string;
+}> = METRIC_CHECK_NAMES.map((name) => ({
+  name,
+  status: "NOT_APPLICABLE",
+  reasonCode: "NA_RUN_DID_NOT_COMPLETE",
+}));
+
+// The nine ratio metric keys in EvaluationMetrics field order (types.ts) —
+// helper for stamping the fixture `metrics` object consistently. The return
+// type keeps the literal keys (not a bare index signature) so spreading it
+// into a contextually-typed EvaluationMetrics literal satisfies the keys.
+const NINE_METRIC_RATIO_KEYS = [
+  "rootCauseDiscipline",
+  "evidenceSupport",
+  "unknownHandling",
+  "diagnosticJustification",
+  "confidenceCalibration",
+  "actionGrounding",
+  "approvalGate",
+  "boundsRespected",
+  "deterministicRecovery",
+] as const;
+
+type MetricRatioKey = (typeof NINE_METRIC_RATIO_KEYS)[number];
+
+function nineRatios(
+  numerator: number,
+  denominator: number,
+): Record<MetricRatioKey, { numerator: number; denominator: number }> {
+  return Object.fromEntries(
+    NINE_METRIC_RATIO_KEYS.map((key) => [key, { numerator, denominator }]),
+  ) as Record<MetricRatioKey, { numerator: number; denominator: number }>;
+}
+
 // Loose, fully-mutable fixture type. Tests deliberately build broken variants
 // (wrong primitives, bogus reason codes, missing fields) that would not
 // typecheck against PersistedEvaluationRunV2 — the client must reject those
@@ -113,7 +162,7 @@ function validResourceJson(id: string = EVALUATION_ID): MutableResource {
       {
         caseId: "c1",
         passed: true,
-        checks: [{ name: "status", status: "PASS", reasonCode: null }],
+        checks: [{ name: "status", status: "PASS", reasonCode: null }, ...NINE_PASS_METRIC_CHECKS],
       },
     ],
     metrics: {
@@ -127,6 +176,7 @@ function validResourceJson(id: string = EVALUATION_ID): MutableResource {
       evidenceGroundingCorrectness: { numerator: 0, denominator: 0 },
       toolCorrectness: { numerator: 0, denominator: 0 },
       expectedStatusCorrectness: { numerator: 1, denominator: 1 },
+      ...nineRatios(1, 1),
     },
   };
 }
@@ -146,7 +196,10 @@ function failingResourceJson(): MutableResource {
       {
         caseId: "c1",
         passed: false,
-        checks: [{ name: "status", status: "FAIL", reasonCode: "STATUS_MISMATCH" }],
+        checks: [
+          { name: "status", status: "FAIL", reasonCode: "STATUS_MISMATCH" },
+          ...NINE_NOT_APPLICABLE_METRIC_CHECKS,
+        ],
       },
     ],
     metrics: {
@@ -160,6 +213,7 @@ function failingResourceJson(): MutableResource {
       evidenceGroundingCorrectness: { numerator: 0, denominator: 0 },
       toolCorrectness: { numerator: 0, denominator: 0 },
       expectedStatusCorrectness: { numerator: 0, denominator: 1 },
+      ...nineRatios(0, 0),
     },
   };
 }
@@ -171,7 +225,11 @@ function expectedScorerResult(): EvaluationSuiteResultV2 {
     contractVersion: 2,
     datasetId: "opspilot-deterministic-v2",
     cases: [
-      { caseId: "c1", passed: true, checks: [{ name: "status", status: "PASS", reasonCode: null }] },
+      {
+        caseId: "c1",
+        passed: true,
+        checks: [{ name: "status", status: "PASS", reasonCode: null }, ...NINE_PASS_METRIC_CHECKS],
+      },
     ],
     metrics: {
       totalCases: 1,
@@ -184,6 +242,7 @@ function expectedScorerResult(): EvaluationSuiteResultV2 {
       evidenceGroundingCorrectness: { numerator: 0, denominator: 0 },
       toolCorrectness: { numerator: 0, denominator: 0 },
       expectedStatusCorrectness: { numerator: 1, denominator: 1 },
+      ...nineRatios(1, 1),
     },
   };
 }
@@ -341,8 +400,16 @@ function twoCaseAllPassedResource(): Record<string, unknown> {
     datasetId: "opspilot-deterministic-v2",
     id: EVALUATION_ID,
     cases: [
-      { caseId: "c1", passed: true, checks: [{ name: "status", status: "PASS", reasonCode: null }] },
-      { caseId: "c2", passed: true, checks: [{ name: "status", status: "PASS", reasonCode: null }] },
+      {
+        caseId: "c1",
+        passed: true,
+        checks: [{ name: "status", status: "PASS", reasonCode: null }, ...NINE_PASS_METRIC_CHECKS],
+      },
+      {
+        caseId: "c2",
+        passed: true,
+        checks: [{ name: "status", status: "PASS", reasonCode: null }, ...NINE_PASS_METRIC_CHECKS],
+      },
     ],
     metrics: {
       totalCases: 2,
@@ -355,6 +422,7 @@ function twoCaseAllPassedResource(): Record<string, unknown> {
       evidenceGroundingCorrectness: { numerator: 0, denominator: 0 },
       toolCorrectness: { numerator: 0, denominator: 0 },
       expectedStatusCorrectness: { numerator: 2, denominator: 2 },
+      ...nineRatios(2, 2),
     },
   };
 }
@@ -373,6 +441,10 @@ describe("HttpEvaluationScorer — fail closed on semantically inconsistent pers
       evidenceGroundingCorrectness: { numerator: 0, denominator: 0 },
       toolCorrectness: { numerator: 0, denominator: 0 },
       expectedStatusCorrectness: { numerator: 1, denominator: 1 },
+      // The nine #59 ratios also claim a full pass, while the returned case
+      // carries only NOT_APPLICABLE outcomes — every metric contradicts the
+      // returned cases, so the response is rejected (never silently repaired).
+      ...nineRatios(1, 1),
     };
 
     await withServer((_req, res) => respondJson(res, 201, resource), async (scorer) => {
@@ -452,14 +524,125 @@ describe("HttpEvaluationScorer — fail closed on semantically inconsistent pers
     // case order [c2, c1] disagrees with the submitted [c1, c2].
     const resource = twoCaseAllPassedResource();
     resource.cases = [
-      { caseId: "c2", passed: true, checks: [{ name: "status", status: "PASS", reasonCode: null }] },
-      { caseId: "c1", passed: true, checks: [{ name: "status", status: "PASS", reasonCode: null }] },
+      {
+        caseId: "c2",
+        passed: true,
+        checks: [{ name: "status", status: "PASS", reasonCode: null }, ...NINE_PASS_METRIC_CHECKS],
+      },
+      {
+        caseId: "c1",
+        passed: true,
+        checks: [{ name: "status", status: "PASS", reasonCode: null }, ...NINE_PASS_METRIC_CHECKS],
+      },
     ];
 
     await withServer((_req, res) => respondJson(res, 201, resource), async (scorer) => {
       await expect(scorer.score(twoCaseInput())).rejects.toBeInstanceOf(
         EvaluationServiceMalformedResponseError,
       );
+    });
+  });
+});
+
+describe("HttpEvaluationScorer — POST requires exactly nine #59 metric outcomes (Issue #59 Checkpoint B)", () => {
+  it("accepts a POST response carrying exactly one outcome per #59 metric check, in the required order", async () => {
+    await withServer((_req, res) => respondJson(res, 201, validResourceJson()), async (scorer) => {
+      const result = await scorer.score(MINIMAL_INPUT);
+      expect(result).toEqual(expectedScorerResult());
+    });
+  });
+
+  it("rejects a POST response omitting all nine #59 metric outcomes (the BLOCKER shape: only a status check, nine ratios at 0/0)", async () => {
+    const resource = validResourceJson();
+    resource.cases[0]!.checks = [{ name: "status", status: "PASS", reasonCode: null }];
+    // Nine ratios at 0/0 — exactly the false-green shape the client accepted
+    // before the completeness invariant was enforced on POST.
+    Object.assign(resource.metrics as object, nineRatios(0, 0));
+
+    await withServer((_req, res) => respondJson(res, 201, resource), async (scorer) => {
+      await expect(scorer.score(MINIMAL_INPUT)).rejects.toBeInstanceOf(EvaluationServiceMalformedResponseError);
+    });
+  });
+
+  it("rejects a POST response missing one of the nine #59 metric outcomes (eight of nine)", async () => {
+    const resource = validResourceJson();
+    resource.cases[0]!.checks = resource.cases[0]!.checks.filter(
+      (check) => check.name !== "deterministic-recovery",
+    );
+
+    await withServer((_req, res) => respondJson(res, 201, resource), async (scorer) => {
+      await expect(scorer.score(MINIMAL_INPUT)).rejects.toBeInstanceOf(EvaluationServiceMalformedResponseError);
+    });
+  });
+
+  it("rejects a POST response with a duplicated #59 metric outcome and a missing one", async () => {
+    const resource = validResourceJson();
+    // Drop bounds-respected and emit evidence-support twice.
+    const withoutBounds = resource.cases[0]!.checks.filter((check) => check.name !== "bounds-respected");
+    const withoutEvidence = withoutBounds.filter((check) => check.name !== "evidence-support");
+    resource.cases[0]!.checks = [
+      ...withoutEvidence,
+      { name: "evidence-support", status: "PASS", reasonCode: null },
+      { name: "evidence-support", status: "PASS", reasonCode: null },
+    ];
+
+    await withServer((_req, res) => respondJson(res, 201, resource), async (scorer) => {
+      await expect(scorer.score(MINIMAL_INPUT)).rejects.toBeInstanceOf(EvaluationServiceMalformedResponseError);
+    });
+  });
+
+  it("rejects a POST response whose #59 metric checks are out of the required order (order is contractual)", async () => {
+    const resource = validResourceJson();
+    const checks = resource.cases[0]!.checks;
+    const first = checks.findIndex((check) => check.name === "root-cause-discipline");
+    const second = checks.findIndex((check) => check.name === "evidence-support");
+    const swapped = [...checks];
+    [swapped[first], swapped[second]] = [swapped[second]!, swapped[first]!];
+    resource.cases[0]!.checks = swapped;
+
+    await withServer((_req, res) => respondJson(res, 201, resource), async (scorer) => {
+      await expect(scorer.score(MINIMAL_INPUT)).rejects.toBeInstanceOf(EvaluationServiceMalformedResponseError);
+    });
+  });
+
+  it("still accepts a pre-B GET response whose cases carry no #59 metric outcomes (compatibility)", async () => {
+    // A pre-B persisted row: the six original checks only, with the nine new
+    // ratio rows synthesized as 0/0 — no invented #59 check rows, no DB write.
+    // The exactly-nine invariant is POST-only, so this GET must succeed.
+    const preB: MutableResource = {
+      contractVersion: 2,
+      datasetId: "opspilot-deterministic-v2",
+      id: EVALUATION_ID,
+      cases: [
+        { caseId: "c1", passed: true, checks: [{ name: "status", status: "PASS", reasonCode: null }] },
+      ],
+      metrics: {
+        totalCases: 1,
+        passedCases: 1,
+        failedCases: 0,
+        passRate: 1,
+        retrievalTop1: { numerator: 0, denominator: 0 },
+        retrievalHitAt3: { numerator: 0, denominator: 0 },
+        schemaHandlingCorrectness: { numerator: 0, denominator: 0 },
+        evidenceGroundingCorrectness: { numerator: 0, denominator: 0 },
+        toolCorrectness: { numerator: 0, denominator: 0 },
+        expectedStatusCorrectness: { numerator: 1, denominator: 1 },
+        ...nineRatios(0, 0),
+      },
+    };
+
+    const handler: RequestHandler = (req, res) => {
+      if (req.method === "GET" && req.url === `/evaluations/${EVALUATION_ID}`) {
+        respondJson(res, 200, preB);
+        return;
+      }
+      respondJson(res, 404, { detail: "not found" });
+    };
+
+    await withServer(handler, async (scorer) => {
+      const fetched = await scorer.fetchEvaluation(EVALUATION_ID);
+      expect(fetched.id).toBe(EVALUATION_ID);
+      expect(fetched.cases[0]!.checks).toHaveLength(1);
     });
   });
 });

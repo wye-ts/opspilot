@@ -4,6 +4,7 @@ import type { ResolutionReport } from "@opspilot/contracts";
 import { INJECTION_PROBE_CHUNK, loadDefaultRunbookCorpus } from "../rag";
 import { validateEvaluationDataset } from "./dataset-validation";
 import { EVALUATION_CASES } from "./evaluation-dataset";
+import { METRIC_CHECK_NAMES } from "./evaluation-evaluator";
 import { runEvaluationSuite } from "./evaluation-runner";
 import { LocalEvaluationScorer } from "./evaluation-scorer";
 import { buildEvaluationSuiteInputV2, EVALUATION_DATASET_ID } from "./v2-types";
@@ -24,10 +25,17 @@ const EXPECTED_CASE_IDS = [
   "tool-execution-failure",
   "malformed-report-submission",
   "injection-probe-structural",
+  // Issue #59 Checkpoint B §7 — five approved cases appended after
+  // injection-probe-structural (dataset positions 16-20).
+  "healthy-service-no-fault",
+  "multi-step-degradation-escalation",
+  "unknown-telemetry-insufficient",
+  "conflicting-signals-unresolved",
+  "bound-exhausted-finalization",
 ];
 
 describe("EVALUATION_CASES", () => {
-  it("contains exactly the 15 approved case ids, in the approved order", () => {
+  it("contains exactly the 20 approved case ids, in the approved order", () => {
     expect(EVALUATION_CASES.map((evaluationCase) => evaluationCase.id)).toEqual(EXPECTED_CASE_IDS);
   });
 
@@ -126,7 +134,7 @@ describe("EVALUATION_CASES", () => {
     expect(case5Action.payload.body).not.toMatch(/working on a fix/i);
   });
 
-  it("passes every declared expectation for all 15 cases when run against the real corpus and real components", async () => {
+  it("passes every declared expectation for all 20 cases when run against the real corpus and real components", async () => {
     const corpusLoad = await loadDefaultRunbookCorpus();
 
     const caseInputs = await runEvaluationSuite({
@@ -141,14 +149,48 @@ describe("EVALUATION_CASES", () => {
     expect(failures).toEqual([]);
 
     const metrics = suiteResult.metrics;
-    expect(metrics.totalCases).toBe(15);
-    expect(metrics.passedCases).toBe(15);
+    expect(metrics.totalCases).toBe(20);
+    expect(metrics.passedCases).toBe(20);
     expect(metrics.failedCases).toBe(0);
-    expect(metrics.retrievalTop1).toEqual({ numerator: 6, denominator: 6 });
-    expect(metrics.retrievalHitAt3).toEqual({ numerator: 2, denominator: 2 });
-    expect(metrics.schemaHandlingCorrectness).toEqual({ numerator: 10, denominator: 10 });
-    expect(metrics.evidenceGroundingCorrectness).toEqual({ numerator: 9, denominator: 9 });
-    expect(metrics.toolCorrectness).toEqual({ numerator: 11, denominator: 11 });
-    expect(metrics.expectedStatusCorrectness).toEqual({ numerator: 15, denominator: 15 });
+    // The six v1 ratios are scope-based (cases declaring the relevant
+    // expectation). The 5 new cases shift the scopes as follows:
+    //   retrievalTop1: +4 (cases 16,17,19,20 declare expectedTop1; case 18 is
+    //     expectedNoResults) -> 10/10
+    //   retrievalHitAt3: +2 (cases 16,19 declare expectedInTopK) -> 4/4
+    //   schemaHandlingCorrectness: +5 (every new case declares schemaExpectation) -> 15/15
+    //   evidenceGroundingCorrectness: +5 -> 14/14
+    //   toolCorrectness: +5 (every new case declares tool expectations) -> 16/16
+    //   expectedStatusCorrectness: +5 -> 20/20
+    expect(metrics.retrievalTop1).toEqual({ numerator: 10, denominator: 10 });
+    expect(metrics.retrievalHitAt3).toEqual({ numerator: 4, denominator: 4 });
+    expect(metrics.schemaHandlingCorrectness).toEqual({ numerator: 15, denominator: 15 });
+    expect(metrics.evidenceGroundingCorrectness).toEqual({ numerator: 14, denominator: 14 });
+    expect(metrics.toolCorrectness).toEqual({ numerator: 16, denominator: 16 });
+    expect(metrics.expectedStatusCorrectness).toEqual({ numerator: 20, denominator: 20 });
+  });
+
+  it("A: every scored case emits exactly one outcome per #59 metric check, in the fixed METRIC_CHECK_NAMES order", async () => {
+    const corpusLoad = await loadDefaultRunbookCorpus();
+
+    const caseInputs = await runEvaluationSuite({
+      cases: EVALUATION_CASES,
+      defaultCorpus: corpusLoad.chunks,
+      injectionProbeChunk: INJECTION_PROBE_CHUNK,
+    });
+    const suiteInput = buildEvaluationSuiteInputV2(EVALUATION_DATASET_ID, caseInputs);
+    const suiteResult = new LocalEvaluationScorer().score(suiteInput);
+
+    expect(suiteResult.cases).toHaveLength(20);
+    for (const caseResult of suiteResult.cases) {
+      // Exactly the nine metric names, once each, in the fixed order — no
+      // missing outcome (which the exactly-nine guard would reject anyway),
+      // no duplicate, and the fixed order proves stable ordering (§14-A/D).
+      const metricChecks = caseResult.checks.filter((check) =>
+        (METRIC_CHECK_NAMES as readonly string[]).includes(check.name),
+      );
+      expect(metricChecks.map((check) => check.name), `case "${caseResult.caseId}"`).toEqual([
+        ...METRIC_CHECK_NAMES,
+      ]);
+    }
   });
 });

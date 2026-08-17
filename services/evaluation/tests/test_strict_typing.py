@@ -147,3 +147,23 @@ async def test_control_valid_suite_still_persists(client: AsyncClient) -> None:
     # Control: the same suite with only correct primitive types must succeed.
     response = await client.post("/evaluations", json=_suite())
     assert response.status_code == 201
+
+
+async def test_wrong_confidence_primitives_rejected_with_422_and_zero_runs(client: AsyncClient) -> None:
+    # Confidence bounds must be finite JSON numbers in [0, 1]: booleans and
+    # numeric strings are rejected (and persist zero runs) rather than coerced
+    # into a valid band (the pre-fix lax `float` coerced true->1.0).
+    for value in (False, True, "0.5"):
+        for field in ("min", "max"):
+            suite = _suite()
+            band = {"min": 0.5, "max": 0.5}
+            band[field] = value
+            suite["cases"][0]["expectations"]["expectedConfidence"] = band
+
+            response = await client.post("/evaluations", json=suite)
+            assert response.status_code == 422, (field, value)
+
+            sessionmaker = get_sessionmaker()
+            async with sessionmaker() as session:
+                result = await session.execute(select(EvaluationRun))
+                assert result.scalars().all() == [], (field, value)

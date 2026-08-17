@@ -4,17 +4,24 @@ import type { AgentOrchestratorResult } from "@opspilot/agent-runtime";
 import type { AgentOrchestratorErrorCode, ResolutionReport } from "@opspilot/contracts";
 import { isCheckReasonCode, resolveCheckReasonMessage } from "./check-reason-codes";
 import {
+  assertExactlyNineMetricChecks,
   evaluateCase,
   evaluateFailure,
   evaluateReport,
   evaluateRetrieval,
   evaluateStatus,
   evaluateTool,
+  METRIC_CHECK_NAMES,
 } from "./evaluation-evaluator";
 import { toJsonValue } from "./json-value";
 import { buildObservedFacts, type ObservedFacts } from "./observed-facts";
 import type { RecordedToolExecution } from "./recording-tool-registry";
-import type { EvaluationCase, EvaluationExpectations } from "./types";
+import type {
+  EvaluationCase,
+  EvaluationCaseResult,
+  EvaluationCheckResult,
+  EvaluationExpectations,
+} from "./types";
 import { buildEvaluationCaseInputV2, type EvaluationCaseInputV2 } from "./v2-types";
 
 const VALID_REPORT: ResolutionReport = {
@@ -636,5 +643,226 @@ describe("wire-level edge cases (independent-review finding F)", () => {
       const result = evaluateReport({ requiredActionTypes: [] }, completed());
       expect(check(result, "action-types")?.status).toBe("PASS");
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #59 Checkpoint B — §14 coverage (A/B/D/E/R here; F/G live in
+// negative-vectors.test.ts; C in evaluation-metrics.test.ts). The two
+// synthetic cases below exercise every #59 metric's PASS path: a "perfect
+// completed" run (metrics 1-8 PASS, deterministic-recovery N/A) and a
+// "perfect failed" run (deterministic-recovery PASS).
+// ---------------------------------------------------------------------------
+
+const PERFECT_COMPLETED_INPUT: EvaluationCaseInputV2 = {
+  caseId: "perfect-completed",
+  expectations: {
+    runStatus: "completed",
+    expectedRootCause: "PRESENT",
+    expectedEvidence: {
+      requiredLocators: [{ sourceType: "RAG_CHUNK", evidenceId: "ev-rag-1" }],
+      state: "SUFFICIENT",
+      requiresTelemetry: false,
+    },
+    expectedTelemetryEvidence: {
+      probative: [],
+      nonProbative: [{ sourceType: "TOOL_EXECUTION", evidenceId: "tool-unknown-1" }],
+    },
+    expectedDiagnostics: [{ evidenceState: "SUFFICIENT", continuationReason: "STATUS_UNRESOLVED" }],
+    expectedStopReason: "SUFFICIENT_EVIDENCE",
+    expectedConfidence: { min: 0.4, max: 0.6 },
+    expectedActions: [
+      {
+        type: "UPDATE_TICKET_STATUS",
+        requiredGrounding: [{ sourceType: "RAG_CHUNK", evidenceId: "ev-rag-1" }],
+        allowedGrounding: [{ sourceType: "RAG_CHUNK", evidenceId: "ev-rag-1" }],
+      },
+    ],
+    expectedApproval: "ELIGIBLE",
+  },
+  observed: {
+    runStatus: "completed",
+    errorCode: null,
+    retrieval: { completed: true, chunkIds: [] },
+    tools: {
+      requested: [{ toolName: "diagnose", toolCallId: "tool-unknown-1" }],
+      executed: [{ toolName: "diagnose", input: {} }],
+      completed: [{ toolName: "diagnose", toolCallId: "tool-unknown-1", output: {} }],
+    },
+    report: {
+      evidence: [
+        { sourceType: "RAG_CHUNK", evidenceId: "ev-rag-1" },
+        { sourceType: "TOOL_EXECUTION", evidenceId: "tool-unknown-1" },
+      ],
+      suggestedActionTypes: ["UPDATE_TICKET_STATUS"],
+      category: "SERVICE_DEGRADATION",
+      rootCausePresent: true,
+      confidence: 0.5,
+      evidenceState: "SUFFICIENT",
+      recommendationDisposition: "ACTIONABLE",
+      suggestedActions: [
+        {
+          type: "UPDATE_TICKET_STATUS",
+          groundedBy: [{ sourceType: "RAG_CHUNK", evidenceId: "ev-rag-1" }],
+        },
+      ],
+    },
+    investigation: {
+      providerTurnsUsed: 1,
+      diagnosticRequestCount: 1,
+      forcedFinalization: false,
+      stopReason: "SUFFICIENT_EVIDENCE",
+      assessments: [
+        {
+          toolCallId: "tool-unknown-1",
+          toolName: "diagnose",
+          assessment: {
+            evidenceState: "SUFFICIENT",
+            continuationReason: "STATUS_UNRESOLVED",
+            supportedBy: [],
+          },
+        },
+      ],
+      toolFailures: [],
+      bounds: { maxProviderTurns: 4, maxDiagnosticToolCalls: 3 },
+      usage: { inputTokens: 100, outputTokens: 20, providerCalls: 1 },
+    },
+    failedStage: null,
+  },
+};
+
+function failedRecoveryInput(
+  overrides: {
+    readonly providerTurnsUsed?: number;
+    readonly bounds?: { readonly maxProviderTurns: number; readonly maxDiagnosticToolCalls: number };
+  } = {},
+): EvaluationCaseInputV2 {
+  return {
+    caseId: "perfect-failed",
+    expectations: {
+      runStatus: "failed",
+      failure: { expectedCode: "TOOL_NOT_FOUND" },
+      expectedRecovery: { failedStage: "DIAGNOSTIC_EXECUTION", reportProduced: false },
+    },
+    observed: {
+      runStatus: "failed",
+      errorCode: "TOOL_NOT_FOUND",
+      retrieval: { completed: false, chunkIds: [] },
+      tools: { requested: [], executed: [], completed: [] },
+      report: null,
+      investigation: {
+        providerTurnsUsed: overrides.providerTurnsUsed ?? 0,
+        diagnosticRequestCount: 0,
+        forcedFinalization: false,
+        stopReason: null,
+        assessments: [],
+        toolFailures: [],
+        bounds: overrides.bounds ?? { maxProviderTurns: 4, maxDiagnosticToolCalls: 3 },
+        usage: { inputTokens: 0, outputTokens: 0, providerCalls: 0 },
+      },
+      failedStage: "DIAGNOSTIC_EXECUTION",
+    },
+  };
+}
+
+function metricCheck(result: EvaluationCaseResult, name: string): EvaluationCheckResult | undefined {
+  return result.checks.find((check) => check.name === name);
+}
+
+describe("Issue #59 Checkpoint B §14-A/D/E/R — nine-metric completeness, ordering, PASS paths, bounds counts", () => {
+  it("A/D: every case emits exactly one outcome per metric, in the fixed METRIC_CHECK_NAMES order, appended after the status checks", () => {
+    const result = evaluateCase(PERFECT_COMPLETED_INPUT);
+    const metricChecks = result.checks.filter((check) =>
+      (METRIC_CHECK_NAMES as readonly string[]).includes(check.name),
+    );
+    expect(metricChecks.map((check) => check.name)).toEqual([...METRIC_CHECK_NAMES]);
+    for (const name of METRIC_CHECK_NAMES) {
+      expect(result.checks.filter((check) => check.name === name)).toHaveLength(1);
+    }
+  });
+
+  it("E: every completed-scope metric has a PASS path (metrics 1-8); deterministic-recovery is N/A on a completed run", () => {
+    const result = evaluateCase(PERFECT_COMPLETED_INPUT);
+    expect(result.passed).toBe(true);
+    for (const name of METRIC_CHECK_NAMES) {
+      if (name === "deterministic-recovery") {
+        expect(metricCheck(result, name)?.status).toBe("NOT_APPLICABLE");
+      } else {
+        expect(metricCheck(result, name)?.status, `metric "${name}" PASS path`).toBe("PASS");
+      }
+    }
+  });
+
+  it("E: deterministic-recovery has a PASS path on a failed run whose recovery facts match", () => {
+    const result = evaluateCase(failedRecoveryInput());
+    expect(metricCheck(result, "deterministic-recovery")?.status).toBe("PASS");
+  });
+
+  it("R: bounds-respected is driven by the attempted provider-call count (providerTurnsUsed) from Checkpoint A", () => {
+    const over = evaluateCase(
+      failedRecoveryInput({ providerTurnsUsed: 5, bounds: { maxProviderTurns: 4, maxDiagnosticToolCalls: 3 } }),
+    );
+    const bounds = metricCheck(over, "bounds-respected");
+    expect(bounds?.status).toBe("FAIL");
+    expect(bounds?.reasonCode).toBe("TURN_BOUND_EXCEEDED");
+
+    const atLimit = evaluateCase(
+      failedRecoveryInput({ providerTurnsUsed: 4, bounds: { maxProviderTurns: 4, maxDiagnosticToolCalls: 3 } }),
+    );
+    expect(metricCheck(atLimit, "bounds-respected")?.status).toBe("PASS");
+  });
+});
+
+describe("Issue #59 Checkpoint B §14 — a contradictory declared stop reason never yields NOT_APPLICABLE or PASS", () => {
+  // The orphaned shape (expectedStopReason without expectedDiagnostics) is
+  // rejected at dataset validation (see dataset-validation.test.ts Rule 16)
+  // and so cannot reach scoring. With expectedDiagnostics declared, Metric 4
+  // is applicable and a declared stop reason that contradicts the observed
+  // stop reason must FAIL — never a silent NOT_APPLICABLE, never PASS.
+  it("fails diagnostic-justification with STOP_REASON_MISMATCH on a contradictory declared stop reason", () => {
+    const result = evaluateCase({
+      ...PERFECT_COMPLETED_INPUT,
+      expectations: { ...PERFECT_COMPLETED_INPUT.expectations, expectedStopReason: "BOUND_EXHAUSTED" },
+    });
+    const diagnostic = metricCheck(result, "diagnostic-justification");
+    expect(diagnostic?.status).toBe("FAIL");
+    expect(diagnostic?.reasonCode).toBe("STOP_REASON_MISMATCH");
+  });
+
+  it("the contradictory declared stop reason is neither NOT_APPLICABLE nor PASS", () => {
+    const result = evaluateCase({
+      ...PERFECT_COMPLETED_INPUT,
+      expectations: { ...PERFECT_COMPLETED_INPUT.expectations, expectedStopReason: "BOUND_EXHAUSTED" },
+    });
+    const diagnostic = metricCheck(result, "diagnostic-justification");
+    expect(diagnostic?.status).not.toBe("NOT_APPLICABLE");
+    expect(diagnostic?.status).not.toBe("PASS");
+  });
+});
+
+describe("Issue #59 Checkpoint B §14-B — exactly-nine completeness guard rejects synthetic partial sets", () => {
+  function passingCheck(name: string): EvaluationCheckResult {
+    return { name, status: "PASS", expected: null, observed: null };
+  }
+
+  it("accepts exactly one outcome per metric check name", () => {
+    expect(() => assertExactlyNineMetricChecks(METRIC_CHECK_NAMES.map(passingCheck))).not.toThrow();
+  });
+
+  it("rejects a synthetic partial nine-metric set (one metric missing)", () => {
+    expect(() => assertExactlyNineMetricChecks(METRIC_CHECK_NAMES.slice(0, 8).map(passingCheck))).toThrow(
+      /Metric completeness invariant violated: check "deterministic-recovery" produced 0 outcomes/,
+    );
+  });
+
+  it("rejects a duplicate metric outcome (same check name twice)", () => {
+    const duplicated = [...METRIC_CHECK_NAMES.map(passingCheck), passingCheck("root-cause-discipline")];
+    expect(() => assertExactlyNineMetricChecks(duplicated)).toThrow(
+      /check "root-cause-discipline" produced 2 outcomes/,
+    );
+  });
+
+  it("rejects an empty check set", () => {
+    expect(() => assertExactlyNineMetricChecks([])).toThrow(/Metric completeness invariant violated/);
   });
 });

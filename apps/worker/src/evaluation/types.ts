@@ -1,5 +1,13 @@
 import type { FakeAgentScenario } from "@opspilot/agent-runtime";
-import type { AgentOrchestratorErrorCode, SuggestedAction } from "@opspilot/contracts";
+import type {
+  AgentOrchestratorErrorCode,
+  ContinuationReason,
+  EvidenceLocator,
+  EvidenceState,
+  InvestigationExecutionStage,
+  InvestigationStopReason,
+  SuggestedAction,
+} from "@opspilot/contracts";
 import type { CheckReasonCode } from "./check-reason-codes";
 import type { NotApplicableCode } from "./not-applicable-codes";
 import type { JsonValue } from "./json-value";
@@ -72,6 +80,50 @@ export interface EvaluationExpectations {
   readonly failure?: {
     readonly expectedCode: AgentOrchestratorErrorCode;
   };
+
+  // Issue #59 Checkpoint B — the nine #59 metric expectation fields (spec
+  // §5). Each is consumed by exactly one metric check in
+  // evaluation-evaluator.ts; the dataset-validation rules in
+  // dataset-validation.ts enforce the cross-field preconditions (e.g. any
+  // expectedRootCause requires expectedEvidence with SUFFICIENT state).
+  readonly expectedRootCause?: "PRESENT" | "ABSENT";
+
+  readonly expectedEvidence?: {
+    readonly state: EvidenceState;
+    readonly requiredLocators: readonly EvidenceLocator[];
+    readonly requiresTelemetry?: boolean;
+    readonly minDistinctLocators?: number;
+  };
+
+  readonly expectedTelemetryEvidence?: {
+    readonly probative: readonly EvidenceLocator[];
+    readonly nonProbative: readonly EvidenceLocator[];
+  };
+
+  readonly expectedDiagnostics?: readonly {
+    readonly evidenceState: EvidenceState;
+    readonly continuationReason: ContinuationReason;
+  }[];
+
+  readonly expectedStopReason?: InvestigationStopReason;
+
+  readonly expectedConfidence?: { readonly min: number; readonly max: number };
+
+  readonly expectedActions?: readonly {
+    readonly type: SuggestedAction["type"];
+    readonly requiredGrounding: readonly EvidenceLocator[];
+    readonly allowedGrounding: readonly EvidenceLocator[];
+  }[];
+
+  readonly expectedApproval?: "ELIGIBLE" | "NOT_ELIGIBLE";
+
+  readonly expectedBounds?: { readonly maxTotalTokens?: number };
+
+  readonly expectedRecovery?: {
+    readonly failedStage: InvestigationExecutionStage;
+    readonly forbiddenCompletedToolCallIds?: readonly string[];
+    readonly reportProduced: boolean;
+  };
 }
 
 // The v2 three-state check status (see v2-types.ts's EvaluationCheckV2). At
@@ -115,4 +167,19 @@ export interface EvaluationMetrics {
   readonly evidenceGroundingCorrectness: { readonly numerator: number; readonly denominator: number };
   readonly toolCorrectness: { readonly numerator: number; readonly denominator: number };
   readonly expectedStatusCorrectness: { readonly numerator: number; readonly denominator: number };
+
+  // Issue #59 Checkpoint B — the nine #59 metric ratios (spec §5/§11). Same
+  // { numerator, denominator } wire shape as the six above (the DB
+  // evaluation_metrics table carries no na_count column — see the Checkpoint
+  // B design decision); N/A counts are derived by the formatter from each
+  // case's check results by metric check name.
+  readonly rootCauseDiscipline: { readonly numerator: number; readonly denominator: number };
+  readonly evidenceSupport: { readonly numerator: number; readonly denominator: number };
+  readonly unknownHandling: { readonly numerator: number; readonly denominator: number };
+  readonly diagnosticJustification: { readonly numerator: number; readonly denominator: number };
+  readonly confidenceCalibration: { readonly numerator: number; readonly denominator: number };
+  readonly actionGrounding: { readonly numerator: number; readonly denominator: number };
+  readonly approvalGate: { readonly numerator: number; readonly denominator: number };
+  readonly boundsRespected: { readonly numerator: number; readonly denominator: number };
+  readonly deterministicRecovery: { readonly numerator: number; readonly denominator: number };
 }

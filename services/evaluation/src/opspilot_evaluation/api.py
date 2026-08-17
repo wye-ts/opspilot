@@ -42,8 +42,16 @@ logger = logging.getLogger("opspilot_evaluation")
 router = APIRouter()
 
 # Order matches evaluation-metrics.ts's EvaluationMetrics field order — kept
-# as a single named list rather than re-deriving it at each call site.
-METRIC_NAMES = (
+# as a single named list rather than re-deriving it at each call site. Six
+# existing ratios plus the nine Issue #59 Checkpoint B ratios (spec §11); the
+# DB evaluation_metrics table carries no na_count column, so N/A counts are
+# derived by the formatter, never persisted.
+#
+# The split into ORIGINAL_METRIC_NAMES / NEW_METRIC_NAMES exists for the
+# Checkpoint-B read-compatibility rule in _read_metrics: a pre-B v2 row (only
+# the six originals) must still be served, with the nine #59 ratios
+# synthesized as 0/0, while partial-new-metric rows fail closed.
+ORIGINAL_METRIC_NAMES = (
     "retrievalTop1",
     "retrievalHitAt3",
     "schemaHandlingCorrectness",
@@ -51,6 +59,18 @@ METRIC_NAMES = (
     "toolCorrectness",
     "expectedStatusCorrectness",
 )
+NEW_METRIC_NAMES = (
+    "rootCauseDiscipline",
+    "evidenceSupport",
+    "unknownHandling",
+    "diagnosticJustification",
+    "confidenceCalibration",
+    "actionGrounding",
+    "approvalGate",
+    "boundsRespected",
+    "deterministicRecovery",
+)
+METRIC_NAMES = ORIGINAL_METRIC_NAMES + NEW_METRIC_NAMES
 
 
 @router.get("/health")
@@ -63,6 +83,60 @@ async def health() -> dict[str, str]:
 def _metric_ratio(metrics: EvaluationMetrics, name: str) -> MetricRatio:
     ratio: MetricRatio = getattr(metrics, name)
     return ratio
+
+
+def _read_metrics(run: EvaluationRun) -> EvaluationMetrics:
+    """Reconstructs the persisted EvaluationMetrics of a v2 run, honoring the
+    Checkpoint-B read-compatibility rule.
+
+    Exactly two persisted metric shapes are valid:
+
+      A. a pre-B v2 row — all six original ratios, none of the nine #59 ratios
+         (valid v2 data persisted before Checkpoint B expanded the shape);
+      B. a current B v2 row — all fifteen ratios.
+
+    A pre-B row is served with the nine #59 ratios synthesized as 0/0
+    (zero-evaluated) — never inventing PASS/FAIL/N/A check rows and never
+    mutating the stored row. Any other shape (a missing original ratio, only a
+    subset of the nine #59 ratios, an unknown name, or a duplicate) fails
+    closed with the service's internal-data error policy rather than being
+    silently defaulted one metric at a time.
+    """
+    stored: dict[str, MetricRatio] = {}
+    for metric in run.metrics:
+        if metric.name in stored:
+            logger.error("evaluation.read_metrics_duplicate", extra={"metric": metric.name})
+            raise EvaluationApiError("INTERNAL_ERROR")
+        stored[metric.name] = MetricRatio(numerator=metric.numerator, denominator=metric.denominator)
+
+    missing_original = [name for name in ORIGINAL_METRIC_NAMES if name not in stored]
+    if missing_original:
+        logger.error("evaluation.read_metrics_missing_original", extra={"missing": missing_original})
+        raise EvaluationApiError("INTERNAL_ERROR")
+
+    unknown = sorted(set(stored) - set(METRIC_NAMES))
+    if unknown:
+        logger.error("evaluation.read_metrics_unknown", extra={"unknown": unknown})
+        raise EvaluationApiError("INTERNAL_ERROR")
+
+    present_new = [name for name in NEW_METRIC_NAMES if name in stored]
+    if present_new and len(present_new) != len(NEW_METRIC_NAMES):
+        logger.error("evaluation.read_metrics_partial_new", extra={"present": present_new})
+        raise EvaluationApiError("INTERNAL_ERROR")
+
+    new_ratios = {
+        name: stored[name] if name in stored else MetricRatio(numerator=0, denominator=0)
+        for name in NEW_METRIC_NAMES
+    }
+
+    return EvaluationMetrics(
+        totalCases=run.total_cases,
+        passedCases=run.passed_cases,
+        failedCases=run.failed_cases,
+        passRate=run.pass_rate,
+        **{name: stored[name] for name in ORIGINAL_METRIC_NAMES},
+        **new_ratios,
+    )
 
 
 async def _persist_evaluation(
@@ -217,11 +291,6 @@ async def get_evaluation(
     if run.contract_version != 2:
         raise EvaluationApiError("CONTRACT_VERSION_UNSUPPORTED")
 
-    metrics_by_name = {
-        metric.name: MetricRatio(numerator=metric.numerator, denominator=metric.denominator)
-        for metric in run.metrics
-    }
-
     return EvaluationRunResultV2(
         contractVersion=2,
         datasetId=run.dataset_id,
@@ -241,11 +310,5 @@ async def get_evaluation(
             )
             for case_result in run.case_results
         ],
-        metrics=EvaluationMetrics(
-            totalCases=run.total_cases,
-            passedCases=run.passed_cases,
-            failedCases=run.failed_cases,
-            passRate=run.pass_rate,
-            **{name: metrics_by_name[name] for name in METRIC_NAMES},
-        ),
+        metrics=_read_metrics(run),
     )

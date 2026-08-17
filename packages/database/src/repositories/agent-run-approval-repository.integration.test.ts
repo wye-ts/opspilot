@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { createPrismaClient, type PrismaClient, type PrismaClientHandle } from "../client";
@@ -7,6 +10,35 @@ import { createTestPrismaClient, truncateAllTables } from "../test/test-db";
 import { appendDirectSuccessPrefix, appendFailurePrefix } from "../test/canonical-stream";
 import { createJob, finalizeCompleted, finalizeFailed, startRun } from "./agent-run-repository";
 import { getApprovalDecision, recordApprovalDecision } from "./agent-run-approval-repository";
+
+// Issue #59 Checkpoint B §10 — the shared reachable approval-eligibility
+// matrix consumed by BOTH the repository parity (this file) and the
+// evaluator parity (apps/worker/src/evaluation/approval-parity.test.ts).
+// This package compiles to CommonJS, where `import.meta` is a compile error
+// (TS1470) and vite-node does not reliably provide `__dirname`; the package
+// root is the working directory under both `pnpm --filter ... run test` and
+// the recursive root `pnpm test` (same convention as
+// packages/provider-claude/src/module-boundary.test.ts).
+const APPROVAL_ELIGIBILITY_FIXTURE_PATH = join(
+  process.cwd(),
+  "src",
+  "test",
+  "approval-eligibility-vectors.json",
+);
+
+interface ApprovalEligibilityVector {
+  readonly id: string;
+  readonly runStatus: "RUNNING" | "COMPLETED" | "FAILED";
+  readonly suggestedActionCount: number;
+  readonly expectedRepositoryEligibility: "ELIGIBLE" | "NOT_ELIGIBLE";
+  readonly evaluationObservable: boolean;
+}
+
+function loadApprovalEligibilityFixture(): { readonly vectors: readonly ApprovalEligibilityVector[] } {
+  return JSON.parse(readFileSync(APPROVAL_ELIGIBILITY_FIXTURE_PATH, "utf8")) as unknown as {
+    readonly vectors: readonly ApprovalEligibilityVector[];
+  };
+}
 
 // Issue #60 Checkpoint B (§6): approval fixtures carry the full new-write #60
 // contract. The eligible report is ACTIONABLE with a grounded DRAFT_CUSTOMER_REPLY
@@ -368,6 +400,52 @@ describe("stored-row corruption (raw SQL bypass, real Postgres)", () => {
     await expect(getApprovalDecision(prisma, run.id)).rejects.toMatchObject({
       code: "PERSISTENCE_VALIDATION_FAILED",
     });
+  });
+});
+
+// Issue #59 Checkpoint B §10.1 — repository side of the approval-eligibility
+// parity. Seeds each reachable vector through the normal lifecycle APIs
+// (createJob -> startRun -> finalizeCompleted/finalizeFailed, never raw SQL)
+// and asserts the real PostgreSQL repository's getApprovalDecision eligibility
+// agrees with the shared fixture. This is the side that executes actual
+// persistence behavior.
+describe("approval eligibility parity — shared fixture vs real PostgreSQL repository (§10.1)", () => {
+  const fixture = loadApprovalEligibilityFixture();
+
+  it("the fixture covers exactly the four minimum reachable matrix rows", () => {
+    expect(fixture.vectors).toHaveLength(4);
+    expect(
+      fixture.vectors.map((vector) => `${vector.runStatus}+${vector.suggestedActionCount}`),
+    ).toEqual(["RUNNING+0", "COMPLETED+0", "COMPLETED+1", "FAILED+0"]);
+    // RUNNING is repository-only: it is not observable by offline evaluation.
+    const running = fixture.vectors.find((vector) => vector.runStatus === "RUNNING");
+    expect(running?.evaluationObservable).toBe(false);
+  });
+
+  it("repository eligibility agrees with the shared fixture for every reachable vector", async () => {
+    for (const vector of fixture.vectors) {
+      let runId: string;
+      if (vector.runStatus === "RUNNING") {
+        ({ run: { id: runId } } = await createRunningRun());
+      } else if (vector.runStatus === "FAILED") {
+        ({ run: { id: runId } } = await createFailedRun());
+      } else if (vector.suggestedActionCount >= 1) {
+        ({ run: { id: runId } } = await createEligibleCompletedRun());
+      } else {
+        ({ run: { id: runId } } = await createIneligibleEmptyActionsRun());
+      }
+
+      const view = await getApprovalDecision(prisma, runId);
+      const repositoryEligible = view.status === "PENDING";
+      expect(repositoryEligible, `repository eligible (${vector.id})`).toBe(
+        vector.expectedRepositoryEligibility === "ELIGIBLE",
+      );
+      // The surfaced status is exactly the fixture's declared eligibility:
+      // PENDING for an eligible undecided run, NOT_ELIGIBLE otherwise.
+      expect(view.status, `view.status (${vector.id})`).toBe(
+        vector.expectedRepositoryEligibility === "ELIGIBLE" ? "PENDING" : "NOT_ELIGIBLE",
+      );
+    }
   });
 });
 

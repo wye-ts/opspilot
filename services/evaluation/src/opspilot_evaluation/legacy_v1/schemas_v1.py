@@ -5,14 +5,15 @@ runtime — the active service accepts contractVersion 2 only (see
 opspilot_evaluation.schemas), and nothing in the active evaluation path
 imports this module.
 
-Frozen shapes live here; shapes that did not change at the #59 Checkpoint A
-cutover (expectations, entry primitives, enums, JsonValue, the aggregate
-metrics) are re-exported from the active schemas module — mirroring the
-TypeScript legacy-v1/ precedent, where types-v1.ts re-exports
-EvaluationExpectations from the active ../types. This is deliberate: the
-frozen oracle pins the v1 CONTRACT SEMANTICS (the pass/fail check model, the
-v1 ObservedFacts without investigation/output/report-metadata), not a
-physical duplicate of every unchanged helper.
+Frozen shapes live here; genuinely version-neutral primitives that did not
+change at the #59 Checkpoint A cutover (entry primitives, enums, JsonValue,
+the expectation sub-models, MetricRatio) are re-exported from the active
+schemas module. The v1 WIRE/RESULT SHAPE itself — EvaluationExpectationsV1,
+EvaluationMetricsV1, and the v1 ObservedFacts discriminant — is owned here so
+the frozen oracle can never acquire future active-v2 fields merely because
+active schemas evolve (OpsPilot #59 Checkpoint B remediation: the active
+EvaluationExpectations/EvaluationMetrics gained the nine Checkpoint-B fields,
+which must stay out of the frozen v1 contract).
 
 The v1 cross-language evaluation contract, as frozen by the approved
 Revision 3 plan for OpsPilot #61: a SUITE-level request/response, not a
@@ -31,9 +32,8 @@ from opspilot_evaluation.schemas import (
     MAX_CASES,
     ActionType,
     ErrorCode,
-    EvaluationExpectations,
-    EvaluationMetrics,
     EvidenceEntry,
+    FailureExpectations,
     JsonValue,
     MetricRatio,
     ReportExpectations,
@@ -43,6 +43,7 @@ from opspilot_evaluation.schemas import (
     ToolExecutedEntry,
     ToolExpectations,
     ToolRequestedEntry,
+    _reject_explicit_null,
     _StrictStr,
 )
 
@@ -50,8 +51,8 @@ __all__ = [
     "EvaluationCaseInputV1",
     "EvaluationCaseResultV1",
     "EvaluationCheckV1",
-    "EvaluationExpectations",
-    "EvaluationMetrics",
+    "EvaluationExpectationsV1",
+    "EvaluationMetricsV1",
     "EvaluationSuiteInputV1",
     "JsonValue",
     "MetricRatio",
@@ -123,10 +124,29 @@ ObservedFactsV1 = ObservedFactsCompletedV1 | ObservedFactsFailedV1
 # ---------------------------------------------------------------------------
 
 
+class EvaluationExpectationsV1(BaseModel):
+    """The frozen pre-Checkpoint-B v1 expectation set — the exact Checkpoint-A
+    EvaluationExpectations, restated here so the offline v1 oracle owns its
+    own request shape. The active EvaluationExpectations gained the ten
+    Checkpoint-B fields (expectedRootCause, expectedEvidence, ...); with
+    extra="forbid" this frozen model rejects any of them on the v1 wire,
+    keeping the frozen contract structurally v1.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    runStatus: RunStatus
+    retrieval: RetrievalExpectations | None = None
+    tool: ToolExpectations | None = None
+    report: ReportExpectations | None = None
+    failure: FailureExpectations | None = None
+
+    _reject_null_fields = _reject_explicit_null("retrieval", "tool", "report", "failure")
+
+
 class EvaluationCaseInputV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
     caseId: _StrictStr = Field(min_length=1, max_length=128)
-    expectations: EvaluationExpectations
+    expectations: EvaluationExpectationsV1
     observed: ObservedFactsV1
 
 
@@ -174,3 +194,24 @@ class EvaluationCaseResultV1(BaseModel):
     caseId: str
     passed: bool
     checks: list[EvaluationCheckV1]
+
+
+class EvaluationMetricsV1(BaseModel):
+    """The frozen pre-Checkpoint-B v1 aggregate-metrics struct — the exact
+    Checkpoint-A EvaluationMetrics, restated here so the offline v1 oracle
+    owns its own result shape. It carries the six historical ratios and NO
+    #59 Checkpoint-B metric fields; the active EvaluationMetrics gains the
+    nine new ratios, but this frozen struct must never acquire them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    totalCases: int
+    passedCases: int
+    failedCases: int
+    passRate: float
+    retrievalTop1: MetricRatio
+    retrievalHitAt3: MetricRatio
+    schemaHandlingCorrectness: MetricRatio
+    evidenceGroundingCorrectness: MetricRatio
+    toolCorrectness: MetricRatio
+    expectedStatusCorrectness: MetricRatio

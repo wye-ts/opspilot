@@ -25,6 +25,13 @@
 //     `passed === checks.every(c => c.status !== "FAIL")`. A contradictory
 //     remote result is never silently repaired, so it can never reach the
 //     formatter, PASS/Summary rendering, or a zero exit code;
+//   - Issue #59 Checkpoint B: a POST response's every returned case must
+//     carry EXACTLY ONE outcome for each of the nine #59 metric checks, in
+//     the fixed METRIC_CHECK_NAMES order (assertExactMetricCheckOutcomes). A
+//     response that omits, duplicates, replaces, or reorders any of the nine
+//     defeats the exactly-one-outcome-per-metric invariant and is rejected as
+//     malformed. This is POST-only — pre-B persisted rows (GET) legitimately
+//     predate the nine and stay compatible;
 //   - error messages never leak raw bodies, DB errors, URLs, or payloads
 //     (see evaluation-service-errors.ts).
 //
@@ -41,6 +48,7 @@ import {
   EvaluationServiceUnavailableError,
   EvaluationServiceUnsupportedVersionError,
 } from "./evaluation-service-errors";
+import { METRIC_CHECK_NAMES } from "./evaluation-evaluator";
 import { aggregateMetrics } from "./evaluation-metrics";
 import type { EvaluationScorer } from "./evaluation-scorer";
 import { CHECK_REASON_MESSAGES, isCheckReasonCode, type CheckReasonCode } from "./check-reason-codes";
@@ -88,9 +96,13 @@ function expectStrictBoolean(value: unknown, path: string): boolean {
   return value;
 }
 
-function expectInteger(value: unknown, path: string): number {
-  if (typeof value !== "number" || !Number.isInteger(value)) {
-    throw malformed(`expected an integer at ${path}`);
+// Counts/tokens on the wire are non-negative integers (Checkpoint B numeric-
+// domain alignment: totalCases/passedCases/failedCases and every ratio's
+// numerator/denominator). Negative values are rejected here, not left for the
+// recompute check to catch downstream. passRate stays a finite fraction.
+function expectNonNegativeInteger(value: unknown, path: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw malformed(`expected a non-negative integer at ${path}`);
   }
   return value;
 }
@@ -159,14 +171,15 @@ function parseCaseResult(value: unknown, path: string): EvaluationCaseResultV2 {
 
 function parseMetricRatio(value: unknown, path: string): { readonly numerator: number; readonly denominator: number } {
   if (!isRecord(value)) throw malformed(`expected an object at ${path}`);
-  const numerator = expectInteger(value.numerator, `${path}.numerator`);
-  const denominator = expectInteger(value.denominator, `${path}.denominator`);
+  const numerator = expectNonNegativeInteger(value.numerator, `${path}.numerator`);
+  const denominator = expectNonNegativeInteger(value.denominator, `${path}.denominator`);
   return { numerator, denominator };
 }
 
-// The six numerator/denominator aggregate metrics, in the frozen
-// EvaluationMetrics field order (see types.ts / evaluation-metrics.ts). Shared
-// by the structural parser below and the semantic recompute-and-compare check.
+// The fifteen numerator/denominator aggregate metrics (six existing + nine
+// Issue #59 Checkpoint B ratios), in the frozen EvaluationMetrics field order
+// (see types.ts / evaluation-metrics.ts). Shared by the structural parser
+// below and the semantic recompute-and-compare check.
 const METRIC_RATIO_NAMES = [
   "retrievalTop1",
   "retrievalHitAt3",
@@ -174,6 +187,15 @@ const METRIC_RATIO_NAMES = [
   "evidenceGroundingCorrectness",
   "toolCorrectness",
   "expectedStatusCorrectness",
+  "rootCauseDiscipline",
+  "evidenceSupport",
+  "unknownHandling",
+  "diagnosticJustification",
+  "confidenceCalibration",
+  "actionGrounding",
+  "approvalGate",
+  "boundsRespected",
+  "deterministicRecovery",
 ] as const;
 
 type MetricRatioName = (typeof METRIC_RATIO_NAMES)[number];
@@ -181,9 +203,9 @@ type MetricRatioName = (typeof METRIC_RATIO_NAMES)[number];
 function parseMetrics(value: unknown, path: string): EvaluationMetrics {
   if (!isRecord(value)) throw malformed(`expected an object at ${path}`);
 
-  const totalCases = expectInteger(value.totalCases, `${path}.totalCases`);
-  const passedCases = expectInteger(value.passedCases, `${path}.passedCases`);
-  const failedCases = expectInteger(value.failedCases, `${path}.failedCases`);
+  const totalCases = expectNonNegativeInteger(value.totalCases, `${path}.totalCases`);
+  const passedCases = expectNonNegativeInteger(value.passedCases, `${path}.passedCases`);
+  const failedCases = expectNonNegativeInteger(value.failedCases, `${path}.failedCases`);
   const passRate = expectFiniteNumber(value.passRate, `${path}.passRate`);
 
   const metricRatios = {} as Record<MetricRatioName, { readonly numerator: number; readonly denominator: number }>;
@@ -260,6 +282,14 @@ function validateSemanticConsistency(
     ) {
       throw malformed("response cases do not exactly match the submitted case IDs and order");
     }
+
+    // A2. POST completeness — Issue #59 Checkpoint B. Every returned case must
+    // carry exactly one outcome for each of the nine #59 metric checks, in the
+    // fixed METRIC_CHECK_NAMES order. POST-only: pre-B persisted rows (GET)
+    // legitimately predate the nine and remain compatible.
+    for (const caseResult of resource.cases) {
+      assertExactMetricCheckOutcomes(caseResult.checks, caseResult.caseId);
+    }
   }
 
   // B. Case verdict consistency — a case's `passed` must equal the logical
@@ -302,6 +332,34 @@ function assertMetricsMatch(returned: EvaluationMetrics, recomputed: EvaluationM
     }
     if (returnedRatio.denominator !== recomputedRatio.denominator) {
       contradict(`${ratioName}.denominator`);
+    }
+  }
+}
+
+// Issue #59 Checkpoint B POST completeness invariant: a POST response's every
+// returned case must contain exactly one outcome for each of the nine #59
+// metric checks, in the fixed METRIC_CHECK_NAMES order (the scorer emits them
+// contiguously at the end of each case's check array — see
+// evaluation-evaluator.ts evaluateCase and the METRIC_CHECK_NAMES contract
+// comment). Any deviation — all nine absent, any one missing, a duplicate, an
+// unexpected #59 name replacing one, or a reorder — is a malformed response
+// that would otherwise let the entire Checkpoint-B evaluation be skipped
+// while the worker renders PASS. Enforced ONLY on the POST response path
+// (validateSemanticConsistency with a submitted request); pre-B persisted
+// rows (GET) legitimately predate the nine and must stay compatible.
+function assertExactMetricCheckOutcomes(checks: readonly EvaluationCheckV2[], caseId: string): void {
+  const metricCheckNames = METRIC_CHECK_NAMES as readonly string[];
+  const metricOutcomes = checks.filter((check) => metricCheckNames.includes(check.name));
+  if (metricOutcomes.length !== METRIC_CHECK_NAMES.length) {
+    throw malformed(
+      `case "${caseId}" must contain exactly one outcome for each of the nine #59 metric checks; found ${metricOutcomes.length}`,
+    );
+  }
+  for (let index = 0; index < METRIC_CHECK_NAMES.length; index += 1) {
+    if (metricOutcomes[index]!.name !== METRIC_CHECK_NAMES[index]) {
+      throw malformed(
+        `case "${caseId}" #59 metric checks are missing, duplicated, replaced, or out of the required order`,
+      );
     }
   }
 }

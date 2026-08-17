@@ -8,6 +8,9 @@ imports it.
 
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from opspilot_evaluation.legacy_v1.metrics_v1 import aggregate_metrics_v1
 from opspilot_evaluation.legacy_v1.schemas_v1 import EvaluationSuiteInputV1
 from opspilot_evaluation.legacy_v1.scorer_v1 import score_cases_v1
@@ -55,8 +58,59 @@ def test_frozen_v1_oracle_reproduces_fixture_metrics() -> None:
     metrics = aggregate_metrics_v1(results)
     got = metrics.model_dump()
 
-    for name, expected_value in fixture["expectedMetrics"].items():
-        assert got[name] == expected_value, name
+    # Strict structural equality against the historical expectedMetrics: the
+    # frozen v1 result must contain EXACTLY the six metric keys (plus the four
+    # aggregate counts), and no #59 Checkpoint-B metric fields may leak in.
+    assert got == fixture["expectedMetrics"]
+
+
+def test_frozen_v1_metrics_carry_no_checkpoint_b_fields() -> None:
+    # The frozen v1 oracle must not acquire active-v2 #59 fields merely because
+    # the active EvaluationMetrics evolved (Checkpoint B remediation): the
+    # dumped result has exactly the six historical metric names and none of the
+    # nine #59 ratios.
+    fixture = load_fixture_v1()
+    request = build_wire_request(fixture)
+    suite = EvaluationSuiteInputV1.model_validate(request)
+
+    results = score_cases_v1(suite.cases)
+    metrics = aggregate_metrics_v1(results)
+    got = metrics.model_dump()
+
+    six_metric_names = {
+        "retrievalTop1",
+        "retrievalHitAt3",
+        "schemaHandlingCorrectness",
+        "evidenceGroundingCorrectness",
+        "toolCorrectness",
+        "expectedStatusCorrectness",
+    }
+    assert six_metric_names.issubset(got.keys())
+    checkpoint_b_metric_names = {
+        "rootCauseDiscipline",
+        "evidenceSupport",
+        "unknownHandling",
+        "diagnosticJustification",
+        "confidenceCalibration",
+        "actionGrounding",
+        "approvalGate",
+        "boundsRespected",
+        "deterministicRecovery",
+    }
+    assert not (checkpoint_b_metric_names & got.keys())
+
+
+def test_frozen_v1_expectations_reject_checkpoint_b_only_field() -> None:
+    # The frozen v1 expectations shape owns its own request contract: a
+    # Checkpoint-B-only expectation field (expectedRootCause) is rejected by
+    # extra="forbid", proving the v1 oracle does not silently accept active-v2
+    # expectation fields (Checkpoint B remediation).
+    fixture = load_fixture_v1()
+    request = build_wire_request(fixture)
+    request["cases"][0]["expectations"]["expectedRootCause"] = "PRESENT"
+
+    with pytest.raises(ValidationError):
+        EvaluationSuiteInputV1.model_validate(request)
 
 
 def test_frozen_v1_observed_shapes_carry_no_v2_additions() -> None:

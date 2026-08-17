@@ -57,6 +57,17 @@ _StrictStr = Annotated[str, Strict()]
 _StrictBool = Annotated[bool, Strict()]
 _StrictStrList = Annotated[list[_StrictStr], Strict()]
 
+# Checkpoint B numeric-domain alignment: every count/token field (distinct
+# locator cardinality, token budgets, investigation usage, metric ratio
+# numerator/denominator, case totals) is a strict non-negative integer.
+# Strict() rejects floats (1.5, 2.0), booleans (true/false), and numeric
+# strings ("2") that lax int would silently coerce; Field(ge=0) rejects
+# negatives. This must match the TypeScript number().int().nonnegative()
+# dataset-validation domain exactly, so the local and service scorers accept
+# and reject the same thresholds. Fractional fields such as confidence are
+# deliberately NOT marked with this (see ExpectedConfidenceExpectations).
+_StrictNonNegativeInt = Annotated[int, Strict(), Field(ge=0)]
+
 # ---------------------------------------------------------------------------
 # JsonValue — mirrors json-value.ts's toJsonValue() invariants that still
 # apply once a value has already survived JSON parsing: Python's JSON parser
@@ -203,6 +214,20 @@ class ToolFailureCode(StrEnum):
     TOOL_OUTPUT_INVALID = "TOOL_OUTPUT_INVALID"
 
 
+# Issue #59 Checkpoint B — the two new closed-vocabulary expectation markers
+# (spec §5). Mirrors types.ts's inline literals:
+#   expectedRootCause?: "PRESENT" | "ABSENT"
+#   expectedApproval?: "ELIGIBLE" | "NOT_ELIGIBLE"
+class ExpectedRootCause(StrEnum):
+    PRESENT = "PRESENT"
+    ABSENT = "ABSENT"
+
+
+class ExpectedApproval(StrEnum):
+    ELIGIBLE = "ELIGIBLE"
+    NOT_ELIGIBLE = "NOT_ELIGIBLE"
+
+
 # ---------------------------------------------------------------------------
 # Shared entry shapes (requested/executed/completed tool calls, evidence)
 # ---------------------------------------------------------------------------
@@ -311,21 +336,21 @@ class ToolFailureFacts(BaseModel):
 
 class InvestigationBounds(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    maxProviderTurns: int
-    maxDiagnosticToolCalls: int
+    maxProviderTurns: _StrictNonNegativeInt
+    maxDiagnosticToolCalls: _StrictNonNegativeInt
 
 
 class InvestigationUsage(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    inputTokens: int
-    outputTokens: int
-    providerCalls: int
+    inputTokens: _StrictNonNegativeInt
+    outputTokens: _StrictNonNegativeInt
+    providerCalls: _StrictNonNegativeInt
 
 
 class InvestigationFacts(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    providerTurnsUsed: int
-    diagnosticRequestCount: int
+    providerTurnsUsed: _StrictNonNegativeInt
+    diagnosticRequestCount: _StrictNonNegativeInt
     forcedFinalization: _StrictBool
     stopReason: InvestigationStopReason | None
     assessments: list[AssessmentFacts]
@@ -416,6 +441,82 @@ class FailureExpectations(BaseModel):
     expectedCode: ErrorCode
 
 
+# ---------------------------------------------------------------------------
+# Issue #59 Checkpoint B — the nine #59 metric expectation sub-models (spec
+# §5). Field-for-field mirrors of types.ts's inline expectation shapes. Each
+# optional field rejects explicit null (omission only) and each model uses
+# extra="forbid", consistent with the rest of the v2 contract.
+# ---------------------------------------------------------------------------
+
+
+class ExpectedEvidenceExpectations(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    state: EvidenceState
+    requiredLocators: list[EvidenceLocator]
+    requiresTelemetry: _StrictBool | None = None
+    minDistinctLocators: _StrictNonNegativeInt | None = None
+
+    _reject_null_fields = _reject_explicit_null("requiresTelemetry", "minDistinctLocators")
+
+
+class ExpectedTelemetryEvidenceExpectations(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    probative: list[EvidenceLocator]
+    nonProbative: list[EvidenceLocator]
+
+
+class ExpectedDiagnosticExpectation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    evidenceState: EvidenceState
+    continuationReason: ContinuationReason
+
+
+# Confidence bounds are continuous/fractional quantities — never integer
+# semantics. Strict() rejects booleans and numeric strings that lax float
+# would coerce, while still accepting every valid JSON number, including
+# integers (0 -> 0.0, 1 -> 1.0); Field(ge=0.0, le=1.0) rejects NaN,
+# ±Infinity, negatives, and values above 1. This mirrors the TypeScript
+# "typeof number && Number.isFinite, then 0 <= min <= max <= 1" rule in
+# dataset-validation.ts Rule 1, so the local and service scorers accept and
+# reject the same confidence bounds.
+_StrictConfidence = Annotated[float, Strict(), Field(ge=0.0, le=1.0)]
+
+
+class ExpectedConfidenceExpectations(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    min: _StrictConfidence
+    max: _StrictConfidence
+
+    @model_validator(mode="after")
+    def _min_le_max(self) -> ExpectedConfidenceExpectations:
+        if self.min > self.max:
+            raise ValueError("expectedConfidence.min must be <= expectedConfidence.max")
+        return self
+
+
+class ExpectedActionExpectations(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: ActionType
+    requiredGrounding: list[EvidenceLocator]
+    allowedGrounding: list[EvidenceLocator]
+
+
+class ExpectedBoundsExpectations(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    maxTotalTokens: _StrictNonNegativeInt | None = None
+
+    _reject_null_fields = _reject_explicit_null("maxTotalTokens")
+
+
+class ExpectedRecoveryExpectations(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    failedStage: InvestigationExecutionStage
+    forbiddenCompletedToolCallIds: _StrictStrList | None = None
+    reportProduced: _StrictBool
+
+    _reject_null_fields = _reject_explicit_null("forbiddenCompletedToolCallIds")
+
+
 class EvaluationExpectations(BaseModel):
     model_config = ConfigDict(extra="forbid")
     runStatus: RunStatus
@@ -423,8 +524,33 @@ class EvaluationExpectations(BaseModel):
     tool: ToolExpectations | None = None
     report: ReportExpectations | None = None
     failure: FailureExpectations | None = None
+    expectedRootCause: ExpectedRootCause | None = None
+    expectedEvidence: ExpectedEvidenceExpectations | None = None
+    expectedTelemetryEvidence: ExpectedTelemetryEvidenceExpectations | None = None
+    expectedDiagnostics: list[ExpectedDiagnosticExpectation] | None = None
+    expectedStopReason: InvestigationStopReason | None = None
+    expectedConfidence: ExpectedConfidenceExpectations | None = None
+    expectedActions: list[ExpectedActionExpectations] | None = None
+    expectedApproval: ExpectedApproval | None = None
+    expectedBounds: ExpectedBoundsExpectations | None = None
+    expectedRecovery: ExpectedRecoveryExpectations | None = None
 
-    _reject_null_fields = _reject_explicit_null("retrieval", "tool", "report", "failure")
+    _reject_null_fields = _reject_explicit_null(
+        "retrieval",
+        "tool",
+        "report",
+        "failure",
+        "expectedRootCause",
+        "expectedEvidence",
+        "expectedTelemetryEvidence",
+        "expectedDiagnostics",
+        "expectedStopReason",
+        "expectedConfidence",
+        "expectedActions",
+        "expectedApproval",
+        "expectedBounds",
+        "expectedRecovery",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -579,15 +705,26 @@ class EvaluationCaseResultV2(BaseModel):
 
 class MetricRatio(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    numerator: int
-    denominator: int
+    numerator: _StrictNonNegativeInt
+    denominator: _StrictNonNegativeInt
+
+
+# The zero ratio used as the default for the nine #59 fields below. The
+# ACTIVE scorer always fills all nine with real aggregates (never a default),
+# and the GET read path synthesizes 0/0 for pre-B v2 rows explicitly (see
+# api._read_metrics), so every wire response carries them. The default is a
+# defensive fallback only — the frozen v1 oracle owns its own six-metric
+# EvaluationMetricsV1 (legacy_v1/schemas_v1.py) and no longer constructs this
+# model (Checkpoint B remediation), so nothing relies on these defaults.
+def _zero_ratio() -> MetricRatio:
+    return MetricRatio(numerator=0, denominator=0)
 
 
 class EvaluationMetrics(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    totalCases: int
-    passedCases: int
-    failedCases: int
+    totalCases: _StrictNonNegativeInt
+    passedCases: _StrictNonNegativeInt
+    failedCases: _StrictNonNegativeInt
     passRate: float
     retrievalTop1: MetricRatio
     retrievalHitAt3: MetricRatio
@@ -595,6 +732,19 @@ class EvaluationMetrics(BaseModel):
     evidenceGroundingCorrectness: MetricRatio
     toolCorrectness: MetricRatio
     expectedStatusCorrectness: MetricRatio
+    # Issue #59 Checkpoint B — the nine #59 metric ratios (spec §5/§11). Same
+    # { numerator, denominator } wire shape as the six above; N/A counts are
+    # derived by the formatter from each case's check results, never carried
+    # on the ratio itself.
+    rootCauseDiscipline: MetricRatio = Field(default_factory=_zero_ratio)
+    evidenceSupport: MetricRatio = Field(default_factory=_zero_ratio)
+    unknownHandling: MetricRatio = Field(default_factory=_zero_ratio)
+    diagnosticJustification: MetricRatio = Field(default_factory=_zero_ratio)
+    confidenceCalibration: MetricRatio = Field(default_factory=_zero_ratio)
+    actionGrounding: MetricRatio = Field(default_factory=_zero_ratio)
+    approvalGate: MetricRatio = Field(default_factory=_zero_ratio)
+    boundsRespected: MetricRatio = Field(default_factory=_zero_ratio)
+    deterministicRecovery: MetricRatio = Field(default_factory=_zero_ratio)
 
 
 class EvaluationRunResultV2(BaseModel):

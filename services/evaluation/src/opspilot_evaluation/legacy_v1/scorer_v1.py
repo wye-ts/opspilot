@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from opspilot_evaluation.legacy_v1.reason_codes_v1 import CheckReasonCode
 from opspilot_evaluation.legacy_v1.schemas_v1 import (
     EvaluationCaseInputV1,
-    EvaluationExpectations,
+    EvaluationExpectationsV1,
     JsonValue,
     ObservedFactsCompletedV1,
     ObservedFactsFailedV1,
@@ -63,7 +63,7 @@ def _check(name: str, passed: bool, fail_reason: CheckReasonCode) -> CheckOutcom
 
 
 def evaluate_status_v1(
-    expectations: EvaluationExpectations,
+    expectations: EvaluationExpectationsV1,
     observed: ObservedFactsUnionV1,
 ) -> list[CheckOutcomeV1]:
     expected = expectations.runStatus.value
@@ -264,7 +264,7 @@ def evaluate_report_v1(
 
 
 def evaluate_failure_v1(
-    expectations: EvaluationExpectations,
+    expectations: EvaluationExpectationsV1,
     observed: ObservedFactsUnionV1,
 ) -> list[CheckOutcomeV1]:
     failure = expectations.failure

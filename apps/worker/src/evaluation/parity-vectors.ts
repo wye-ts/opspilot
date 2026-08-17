@@ -15,7 +15,7 @@ import {
 } from "./v2-types";
 import type { ObservedFacts } from "./observed-facts";
 
-// The single TS-owned ACTIVE parity artifact for the current 15-case dataset
+// The single TS-owned ACTIVE parity artifact for the current 20-case dataset
 // (see the OpsPilot #61 Phase 1 plan, clarification B, and the HQ targeted
 // corrections, correction 4). Unlike a plain scoring-output snapshot, this
 // fixture carries BOTH the normalized inputs (caseId/expectations/observed)
@@ -100,7 +100,7 @@ export function buildParityFixture(
   };
 }
 
-// Loads the real corpus and runs the real, fixed 15-case dataset (the same
+// Loads the real corpus and runs the real, fixed 20-case dataset (the same
 // path run-eval.ts's CLI uses), scores it with the real LocalEvaluationScorer,
 // then builds the combined parity fixture from it. Dependencies are
 // injectable for tests, matching the pattern in run-eval.ts's

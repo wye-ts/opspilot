@@ -102,7 +102,24 @@ describe("frozen v1 offline oracle (legacy-v1/)", () => {
       expect(scored.checks).toEqual(parityCase.expected.checks);
     }
 
-    expect(result.metrics).toEqual(fixture.expectedMetrics);
+    // Strict structural equality against the historical expectedMetrics: the
+    // frozen v1 result must contain EXACTLY the six metric keys (plus the four
+    // aggregate counts) and no #59 Checkpoint-B field. toStrictEqual — unlike
+    // toEqual — fails on extra keys, so a leaked #59 ratio would break this.
+    expect(result.metrics).toStrictEqual(fixture.expectedMetrics);
+    const metricKeys = Object.keys(result.metrics);
+    const checkpointBMetricNames = [
+      "rootCauseDiscipline",
+      "evidenceSupport",
+      "unknownHandling",
+      "diagnosticJustification",
+      "confidenceCalibration",
+      "actionGrounding",
+      "approvalGate",
+      "boundsRespected",
+      "deterministicRecovery",
+    ];
+    expect(checkpointBMetricNames.some((name) => metricKeys.includes(name))).toBe(false);
   });
 
   it("the frozen v1 observed shapes carry no v2 additions — no investigation, no failedStage, no completed output", () => {
