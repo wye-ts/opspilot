@@ -2012,6 +2012,88 @@ describe("runAgentOrchestrator — bounded multi-step diagnostic loop (issue #57
     expect(result.status).toBe("completed");
   });
 
+  it("resolves maxOutputTokens to the report-safe finalization ceiling on EVERY provider turn: investigation turns 0-2 AND the forced finalization turn 3 all get finalizationMaxOutputTokens (issue #61 Codex MAJOR 1)", async () => {
+    const seenMaxOutputTokens: number[] = [];
+    let turn = 0;
+    const provider: LlmProvider = {
+      runAgentTurn: async (input) => {
+        seenMaxOutputTokens.push(input.maxOutputTokens);
+        if (turn++ < 3) {
+          return {
+            type: "diagnostic_tool_request",
+            providerRequestId: `p:${turn - 1}`,
+            usage,
+            request: {
+              toolCallId: `call-${turn}`,
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+              rawAssessment: assessmentForTurnIndex(turn - 1),
+            },
+          };
+        }
+        return { type: "report_submission", providerRequestId: "p:3", usage, rawInput: validReport };
+      },
+    };
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: registry,
+      initialConversation: [ticketContext],
+      outputBudget: { investigationMaxOutputTokens: 1024, finalizationMaxOutputTokens: 3072 },
+    });
+
+    expect(result.status).toBe("completed");
+    // MAX_PROVIDER_TURNS is 4: turns 0-2 are INVESTIGATION, turn 3 is the
+    // reserved forced FINALIZATION turn — see agent-run-bounds.ts. Every one of
+    // them is report-capable (submit_resolution_report is available on
+    // investigation turns too), so every turn must receive the report-safe
+    // finalization ceiling, never the smaller investigation ceiling.
+    expect(seenMaxOutputTokens).toEqual([3072, 3072, 3072, 3072]);
+    // Required test A: investigation turns 0/1/2 receive the finalization
+    // ceiling.
+    expect(seenMaxOutputTokens.slice(0, 3)).toEqual([3072, 3072, 3072]);
+    // Required test B: the finalization turn receives the finalization ceiling.
+    expect(seenMaxOutputTokens.at(-1)).toBe(3072);
+    // No report-capable turn may ever receive the investigation ceiling.
+    expect(seenMaxOutputTokens).not.toContain(1024);
+  });
+
+  it("C — a voluntary report on an investigation turn needing >1024 and <=3072 tokens completes, because the report-capable turn gets the finalization ceiling (issue #61 Codex MAJOR 1)", async () => {
+    const seenMaxOutputTokens: number[] = [];
+    const provider: LlmProvider = {
+      runAgentTurn: async (input) => {
+        seenMaxOutputTokens.push(input.maxOutputTokens);
+        // Voluntary report on turn 0, an INVESTIGATION turn —
+        // submit_resolution_report is available there too, so an investigation
+        // call can legitimately produce the final report. This is exactly the
+        // case the phase-based ceiling truncated: a report needing more than the
+        // investigation ceiling (1024) and up to the finalization ceiling (3072).
+        return {
+          type: "report_submission",
+          providerRequestId: "p:0",
+          usage,
+          rawInput: validReportWithRagEvidence,
+        };
+      },
+    };
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: registry,
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+      outputBudget: { investigationMaxOutputTokens: 1024, finalizationMaxOutputTokens: 3072 },
+    });
+
+    // The voluntary investigation-turn report completes (not truncated).
+    expect(result.status).toBe("completed");
+    // The single investigation turn received the report-safe 3072 ceiling, so a
+    // report needing >1024 and <=3072 tokens has room to complete.
+    expect(seenMaxOutputTokens).toEqual([3072]);
+    expect(seenMaxOutputTokens[0]).toBeGreaterThan(1024);
+    expect(seenMaxOutputTokens[0]).toBeLessThanOrEqual(3072);
+  });
+
   it("fails closed with TOOL_NOT_FOUND when a forbidden tool is requested on a later diagnostic step", async () => {
     const scenario: FakeAgentScenario = {
       id: "forbidden-on-step-2",

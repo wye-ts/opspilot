@@ -16,6 +16,7 @@ export const FAILURE_DISPLAY_MESSAGES: Record<AgentOrchestratorErrorCode, string
   REPORT_SCHEMA_INVALID: "The submitted resolution report failed schema validation.",
   REPORT_EVIDENCE_INVALID: "The submitted resolution report cited invalid evidence.",
   PROVIDER_PROTOCOL_INVALID: "The model provider violated the expected turn protocol.",
+  PROVIDER_OUTPUT_TRUNCATED: "The model provider reached its output limit before completing its response.",
   // Deliberately vague about the cause. These are read-time display strings on
   // a publicly reachable run resource, so they must not tell a caller whether
   // the deployment's credential is rejected, out of credit, or merely rate

@@ -1319,13 +1319,16 @@ describe("AgentRunsController.createAgentRun — LIVE admission", () => {
     expect(executeAndPersist).not.toHaveBeenCalled();
   });
 
-  it("passes the configured output-token ceiling to a LIVE run", async () => {
+  it("passes the configured stage-aware output-token budget to a LIVE run", async () => {
     const { controller, executeAndPersist } = liveController(servableConfig());
 
     await requestLive(controller);
 
     expect(executeAndPersist).toHaveBeenCalledWith(
-      expect.objectContaining({ maxOutputTokens: 1024, liveAttemptLimit: 2 }),
+      expect.objectContaining({
+        outputBudget: { investigationMaxOutputTokens: 1024, finalizationMaxOutputTokens: 3072 },
+        liveAttemptLimit: 2,
+      }),
     );
   });
 

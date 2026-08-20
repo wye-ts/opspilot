@@ -30,6 +30,13 @@ export const TokenUsageSchema = z
 // failure modes are implemented.
 export const AgentProtocolErrorCodeSchema = z.enum([
   "PROVIDER_PROTOCOL_INVALID",
+  // stop_reason === "max_tokens": the provider was cut off before it finished
+  // responding. Distinct from PROVIDER_PROTOCOL_INVALID (a complete response
+  // that violates the turn contract) — this is an incomplete one, and must
+  // never be reinterpreted as whatever partial content happens to be present
+  // (e.g. a partially-filled submit_resolution_report tool_use block
+  // otherwise misclassifying as a schema-invalid report).
+  "PROVIDER_OUTPUT_TRUNCATED",
 ]);
 
 const DiagnosticToolRequestTurnResultSchema = z

@@ -16,6 +16,10 @@ export const AgentOrchestratorErrorCodeSchema = z.enum([
   "REPORT_SCHEMA_INVALID",
   "REPORT_EVIDENCE_INVALID",
   "PROVIDER_PROTOCOL_INVALID",
+  // stop_reason === "max_tokens" (see AgentProtocolErrorCodeSchema in
+  // agent-turn.ts). Forwarded verbatim from the protocol_error turn result —
+  // the orchestrator never re-derives it from stopReason itself.
+  "PROVIDER_OUTPUT_TRUNCATED",
   // Transport-level provider failures. Distinct from PROVIDER_PROTOCOL_INVALID,
   // which means the provider answered but the answer did not satisfy the
   // contract; these three mean no usable answer was produced at all.

@@ -819,7 +819,7 @@ export function createAgentRunService(repository: AgentRunRepositoryInterface): 
           ...(params.allowedRagChunkIds !== undefined ? { allowedRagChunkIds: params.allowedRagChunkIds } : {}),
           ...(params.retriever !== undefined ? { retriever: params.retriever } : {}),
           ...(params.retrievalInput !== undefined ? { retrievalInput: params.retrievalInput } : {}),
-          ...(params.maxOutputTokens !== undefined ? { maxOutputTokens: params.maxOutputTokens } : {}),
+          ...(params.outputBudget !== undefined ? { outputBudget: params.outputBudget } : {}),
           // Scope: this reaches the provider turns only; tool, retrieval, and
           // persistence cancellation are not wired in this milestone.
           ...(effectiveSignal !== undefined ? { signal: effectiveSignal } : {}),

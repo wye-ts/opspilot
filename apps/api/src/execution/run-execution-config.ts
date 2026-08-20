@@ -55,9 +55,25 @@ export type LivePublicTrialConfig =
     }
   | { readonly enabled: false };
 
+/**
+ * Stage-aware per-turn output ceilings for an API LIVE run — the exact, hard
+ * bound on output spend for each turn phase (see AgentTurnPhase).
+ *
+ * Split because the four provider turns are not interchangeable: turns 0-2
+ * (INVESTIGATION) each need only enough headroom for one diagnostic tool
+ * call, while turn 3 (the reserved, forced FINALIZATION turn) must emit a
+ * complete structured resolution report. A single scalar ceiling sized for
+ * the cheap case truncates finalization mid-report; sized for finalization,
+ * it wastes budget on every investigation turn. See docs/04-agent-design.md
+ * §7 (Budgets and Deadline).
+ */
+export interface LiveRunOutputBudget {
+  readonly investigationMaxOutputTokens: number;
+  readonly finalizationMaxOutputTokens: number;
+}
+
 export interface LiveRunSafeguardConfig {
-  /** Per-turn output ceiling for an API LIVE run — the exact, hard bound on output spend. */
-  readonly maxOutputTokens: number;
+  readonly outputBudget: LiveRunOutputBudget;
   readonly maxAttemptsPerJob: number;
   /**
    * Concurrent live runs, PER PROCESS. Always exactly 1 in this release — see
@@ -134,7 +150,11 @@ const MAX_PROVIDER_DEADLINE_MS = 600_000;
 // §6.2. The ranges exist to catch an operator typo — a stray zero on the daily
 // limit is the difference between a demo and a bill — not to express policy.
 export const LIVE_RUN_DEFAULTS = {
-  maxOutputTokens: 1024,
+  investigationMaxOutputTokens: 1024,
+  // Larger than the investigation ceiling: the forced finalization turn must
+  // fit a complete structured resolution report, not one tool call. See
+  // LiveRunOutputBudget.
+  finalizationMaxOutputTokens: 3072,
   maxAttemptsPerJob: 2,
   maxConcurrency: 1,
   rateLimitMax: 2,
@@ -179,7 +199,8 @@ export const PUBLIC_TRIAL_DEFAULTS = {
 export const REQUIRED_MAX_CONCURRENCY = 1;
 
 const LIVE_RUN_RANGES = {
-  maxOutputTokens: { min: 256, max: 4096 },
+  investigationMaxOutputTokens: { min: 256, max: 4096 },
+  finalizationMaxOutputTokens: { min: 1024, max: 8192 },
   maxAttemptsPerJob: { min: 1, max: 10 },
   rateLimitMax: { min: 1, max: 60 },
   rateLimitWindowMs: { min: 1_000, max: 3_600_000 },
@@ -325,15 +346,70 @@ function parseRequiredMaxConcurrency(raw: string | undefined, variableName: stri
   );
 }
 
+/**
+ * The finalization ceiling must never be given LESS headroom than an
+ * investigation ceiling: the whole point of the split is that the final
+ * report needs MORE room, not less. An operator override that inverts them is
+ * the exact misconfiguration this change exists to prevent, so it fails
+ * startup rather than silently reintroducing the truncation this split was
+ * built to stop.
+ *
+ * Backward compatibility (issue #61 Codex MAJOR 2): `LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS`
+ * did not exist before the ceiling split, so a pre-existing valid high
+ * `LIVE_RUN_MAX_OUTPUT_TOKENS` override (up to 4096) must not start failing
+ * startup merely because the NEW variable is unset. When the finalization
+ * variable is absent or blank, the finalization ceiling defaults to
+ * `max(3072, investigationMaxOutputTokens)` — at least the documented 3072
+ * default, and never below a high investigation override. Only an EXPLICIT
+ * finalization value below the investigation ceiling is rejected: a deliberate,
+ * unsafe operator number is never silently overridden.
+ */
+function parseLiveRunOutputBudget(env: EnvRecord): LiveRunOutputBudget {
+  const investigationMaxOutputTokens = parseBoundedInteger(
+    env.LIVE_RUN_MAX_OUTPUT_TOKENS,
+    LIVE_RUN_DEFAULTS.investigationMaxOutputTokens,
+    LIVE_RUN_RANGES.investigationMaxOutputTokens.min,
+    LIVE_RUN_RANGES.investigationMaxOutputTokens.max,
+    "LIVE_RUN_MAX_OUTPUT_TOKENS",
+  );
+
+  const rawFinalization = env.LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS?.trim();
+  const finalizationExplicitlyConfigured =
+    rawFinalization !== undefined && rawFinalization !== "";
+
+  let finalizationMaxOutputTokens: number;
+  if (finalizationExplicitlyConfigured) {
+    finalizationMaxOutputTokens = parseBoundedInteger(
+      env.LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS,
+      LIVE_RUN_DEFAULTS.finalizationMaxOutputTokens,
+      LIVE_RUN_RANGES.finalizationMaxOutputTokens.min,
+      LIVE_RUN_RANGES.finalizationMaxOutputTokens.max,
+      "LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS",
+    );
+  } else {
+    // Backward-compatible default. Investigation's max is 4096 (within the
+    // finalization range of 1024..8192), so this computed default is always
+    // in-range and never below the investigation ceiling.
+    finalizationMaxOutputTokens = Math.max(
+      LIVE_RUN_DEFAULTS.finalizationMaxOutputTokens,
+      investigationMaxOutputTokens,
+    );
+  }
+
+  if (finalizationMaxOutputTokens < investigationMaxOutputTokens) {
+    throw new ProviderConfigError(
+      "LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS must be greater than or equal to " +
+        "LIVE_RUN_MAX_OUTPUT_TOKENS. The finalization turn must emit a complete structured " +
+        "report and needs at least as much output headroom as an investigation turn.",
+    );
+  }
+
+  return { investigationMaxOutputTokens, finalizationMaxOutputTokens };
+}
+
 function parseLiveRunSafeguards(env: EnvRecord): LiveRunSafeguardConfig {
   return {
-    maxOutputTokens: parseBoundedInteger(
-      env.LIVE_RUN_MAX_OUTPUT_TOKENS,
-      LIVE_RUN_DEFAULTS.maxOutputTokens,
-      LIVE_RUN_RANGES.maxOutputTokens.min,
-      LIVE_RUN_RANGES.maxOutputTokens.max,
-      "LIVE_RUN_MAX_OUTPUT_TOKENS",
-    ),
+    outputBudget: parseLiveRunOutputBudget(env),
     maxAttemptsPerJob: parseBoundedInteger(
       env.LIVE_RUN_MAX_ATTEMPTS_PER_JOB,
       LIVE_RUN_DEFAULTS.maxAttemptsPerJob,
