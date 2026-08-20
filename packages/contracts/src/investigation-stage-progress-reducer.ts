@@ -115,6 +115,7 @@ export interface DeriveExecutionStageProgressInput {
 //   REPORT_SCHEMA_INVALID      ResolutionReportSchema parse failed
 //   REPORT_EVIDENCE_INVALID    findInvalidEvidence rejected the report
 //   PROVIDER_PROTOCOL_INVALID  tool request on the finalization turn; loop exhausted
+//   PROVIDER_OUTPUT_TRUNCATED  stop_reason === "max_tokens" on any provider turn
 //   PROVIDER_TIMEOUT/          providerFailureCode(...) from an LlmProviderError on
 //   PROVIDER_CANCELLED/        any provider turn
 //   PROVIDER_UNAVAILABLE
@@ -236,6 +237,17 @@ const FAILURE_POLICY = {
   // case (issue #57 §7), and never after the provider has already returned a
   // report payload.
   PROVIDER_PROTOCOL_INVALID: {
+    legalStages: ANALYSIS_OR_REPORT,
+    requiresSpecificFact: "none",
+    allowedBeforeAgentStarted: false,
+    allowedAfterReportSubmitted: false,
+    allowedInDiagnosticLoop: true,
+  },
+  // stop_reason === "max_tokens", normalized before the report_submission
+  // branch — see claude-response-normalization.ts. REPORT_SUBMITTED is never
+  // emitted for a truncated turn, so allowedAfterReportSubmitted: false is
+  // correct on exactly the same grounds as PROVIDER_PROTOCOL_INVALID.
+  PROVIDER_OUTPUT_TRUNCATED: {
     legalStages: ANALYSIS_OR_REPORT,
     requiresSpecificFact: "none",
     allowedBeforeAgentStarted: false,

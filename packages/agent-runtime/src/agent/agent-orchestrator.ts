@@ -44,8 +44,33 @@ import type { ToolRegistry } from "../tools/diagnostic-tool";
 
 // A provider must not infer this from turnIndex itself (see
 // docs/04-agent-design.md §9's phase concept) — only the orchestrator's own
-// bounded-loop policy maps turn positions to a phase.
-const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
+// bounded-loop policy maps turn positions to a phase, and only the
+// orchestrator resolves the report-safe output ceiling (below). Every
+// report-capable turn uses finalizationMaxOutputTokens (issue #61 Codex
+// MAJOR 1).
+const DEFAULT_OUTPUT_BUDGET: AgentOutputBudget = {
+  investigationMaxOutputTokens: 4096,
+  finalizationMaxOutputTokens: 4096,
+};
+
+/**
+ * Per-turn output ceilings, mirrored from apps/api's LiveRunOutputBudget
+ * (run-execution-config.ts) so a LIVE caller's config maps onto this param
+ * without translation. Defined here rather than imported: agent-runtime has no
+ * dependency on apps/api, and this shape is a provider-turn concept independent
+ * of how any one caller configures it.
+ *
+ * The orchestrator resolves `finalizationMaxOutputTokens` as the report-safe
+ * ceiling for EVERY provider turn (issue #61 Codex MAJOR 1), because
+ * submit_resolution_report is available on investigation turns too.
+ * `investigationMaxOutputTokens` is carried for shape parity with apps/api's
+ * LiveRunOutputBudget but is not used for ceiling selection — an
+ * investigation-phase provider call can legitimately produce the final report.
+ */
+export interface AgentOutputBudget {
+  readonly investigationMaxOutputTokens: number;
+  readonly finalizationMaxOutputTokens: number;
+}
 
 // RetrievalSummaryEntry and AgentTraceEvent now live in @opspilot/contracts
 // (Zod-backed — see docs/11-agent-run-persistence.md) so packages/database
@@ -64,7 +89,7 @@ export interface AgentOrchestratorParams {
   readonly allowedRagChunkIds?: ReadonlySet<string>;
   readonly retriever?: RunbookRetriever;
   readonly retrievalInput?: RetrievalInput;
-  readonly maxOutputTokens?: number;
+  readonly outputBudget?: AgentOutputBudget;
   // Forwarded verbatim to every provider turn. The orchestrator neither
   // creates nor inspects it: it owns no deadline of its own (see
   // MAX_PROVIDER_TURNS above — the loop is bounded by turn count, not by
@@ -225,7 +250,7 @@ export async function runAgentOrchestrator(
     return failed("RETRIEVAL_PARAMS_INVALID", paramsError, [], "AGENT_ANALYSIS");
   }
 
-  const { provider, toolRegistry, maxOutputTokens = DEFAULT_MAX_OUTPUT_TOKENS } = params;
+  const { provider, toolRegistry, outputBudget = DEFAULT_OUTPUT_BUDGET } = params;
 
   // TWO INDEPENDENT OUTPUT CHANNELS, deliberately not derived from one
   // another (issue #37, docs/reviews/21-...md §5):
@@ -355,7 +380,16 @@ export async function runAgentOrchestrator(
       result = await provider.runAgentTurn({
         turnIndex,
         phase,
-        maxOutputTokens,
+        // The report-safe ceiling on EVERY provider turn (issue #61 Codex
+        // MAJOR 1): submit_resolution_report is available on every investigation
+        // turn too, so an investigation-phase provider call can legitimately
+        // produce the final report. Selecting a smaller ceiling by phase name
+        // alone is therefore insufficient — all report-capable turns get
+        // finalizationMaxOutputTokens. The provider still receives one plain
+        // number per turn (AgentTurnInput.maxOutputTokens) and stays the single
+        // output-budget authority for the turn it runs; only the orchestrator
+        // resolves the report-safe ceiling.
+        maxOutputTokens: outputBudget.finalizationMaxOutputTokens,
         conversation,
         // Issue #58 Checkpoint B (§10): the remaining diagnostic budget for
         // THIS turn — MAX_DIAGNOSTIC_TOOL_CALLS minus the number of accepted

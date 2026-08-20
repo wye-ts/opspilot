@@ -98,6 +98,16 @@ function protocolError(
   };
 }
 
+function outputTruncatedError(context: RawProviderTurnContext): AgentTurnResult {
+  return {
+    type: "protocol_error",
+    providerRequestId: context.providerRequestId,
+    usage: context.usage,
+    code: "PROVIDER_OUTPUT_TRUNCATED",
+    message: "The provider reached the configured output limit before completing its response.",
+  };
+}
+
 // This handles only the response-content decision tree, and only ever runs
 // on a response the SDK call already returned successfully — SDK/transport
 // failures (auth, rate limit, connection, timeout, server errors) never
@@ -113,6 +123,21 @@ export function normalizeClaudeMessage(
       context,
       `Claude refused to respond${category ? ` (category: ${category})` : ""}.`,
     );
+  }
+
+  // Checked before the content decision tree below, and deliberately not
+  // scoped to the finalization turn: a truncated investigation turn is
+  // equally misclassified without this. Without this check, a truncated
+  // response falls through into the content tree and is silently
+  // reinterpreted as whatever partial content happens to be present — a
+  // partially-filled submit_resolution_report tool_use block becomes
+  // report_submission, which ResolutionReportSchema truthfully rejects for
+  // its missing trailing fields but as REPORT_SCHEMA_INVALID, naming a model
+  // contract defect that never happened instead of a harness budgeting
+  // mistake. Returning here means REPORT_SUBMITTED is never emitted and the
+  // partial report is never persisted.
+  if (message.stop_reason === "max_tokens") {
+    return outputTruncatedError(context);
   }
 
   const toolUseBlocks = message.content.filter(isToolUseBlock);

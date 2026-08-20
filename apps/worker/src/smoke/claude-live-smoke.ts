@@ -174,7 +174,15 @@ export async function runSmokeScenario(
       },
     ],
     // The single output-budget authority; there is no ANTHROPIC_MAX_TOKENS.
-    maxOutputTokens: SMOKE_MAX_OUTPUT_TOKENS,
+    // The orchestrator resolves the report-safe finalizationMaxOutputTokens for
+    // every provider turn (issue #61 Codex MAJOR 1). Same ceiling here — this
+    // is a minimal connectivity smoke check, not a production LIVE run, so it
+    // does not need the larger report-safe ceiling the LiveRunOutputBudget
+    // split provides.
+    outputBudget: {
+      investigationMaxOutputTokens: SMOKE_MAX_OUTPUT_TOKENS,
+      finalizationMaxOutputTokens: SMOKE_MAX_OUTPUT_TOKENS,
+    },
     signal: dependencies.signal,
   });
 }

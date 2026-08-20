@@ -305,6 +305,29 @@ today): turns 0–2 each accept at most one diagnostic request, and turn 3 is
 forced finalization. A voluntary report may be submitted earlier, on any
 investigation turn.
 
+**Per-turn output ceiling is the report-safe `finalizationMaxOutputTokens` on
+EVERY report-capable turn (issue #61 Codex MAJOR 1).** Each `runAgentTurn` call
+carries a `maxOutputTokens` value the orchestrator resolves to
+`outputBudget.finalizationMaxOutputTokens` for every provider turn — the 3
+`INVESTIGATION` turns 0–2 AND the forced `FINALIZATION` turn 3. Selecting a
+smaller ceiling by phase name alone is insufficient because
+`submit_resolution_report` is available on every investigation turn too, so an
+investigation-phase provider call can legitimately produce the final report.
+`investigationMaxOutputTokens` is carried for shape parity but is not used for
+ceiling selection. The split from the earlier single scalar exists because a
+report must never be truncated mid-emission (the confirmed production incident
+this ceiling was built to prevent — see §18, `PROVIDER_OUTPUT_TRUNCATED`).
+Configured via `LIVE_RUN_MAX_OUTPUT_TOKENS` /
+`LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS` (`run-execution-config.ts`).
+
+When `LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS` is absent or blank (issue #61
+Codex MAJOR 2 — the variable predates this split, so a pre-existing valid high
+`LIVE_RUN_MAX_OUTPUT_TOKENS` override must not break startup):
+`finalizationMaxOutputTokens = max(3072, investigationMaxOutputTokens)`.
+An EXPLICIT finalization ceiling below the investigation ceiling is still
+rejected at startup — a deliberate unsafe operator number is never silently
+overridden.
+
 These bounds are the mechanical **capability** — *can* another diagnostic
 safely execute? Issue #58 adds the evidence-sufficiency **policy** layered on
 top — *should* another diagnostic execute, given what has been gathered so
@@ -880,6 +903,27 @@ persisted `failure_code`. Before PR 6B1 such a throw escaped to the caller, whic
 persisted path was deterministic and a throw genuinely meant "should never happen", and not
 acceptable once a network call is involved. Only `LlmProviderError` is converted; a genuine defect
 still propagates.
+
+### 18.2 `PROVIDER_OUTPUT_TRUNCATED`
+
+Added to `AgentProtocolErrorCodeSchema` and `AgentOrchestratorErrorCodeSchema` for
+`stop_reason === "max_tokens"` — the provider was cut off by its configured output
+ceiling before it finished responding. `claude-response-normalization.ts` checks
+for this immediately after the `refusal` check and before the content decision
+tree, so it takes precedence over whatever partial content happens to be
+present. This matters concretely: a truncated finalization turn can still carry
+a partially-filled `submit_resolution_report` tool_use block, which — without
+this check — normalizes to `report_submission` and then fails
+`ResolutionReportSchema` validation as `REPORT_SCHEMA_INVALID`, truthfully
+rejecting an incomplete report but naming the wrong cause (a model contract
+defect that never happened, rather than a harness output-budget mistake). This
+was a confirmed production incident.
+
+Because the check runs before the `report_submission` branch, `REPORT_SUBMITTED`
+is never emitted and no partial report is ever persisted for a truncated turn.
+It is deliberately not scoped to the finalization turn — a truncated
+investigation turn is equally misclassified without it. See §7 for the
+stage-aware output ceiling this failure mode motivated.
 
 Rules:
 

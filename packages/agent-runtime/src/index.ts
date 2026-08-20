@@ -94,6 +94,7 @@ export type {
 export type {
   AgentOrchestratorParams,
   AgentOrchestratorResult,
+  AgentOutputBudget,
   AgentTraceEvent,
   RetrievalSummaryEntry,
 } from "./agent/agent-orchestrator";
