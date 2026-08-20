@@ -697,6 +697,58 @@ describe("normalizeClaudeMessage", () => {
     expect(result.message).toContain("cyber");
   });
 
+  // The production incident (LIVE run ae920afb…): Claude's structured report
+  // was cut off mid-object by the finalization output ceiling, so the
+  // partially-filled submit_resolution_report tool_use block was still
+  // present and normalized to report_submission — a technically-true but
+  // misleading classification, since REPORT_SCHEMA_INVALID then named a model
+  // contract defect that never happened. stop_reason === "max_tokens" is now
+  // checked before the content decision tree so this never happens again,
+  // regardless of what partial content survived the cut.
+  it("normalizes a max_tokens stop_reason to PROVIDER_OUTPUT_TRUNCATED even with a partial report tool_use block present, never report_submission", () => {
+    const message = buildFakeMessage({
+      stop_reason: "max_tokens",
+      content: [
+        buildToolUseBlock({
+          id: "toolu_report",
+          name: SUBMIT_RESOLUTION_REPORT_TOOL_NAME,
+          // Realistically truncated: missing every field after category.
+          input: { category: "SERVICE_DEGRADATION" },
+        }),
+      ],
+    });
+
+    const result = normalizeClaudeMessage(message, context);
+
+    expect(result.type).toBe("protocol_error");
+    if (result.type !== "protocol_error") throw new Error("unreachable");
+    expect(result.code).toBe("PROVIDER_OUTPUT_TRUNCATED");
+    expect(result.code).not.toBe("REPORT_SCHEMA_INVALID");
+  });
+
+  // A truncation before any tool_use block completes must be classified
+  // identically — not misreported as "0 diagnostic tool requests" via
+  // normalizeDiagnosticToolRequests, and not scoped to the finalization turn:
+  // an investigation-turn truncation is equally misclassified without this.
+  it("normalizes a max_tokens stop_reason to PROVIDER_OUTPUT_TRUNCATED with zero tool_use blocks", () => {
+    const message = buildFakeMessage({ stop_reason: "max_tokens", content: [] });
+
+    const result = normalizeClaudeMessage(message, context);
+
+    expect(result.type).toBe("protocol_error");
+    if (result.type !== "protocol_error") throw new Error("unreachable");
+    expect(result.code).toBe("PROVIDER_OUTPUT_TRUNCATED");
+  });
+
+  it("still carries usage and providerRequestId on a truncated turn", () => {
+    const message = buildFakeMessage({ stop_reason: "max_tokens", content: [] });
+
+    const result = normalizeClaudeMessage(message, context);
+
+    expect(result.providerRequestId).toBe(context.providerRequestId);
+    expect(result.usage).toEqual(context.usage);
+  });
+
   it("normalizes a mixed report + diagnostic tool call in one turn to protocol_error", () => {
     const message = buildFakeMessage({
       stop_reason: "tool_use",

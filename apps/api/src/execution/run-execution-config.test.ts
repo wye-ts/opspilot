@@ -238,7 +238,10 @@ describe("parseRunExecutionConfig — safeguard defaults", () => {
     const { liveRunSafeguards, trustProxyHops } = parseRunExecutionConfig({});
 
     expect(liveRunSafeguards).toEqual({
-      maxOutputTokens: 1024,
+      outputBudget: {
+        investigationMaxOutputTokens: 1024,
+        finalizationMaxOutputTokens: 3072,
+      },
       maxAttemptsPerJob: 2,
       maxConcurrency: 1,
       rateLimitMax: 2,
@@ -252,7 +255,12 @@ describe("parseRunExecutionConfig — safeguard defaults", () => {
   it("keeps the exported defaults and the parsed defaults in agreement", () => {
     const { liveRunSafeguards, trustProxyHops } = parseRunExecutionConfig({});
 
-    expect(liveRunSafeguards.maxOutputTokens).toBe(LIVE_RUN_DEFAULTS.maxOutputTokens);
+    expect(liveRunSafeguards.outputBudget.investigationMaxOutputTokens).toBe(
+      LIVE_RUN_DEFAULTS.investigationMaxOutputTokens,
+    );
+    expect(liveRunSafeguards.outputBudget.finalizationMaxOutputTokens).toBe(
+      LIVE_RUN_DEFAULTS.finalizationMaxOutputTokens,
+    );
     expect(liveRunSafeguards.maxAttemptsPerJob).toBe(LIVE_RUN_DEFAULTS.maxAttemptsPerJob);
     expect(liveRunSafeguards.maxConcurrency).toBe(LIVE_RUN_DEFAULTS.maxConcurrency);
     expect(liveRunSafeguards.rateLimitMax).toBe(LIVE_RUN_DEFAULTS.rateLimitMax);
@@ -264,6 +272,7 @@ describe("parseRunExecutionConfig — safeguard defaults", () => {
   it("accepts explicit in-range values", () => {
     const { liveRunSafeguards, trustProxyHops } = parseRunExecutionConfig({
       LIVE_RUN_MAX_OUTPUT_TOKENS: "2048",
+      LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS: "4096",
       LIVE_RUN_MAX_ATTEMPTS_PER_JOB: "3",
       LIVE_RUN_MAX_CONCURRENCY: "1",
       LIVE_RUN_RATE_LIMIT_MAX: "5",
@@ -274,7 +283,10 @@ describe("parseRunExecutionConfig — safeguard defaults", () => {
     });
 
     expect(liveRunSafeguards).toEqual({
-      maxOutputTokens: 2048,
+      outputBudget: {
+        investigationMaxOutputTokens: 2048,
+        finalizationMaxOutputTokens: 4096,
+      },
       maxAttemptsPerJob: 3,
       maxConcurrency: 1,
       rateLimitMax: 5,
@@ -310,6 +322,12 @@ describe("parseRunExecutionConfig — safeguard range enforcement", () => {
   it.each([
     ["LIVE_RUN_MAX_OUTPUT_TOKENS", "255", /LIVE_RUN_MAX_OUTPUT_TOKENS must be an integer between 256 and 4096/],
     ["LIVE_RUN_MAX_OUTPUT_TOKENS", "4097", /LIVE_RUN_MAX_OUTPUT_TOKENS must be an integer/],
+    [
+      "LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS",
+      "1023",
+      /LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS must be an integer between 1024 and 8192/,
+    ],
+    ["LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS", "8193", /LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS must be an integer/],
     ["LIVE_RUN_MAX_ATTEMPTS_PER_JOB", "0", /LIVE_RUN_MAX_ATTEMPTS_PER_JOB must be an integer between 1 and 10/],
     ["LIVE_RUN_MAX_ATTEMPTS_PER_JOB", "11", /LIVE_RUN_MAX_ATTEMPTS_PER_JOB must be an integer/],
     ["LIVE_RUN_RATE_LIMIT_MAX", "0", /LIVE_RUN_RATE_LIMIT_MAX must be an integer between 1 and 60/],
@@ -343,6 +361,85 @@ describe("parseRunExecutionConfig — safeguard range enforcement", () => {
       expect((error as Error).message).toContain("LIVE_RUN_DAILY_LIMIT");
       expect((error as Error).message).not.toContain("99999");
     }
+  });
+
+  it("rejects a finalization ceiling below the investigation ceiling", () => {
+    expect(() =>
+      parseRunExecutionConfig({
+        LIVE_RUN_MAX_OUTPUT_TOKENS: "2048",
+        LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS: "1024",
+      }),
+    ).toThrow(/LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS must be greater than or equal to/);
+  });
+
+  it("accepts a finalization ceiling exactly equal to the investigation ceiling", () => {
+    const { liveRunSafeguards } = parseRunExecutionConfig({
+      LIVE_RUN_MAX_OUTPUT_TOKENS: "2048",
+      LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS: "2048",
+    });
+
+    expect(liveRunSafeguards.outputBudget).toEqual({
+      investigationMaxOutputTokens: 2048,
+      finalizationMaxOutputTokens: 2048,
+    });
+  });
+});
+
+describe("parseRunExecutionConfig — backward-compatible finalization defaulting (issue #61 Codex MAJOR 2)", () => {
+  it("A — a 4096 investigation override with finalization UNSET succeeds, defaulting finalization to 4096", () => {
+    // LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS predates this split; a
+    // pre-existing valid high investigation override must not start failing
+    // startup merely because the new variable is unset.
+    const { liveRunSafeguards } = parseRunExecutionConfig({ LIVE_RUN_MAX_OUTPUT_TOKENS: "4096" });
+
+    expect(liveRunSafeguards.outputBudget).toEqual({
+      investigationMaxOutputTokens: 4096,
+      finalizationMaxOutputTokens: 4096,
+    });
+  });
+
+  it("B — a 4096 investigation override with BLANK finalization defaults finalization to 4096", () => {
+    // A blank value is treated as unset, exactly like every other parser here.
+    const { liveRunSafeguards } = parseRunExecutionConfig({
+      LIVE_RUN_MAX_OUTPUT_TOKENS: "4096",
+      LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS: "  ",
+    });
+
+    expect(liveRunSafeguards.outputBudget.finalizationMaxOutputTokens).toBe(4096);
+  });
+
+  it("C — investigation 1024 with finalization unset defaults finalization to 3072", () => {
+    const { liveRunSafeguards } = parseRunExecutionConfig({});
+
+    expect(liveRunSafeguards.outputBudget).toEqual({
+      investigationMaxOutputTokens: 1024,
+      finalizationMaxOutputTokens: 3072,
+    });
+  });
+
+  it("D — an explicit finalization below a 4096 investigation is rejected, never silently overridden", () => {
+    // Only an EXPLICIT unsafe value is rejected — the backward-compatible
+    // default never masks a deliberate operator number.
+    expect(() =>
+      parseRunExecutionConfig({
+        LIVE_RUN_MAX_OUTPUT_TOKENS: "4096",
+        LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS: "3072",
+      }),
+    ).toThrow(/LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS must be greater than or equal to/);
+  });
+
+  it("E — existing valid documented ranges remain unchanged", () => {
+    // Explicit, in-range, finalization >= investigation parses exactly as it
+    // always did before the backward-compatible defaulting was added.
+    const { liveRunSafeguards } = parseRunExecutionConfig({
+      LIVE_RUN_MAX_OUTPUT_TOKENS: "2048",
+      LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS: "4096",
+    });
+
+    expect(liveRunSafeguards.outputBudget).toEqual({
+      investigationMaxOutputTokens: 2048,
+      finalizationMaxOutputTokens: 4096,
+    });
   });
 });
 
@@ -504,7 +601,11 @@ describe("parseRunExecutionConfig — LIVE_RUN_MAX_CONCURRENCY is pinned to 1", 
       servableEnv(),
       servableEnv({ LIVE_RUN_MAX_CONCURRENCY: "1" }),
       servableEnv({ LIVE_RUN_DAILY_LIMIT: "1000", LIVE_RUN_DAILY_COST_CEILING_USD: "1000" }),
-      servableEnv({ LIVE_RUN_RATE_LIMIT_MAX: "60", LIVE_RUN_MAX_OUTPUT_TOKENS: "4096" }),
+      servableEnv({
+        LIVE_RUN_RATE_LIMIT_MAX: "60",
+        LIVE_RUN_MAX_OUTPUT_TOKENS: "4096",
+        LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS: "4096",
+      }),
     ];
 
     for (const env of accepted) {

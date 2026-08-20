@@ -132,7 +132,7 @@ No `status` column, no `latest_run_id` pointer — there is no queue/claim mecha
 | `provider_mode` | `TEXT NOT NULL` | `FAKE \| LIVE` |
 | `model_identifier` | `TEXT NULL` | |
 | `report` | `JSONB NULL` | Set only on `COMPLETED` |
-| `failure_code` | `TEXT NULL` | Set only on `FAILED`; one of the 10 `AgentOrchestratorErrorCode` values — **never a free-text message** (§6) |
+| `failure_code` | `TEXT NULL` | Set only on `FAILED`; one of the 14 `AgentOrchestratorErrorCode` values — **never a free-text message** (§6) |
 | `started_at` | `TIMESTAMPTZ NOT NULL` | Non-nullable — every row is created already `RUNNING` |
 | `finished_at` | `TIMESTAMPTZ NULL` | Set only on a terminal status |
 | `created_at` | `TIMESTAMPTZ NOT NULL DEFAULT now()` | |
@@ -178,7 +178,7 @@ agent_runs_attempt_number_chk                 attempt_number >= 1
 agent_runs_status_chk                         status IN ('RUNNING','COMPLETED','FAILED')
 agent_runs_provider_mode_chk                  provider_mode IN ('FAKE','LIVE')
 agent_runs_report_is_object_chk               report IS NULL OR jsonb_typeof(report) = 'object'
-agent_runs_failure_code_chk                   failure_code IS NULL OR failure_code IN (<10 exact codes>)
+agent_runs_failure_code_chk                   failure_code IS NULL OR failure_code IN (<14 exact codes>)
 agent_runs_terminal_outcome_chk               see below
 
 agent_trace_events_sequence_number_chk        sequence_number >= 1

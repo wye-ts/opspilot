@@ -2082,8 +2082,8 @@ describe("every current orchestrator error code has a runtime-exercised policy",
   // actually reachable through the reducer in at least one direction.
   const ALL_CODES = AgentOrchestratorErrorCodeSchema.options;
 
-  it("covers all 13 codes with an accept or a typed reject", () => {
-    expect(ALL_CODES).toHaveLength(13);
+  it("covers all 14 codes with an accept or a typed reject", () => {
+    expect(ALL_CODES).toHaveLength(14);
 
     for (const code of ALL_CODES) {
       // Attribute every code to AGENT_ANALYSIS during an active analysis

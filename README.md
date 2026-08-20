@@ -151,10 +151,12 @@ reconciliation. Their honest strengths differ and are documented rather than glo
   may be in flight at a time (`LIVE_RUN_MAX_CONCURRENCY` is pinned to `1` and any other value fails
   startup). **Actual provider billing may be higher**, after an ambiguous network outcome or a
   process termination;
-- the **per-attempt output ceiling** is hard, giving a daily output envelope of
-  `maxOutputTokens x maxAgentTurns x (maxRetries + 1) x dailyRunLimit` — `1024 x 2 x 1 x 10 =
-  20,480` output tokens/day at shipped defaults, where the `+ 1` factor is `1` only because the
-  protected path requires `ANTHROPIC_MAX_RETRIES=0`;
+- the **per-turn output ceiling** is hard and report-safe — the report-safe `finalizationMaxOutputTokens`
+  is applied to every provider turn (`MAX_PROVIDER_TURNS = 4`), because `submit_resolution_report` is
+  available on investigation turns too (issue #61 Codex MAJOR 1), giving a daily output envelope of
+  `finalizationMaxOutputTokens x 4 x (maxRetries + 1) x dailyRunLimit` — `3072 x 4 x 1 x 10 = 122,880`
+  output tokens/day at shipped defaults, where the `+ 1` factor is `1` only because the protected path
+  requires `ANTHROPIC_MAX_RETRIES=0`;
 - the **rate limit** and **concurrency lease** are per process, and reset on restart;
 - **cost figures are a lower bound** — an abandoned-but-billed retry attempt is not observable,
   which is why the public path forbids SDK retries outright.

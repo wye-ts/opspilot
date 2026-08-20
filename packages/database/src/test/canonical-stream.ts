@@ -173,6 +173,7 @@ export async function appendFailurePrefix(
     case "RETRIEVAL_FAILED":
     case "RETRIEVAL_RESPONSE_INVALID":
     case "PROVIDER_PROTOCOL_INVALID":
+    case "PROVIDER_OUTPUT_TRUNCATED":
     case "PROVIDER_UNAVAILABLE":
     case "PROVIDER_TIMEOUT":
     case "PROVIDER_CANCELLED":

@@ -311,7 +311,7 @@ export class AgentRunsController {
         createProvider: (job, collector) =>
           this.providerFactory.createProvider(job, "LIVE", collector),
         toolRegistry: this.toolRegistry,
-        maxOutputTokens: this.config.liveRunSafeguards.maxOutputTokens,
+        outputBudget: this.config.liveRunSafeguards.outputBudget,
         usageHooks: this.usageHooks,
         // PUBLIC (issue #39) is a fixed, non-configurable 1 — never
         // LIVE_RUN_MAX_ATTEMPTS_PER_JOB, which remains the private path's
