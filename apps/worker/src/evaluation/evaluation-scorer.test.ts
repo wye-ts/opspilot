@@ -21,12 +21,12 @@ import { aggregateMetrics } from "./evaluation-metrics";
 import { buildObservedFacts } from "./observed-facts";
 import type { EvaluationCase } from "./types";
 import {
-  buildEvaluationCaseInputV1,
-  buildEvaluationSuiteInputV1,
-  toEvaluationCaseResultV1,
-  type EvaluationSuiteInputV1,
-  type EvaluationSuiteResultV1,
-} from "./v1-types";
+  buildEvaluationCaseInputV2,
+  buildEvaluationSuiteInputV2,
+  toEvaluationCaseResultV2,
+  type EvaluationSuiteInputV2,
+  type EvaluationSuiteResultV2,
+} from "./v2-types";
 
 const VALID_REPORT: ResolutionReport = {
   category: "SERVICE_DEGRADATION",
@@ -60,19 +60,19 @@ describe("LocalEvaluationScorer", () => {
   it("produces the exact same per-case result (mapped to wire shape) as calling evaluateCase directly", () => {
     const evaluationCase = buildCase();
     const observed = buildObservedFacts(agentResult, []);
-    const caseInput = buildEvaluationCaseInputV1(evaluationCase.id, evaluationCase.expectations, observed);
-    const suiteInput = buildEvaluationSuiteInputV1("test-dataset", [caseInput]);
+    const caseInput = buildEvaluationCaseInputV2(evaluationCase.id, evaluationCase.expectations, observed);
+    const suiteInput = buildEvaluationSuiteInputV2("test-dataset", [caseInput]);
 
     const direct = evaluateCase(caseInput);
     const viaScorer = new LocalEvaluationScorer().score(suiteInput);
 
-    expect(viaScorer.cases).toEqual([toEvaluationCaseResultV1(direct)]);
-    expect(viaScorer.metrics).toEqual(aggregateMetrics([toEvaluationCaseResultV1(direct)]));
+    expect(viaScorer.cases).toEqual([toEvaluationCaseResultV2(direct)]);
+    expect(viaScorer.metrics).toEqual(aggregateMetrics([toEvaluationCaseResultV2(direct)]));
     expect(viaScorer.contractVersion).toBe(suiteInput.contractVersion);
     expect(viaScorer.datasetId).toBe("test-dataset");
   });
 
-  it("accepts only the normalized EvaluationSuiteInputV1 shape — no AgentOrchestratorResult, trace, or tool-recorder parameter exists on score()", () => {
+  it("accepts only the normalized EvaluationSuiteInputV2 shape — no AgentOrchestratorResult, trace, or tool-recorder parameter exists on score()", () => {
     // Structural proof for correction 1/5: score() takes exactly one
     // parameter. There is no second/third parameter a caller could use to
     // smuggle a raw runtime object past the normalized boundary.
@@ -80,8 +80,8 @@ describe("LocalEvaluationScorer", () => {
 
     const evaluationCase = buildCase();
     const observed = buildObservedFacts(agentResult, []);
-    const caseInput = buildEvaluationCaseInputV1(evaluationCase.id, evaluationCase.expectations, observed);
-    const suiteInput = buildEvaluationSuiteInputV1("test-dataset", [caseInput]);
+    const caseInput = buildEvaluationCaseInputV2(evaluationCase.id, evaluationCase.expectations, observed);
+    const suiteInput = buildEvaluationSuiteInputV2("test-dataset", [caseInput]);
 
     // The only fields score() can read are exactly these — contractVersion/
     // datasetId/cases[caseId/expectations/observed].
@@ -91,13 +91,15 @@ describe("LocalEvaluationScorer", () => {
     expect(() => new LocalEvaluationScorer().score(suiteInput)).not.toThrow();
   });
 
-  it("EvaluationCaseInputV1.observed is the exact nested v1 shape — not the pre-correction flat shape", () => {
+  it("EvaluationCaseInputV2.observed is the exact nested v2 shape — not the pre-correction flat shape", () => {
     const evaluationCase = buildCase();
     const observed = buildObservedFacts(agentResult, []);
-    const caseInput = buildEvaluationCaseInputV1(evaluationCase.id, evaluationCase.expectations, observed);
+    const caseInput = buildEvaluationCaseInputV2(evaluationCase.id, evaluationCase.expectations, observed);
 
     expect(Object.keys(caseInput.observed).sort()).toEqual([
       "errorCode",
+      "failedStage",
+      "investigation",
       "report",
       "retrieval",
       "runStatus",
@@ -113,12 +115,12 @@ describe("LocalEvaluationScorer", () => {
   it("LocalEvaluationScorer scores identically whether observed came from buildObservedFacts or was reconstructed from parsed JSON — proving it depends only on the nested shape, not on runtime object identity", () => {
     const evaluationCase = buildCase();
     const observed = buildObservedFacts(agentResult, []);
-    const caseInput = buildEvaluationCaseInputV1(evaluationCase.id, evaluationCase.expectations, observed);
-    const suiteInput = buildEvaluationSuiteInputV1("test-dataset", [caseInput]);
+    const caseInput = buildEvaluationCaseInputV2(evaluationCase.id, evaluationCase.expectations, observed);
+    const suiteInput = buildEvaluationSuiteInputV2("test-dataset", [caseInput]);
 
     // Round-trip through JSON — simulates "loaded from the parity fixture"
     // or "received over HTTP", with no TypeScript class/runtime object left.
-    const roundTripped: EvaluationSuiteInputV1 = JSON.parse(JSON.stringify(suiteInput));
+    const roundTripped: EvaluationSuiteInputV2 = JSON.parse(JSON.stringify(suiteInput));
 
     expect(new LocalEvaluationScorer().score(suiteInput)).toEqual(
       new LocalEvaluationScorer().score(roundTripped),
@@ -127,15 +129,15 @@ describe("LocalEvaluationScorer", () => {
 });
 
 describe("a future HTTP scorer can implement EvaluationScorer using only normalized types", () => {
-  it("compiles and runs against nothing but EvaluationSuiteInputV1/EvaluationSuiteResultV1 — no AgentOrchestratorResult/trace/tool-recorder import required", async () => {
+  it("compiles and runs against nothing but EvaluationSuiteInputV2/EvaluationSuiteResultV2 — no AgentOrchestratorResult/trace/tool-recorder import required", async () => {
     // This class never imports @opspilot/agent-runtime, RecordedToolExecution,
-    // or any trace-event type — it only ever touches EvaluationSuiteInputV1/
-    // EvaluationSuiteResultV1. A real HttpEvaluationScorer would replace the
+    // or any trace-event type — it only ever touches EvaluationSuiteInputV2/
+    // EvaluationSuiteResultV2. A real HttpEvaluationScorer would replace the
     // body with `fetch(url, {body: JSON.stringify(input)})` and nothing else
     // about this shape would need to change (see correction 5).
     class StubHttpEvaluationScorer implements EvaluationScorer {
-      constructor(private readonly canned: EvaluationSuiteResultV1) {}
-      async score(input: EvaluationSuiteInputV1): Promise<EvaluationSuiteResultV1> {
+      constructor(private readonly canned: EvaluationSuiteResultV2) {}
+      async score(input: EvaluationSuiteInputV2): Promise<EvaluationSuiteResultV2> {
         // A real implementation would serialize `input` to JSON and POST it;
         // here we just prove the interface is satisfiable and the input is
         // JSON-serializable (no functions/classes/undefined survive it).
@@ -146,15 +148,15 @@ describe("a future HTTP scorer can implement EvaluationScorer using only normali
 
     const evaluationCase = buildCase();
     const observed = buildObservedFacts(agentResult, []);
-    const caseInput = buildEvaluationCaseInputV1(evaluationCase.id, evaluationCase.expectations, observed);
-    const suiteInput = buildEvaluationSuiteInputV1("test-dataset", [caseInput]);
+    const caseInput = buildEvaluationCaseInputV2(evaluationCase.id, evaluationCase.expectations, observed);
+    const suiteInput = buildEvaluationSuiteInputV2("test-dataset", [caseInput]);
 
-    const canned: EvaluationSuiteResultV1 = {
+    const canned: EvaluationSuiteResultV2 = {
       contractVersion: suiteInput.contractVersion,
       datasetId: suiteInput.datasetId,
-      cases: [{ caseId: "synthetic-case", passed: true, checks: [{ name: "status", passed: true, reasonCode: null }] }],
+      cases: [{ caseId: "synthetic-case", passed: true, checks: [{ name: "status", status: "PASS", reasonCode: null }] }],
       metrics: aggregateMetrics([
-        { caseId: "synthetic-case", passed: true, checks: [{ name: "status", passed: true, reasonCode: null }] },
+        { caseId: "synthetic-case", passed: true, checks: [{ name: "status", status: "PASS", reasonCode: null }] },
       ]),
     };
 

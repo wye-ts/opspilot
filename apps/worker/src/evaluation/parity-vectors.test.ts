@@ -5,11 +5,12 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import type { StoredRunbookChunk } from "@opspilot/agent-runtime";
+import type { ObservedFacts } from "./observed-facts";
 import { buildParityFixture, computeParityFixture, InvalidParityDatasetError } from "./parity-vectors";
-import { buildEvaluationSuiteInputV1 } from "./v1-types";
+import { buildEvaluationSuiteInputV2 } from "./v2-types";
 import type { EvaluationCase } from "./types";
 
-const FIXTURE_PATH = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "ts-parity-v1.json");
+const FIXTURE_PATH = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "ts-parity-v2.json");
 
 const FIXTURE_INJECTION_PROBE_CHUNK: StoredRunbookChunk = {
   chunkId: "fixture-injection-probe",
@@ -32,8 +33,8 @@ function fixtureCase(overrides: Partial<EvaluationCase> = {}): EvaluationCase {
   };
 }
 
-describe("parity fixture — TS-owned (fixtures/ts-parity-v1.json)", () => {
-  it("regenerates byte-identically from the real 15-case dataset — fails if the committed fixture has drifted", async () => {
+describe("parity fixture — TS-owned (fixtures/ts-parity-v2.json)", () => {
+  it("regenerates byte-identically from the real 20-case dataset — fails if the committed fixture has drifted", async () => {
     const regenerated = await computeParityFixture();
     const committedRaw = readFileSync(FIXTURE_PATH, "utf8");
     const committed: unknown = JSON.parse(committedRaw);
@@ -44,18 +45,20 @@ describe("parity fixture — TS-owned (fixtures/ts-parity-v1.json)", () => {
     expect(`${JSON.stringify(regenerated, null, 2)}\n`).toBe(committedRaw);
   });
 
-  it("uses numeric contractVersion 1 and the approved datasetId", async () => {
+  it("uses numeric contractVersion 2 and the approved datasetId", async () => {
     const fixture = await computeParityFixture();
-    expect(fixture.contractVersion).toBe(1);
+    expect(fixture.contractVersion).toBe(2);
     expect(typeof fixture.contractVersion).toBe("number");
-    expect(fixture.datasetId).toBe("opspilot-deterministic-v1");
+    expect(fixture.datasetId).toBe("opspilot-deterministic-v2");
   });
 
-  it("covers all 15 cases, in the fixed dataset order, each with normalized input AND expected scored output", async () => {
+  it("covers all 20 cases, in the fixed dataset order, each with normalized input AND expected scored output", async () => {
     const fixture = await computeParityFixture();
-    expect(fixture.cases).toHaveLength(15);
+    expect(fixture.cases).toHaveLength(20);
     expect(fixture.cases[0]?.caseId).toBe("notification-service-degradation");
-    expect(fixture.cases.at(-1)?.caseId).toBe("injection-probe-structural");
+    // The five Checkpoint B cases append after injection-probe-structural, so
+    // the fixed dataset order ends with the last appended case.
+    expect(fixture.cases.at(-1)?.caseId).toBe("bound-exhausted-finalization");
 
     for (const parityCase of fixture.cases) {
       expect(parityCase).toHaveProperty("expectations");
@@ -65,25 +68,39 @@ describe("parity fixture — TS-owned (fixtures/ts-parity-v1.json)", () => {
     }
   });
 
-  it("marks every case as passed — the current 15-case dataset is fully green", async () => {
+  it("marks every case as passed — the current 20-case dataset is fully green", async () => {
     const fixture = await computeParityFixture();
     expect(fixture.cases.every((parityCase) => parityCase.expected.passed)).toBe(true);
   });
 
-  it("includes aggregate case totals and all six metrics", async () => {
+  it("includes aggregate case totals and all fifteen metrics", async () => {
     const fixture = await computeParityFixture();
     const metrics = fixture.expectedMetrics;
 
-    expect(metrics.totalCases).toBe(15);
-    expect(metrics.passedCases).toBe(15);
+    expect(metrics.totalCases).toBe(20);
+    expect(metrics.passedCases).toBe(20);
     expect(metrics.failedCases).toBe(0);
     expect(metrics.passRate).toBe(1);
-    expect(metrics.retrievalTop1).toEqual({ numerator: 6, denominator: 6 });
-    expect(metrics.retrievalHitAt3).toEqual({ numerator: 2, denominator: 2 });
-    expect(metrics.schemaHandlingCorrectness).toEqual({ numerator: 10, denominator: 10 });
-    expect(metrics.evidenceGroundingCorrectness).toEqual({ numerator: 9, denominator: 9 });
-    expect(metrics.toolCorrectness).toEqual({ numerator: 11, denominator: 11 });
-    expect(metrics.expectedStatusCorrectness).toEqual({ numerator: 15, denominator: 15 });
+    expect(metrics.retrievalTop1).toEqual({ numerator: 10, denominator: 10 });
+    expect(metrics.retrievalHitAt3).toEqual({ numerator: 4, denominator: 4 });
+    expect(metrics.schemaHandlingCorrectness).toEqual({ numerator: 15, denominator: 15 });
+    expect(metrics.evidenceGroundingCorrectness).toEqual({ numerator: 14, denominator: 14 });
+    expect(metrics.toolCorrectness).toEqual({ numerator: 16, denominator: 16 });
+    expect(metrics.expectedStatusCorrectness).toEqual({ numerator: 20, denominator: 20 });
+    // Issue #59 Checkpoint B §11: the nine new metrics aggregate PASS over
+    // PASS+FAIL — N/A is excluded from BOTH numerator and denominator and
+    // reported separately by the formatter (e.g. root-cause-discipline is
+    // 8/8 with 12 N/A cases). Every case is green here, so each numerator
+    // equals its applicable (non-N/A) count.
+    expect(metrics.rootCauseDiscipline).toEqual({ numerator: 8, denominator: 8 });
+    expect(metrics.evidenceSupport).toEqual({ numerator: 8, denominator: 8 });
+    expect(metrics.unknownHandling).toEqual({ numerator: 4, denominator: 4 });
+    expect(metrics.diagnosticJustification).toEqual({ numerator: 8, denominator: 8 });
+    expect(metrics.confidenceCalibration).toEqual({ numerator: 8, denominator: 8 });
+    expect(metrics.actionGrounding).toEqual({ numerator: 2, denominator: 2 });
+    expect(metrics.approvalGate).toEqual({ numerator: 17, denominator: 17 });
+    expect(metrics.boundsRespected).toEqual({ numerator: 20, denominator: 20 });
+    expect(metrics.deterministicRecovery).toEqual({ numerator: 9, denominator: 9 });
   });
 
   it("is independently scoreable by Python: each case carries only expectations/observed (JSON-serializable) plus the expected verdict to diff against", async () => {
@@ -93,26 +110,55 @@ describe("parity fixture — TS-owned (fixtures/ts-parity-v1.json)", () => {
       expect(Object.keys(parityCase.expected).sort()).toEqual(["checks", "passed"]);
       // No expected/observed leaking into the wire-shaped check list itself.
       for (const check of parityCase.expected.checks) {
-        expect(Object.keys(check).sort()).toEqual(["name", "passed", "reasonCode"]);
+        expect(Object.keys(check).sort()).toEqual(["name", "reasonCode", "status"]);
       }
     }
   });
 
-  it("uses the exact nested v1 observed shape — retrieval.completed/chunkIds, tools.requested/executed/completed, report.evidence/suggestedActionTypes, errorCode explicit null", async () => {
+  it("uses the exact nested v2 observed shape — retrieval.completed/chunkIds, tools.requested/executed/completed with output, the 8-field report, and investigation + failedStage on both branches", async () => {
     const fixture = await computeParityFixture();
     for (const parityCase of fixture.cases) {
       const { observed } = parityCase;
-      expect(Object.keys(observed).sort()).toEqual(["errorCode", "report", "retrieval", "runStatus", "tools"]);
+      expect(Object.keys(observed).sort()).toEqual([
+        "errorCode",
+        "failedStage",
+        "investigation",
+        "report",
+        "retrieval",
+        "runStatus",
+        "tools",
+      ]);
       expect(Object.keys(observed.retrieval).sort()).toEqual(["chunkIds", "completed"]);
       expect(Object.keys(observed.tools).sort()).toEqual(["completed", "executed", "requested"]);
+      expect(Object.keys(observed.investigation).sort()).toEqual([
+        "assessments",
+        "bounds",
+        "diagnosticRequestCount",
+        "forcedFinalization",
+        "providerTurnsUsed",
+        "stopReason",
+        "toolFailures",
+        "usage",
+      ]);
       expect("errorCode" in observed).toBe(true);
       if (observed.runStatus === "completed") {
         expect(observed.errorCode).toBeNull();
         expect(observed.report).not.toBeNull();
-        expect(Object.keys(observed.report!).sort()).toEqual(["evidence", "suggestedActionTypes"]);
+        expect(observed.failedStage).toBeNull();
+        expect(Object.keys(observed.report!).sort()).toEqual([
+          "category",
+          "confidence",
+          "evidence",
+          "evidenceState",
+          "recommendationDisposition",
+          "rootCausePresent",
+          "suggestedActionTypes",
+          "suggestedActions",
+        ]);
       } else {
         expect(observed.errorCode).not.toBeNull();
         expect(observed.report).toBeNull();
+        expect(typeof observed.failedStage).toBe("string");
       }
     }
   });
@@ -188,7 +234,7 @@ describe("computeParityFixture — validates the dataset before execution", () =
     ).rejects.toBeInstanceOf(InvalidParityDatasetError);
   });
 
-  it("the real 15-case corpus (with no overrides) remains valid and unaffected by the new validation gate", async () => {
+  it("the real 20-case corpus (with no overrides) remains valid and unaffected by the new validation gate", async () => {
     await expect(computeParityFixture()).resolves.not.toThrow();
   });
 });
@@ -199,7 +245,7 @@ describe("computeParityFixture — validates the dataset before execution", () =
 // avoid collapsing two distinct cases that happen to share a caseId.
 describe("buildParityFixture — fails closed on a duplicate caseId even when called directly", () => {
   it("throws rather than silently pairing one case's expectations/observed with a different case's scored result", () => {
-    const suiteInput = buildEvaluationSuiteInputV1("test-dataset", [
+    const suiteInput = buildEvaluationSuiteInputV2("test-dataset", [
       { caseId: "dup-case", expectations: { runStatus: "completed" }, observed: sentinelObserved() },
       { caseId: "dup-case", expectations: { runStatus: "completed" }, observed: sentinelObserved() },
     ]);
@@ -207,7 +253,7 @@ describe("buildParityFixture — fails closed on a duplicate caseId even when ca
       contractVersion: suiteInput.contractVersion,
       datasetId: suiteInput.datasetId,
       cases: [
-        { caseId: "dup-case", passed: true, checks: [{ name: "status", passed: true, reasonCode: null }] as const },
+        { caseId: "dup-case", passed: true, checks: [{ name: "status", status: "PASS", reasonCode: null }] as const },
       ],
       metrics: {
         totalCases: 1,
@@ -220,6 +266,15 @@ describe("buildParityFixture — fails closed on a duplicate caseId even when ca
         evidenceGroundingCorrectness: { numerator: 0, denominator: 0 },
         toolCorrectness: { numerator: 0, denominator: 0 },
         expectedStatusCorrectness: { numerator: 0, denominator: 0 },
+        rootCauseDiscipline: { numerator: 0, denominator: 0 },
+        evidenceSupport: { numerator: 0, denominator: 0 },
+        unknownHandling: { numerator: 0, denominator: 0 },
+        diagnosticJustification: { numerator: 0, denominator: 0 },
+        confidenceCalibration: { numerator: 0, denominator: 0 },
+        actionGrounding: { numerator: 0, denominator: 0 },
+        approvalGate: { numerator: 0, denominator: 0 },
+        boundsRespected: { numerator: 0, denominator: 0 },
+        deterministicRecovery: { numerator: 0, denominator: 0 },
       },
     };
 
@@ -227,13 +282,33 @@ describe("buildParityFixture — fails closed on a duplicate caseId even when ca
   });
 });
 
-function sentinelObserved() {
+function sentinelObserved(): ObservedFacts {
   return {
-    runStatus: "completed" as const,
+    runStatus: "completed",
     errorCode: null,
     retrieval: { completed: false, chunkIds: [] },
     tools: { requested: [], executed: [], completed: [] },
-    report: { evidence: [], suggestedActionTypes: [] },
+    report: {
+      evidence: [],
+      suggestedActionTypes: [],
+      category: "SERVICE_DEGRADATION",
+      rootCausePresent: true,
+      confidence: 0.5,
+      evidenceState: "SUFFICIENT",
+      recommendationDisposition: "ADVISORY",
+      suggestedActions: [],
+    },
+    investigation: {
+      providerTurnsUsed: 0,
+      diagnosticRequestCount: 0,
+      forcedFinalization: false,
+      stopReason: "SUFFICIENT_EVIDENCE",
+      assessments: [],
+      toolFailures: [],
+      bounds: { maxProviderTurns: 4, maxDiagnosticToolCalls: 3 },
+      usage: { inputTokens: 0, outputTokens: 0, providerCalls: 0 },
+    },
+    failedStage: null,
   };
 }
 
@@ -275,6 +350,6 @@ function sentinelObserved() {
 describe("ten approved v1 semantic traps — documented mapping", () => {
   it("the mapping above stays anchored to a real, still-passing suite (smoke check)", async () => {
     const fixture = await computeParityFixture();
-    expect(fixture.cases).toHaveLength(15);
+    expect(fixture.cases).toHaveLength(20);
   });
 });

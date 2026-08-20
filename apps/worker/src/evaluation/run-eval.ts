@@ -23,13 +23,13 @@ import {
   type EvaluationServiceErrorCategory,
 } from "./evaluation-service-errors";
 import type { EvaluationCase, EvaluationMetrics } from "./types";
-import { buildEvaluationSuiteInputV1, EVALUATION_DATASET_ID, type EvaluationCaseResultV1 } from "./v1-types";
+import { buildEvaluationSuiteInputV2, EVALUATION_DATASET_ID, type EvaluationCaseResultV2 } from "./v2-types";
 
 const UNEXPECTED_FAILURE_MESSAGE = "OpsPilot Evaluation\n\nEvaluation failed unexpectedly.";
 
 export interface EvaluationRunOutcome {
   readonly kind: "executed";
-  readonly results: readonly EvaluationCaseResultV1[];
+  readonly results: readonly EvaluationCaseResultV2[];
   readonly metrics: EvaluationMetrics;
 }
 
@@ -67,7 +67,7 @@ const DEFAULT_DEPENDENCIES: EvaluationDependencies = {
 
 // Composition root: loads the real Markdown corpus once, validates the
 // dataset before any case executes, runs the suite to get normalized
-// per-case inputs, wraps them into the v1 suite input, and hands that whole
+// per-case inputs, wraps them into the v2 suite input, and hands that whole
 // suite to an EvaluationScorer — the only place in the CLI path that builds
 // the cross-language contract or selects/invokes a scorer (see the OpsPilot
 // #61 Phase 1 HQ targeted corrections, correction 5). Dependencies are
@@ -99,7 +99,7 @@ export async function runEvaluation(
     defaultCorpus,
     injectionProbeChunk: deps.injectionProbeChunk,
   });
-  const suiteInput = buildEvaluationSuiteInputV1(EVALUATION_DATASET_ID, caseInputs);
+  const suiteInput = buildEvaluationSuiteInputV2(EVALUATION_DATASET_ID, caseInputs);
 
   const scorer = deps.scorer ?? createEvaluationScorer(deps.scorerSelection);
   const suiteResult = await scorer.score(suiteInput);

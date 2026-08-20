@@ -23,7 +23,37 @@ export type CheckReasonCode =
   | "ACTION_TYPES_MISMATCH"
   | "FAILURE_CODE_RUN_COMPLETED"
   | "FAILURE_CODE_MISMATCH"
-  | "STATUS_MISMATCH";
+  | "STATUS_MISMATCH"
+  // Issue #59 Checkpoint B — the 25 retained #59 metric FAIL reason codes
+  // (see the Checkpoint B implementation spec §5/§9.1). Each is selected by
+  // exactly one of the nine metric check functions in evaluation-evaluator.ts
+  // and must appear in at least one negative vector (mechanically audited by
+  // the negative-vectors consumers in both languages).
+  | "ROOT_CAUSE_PRESENCE_MISMATCH"
+  | "ROOT_CAUSE_WITHOUT_SUFFICIENT_EVIDENCE"
+  | "EVIDENCE_REQUIRED_LOCATOR_MISSING"
+  | "EVIDENCE_STATE_MISMATCH"
+  | "EVIDENCE_TELEMETRY_MISSING"
+  | "EVIDENCE_CARDINALITY_INSUFFICIENT"
+  | "TELEMETRY_CLASSIFICATION_NOT_OBSERVED"
+  | "UNKNOWN_TELEMETRY_TREATED_AS_ANSWER"
+  | "UNKNOWN_TELEMETRY_GROUNDS_ACTION"
+  | "DIAGNOSTIC_SEQUENCE_MISMATCH"
+  | "DIAGNOSTIC_COUNT_MISMATCH"
+  | "DIAGNOSTIC_STOP_NOT_VOLUNTARY"
+  | "STOP_REASON_MISMATCH"
+  | "CONFIDENCE_OUT_OF_BAND"
+  | "ACTION_TYPE_SET_MISMATCH"
+  | "ACTION_REQUIRED_GROUNDING_MISSING"
+  | "ACTION_GROUNDING_NOT_ALLOWED"
+  | "ACTION_GROUNDING_DUPLICATED"
+  | "APPROVAL_ELIGIBILITY_MISMATCH"
+  | "TURN_BOUND_EXCEEDED"
+  | "TOOL_BOUND_EXCEEDED"
+  | "TOKEN_BUDGET_EXCEEDED"
+  | "RECOVERY_STAGE_MISMATCH"
+  | "RECOVERY_SIDE_EFFECT_OBSERVED"
+  | "RECOVERY_REPORT_PRESENCE_MISMATCH";
 
 // Total by construction: TypeScript rejects this object literal unless every
 // member of CheckReasonCode has an entry, and rejects any key that is not a
@@ -52,8 +82,41 @@ export const CHECK_REASON_MESSAGES: Record<CheckReasonCode, string> = {
   FAILURE_CODE_RUN_COMPLETED: "The run completed, but a failure was expected.",
   FAILURE_CODE_MISMATCH: "The observed failure code did not match the expected failure code.",
   STATUS_MISMATCH: "The observed run status did not match the expected run status.",
+  // Issue #59 Checkpoint B metric FAIL messages (spec §5). Fixed, flat,
+  // application-authored prose — none interpolates case data, so a message
+  // never leaks a locator, chunk id, tool name, confidence value, or token
+  // count into the report.
+  ROOT_CAUSE_PRESENCE_MISMATCH: "The observed report root-cause presence did not match the expected root-cause presence.",
+  ROOT_CAUSE_WITHOUT_SUFFICIENT_EVIDENCE: "A root cause was reported without sufficient supporting evidence.",
+  EVIDENCE_REQUIRED_LOCATOR_MISSING: "A required evidence locator was not observed in the report.",
+  EVIDENCE_STATE_MISMATCH: "The observed evidence state did not match the expected evidence state.",
+  EVIDENCE_TELEMETRY_MISSING: "Evidence expected to be grounded in telemetry was not grounded in telemetry.",
+  EVIDENCE_CARDINALITY_INSUFFICIENT: "Fewer distinct evidence locators were observed than required.",
+  TELEMETRY_CLASSIFICATION_NOT_OBSERVED: "The expected telemetry classification for an evidence locator was not observed.",
+  UNKNOWN_TELEMETRY_TREATED_AS_ANSWER: "Unknown telemetry was treated as an answer in the report.",
+  UNKNOWN_TELEMETRY_GROUNDS_ACTION: "Unknown telemetry was used to ground a suggested action.",
+  DIAGNOSTIC_SEQUENCE_MISMATCH: "The observed diagnostic step sequence did not match the expected sequence.",
+  DIAGNOSTIC_COUNT_MISMATCH: "The observed number of diagnostic steps did not match the expected count.",
+  DIAGNOSTIC_STOP_NOT_VOLUNTARY: "The investigation stopped for a non-voluntary reason.",
+  STOP_REASON_MISMATCH: "The observed investigation stop reason did not match the expected stop reason.",
+  CONFIDENCE_OUT_OF_BAND: "The reported confidence was outside the expected confidence band.",
+  ACTION_TYPE_SET_MISMATCH: "The set of suggested action types did not match the expected set.",
+  ACTION_REQUIRED_GROUNDING_MISSING: "A suggested action was missing required grounding evidence.",
+  ACTION_GROUNDING_NOT_ALLOWED: "A suggested action was grounded on evidence outside its allowed grounding set.",
+  ACTION_GROUNDING_DUPLICATED: "A suggested action grounded a required locator on duplicated evidence.",
+  APPROVAL_ELIGIBILITY_MISMATCH: "The observed approval eligibility did not match the expected eligibility.",
+  TURN_BOUND_EXCEEDED: "The run exceeded the maximum provider turn bound.",
+  TOOL_BOUND_EXCEEDED: "The run exceeded the maximum diagnostic tool call bound.",
+  TOKEN_BUDGET_EXCEEDED: "The run exceeded the expected token budget.",
+  RECOVERY_STAGE_MISMATCH: "The failed stage of the run did not match the expected recovery stage.",
+  RECOVERY_SIDE_EFFECT_OBSERVED: "A tool call that should have been blocked completed during the run.",
+  RECOVERY_REPORT_PRESENCE_MISMATCH: "The presence of a report after failure did not match the expected recovery outcome.",
 };
 
 export function resolveCheckReasonMessage(code: CheckReasonCode): string {
   return CHECK_REASON_MESSAGES[code];
+}
+
+export function isCheckReasonCode(value: unknown): value is CheckReasonCode {
+  return typeof value === "string" && value in CHECK_REASON_MESSAGES;
 }

@@ -1,0 +1,33 @@
+{
+  "comment": "Issue #59 Checkpoint B §10 — approval eligibility parity. The minimum reachable matrix (spec §10): real PostgreSQL repository behavior (packages/database/src/repositories/agent-run-approval-repository.integration.test.ts) and the evaluator approval rule (apps/worker/src/evaluation/approval-parity.test.ts) both consume this same TS-owned fixture. evaluationObservable marks the terminal states the offline evaluator scores (RUNNING is repository-only). The deliberately-unreachable states RUNNING/FAILED with >=1 finalized actions are excluded, per §10.",
+  "vectors": [
+    {
+      "id": "running-zero-actions",
+      "runStatus": "RUNNING",
+      "suggestedActionCount": 0,
+      "expectedRepositoryEligibility": "NOT_ELIGIBLE",
+      "evaluationObservable": false
+    },
+    {
+      "id": "completed-zero-actions",
+      "runStatus": "COMPLETED",
+      "suggestedActionCount": 0,
+      "expectedRepositoryEligibility": "NOT_ELIGIBLE",
+      "evaluationObservable": true
+    },
+    {
+      "id": "completed-one-action",
+      "runStatus": "COMPLETED",
+      "suggestedActionCount": 1,
+      "expectedRepositoryEligibility": "ELIGIBLE",
+      "evaluationObservable": true
+    },
+    {
+      "id": "failed-zero-actions",
+      "runStatus": "FAILED",
+      "suggestedActionCount": 0,
+      "expectedRepositoryEligibility": "NOT_ELIGIBLE",
+      "evaluationObservable": true
+    }
+  ]
+}

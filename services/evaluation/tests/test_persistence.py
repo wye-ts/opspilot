@@ -14,9 +14,12 @@ from opspilot_evaluation.api import _persist_evaluation
 from opspilot_evaluation.db.models import EvaluationRun
 from opspilot_evaluation.db.session import get_sessionmaker
 from opspilot_evaluation.schemas import (
-    EvaluationCaseInputV1,
+    EvaluationCaseInputV2,
     EvaluationExpectations,
-    EvaluationSuiteInputV1,
+    EvaluationSuiteInputV2,
+    InvestigationBounds,
+    InvestigationFacts,
+    InvestigationUsage,
     ObservedFactsCompleted,
     ReportFacts,
     RetrievalFacts,
@@ -28,24 +31,43 @@ from opspilot_evaluation.scoring.scorer import score_cases
 pytestmark = pytest.mark.asyncio
 
 
-def _case(case_id: str) -> EvaluationCaseInputV1:
+def _case(case_id: str) -> EvaluationCaseInputV2:
     observed = ObservedFactsCompleted(
         runStatus="completed",
         errorCode=None,
         retrieval=RetrievalFacts(completed=False, chunkIds=[]),
         tools=ToolFacts(requested=[], executed=[], completed=[]),
-        report=ReportFacts(evidence=[], suggestedActionTypes=[]),
+        report=ReportFacts(
+            evidence=[],
+            suggestedActionTypes=[],
+            category="UNKNOWN",
+            rootCausePresent=False,
+            confidence=0.0,
+            evidenceState="INSUFFICIENT",
+            recommendationDisposition="ADVISORY",
+            suggestedActions=[],
+        ),
+        investigation=InvestigationFacts(
+            providerTurnsUsed=0,
+            diagnosticRequestCount=0,
+            forcedFinalization=False,
+            stopReason=None,
+            assessments=[],
+            toolFailures=[],
+            bounds=InvestigationBounds(maxProviderTurns=4, maxDiagnosticToolCalls=3),
+            usage=InvestigationUsage(inputTokens=0, outputTokens=0, providerCalls=0),
+        ),
     )
     expectations = EvaluationExpectations(runStatus="completed")
-    return EvaluationCaseInputV1(caseId=case_id, expectations=expectations, observed=observed)
+    return EvaluationCaseInputV2(caseId=case_id, expectations=expectations, observed=observed)
 
 
 async def test_genuine_constraint_violation_rolls_back_atomically() -> None:
-    # Bypasses EvaluationSuiteInputV1's own duplicate-caseId validator
+    # Bypasses EvaluationSuiteInputV2's own duplicate-caseId validator
     # (model_construct skips validation) specifically so this test can
     # exercise the DB's own uq_case_results_run_case constraint instead.
     cases = [_case("dup"), _case("dup")]
-    suite = EvaluationSuiteInputV1.model_construct(contractVersion=1, datasetId="rollback-test", cases=cases)
+    suite = EvaluationSuiteInputV2.model_construct(contractVersion=2, datasetId="rollback-test", cases=cases)
     results = score_cases(cases)
     metrics = aggregate_metrics(results)
 

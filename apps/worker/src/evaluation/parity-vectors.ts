@@ -6,38 +6,41 @@ import { runEvaluationSuite } from "./evaluation-runner";
 import { LocalEvaluationScorer } from "./evaluation-scorer";
 import type { EvaluationCase, EvaluationExpectations, EvaluationMetrics } from "./types";
 import {
-  buildEvaluationSuiteInputV1,
+  buildEvaluationSuiteInputV2,
   EVALUATION_CONTRACT_VERSION,
   EVALUATION_DATASET_ID,
-  type EvaluationCheckV1,
-  type EvaluationSuiteInputV1,
-  type EvaluationSuiteResultV1,
-} from "./v1-types";
+  type EvaluationCheckV2,
+  type EvaluationSuiteInputV2,
+  type EvaluationSuiteResultV2,
+} from "./v2-types";
 import type { ObservedFacts } from "./observed-facts";
 
-// The single TS-owned parity artifact for the current 15-case dataset (see
-// the OpsPilot #61 Phase 1 plan, clarification B, and the HQ targeted
+// The single TS-owned ACTIVE parity artifact for the current 20-case dataset
+// (see the OpsPilot #61 Phase 1 plan, clarification B, and the HQ targeted
 // corrections, correction 4). Unlike a plain scoring-output snapshot, this
 // fixture carries BOTH the normalized inputs (caseId/expectations/observed)
 // AND the expected TS scoring output (per-case passed/checks, plus
 // aggregate metrics) in one document — Python Phase 2 can score `cases[]`
 // independently and diff against `.expected`/`.expectedMetrics` without ever
 // executing the TypeScript agent runtime. There must never be a second,
-// Python-owned copy of this fixture.
-export interface ParityFixtureCaseV1 {
+// Python-owned copy of this fixture. The historical v1 fixture
+// (ts-parity-v1.json) is frozen and never regenerated — it survives only as
+// the offline oracle input for legacy-v1/ (see the OpsPilot #59 Revision 5
+// plan §5).
+export interface ParityFixtureCaseV2 {
   readonly caseId: string;
   readonly expectations: EvaluationExpectations;
   readonly observed: ObservedFacts;
   readonly expected: {
     readonly passed: boolean;
-    readonly checks: readonly EvaluationCheckV1[];
+    readonly checks: readonly EvaluationCheckV2[];
   };
 }
 
-export interface ParityFixtureV1 {
+export interface ParityFixtureV2 {
   readonly contractVersion: typeof EVALUATION_CONTRACT_VERSION;
   readonly datasetId: string;
-  readonly cases: readonly ParityFixtureCaseV1[];
+  readonly cases: readonly ParityFixtureCaseV2[];
   readonly expectedMetrics: EvaluationMetrics;
 }
 
@@ -65,9 +68,9 @@ export class InvalidParityDatasetError extends Error {
 // exported and callable directly, so it must not trust that a caller ran
 // that validation first.
 export function buildParityFixture(
-  suiteInput: EvaluationSuiteInputV1,
-  suiteResult: EvaluationSuiteResultV1,
-): ParityFixtureV1 {
+  suiteInput: EvaluationSuiteInputV2,
+  suiteResult: EvaluationSuiteResultV2,
+): ParityFixtureV2 {
   const seenCaseIds = new Set<string>();
   for (const caseInput of suiteInput.cases) {
     if (seenCaseIds.has(caseInput.caseId)) {
@@ -97,7 +100,7 @@ export function buildParityFixture(
   };
 }
 
-// Loads the real corpus and runs the real, fixed 15-case dataset (the same
+// Loads the real corpus and runs the real, fixed 20-case dataset (the same
 // path run-eval.ts's CLI uses), scores it with the real LocalEvaluationScorer,
 // then builds the combined parity fixture from it. Dependencies are
 // injectable for tests, matching the pattern in run-eval.ts's
@@ -108,7 +111,7 @@ export async function computeParityFixture(
     readonly loadCorpus?: () => Promise<{ readonly chunks: readonly StoredRunbookChunk[] }>;
     readonly injectionProbeChunk?: StoredRunbookChunk;
   } = {},
-): Promise<ParityFixtureV1> {
+): Promise<ParityFixtureV2> {
   const cases = overrides.cases ?? EVALUATION_CASES;
   const loadCorpus = overrides.loadCorpus ?? loadDefaultRunbookCorpus;
   const injectionProbeChunk = overrides.injectionProbeChunk ?? INJECTION_PROBE_CHUNK;
@@ -130,7 +133,7 @@ export async function computeParityFixture(
     injectionProbeChunk,
   });
 
-  const suiteInput = buildEvaluationSuiteInputV1(EVALUATION_DATASET_ID, caseInputs);
+  const suiteInput = buildEvaluationSuiteInputV2(EVALUATION_DATASET_ID, caseInputs);
   const suiteResult = new LocalEvaluationScorer().score(suiteInput);
 
   return buildParityFixture(suiteInput, suiteResult);

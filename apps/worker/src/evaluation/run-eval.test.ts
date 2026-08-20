@@ -21,7 +21,7 @@ import {
   type EvaluationRunResolution,
 } from "./run-eval";
 import type { EvaluationCase } from "./types";
-import type { EvaluationCaseInputV1, EvaluationCaseResultV1 } from "./v1-types";
+import type { EvaluationCaseInputV2, EvaluationCaseResultV2 } from "./v2-types";
 
 const FIXTURE_CORPUS: readonly StoredRunbookChunk[] = [
   { chunkId: "fixture-chunk-1", runbookId: "fixture-runbook", title: "Fixture", content: "fixture content" },
@@ -43,7 +43,11 @@ function validCase(id: string): EvaluationCase {
     corpusProfile: "default",
     toolProfile: "default",
     scenario: { id, turns: [] },
-    expectations: { runStatus: "failed", failure: { expectedCode: "TOOL_NOT_FOUND" } },
+    expectations: {
+      runStatus: "failed",
+      failure: { expectedCode: "TOOL_NOT_FOUND" },
+      expectedRecovery: { failedStage: "DIAGNOSTIC_EXECUTION", reportProduced: false },
+    },
   };
 }
 
@@ -52,7 +56,7 @@ function validCase(id: string): EvaluationCase {
 // stubScorer(), which ignores its input and returns a canned suite result.
 // This is only here so deps.runSuite has something type-correct to resolve
 // to.
-function dummyCaseInput(id: string): EvaluationCaseInputV1 {
+function dummyCaseInput(id: string): EvaluationCaseInputV2 {
   return {
     caseId: id,
     expectations: { runStatus: "failed", failure: { expectedCode: "TOOL_NOT_FOUND" } },
@@ -62,11 +66,22 @@ function dummyCaseInput(id: string): EvaluationCaseInputV1 {
       retrieval: { completed: false, chunkIds: [] },
       tools: { requested: [], executed: [], completed: [] },
       report: null,
+      investigation: {
+        providerTurnsUsed: 0,
+        diagnosticRequestCount: 0,
+        forcedFinalization: false,
+        stopReason: null,
+        assessments: [],
+        toolFailures: [],
+        bounds: { maxProviderTurns: 4, maxDiagnosticToolCalls: 3 },
+        usage: { inputTokens: 0, outputTokens: 0, providerCalls: 0 },
+      },
+      failedStage: "DIAGNOSTIC_EXECUTION",
     },
   };
 }
 
-function stubScorer(cases: readonly EvaluationCaseResultV1[]): EvaluationScorer {
+function stubScorer(cases: readonly EvaluationCaseResultV2[]): EvaluationScorer {
   return {
     score: (input) => ({
       contractVersion: input.contractVersion,
@@ -77,12 +92,12 @@ function stubScorer(cases: readonly EvaluationCaseResultV1[]): EvaluationScorer 
   };
 }
 
-function passingResult(caseId: string): EvaluationCaseResultV1 {
-  return { caseId, passed: true, checks: [{ name: "status", passed: true, reasonCode: null }] };
+function passingResult(caseId: string): EvaluationCaseResultV2 {
+  return { caseId, passed: true, checks: [{ name: "status", status: "PASS", reasonCode: null }] };
 }
 
-function failingResult(caseId: string): EvaluationCaseResultV1 {
-  return { caseId, passed: false, checks: [{ name: "status", passed: false, reasonCode: "STATUS_MISMATCH" }] };
+function failingResult(caseId: string): EvaluationCaseResultV2 {
+  return { caseId, passed: false, checks: [{ name: "status", status: "FAIL", reasonCode: "STATUS_MISMATCH" }] };
 }
 
 describe("runEvaluation", () => {
@@ -139,6 +154,34 @@ describe("runEvaluation", () => {
     if (outcome.kind !== "configuration-error") throw new Error("unreachable");
     expect(outcome.message.length).toBeGreaterThan(0);
     expect(getExitCode(outcome)).toBe(1);
+    expect(runSuite).not.toHaveBeenCalled();
+  });
+
+  it("returns 'configuration-error' and never runs the suite for an orphaned expectedStopReason", async () => {
+    // A declared stop reason without expectedDiagnostics would be silently
+    // skipped by Metric 4 (NOT_APPLICABLE before the stop-reason comparison),
+    // so dataset validation rejects the orphan before any case executes — the
+    // malformed shape can never reach scoring to become NOT_APPLICABLE/PASS.
+    const runSuite = vi.fn();
+    const orphanStopCase: EvaluationCase = {
+      ...validCase("orphan-stop"),
+      expectations: {
+        runStatus: "completed",
+        report: { requiredEvidenceTypes: [] }, // otherwise-valid completed case
+        expectedStopReason: "SUFFICIENT_EVIDENCE",
+      },
+    };
+
+    const outcome = await runEvaluation({
+      loadCorpus: async () => ({ chunks: FIXTURE_CORPUS, sourceFileCount: 1 }),
+      cases: [orphanStopCase],
+      injectionProbeChunk: FIXTURE_INJECTION_PROBE_CHUNK,
+      runSuite,
+    });
+
+    expect(outcome.kind).toBe("configuration-error");
+    if (outcome.kind !== "configuration-error") throw new Error("unreachable");
+    expect(outcome.message).toContain("expectedStopReason requires expectedDiagnostics");
     expect(runSuite).not.toHaveBeenCalled();
   });
 
@@ -325,6 +368,15 @@ describe("renderEvaluationResolution — three distinct CLI error categories", (
           evidenceGroundingCorrectness: { numerator: 0, denominator: 0 },
           toolCorrectness: { numerator: 0, denominator: 0 },
           expectedStatusCorrectness: { numerator: 1, denominator: 1 },
+          rootCauseDiscipline: { numerator: 0, denominator: 0 },
+          evidenceSupport: { numerator: 0, denominator: 0 },
+          unknownHandling: { numerator: 0, denominator: 0 },
+          diagnosticJustification: { numerator: 0, denominator: 0 },
+          confidenceCalibration: { numerator: 0, denominator: 0 },
+          actionGrounding: { numerator: 0, denominator: 0 },
+          approvalGate: { numerator: 0, denominator: 0 },
+          boundsRespected: { numerator: 0, denominator: 0 },
+          deterministicRecovery: { numerator: 0, denominator: 0 },
         },
       },
     };
@@ -353,6 +405,15 @@ describe("renderEvaluationResolution — three distinct CLI error categories", (
           evidenceGroundingCorrectness: { numerator: 0, denominator: 0 },
           toolCorrectness: { numerator: 0, denominator: 0 },
           expectedStatusCorrectness: { numerator: 0, denominator: 1 },
+          rootCauseDiscipline: { numerator: 0, denominator: 0 },
+          evidenceSupport: { numerator: 0, denominator: 0 },
+          unknownHandling: { numerator: 0, denominator: 0 },
+          diagnosticJustification: { numerator: 0, denominator: 0 },
+          confidenceCalibration: { numerator: 0, denominator: 0 },
+          actionGrounding: { numerator: 0, denominator: 0 },
+          approvalGate: { numerator: 0, denominator: 0 },
+          boundsRespected: { numerator: 0, denominator: 0 },
+          deterministicRecovery: { numerator: 0, denominator: 0 },
         },
       },
     };

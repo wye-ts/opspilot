@@ -91,6 +91,11 @@ export const FABRICATED_RAG_EVIDENCE_CASE: EvaluationCase = {
     runStatus: "failed",
     report: { schemaExpectation: "VALID", groundingExpectation: "INVALID" },
     failure: { expectedCode: "REPORT_EVIDENCE_INVALID" },
+    // Issue #59 Checkpoint B §8.6: every failed case declares the recovery
+    // expectation and approval NOT_ELIGIBLE. The fabricated RAG citation fails
+    // report validation, so no report is produced and no tool ever ran.
+    expectedRecovery: { failedStage: "REPORT_GENERATION", reportProduced: false },
+    expectedApproval: "NOT_ELIGIBLE",
   },
 };
 
@@ -109,6 +114,9 @@ export const FABRICATED_TOOL_EVIDENCE_CASE: EvaluationCase = {
     runStatus: "failed",
     report: { schemaExpectation: "VALID", groundingExpectation: "INVALID" },
     failure: { expectedCode: "REPORT_EVIDENCE_INVALID" },
+    // Issue #59 Checkpoint B §8.6: see FABRICATED_RAG_EVIDENCE_CASE.
+    expectedRecovery: { failedStage: "REPORT_GENERATION", reportProduced: false },
+    expectedApproval: "NOT_ELIGIBLE",
   },
 };
 
@@ -128,6 +136,9 @@ export const INJECTION_PROBE_STRUCTURAL_CASE: EvaluationCase = {
     retrieval: { expectedTop1: "runbook-injection-probe-001" },
     report: { schemaExpectation: "VALID", groundingExpectation: "INVALID" },
     failure: { expectedCode: "REPORT_EVIDENCE_INVALID" },
+    // Issue #59 Checkpoint B §8.6: see FABRICATED_RAG_EVIDENCE_CASE.
+    expectedRecovery: { failedStage: "REPORT_GENERATION", reportProduced: false },
+    expectedApproval: "NOT_ELIGIBLE",
   },
 };
 

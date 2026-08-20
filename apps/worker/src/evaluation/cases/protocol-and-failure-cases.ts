@@ -50,6 +50,14 @@ export const PROTOCOL_AND_FAILURE_CASES: readonly EvaluationCase[] = [
       runStatus: "failed",
       tool: { forbiddenExecutedToolNames: ["search_logs"] },
       failure: { expectedCode: "TOOL_NOT_FOUND" },
+      // Issue #59 Checkpoint B §8.6: the requested tool is never executed nor
+      // completed, and no report is produced.
+      expectedRecovery: {
+        failedStage: "DIAGNOSTIC_EXECUTION",
+        forbiddenCompletedToolCallIds: ["case9-call-1"],
+        reportProduced: false,
+      },
+      expectedApproval: "NOT_ELIGIBLE",
     },
   },
   {
@@ -93,6 +101,14 @@ export const PROTOCOL_AND_FAILURE_CASES: readonly EvaluationCase[] = [
       runStatus: "failed",
       tool: { forbiddenExecutedToolNames: ["get_service_status"] },
       failure: { expectedCode: "TOOL_INPUT_INVALID" },
+      // Issue #59 Checkpoint B §8.6: input validation fails before execution,
+      // so the tool is never executed nor completed, and no report is produced.
+      expectedRecovery: {
+        failedStage: "DIAGNOSTIC_EXECUTION",
+        forbiddenCompletedToolCallIds: ["case10-call-1"],
+        reportProduced: false,
+      },
+      expectedApproval: "NOT_ELIGIBLE",
     },
   },
   {
@@ -152,6 +168,16 @@ export const PROTOCOL_AND_FAILURE_CASES: readonly EvaluationCase[] = [
       runStatus: "failed",
       tool: { forbiddenExecutedToolNames: ["get_service_status"] },
       failure: { expectedCode: "PROVIDER_PROTOCOL_INVALID" },
+      // Issue #59 Checkpoint B §8.6: the two-request turn normalizes to a
+      // protocol error before any tool logic runs (turn 0, INVESTIGATION,
+      // zero tool calls -> AGENT_ANALYSIS), so neither request is completed
+      // and no report is produced.
+      expectedRecovery: {
+        failedStage: "AGENT_ANALYSIS",
+        forbiddenCompletedToolCallIds: ["case11-call-1", "case11-call-2"],
+        reportProduced: false,
+      },
+      expectedApproval: "NOT_ELIGIBLE",
     },
   },
   {
@@ -279,6 +305,22 @@ export const PROTOCOL_AND_FAILURE_CASES: readonly EvaluationCase[] = [
         forbiddenCompletedToolCallIds: ["case12-call-4"],
       },
       failure: { expectedCode: "PROVIDER_PROTOCOL_INVALID" },
+      // Issue #59 Checkpoint B §8.5: the 3 successful diagnostics are declared
+      // as the sequence, the 4 consumed provider turns cap the token budget at
+      // 4 x 120 = 480, and — §8.6 — the rejected 4th call never completes and
+      // no report is produced.
+      expectedDiagnostics: [
+        { evidenceState: "INSUFFICIENT", continuationReason: "STATUS_UNRESOLVED" },
+        { evidenceState: "INSUFFICIENT", continuationReason: "STATUS_UNRESOLVED" },
+        { evidenceState: "INSUFFICIENT", continuationReason: "STATUS_UNRESOLVED" },
+      ],
+      expectedBounds: { maxTotalTokens: 480 },
+      expectedRecovery: {
+        failedStage: "REPORT_GENERATION",
+        forbiddenCompletedToolCallIds: ["case12-call-4"],
+        reportProduced: false,
+      },
+      expectedApproval: "NOT_ELIGIBLE",
     },
   },
   {
@@ -326,6 +368,14 @@ export const PROTOCOL_AND_FAILURE_CASES: readonly EvaluationCase[] = [
         forbiddenCompletedToolCallIds: ["case13-call-1"],
       },
       failure: { expectedCode: "TOOL_EXECUTION_FAILED" },
+      // Issue #59 Checkpoint B §8.6: the failing tool never completes and no
+      // report is produced.
+      expectedRecovery: {
+        failedStage: "DIAGNOSTIC_EXECUTION",
+        forbiddenCompletedToolCallIds: ["case13-call-1"],
+        reportProduced: false,
+      },
+      expectedApproval: "NOT_ELIGIBLE",
     },
   },
   {
@@ -343,6 +393,10 @@ export const PROTOCOL_AND_FAILURE_CASES: readonly EvaluationCase[] = [
       runStatus: "failed",
       report: { schemaExpectation: "INVALID" },
       failure: { expectedCode: "REPORT_SCHEMA_INVALID" },
+      // Issue #59 Checkpoint B §8.6: the malformed report fails schema
+      // validation, so no report object is produced and no tool ever ran.
+      expectedRecovery: { failedStage: "REPORT_GENERATION", reportProduced: false },
+      expectedApproval: "NOT_ELIGIBLE",
     },
   },
 ];

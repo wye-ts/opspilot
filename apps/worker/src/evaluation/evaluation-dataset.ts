@@ -1,3 +1,4 @@
+import { CHECKPOINT_B_CASES } from "./cases/checkpoint-b-cases";
 import {
   FABRICATED_RAG_EVIDENCE_CASE,
   FABRICATED_TOOL_EVIDENCE_CASE,
@@ -15,4 +16,8 @@ export const EVALUATION_CASES: readonly EvaluationCase[] = [
   FABRICATED_TOOL_EVIDENCE_CASE,
   ...PROTOCOL_AND_FAILURE_CASES,
   INJECTION_PROBE_STRUCTURAL_CASE,
+  // Issue #59 Checkpoint B §7 — the five approved cases (positions 16-20),
+  // appended after injection-probe-structural so the dataset order remains
+  // deterministic and backward-compatible with the 15-case fixtures.
+  ...CHECKPOINT_B_CASES,
 ];

@@ -1,17 +1,23 @@
 import { describe, expect, it } from "vitest";
 
 import { aggregateMetrics } from "./evaluation-metrics";
-import type { EvaluationCaseResultV1, EvaluationCheckV1 } from "./v1-types";
+import type { EvaluationCaseResultV2, EvaluationCheckV2 } from "./v2-types";
 
-function makeCheck(name: string, passed: boolean): EvaluationCheckV1 {
-  return passed ? { name, passed: true, reasonCode: null } : { name, passed: false, reasonCode: "STATUS_MISMATCH" };
+function makeCheck(name: string, passed: boolean): EvaluationCheckV2 {
+  return passed
+    ? { name, status: "PASS", reasonCode: null }
+    : { name, status: "FAIL", reasonCode: "STATUS_MISMATCH" };
+}
+
+function makeNaCheck(name: string): EvaluationCheckV2 {
+  return { name, status: "NOT_APPLICABLE", reasonCode: "NA_EXPECTATION_NOT_DECLARED" };
 }
 
 function makeResult(
   caseId: string,
-  checks: readonly EvaluationCheckV1[],
-): EvaluationCaseResultV1 {
-  return { caseId, passed: checks.every((check) => check.passed), checks };
+  checks: readonly EvaluationCheckV2[],
+): EvaluationCaseResultV2 {
+  return { caseId, passed: checks.every((check) => check.status !== "FAIL"), checks };
 }
 
 describe("aggregateMetrics", () => {
@@ -92,6 +98,28 @@ describe("aggregateMetrics", () => {
     ];
 
     expect(aggregateMetrics(results).expectedStatusCorrectness).toEqual({ numerator: 1, denominator: 2 });
+  });
+
+  it("C: excludes NOT_APPLICABLE outcomes from BOTH numerator and denominator of the nine #59 metrics (spec §11: denominator = PASS + FAIL)", () => {
+    const results = [
+      makeResult("a", [makeCheck("root-cause-discipline", true)]), // PASS → in
+      makeResult("b", [makeCheck("root-cause-discipline", false)]), // FAIL → in
+      makeResult("c", [makeNaCheck("root-cause-discipline")]), // N/A → excluded from both
+      makeResult("d", [makeNaCheck("root-cause-discipline")]), // N/A → excluded from both
+      makeResult("e", []), // metric absent → excluded from both
+    ];
+
+    const metrics = aggregateMetrics(results);
+
+    expect(metrics.rootCauseDiscipline).toEqual({ numerator: 1, denominator: 2 });
+    expect(metrics.evidenceSupport).toEqual({ numerator: 0, denominator: 0 });
+    expect(metrics.unknownHandling).toEqual({ numerator: 0, denominator: 0 });
+    expect(metrics.diagnosticJustification).toEqual({ numerator: 0, denominator: 0 });
+    expect(metrics.confidenceCalibration).toEqual({ numerator: 0, denominator: 0 });
+    expect(metrics.actionGrounding).toEqual({ numerator: 0, denominator: 0 });
+    expect(metrics.approvalGate).toEqual({ numerator: 0, denominator: 0 });
+    expect(metrics.boundsRespected).toEqual({ numerator: 0, denominator: 0 });
+    expect(metrics.deterministicRecovery).toEqual({ numerator: 0, denominator: 0 });
   });
 
   it("handles an empty result set deterministically, without NaN or division errors", () => {

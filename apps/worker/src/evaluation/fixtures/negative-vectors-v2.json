@@ -1,0 +1,1167 @@
+{
+  "comment": "Issue #59 Checkpoint B §9 — synthetic negative evaluator vectors. One vector per retained #59 metric FAIL reason code (§9.1) plus the two §9.2 co-failure examples. Each vector is a self-contained scorer input (expectations + observed); the expectedFailures field declares the EXACT set of #59 metric check FAILs (checkName + reasonCode) the scorer must produce for that input — no missing failure, no unexpected failure. These are synthetic scorer inputs and need not be orchestrator-producible. Consumers: apps/worker/src/evaluation/negative-vectors.test.ts (TS) and services/evaluation/tests/test_negative_vectors.py (Python), both reading this single TS-owned fixture.",
+  "vectors": [
+    {
+      "id": "v-root-cause-presence-mismatch",
+      "expectedFailures": [
+        { "checkName": "root-cause-discipline", "reasonCode": "ROOT_CAUSE_PRESENCE_MISMATCH" }
+      ],
+      "expectations": {
+        "runStatus": "completed",
+        "expectedRootCause": "PRESENT"
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": { "requested": [], "executed": [], "completed": [] },
+        "report": {
+          "evidence": [],
+          "suggestedActionTypes": [],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": false,
+          "confidence": 0.7,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ADVISORY",
+          "suggestedActions": []
+        },
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 0,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 100, "outputTokens": 20, "providerCalls": 1 }
+        },
+        "failedStage": null
+      }
+    },
+    {
+      "id": "v-root-cause-without-sufficient-evidence",
+      "expectedFailures": [
+        { "checkName": "root-cause-discipline", "reasonCode": "ROOT_CAUSE_WITHOUT_SUFFICIENT_EVIDENCE" }
+      ],
+      "expectations": {
+        "runStatus": "completed",
+        "expectedRootCause": "PRESENT"
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": { "requested": [], "executed": [], "completed": [] },
+        "report": {
+          "evidence": [],
+          "suggestedActionTypes": [],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": true,
+          "confidence": 0.7,
+          "evidenceState": "INSUFFICIENT",
+          "recommendationDisposition": "ADVISORY",
+          "suggestedActions": []
+        },
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 0,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 100, "outputTokens": 20, "providerCalls": 1 }
+        },
+        "failedStage": null
+      }
+    },
+    {
+      "id": "v-evidence-required-locator-missing",
+      "expectedFailures": [
+        { "checkName": "evidence-support", "reasonCode": "EVIDENCE_REQUIRED_LOCATOR_MISSING" }
+      ],
+      "expectations": {
+        "runStatus": "completed",
+        "expectedEvidence": {
+          "state": "SUFFICIENT",
+          "requiredLocators": [
+            { "sourceType": "RAG_CHUNK", "evidenceId": "runbook-auth-failures-001" }
+          ]
+        }
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": { "requested": [], "executed": [], "completed": [] },
+        "report": {
+          "evidence": [],
+          "suggestedActionTypes": [],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": false,
+          "confidence": 0.7,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ADVISORY",
+          "suggestedActions": []
+        },
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 0,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 100, "outputTokens": 20, "providerCalls": 1 }
+        },
+        "failedStage": null
+      }
+    },
+    {
+      "id": "v-evidence-state-mismatch",
+      "expectedFailures": [
+        { "checkName": "evidence-support", "reasonCode": "EVIDENCE_STATE_MISMATCH" }
+      ],
+      "expectations": {
+        "runStatus": "completed",
+        "expectedEvidence": { "state": "SUFFICIENT", "requiredLocators": [] }
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": { "requested": [], "executed": [], "completed": [] },
+        "report": {
+          "evidence": [],
+          "suggestedActionTypes": [],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": false,
+          "confidence": 0.7,
+          "evidenceState": "INSUFFICIENT",
+          "recommendationDisposition": "ADVISORY",
+          "suggestedActions": []
+        },
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 0,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 100, "outputTokens": 20, "providerCalls": 1 }
+        },
+        "failedStage": null
+      }
+    },
+    {
+      "id": "v-evidence-telemetry-missing",
+      "expectedFailures": [
+        { "checkName": "evidence-support", "reasonCode": "EVIDENCE_TELEMETRY_MISSING" }
+      ],
+      "expectations": {
+        "runStatus": "completed",
+        "expectedEvidence": {
+          "state": "SUFFICIENT",
+          "requiredLocators": [],
+          "requiresTelemetry": true
+        }
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": { "requested": [], "executed": [], "completed": [] },
+        "report": {
+          "evidence": [
+            { "sourceType": "RAG_CHUNK", "evidenceId": "runbook-notification-degradation-001" }
+          ],
+          "suggestedActionTypes": [],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": false,
+          "confidence": 0.7,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ADVISORY",
+          "suggestedActions": []
+        },
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 0,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 100, "outputTokens": 20, "providerCalls": 1 }
+        },
+        "failedStage": null
+      }
+    },
+    {
+      "id": "v-evidence-cardinality-insufficient",
+      "expectedFailures": [
+        { "checkName": "evidence-support", "reasonCode": "EVIDENCE_CARDINALITY_INSUFFICIENT" }
+      ],
+      "expectations": {
+        "runStatus": "completed",
+        "expectedEvidence": {
+          "state": "SUFFICIENT",
+          "requiredLocators": [],
+          "minDistinctLocators": 2
+        }
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": { "requested": [], "executed": [], "completed": [] },
+        "report": {
+          "evidence": [
+            { "sourceType": "TOOL_EXECUTION", "evidenceId": "case-v-call-1" }
+          ],
+          "suggestedActionTypes": [],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": false,
+          "confidence": 0.7,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ADVISORY",
+          "suggestedActions": []
+        },
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 0,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 100, "outputTokens": 20, "providerCalls": 1 }
+        },
+        "failedStage": null
+      }
+    },
+    {
+      "id": "v-telemetry-classification-not-observed",
+      "expectedFailures": [
+        { "checkName": "unknown-telemetry-handling", "reasonCode": "TELEMETRY_CLASSIFICATION_NOT_OBSERVED" }
+      ],
+      "expectations": {
+        "runStatus": "completed",
+        "expectedTelemetryEvidence": {
+          "probative": [],
+          "nonProbative": [
+            { "sourceType": "TOOL_EXECUTION", "evidenceId": "case-v-call-1" }
+          ]
+        }
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": { "requested": [], "executed": [], "completed": [] },
+        "report": {
+          "evidence": [],
+          "suggestedActionTypes": [],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": false,
+          "confidence": 0.7,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ADVISORY",
+          "suggestedActions": []
+        },
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 0,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 100, "outputTokens": 20, "providerCalls": 1 }
+        },
+        "failedStage": null
+      }
+    },
+    {
+      "id": "v-unknown-treated-as-answer",
+      "expectedFailures": [
+        { "checkName": "unknown-telemetry-handling", "reasonCode": "UNKNOWN_TELEMETRY_TREATED_AS_ANSWER" },
+        { "checkName": "evidence-support", "reasonCode": "EVIDENCE_STATE_MISMATCH" },
+        { "checkName": "root-cause-discipline", "reasonCode": "ROOT_CAUSE_PRESENCE_MISMATCH" }
+      ],
+      "expectations": {
+        "runStatus": "completed",
+        "expectedRootCause": "ABSENT",
+        "expectedEvidence": { "state": "INSUFFICIENT", "requiredLocators": [] },
+        "expectedTelemetryEvidence": {
+          "probative": [],
+          "nonProbative": [
+            { "sourceType": "TOOL_EXECUTION", "evidenceId": "case-v-call-1" }
+          ]
+        }
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": {
+          "requested": [
+            { "toolName": "get_service_status", "toolCallId": "case-v-call-1" }
+          ],
+          "executed": [
+            { "toolName": "get_service_status", "input": { "serviceSlug": "auth-service" } }
+          ],
+          "completed": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case-v-call-1",
+              "output": { "serviceSlug": "auth-service", "status": "DEGRADED" }
+            }
+          ]
+        },
+        "report": {
+          "evidence": [
+            { "sourceType": "TOOL_EXECUTION", "evidenceId": "case-v-call-1" }
+          ],
+          "suggestedActionTypes": [],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": true,
+          "confidence": 0.7,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ADVISORY",
+          "suggestedActions": []
+        },
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 1,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [
+            {
+              "toolCallId": "case-v-call-1",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "SUFFICIENT",
+                "continuationReason": "STATUS_UNRESOLVED",
+                "supportedBy": []
+              }
+            }
+          ],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 100, "outputTokens": 20, "providerCalls": 1 }
+        },
+        "failedStage": null
+      }
+    },
+    {
+      "id": "v-unknown-grounds-action",
+      "expectedFailures": [
+        { "checkName": "unknown-telemetry-handling", "reasonCode": "UNKNOWN_TELEMETRY_GROUNDS_ACTION" },
+        { "checkName": "action-grounding", "reasonCode": "ACTION_REQUIRED_GROUNDING_MISSING" }
+      ],
+      "expectations": {
+        "runStatus": "completed",
+        "expectedTelemetryEvidence": {
+          "probative": [],
+          "nonProbative": [
+            { "sourceType": "TOOL_EXECUTION", "evidenceId": "case-v-call-1" }
+          ]
+        },
+        "expectedActions": [
+          {
+            "type": "UPDATE_TICKET_STATUS",
+            "requiredGrounding": [
+              { "sourceType": "RAG_CHUNK", "evidenceId": "runbook-auth-failures-001" }
+            ],
+            "allowedGrounding": [
+              { "sourceType": "RAG_CHUNK", "evidenceId": "runbook-auth-failures-001" },
+              { "sourceType": "TOOL_EXECUTION", "evidenceId": "case-v-call-1" }
+            ]
+          }
+        ]
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": {
+          "requested": [
+            { "toolName": "get_service_status", "toolCallId": "case-v-call-1" }
+          ],
+          "executed": [
+            { "toolName": "get_service_status", "input": { "serviceSlug": "auth-service" } }
+          ],
+          "completed": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case-v-call-1",
+              "output": { "serviceSlug": "auth-service", "status": "DEGRADED" }
+            }
+          ]
+        },
+        "report": {
+          "evidence": [
+            { "sourceType": "TOOL_EXECUTION", "evidenceId": "case-v-call-1" }
+          ],
+          "suggestedActionTypes": ["UPDATE_TICKET_STATUS"],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": false,
+          "confidence": 0.7,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ACTIONABLE",
+          "suggestedActions": [
+            {
+              "type": "UPDATE_TICKET_STATUS",
+              "groundedBy": [
+                { "sourceType": "TOOL_EXECUTION", "evidenceId": "case-v-call-1" }
+              ]
+            }
+          ]
+        },
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 1,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [
+            {
+              "toolCallId": "case-v-call-1",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "NO_EVIDENCE_YET",
+                "supportedBy": []
+              }
+            }
+          ],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 100, "outputTokens": 20, "providerCalls": 1 }
+        },
+        "failedStage": null
+      }
+    },
+    {
+      "id": "v-action-type-set-mismatch",
+      "expectedFailures": [
+        { "checkName": "action-grounding", "reasonCode": "ACTION_TYPE_SET_MISMATCH" }
+      ],
+      "expectations": {
+        "runStatus": "completed",
+        "expectedActions": [
+          {
+            "type": "UPDATE_TICKET_STATUS",
+            "requiredGrounding": [],
+            "allowedGrounding": []
+          }
+        ]
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": { "requested": [], "executed": [], "completed": [] },
+        "report": {
+          "evidence": [],
+          "suggestedActionTypes": ["CREATE_ESCALATION"],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": false,
+          "confidence": 0.7,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ACTIONABLE",
+          "suggestedActions": [
+            {
+              "type": "CREATE_ESCALATION",
+              "groundedBy": []
+            }
+          ]
+        },
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 0,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 100, "outputTokens": 20, "providerCalls": 1 }
+        },
+        "failedStage": null
+      }
+    },
+    {
+      "id": "v-action-required-grounding-missing",
+      "expectedFailures": [
+        { "checkName": "action-grounding", "reasonCode": "ACTION_REQUIRED_GROUNDING_MISSING" }
+      ],
+      "expectations": {
+        "runStatus": "completed",
+        "expectedActions": [
+          {
+            "type": "UPDATE_TICKET_STATUS",
+            "requiredGrounding": [
+              { "sourceType": "RAG_CHUNK", "evidenceId": "runbook-auth-failures-001" }
+            ],
+            "allowedGrounding": [
+              { "sourceType": "RAG_CHUNK", "evidenceId": "runbook-auth-failures-001" },
+              { "sourceType": "TOOL_EXECUTION", "evidenceId": "case-v-call-1" }
+            ]
+          }
+        ]
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": { "requested": [], "executed": [], "completed": [] },
+        "report": {
+          "evidence": [],
+          "suggestedActionTypes": ["UPDATE_TICKET_STATUS"],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": false,
+          "confidence": 0.7,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ACTIONABLE",
+          "suggestedActions": [
+            {
+              "type": "UPDATE_TICKET_STATUS",
+              "groundedBy": [
+                { "sourceType": "TOOL_EXECUTION", "evidenceId": "case-v-call-1" }
+              ]
+            }
+          ]
+        },
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 0,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 100, "outputTokens": 20, "providerCalls": 1 }
+        },
+        "failedStage": null
+      }
+    },
+    {
+      "id": "v-action-grounding-not-allowed",
+      "expectedFailures": [
+        { "checkName": "action-grounding", "reasonCode": "ACTION_GROUNDING_NOT_ALLOWED" }
+      ],
+      "expectations": {
+        "runStatus": "completed",
+        "expectedActions": [
+          {
+            "type": "UPDATE_TICKET_STATUS",
+            "requiredGrounding": [
+              { "sourceType": "TOOL_EXECUTION", "evidenceId": "case-v-call-1" }
+            ],
+            "allowedGrounding": [
+              { "sourceType": "TOOL_EXECUTION", "evidenceId": "case-v-call-1" }
+            ]
+          }
+        ]
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": { "requested": [], "executed": [], "completed": [] },
+        "report": {
+          "evidence": [],
+          "suggestedActionTypes": ["UPDATE_TICKET_STATUS"],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": false,
+          "confidence": 0.7,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ACTIONABLE",
+          "suggestedActions": [
+            {
+              "type": "UPDATE_TICKET_STATUS",
+              "groundedBy": [
+                { "sourceType": "TOOL_EXECUTION", "evidenceId": "case-v-call-1" },
+                { "sourceType": "RAG_CHUNK", "evidenceId": "runbook-auth-failures-001" }
+              ]
+            }
+          ]
+        },
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 0,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 100, "outputTokens": 20, "providerCalls": 1 }
+        },
+        "failedStage": null
+      }
+    },
+    {
+      "id": "v-action-grounding-duplicated",
+      "expectedFailures": [
+        { "checkName": "action-grounding", "reasonCode": "ACTION_GROUNDING_DUPLICATED" }
+      ],
+      "expectations": {
+        "runStatus": "completed",
+        "expectedActions": [
+          {
+            "type": "UPDATE_TICKET_STATUS",
+            "requiredGrounding": [
+              { "sourceType": "TOOL_EXECUTION", "evidenceId": "case-v-call-1" }
+            ],
+            "allowedGrounding": [
+              { "sourceType": "TOOL_EXECUTION", "evidenceId": "case-v-call-1" }
+            ]
+          }
+        ]
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": { "requested": [], "executed": [], "completed": [] },
+        "report": {
+          "evidence": [],
+          "suggestedActionTypes": ["UPDATE_TICKET_STATUS"],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": false,
+          "confidence": 0.7,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ACTIONABLE",
+          "suggestedActions": [
+            {
+              "type": "UPDATE_TICKET_STATUS",
+              "groundedBy": [
+                { "sourceType": "TOOL_EXECUTION", "evidenceId": "case-v-call-1" },
+                { "sourceType": "TOOL_EXECUTION", "evidenceId": "case-v-call-1" }
+              ]
+            }
+          ]
+        },
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 0,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 100, "outputTokens": 20, "providerCalls": 1 }
+        },
+        "failedStage": null
+      }
+    },
+    {
+      "id": "v-diagnostic-sequence-mismatch",
+      "expectedFailures": [
+        { "checkName": "diagnostic-justification", "reasonCode": "DIAGNOSTIC_SEQUENCE_MISMATCH" }
+      ],
+      "expectations": {
+        "runStatus": "completed",
+        "expectedDiagnostics": [
+          { "evidenceState": "INSUFFICIENT", "continuationReason": "STATUS_UNRESOLVED" }
+        ],
+        "expectedStopReason": "SUFFICIENT_EVIDENCE"
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": { "requested": [], "executed": [], "completed": [] },
+        "report": {
+          "evidence": [],
+          "suggestedActionTypes": [],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": false,
+          "confidence": 0.7,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ADVISORY",
+          "suggestedActions": []
+        },
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 1,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [
+            {
+              "toolCallId": "case-v-call-1",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "SUFFICIENT",
+                "continuationReason": "STATUS_UNRESOLVED",
+                "supportedBy": []
+              }
+            }
+          ],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 100, "outputTokens": 20, "providerCalls": 1 }
+        },
+        "failedStage": null
+      }
+    },
+    {
+      "id": "v-diagnostic-count-mismatch",
+      "expectedFailures": [
+        { "checkName": "diagnostic-justification", "reasonCode": "DIAGNOSTIC_COUNT_MISMATCH" }
+      ],
+      "expectations": {
+        "runStatus": "completed",
+        "expectedDiagnostics": [
+          { "evidenceState": "INSUFFICIENT", "continuationReason": "STATUS_UNRESOLVED" }
+        ],
+        "expectedStopReason": "SUFFICIENT_EVIDENCE"
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": { "requested": [], "executed": [], "completed": [] },
+        "report": {
+          "evidence": [],
+          "suggestedActionTypes": [],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": false,
+          "confidence": 0.7,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ADVISORY",
+          "suggestedActions": []
+        },
+        "investigation": {
+          "providerTurnsUsed": 2,
+          "diagnosticRequestCount": 2,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [
+            {
+              "toolCallId": "case-v-call-1",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "STATUS_UNRESOLVED",
+                "supportedBy": []
+              }
+            }
+          ],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 200, "outputTokens": 40, "providerCalls": 2 }
+        },
+        "failedStage": null
+      }
+    },
+    {
+      "id": "v-diagnostic-stop-not-voluntary",
+      "expectedFailures": [
+        { "checkName": "diagnostic-justification", "reasonCode": "DIAGNOSTIC_STOP_NOT_VOLUNTARY" }
+      ],
+      "expectations": {
+        "runStatus": "completed",
+        "expectedDiagnostics": [
+          { "evidenceState": "INSUFFICIENT", "continuationReason": "STATUS_UNRESOLVED" },
+          { "evidenceState": "INSUFFICIENT", "continuationReason": "STATUS_UNRESOLVED" },
+          { "evidenceState": "INSUFFICIENT", "continuationReason": "STATUS_UNRESOLVED" }
+        ],
+        "expectedStopReason": "NO_JUSTIFIED_DIAGNOSTIC"
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": { "requested": [], "executed": [], "completed": [] },
+        "report": {
+          "evidence": [],
+          "suggestedActionTypes": [],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": false,
+          "confidence": 0.7,
+          "evidenceState": "INSUFFICIENT",
+          "recommendationDisposition": "ADVISORY",
+          "suggestedActions": []
+        },
+        "investigation": {
+          "providerTurnsUsed": 3,
+          "diagnosticRequestCount": 3,
+          "forcedFinalization": false,
+          "stopReason": "NO_JUSTIFIED_DIAGNOSTIC",
+          "assessments": [
+            {
+              "toolCallId": "case-v-call-1",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "STATUS_UNRESOLVED",
+                "supportedBy": []
+              }
+            },
+            {
+              "toolCallId": "case-v-call-2",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "STATUS_UNRESOLVED",
+                "supportedBy": []
+              }
+            },
+            {
+              "toolCallId": "case-v-call-3",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "STATUS_UNRESOLVED",
+                "supportedBy": []
+              }
+            }
+          ],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 300, "outputTokens": 60, "providerCalls": 3 }
+        },
+        "failedStage": null
+      }
+    },
+    {
+      "id": "v-stop-reason-mismatch",
+      "expectedFailures": [
+        { "checkName": "diagnostic-justification", "reasonCode": "STOP_REASON_MISMATCH" }
+      ],
+      "expectations": {
+        "runStatus": "completed",
+        "expectedDiagnostics": [
+          { "evidenceState": "INSUFFICIENT", "continuationReason": "STATUS_UNRESOLVED" }
+        ],
+        "expectedStopReason": "SUFFICIENT_EVIDENCE"
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": { "requested": [], "executed": [], "completed": [] },
+        "report": {
+          "evidence": [],
+          "suggestedActionTypes": [],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": false,
+          "confidence": 0.7,
+          "evidenceState": "INSUFFICIENT",
+          "recommendationDisposition": "ADVISORY",
+          "suggestedActions": []
+        },
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 1,
+          "forcedFinalization": false,
+          "stopReason": "NO_JUSTIFIED_DIAGNOSTIC",
+          "assessments": [
+            {
+              "toolCallId": "case-v-call-1",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "STATUS_UNRESOLVED",
+                "supportedBy": []
+              }
+            }
+          ],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 100, "outputTokens": 20, "providerCalls": 1 }
+        },
+        "failedStage": null
+      }
+    },
+    {
+      "id": "v-confidence-out-of-band",
+      "expectedFailures": [
+        { "checkName": "confidence-calibration", "reasonCode": "CONFIDENCE_OUT_OF_BAND" }
+      ],
+      "expectations": {
+        "runStatus": "completed",
+        "expectedConfidence": { "min": 0.5, "max": 0.9 }
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": { "requested": [], "executed": [], "completed": [] },
+        "report": {
+          "evidence": [],
+          "suggestedActionTypes": [],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": false,
+          "confidence": 0.3,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ADVISORY",
+          "suggestedActions": []
+        },
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 0,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 100, "outputTokens": 20, "providerCalls": 1 }
+        },
+        "failedStage": null
+      }
+    },
+    {
+      "id": "v-approval-eligibility-mismatch",
+      "expectedFailures": [
+        { "checkName": "approval-gate", "reasonCode": "APPROVAL_ELIGIBILITY_MISMATCH" }
+      ],
+      "expectations": {
+        "runStatus": "completed",
+        "expectedApproval": "ELIGIBLE"
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": { "requested": [], "executed": [], "completed": [] },
+        "report": {
+          "evidence": [],
+          "suggestedActionTypes": [],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": false,
+          "confidence": 0.7,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ADVISORY",
+          "suggestedActions": []
+        },
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 0,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 100, "outputTokens": 20, "providerCalls": 1 }
+        },
+        "failedStage": null
+      }
+    },
+    {
+      "id": "v-turn-bound-exceeded",
+      "expectedFailures": [
+        { "checkName": "bounds-respected", "reasonCode": "TURN_BOUND_EXCEEDED" }
+      ],
+      "expectations": {
+        "runStatus": "completed"
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": { "requested": [], "executed": [], "completed": [] },
+        "report": {
+          "evidence": [],
+          "suggestedActionTypes": [],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": false,
+          "confidence": 0.7,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ADVISORY",
+          "suggestedActions": []
+        },
+        "investigation": {
+          "providerTurnsUsed": 5,
+          "diagnosticRequestCount": 3,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 500, "outputTokens": 100, "providerCalls": 5 }
+        },
+        "failedStage": null
+      }
+    },
+    {
+      "id": "v-tool-bound-exceeded",
+      "expectedFailures": [
+        { "checkName": "bounds-respected", "reasonCode": "TOOL_BOUND_EXCEEDED" }
+      ],
+      "expectations": {
+        "runStatus": "completed"
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": { "requested": [], "executed": [], "completed": [] },
+        "report": {
+          "evidence": [],
+          "suggestedActionTypes": [],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": false,
+          "confidence": 0.7,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ADVISORY",
+          "suggestedActions": []
+        },
+        "investigation": {
+          "providerTurnsUsed": 4,
+          "diagnosticRequestCount": 4,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 400, "outputTokens": 80, "providerCalls": 4 }
+        },
+        "failedStage": null
+      }
+    },
+    {
+      "id": "v-token-budget-exceeded",
+      "expectedFailures": [
+        { "checkName": "bounds-respected", "reasonCode": "TOKEN_BUDGET_EXCEEDED" }
+      ],
+      "expectations": {
+        "runStatus": "completed",
+        "expectedBounds": { "maxTotalTokens": 200 }
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": { "requested": [], "executed": [], "completed": [] },
+        "report": {
+          "evidence": [],
+          "suggestedActionTypes": [],
+          "category": "SERVICE_DEGRADATION",
+          "rootCausePresent": false,
+          "confidence": 0.7,
+          "evidenceState": "SUFFICIENT",
+          "recommendationDisposition": "ADVISORY",
+          "suggestedActions": []
+        },
+        "investigation": {
+          "providerTurnsUsed": 2,
+          "diagnosticRequestCount": 1,
+          "forcedFinalization": false,
+          "stopReason": "SUFFICIENT_EVIDENCE",
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 300, "outputTokens": 60, "providerCalls": 2 }
+        },
+        "failedStage": null
+      }
+    },
+    {
+      "id": "v-recovery-stage-mismatch",
+      "expectedFailures": [
+        { "checkName": "deterministic-recovery", "reasonCode": "RECOVERY_STAGE_MISMATCH" }
+      ],
+      "expectations": {
+        "runStatus": "failed",
+        "failure": { "expectedCode": "REPORT_SCHEMA_INVALID" },
+        "expectedRecovery": { "failedStage": "DIAGNOSTIC_EXECUTION", "reportProduced": false }
+      },
+      "observed": {
+        "runStatus": "failed",
+        "errorCode": "REPORT_SCHEMA_INVALID",
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": { "requested": [], "executed": [], "completed": [] },
+        "report": null,
+        "investigation": {
+          "providerTurnsUsed": 0,
+          "diagnosticRequestCount": 0,
+          "forcedFinalization": false,
+          "stopReason": null,
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 0, "outputTokens": 0, "providerCalls": 0 }
+        },
+        "failedStage": "REPORT_GENERATION"
+      }
+    },
+    {
+      "id": "v-recovery-side-effect-observed",
+      "expectedFailures": [
+        { "checkName": "deterministic-recovery", "reasonCode": "RECOVERY_SIDE_EFFECT_OBSERVED" }
+      ],
+      "expectations": {
+        "runStatus": "failed",
+        "failure": { "expectedCode": "REPORT_SCHEMA_INVALID" },
+        "expectedRecovery": {
+          "failedStage": "REPORT_GENERATION",
+          "forbiddenCompletedToolCallIds": ["case-v-call-1"],
+          "reportProduced": false
+        }
+      },
+      "observed": {
+        "runStatus": "failed",
+        "errorCode": "REPORT_SCHEMA_INVALID",
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": {
+          "requested": [
+            { "toolName": "get_service_status", "toolCallId": "case-v-call-1" }
+          ],
+          "executed": [
+            { "toolName": "get_service_status", "input": { "serviceSlug": "auth-service" } }
+          ],
+          "completed": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case-v-call-1",
+              "output": { "serviceSlug": "auth-service", "status": "DEGRADED" }
+            }
+          ]
+        },
+        "report": null,
+        "investigation": {
+          "providerTurnsUsed": 1,
+          "diagnosticRequestCount": 1,
+          "forcedFinalization": false,
+          "stopReason": null,
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 100, "outputTokens": 20, "providerCalls": 1 }
+        },
+        "failedStage": "REPORT_GENERATION"
+      }
+    },
+    {
+      "id": "v-recovery-report-presence-mismatch",
+      "expectedFailures": [
+        { "checkName": "deterministic-recovery", "reasonCode": "RECOVERY_REPORT_PRESENCE_MISMATCH" }
+      ],
+      "expectations": {
+        "runStatus": "failed",
+        "failure": { "expectedCode": "REPORT_SCHEMA_INVALID" },
+        "expectedRecovery": { "failedStage": "REPORT_GENERATION", "reportProduced": true }
+      },
+      "observed": {
+        "runStatus": "failed",
+        "errorCode": "REPORT_SCHEMA_INVALID",
+        "retrieval": { "completed": true, "chunkIds": [] },
+        "tools": { "requested": [], "executed": [], "completed": [] },
+        "report": null,
+        "investigation": {
+          "providerTurnsUsed": 0,
+          "diagnosticRequestCount": 0,
+          "forcedFinalization": false,
+          "stopReason": null,
+          "assessments": [],
+          "toolFailures": [],
+          "bounds": { "maxProviderTurns": 4, "maxDiagnosticToolCalls": 3 },
+          "usage": { "inputTokens": 0, "outputTokens": 0, "providerCalls": 0 }
+        },
+        "failedStage": "REPORT_GENERATION"
+      }
+    }
+  ]
+}

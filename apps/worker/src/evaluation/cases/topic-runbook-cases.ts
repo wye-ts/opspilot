@@ -135,14 +135,19 @@ const CASE_3_REPORT: ResolutionReport = {
   ],
 };
 
+// Issue #59 Checkpoint B §8.1: the old fixture claimed "connection pool
+// saturation" as an established root cause despite the diagnostic tool
+// returning UNKNOWN (database-service is unseeded) — an untruthful fixture.
+// Corrected to a truthful non-answer: UNKNOWN / INSUFFICIENT / rootCause null /
+// ADVISORY / [] / ~0.3. The old bad shape belongs in the negative vectors.
 const CASE_4_REPORT: ResolutionReport = {
-  category: "CONFIGURATION",
-  summary: "Database connection pool saturation is causing intermittent timeouts.",
-  rootCause: "Connection pool saturation across services sharing the database.",
-  customerImpact: "Customers may experience intermittent timeouts.",
+  category: "UNKNOWN",
+  summary: "Database connection pool saturation could not be confirmed.",
+  rootCause: null,
+  customerImpact: "The cause of the intermittent timeouts remains unexplained.",
   recommendedResolution:
-    "Check active connection count against pool size and investigate long-running queries per the runbook.",
-  confidence: 0.7,
+    "Manual investigation is required before a structured next action can be recommended.",
+  confidence: 0.3,
   evidence: [
     {
       evidenceId: "case4-call-1",
@@ -152,14 +157,12 @@ const CASE_4_REPORT: ResolutionReport = {
     {
       evidenceId: "runbook-database-connection-saturation-001",
       sourceType: "RAG_CHUNK",
-      finding: "Runbook describes database connection pool saturation.",
+      finding: "Runbook describes connection pool saturation as a candidate pattern, but no confirmation was obtained.",
     },
   ],
-  evidenceState: "SUFFICIENT",
-  // Issue #60 Checkpoint C: this case deliberately carries no structured
-  // action — the recommendation is monitoring/investigation guidance for the
-  // operator (check the connection count, inspect long-running queries), so
-  // the truthful disposition is ADVISORY with zero suggested actions.
+  evidenceState: "INSUFFICIENT",
+  // Issue #60 Checkpoint C: no structured action — the truthful disposition
+  // for an unconfirmed conclusion is ADVISORY with zero suggested actions.
   recommendationDisposition: "ADVISORY",
   suggestedActions: [],
 };
@@ -285,6 +288,39 @@ export const TOPIC_RUNBOOK_CASES: readonly EvaluationCase[] = [
         requiredEvidenceTypes: ["TOOL_EXECUTION", "RAG_CHUNK"],
         requiredActionTypes: ["UPDATE_TICKET_STATUS"],
       },
+      // Issue #59 Checkpoint B §8.3: the flagship accepted expectations —
+      // PRESENT root cause, SUFFICIENT evidence grounded in the notification
+      // tool result + runbook, an ACTIONABLE grounded action, approval
+      // eligibility, the diagnostic sequence, and a voluntary SUFFICIENT stop.
+      // Metric 3 is N/A (nonProbative is empty).
+      expectedRootCause: "PRESENT",
+      expectedEvidence: {
+        state: "SUFFICIENT",
+        requiredLocators: [
+          { evidenceId: "case1-call-1", sourceType: "TOOL_EXECUTION" },
+          { evidenceId: "runbook-notification-degradation-001", sourceType: "RAG_CHUNK" },
+        ],
+        requiresTelemetry: true,
+        minDistinctLocators: 2,
+      },
+      expectedTelemetryEvidence: {
+        probative: [{ evidenceId: "case1-call-1", sourceType: "TOOL_EXECUTION" }],
+        nonProbative: [],
+      },
+      expectedDiagnostics: [{ evidenceState: "INSUFFICIENT", continuationReason: "STATUS_UNRESOLVED" }],
+      expectedStopReason: "SUFFICIENT_EVIDENCE",
+      expectedConfidence: { min: 0.7, max: 0.95 },
+      expectedActions: [
+        {
+          type: "UPDATE_TICKET_STATUS",
+          requiredGrounding: [{ evidenceId: "case1-call-1", sourceType: "TOOL_EXECUTION" }],
+          allowedGrounding: [
+            { evidenceId: "case1-call-1", sourceType: "TOOL_EXECUTION" },
+            { evidenceId: "runbook-notification-degradation-001", sourceType: "RAG_CHUNK" },
+          ],
+        },
+      ],
+      expectedApproval: "ELIGIBLE",
     },
   },
   {
@@ -439,6 +475,16 @@ export const TOPIC_RUNBOOK_CASES: readonly EvaluationCase[] = [
         expectedCompleted: [{ toolName: "get_service_status", toolCallId: "case4-call-1" }],
       },
       report: { schemaExpectation: "VALID", groundingExpectation: "VALID" },
+      // Issue #59 Checkpoint B §8.1: the UNKNOWN status result is treated as a
+      // non-answer — no root cause, INSUFFICIENT evidence, low confidence.
+      expectedRootCause: "ABSENT",
+      expectedEvidence: { state: "INSUFFICIENT", requiredLocators: [] },
+      expectedTelemetryEvidence: {
+        probative: [],
+        nonProbative: [{ evidenceId: "case4-call-1", sourceType: "TOOL_EXECUTION" }],
+      },
+      expectedConfidence: { min: 0.15, max: 0.45 },
+      expectedApproval: "NOT_ELIGIBLE",
     },
   },
   {
@@ -536,6 +582,20 @@ export const TOPIC_RUNBOOK_CASES: readonly EvaluationCase[] = [
         groundingExpectation: "VALID",
         requiredEvidenceTypes: ["TOOL_EXECUTION"],
       },
+      // Issue #59 Checkpoint B §8.4: the UNKNOWN unclassified-service result
+      // is nonProbative and treated as a non-answer — no root cause,
+      // INSUFFICIENT evidence, low confidence, and a voluntary stop. Metric 3
+      // PASSes (the nonProbative locator was a completed tool call).
+      expectedRootCause: "ABSENT",
+      expectedEvidence: { state: "INSUFFICIENT", requiredLocators: [] },
+      expectedTelemetryEvidence: {
+        probative: [],
+        nonProbative: [{ evidenceId: "case6-call-1", sourceType: "TOOL_EXECUTION" }],
+      },
+      expectedDiagnostics: [{ evidenceState: "INSUFFICIENT", continuationReason: "NO_EVIDENCE_YET" }],
+      expectedStopReason: "NO_JUSTIFIED_DIAGNOSTIC",
+      expectedConfidence: { min: 0.05, max: 0.35 },
+      expectedApproval: "NOT_ELIGIBLE",
     },
   },
 ];

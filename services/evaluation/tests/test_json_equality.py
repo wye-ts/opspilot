@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from opspilot_evaluation.schemas import ToolExecutedEntry, ToolExpectations, ToolFacts
+from opspilot_evaluation.schemas import CheckStatus, ToolExecutedEntry, ToolExpectations, ToolFacts
 from opspilot_evaluation.scoring.reason_codes import CheckReasonCode
 from opspilot_evaluation.scoring.scorer import CheckOutcome, evaluate_tool, json_values_equal
 
@@ -53,7 +53,9 @@ def test_evaluate_tool_executed_top_level_bool_number_mismatch() -> None:
         completed=[],
     )
     checks = evaluate_tool(expectations, observed)
-    expected = CheckOutcome(name="tool-executed", passed=False, reason_code=CheckReasonCode.TOOL_EXECUTED_MISMATCH)
+    expected = CheckOutcome(
+        name="tool-executed", status=CheckStatus.FAIL, reason_code=CheckReasonCode.TOOL_EXECUTED_MISMATCH
+    )
     assert checks == [expected]
 
 
@@ -69,7 +71,9 @@ def test_evaluate_tool_executed_nested_bool_number_mismatch() -> None:
         completed=[],
     )
     checks = evaluate_tool(expectations, observed)
-    expected = CheckOutcome(name="tool-executed", passed=False, reason_code=CheckReasonCode.TOOL_EXECUTED_MISMATCH)
+    expected = CheckOutcome(
+        name="tool-executed", status=CheckStatus.FAIL, reason_code=CheckReasonCode.TOOL_EXECUTED_MISMATCH
+    )
     assert checks == [expected]
 
 
@@ -83,4 +87,4 @@ def test_evaluate_tool_executed_numeric_1_vs_1_point_0_still_equal() -> None:
         completed=[],
     )
     checks = evaluate_tool(expectations, observed)
-    assert checks == [CheckOutcome(name="tool-executed", passed=True)]
+    assert checks == [CheckOutcome(name="tool-executed", status=CheckStatus.PASS)]

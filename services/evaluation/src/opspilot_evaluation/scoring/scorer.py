@@ -1,11 +1,14 @@
-"""Deterministic scorer with semantic parity to the TypeScript v1 scorer.
+"""Deterministic scorer with semantic parity to the TypeScript v2 scorer.
 
 Ports apps/worker/src/evaluation/evaluation-evaluator.ts function-for-
 function: same check names, same check order per case (status, retrieval,
 tool, report, failure), same pass/fail logic, same reason-code selection.
+At Checkpoint A the active scorer emits PASS/FAIL only; NOT_APPLICABLE is
+structurally supported by CheckOutcome but never emitted yet (OpsPilot #59
+Checkpoint A §3). A case passes iff no check has status FAIL.
 
 Unlike the TS scorer, there is no TS-internal EvaluationCheckResult carrying
-expected/observed echoes: the wire contract (EvaluationCheckV1) never exposes
+expected/observed echoes: the wire contract (EvaluationCheckV2) never exposes
 them (see the task spec, "Do not expose per-check internal expected/observed
 echoes"), so the internal CheckOutcome shape below only ever carries what the
 wire needs.
@@ -16,35 +19,64 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from opspilot_evaluation.schemas import (
-    EvaluationCaseInputV1,
+    CheckStatus,
+    EvaluationCaseInputV2,
     EvaluationExpectations,
+    EvidenceEntry,
+    ExpectedActionExpectations,
     JsonValue,
     ObservedFactsCompleted,
     ObservedFactsFailed,
     ReportExpectations,
     RetrievalExpectations,
     RetrievalFacts,
+    SuggestedActionFacts,
     ToolExpectations,
     ToolFacts,
 )
+from opspilot_evaluation.scoring.not_applicable_codes import NotApplicableCode
 from opspilot_evaluation.scoring.reason_codes import CheckReasonCode
 
 ObservedFactsUnion = ObservedFactsCompleted | ObservedFactsFailed
+
+# Issue #59 Checkpoint B — the nine metric check names in the fixed spec §3
+# order. Mirrors evaluation-evaluator.ts's METRIC_CHECK_NAMES. Every case must
+# emit EXACTLY ONE outcome per name (PASS | FAIL | NOT_APPLICABLE).
+METRIC_CHECK_NAMES = [
+    "root-cause-discipline",
+    "evidence-support",
+    "unknown-telemetry-handling",
+    "diagnostic-justification",
+    "confidence-calibration",
+    "action-grounding",
+    "approval-gate",
+    "bounds-respected",
+    "deterministic-recovery",
+]
 
 
 @dataclass(frozen=True)
 class CheckOutcome:
     name: str
-    passed: bool
-    reason_code: CheckReasonCode | None = None
+    status: CheckStatus
+    reason_code: CheckReasonCode | NotApplicableCode | None = None
 
     def __post_init__(self) -> None:
-        # Mirrors the EvaluationCheckV1 discriminated-union invariant in
-        # v1-types.ts: reasonCode is present iff passed is False.
-        if self.passed and self.reason_code is not None:
-            raise ValueError(f'Invariant violated: passing check "{self.name}" carries a reasonCode')
-        if not self.passed and self.reason_code is None:
-            raise ValueError(f'Invariant violated: failing check "{self.name}" has no reasonCode')
+        # Mirrors the EvaluationCheckV2 discriminated-union invariant in
+        # v2-types.ts: a PASS check carries reasonCode null, a FAIL check
+        # carries a CheckReasonCode, and a NOT_APPLICABLE check carries a
+        # NotApplicableCode.
+        if self.status is CheckStatus.PASS:
+            if self.reason_code is not None:
+                raise ValueError(f'Invariant violated: passing check "{self.name}" carries a reasonCode')
+        elif self.status is CheckStatus.FAIL:
+            if not isinstance(self.reason_code, CheckReasonCode):
+                raise ValueError(f'Invariant violated: failing check "{self.name}" has no valid CheckReasonCode')
+        elif self.status is CheckStatus.NOT_APPLICABLE:
+            if not isinstance(self.reason_code, NotApplicableCode):
+                raise ValueError(
+                    f'Invariant violated: not-applicable check "{self.name}" has no valid NotApplicableCode'
+                )
 
 
 @dataclass(frozen=True)
@@ -55,15 +87,35 @@ class CaseScoreResult:
 
 
 def _pass(name: str) -> CheckOutcome:
-    return CheckOutcome(name=name, passed=True)
+    return CheckOutcome(name=name, status=CheckStatus.PASS)
 
 
 def _fail(name: str, reason_code: CheckReasonCode) -> CheckOutcome:
-    return CheckOutcome(name=name, passed=False, reason_code=reason_code)
+    return CheckOutcome(name=name, status=CheckStatus.FAIL, reason_code=reason_code)
 
 
 def _check(name: str, passed: bool, fail_reason: CheckReasonCode) -> CheckOutcome:
     return _pass(name) if passed else _fail(name, fail_reason)
+
+
+def _na(name: str, reason_code: NotApplicableCode) -> CheckOutcome:
+    return CheckOutcome(name=name, status=CheckStatus.NOT_APPLICABLE, reason_code=reason_code)
+
+
+def _count_distinct_evidence_locators(locators: list[EvidenceEntry]) -> int:
+    """Mirrors countDistinctEvidenceLocators from packages/contracts/src/evidence.ts:
+    counts DISTINCT (sourceType, evidenceId) pairs, never raw length."""
+    return len({f"{entry.sourceType}:{entry.evidenceId}" for entry in locators})
+
+
+def _assert_exactly_nine_metric_checks(checks: list[CheckOutcome]) -> None:
+    for name in METRIC_CHECK_NAMES:
+        occurrences = [check for check in checks if check.name == name]
+        if len(occurrences) != 1:
+            raise RuntimeError(
+                f'Metric completeness invariant violated: check "{name}" produced '
+                f"{len(occurrences)} outcomes; exactly one is required per case."
+            )
 
 
 def evaluate_status(
@@ -285,7 +337,303 @@ def evaluate_failure(
     return [_fail("failure-code", CheckReasonCode.FAILURE_CODE_MISMATCH)]
 
 
-def evaluate_case(case_input: EvaluationCaseInputV1) -> CaseScoreResult:
+# ---------------------------------------------------------------------------
+# Issue #59 Checkpoint B — the nine metric checks (spec §3/§4/§5). Function-
+# for-function mirror of evaluation-evaluator.ts's evaluateMetric* functions:
+# same check names, same applicability, same FAIL reason-code precedence. Each
+# returns EXACTLY ONE CheckOutcome (PASS | FAIL | NOT_APPLICABLE).
+# ---------------------------------------------------------------------------
+
+
+def evaluate_metric_root_cause_discipline(
+    expectations: EvaluationExpectations,
+    observed: ObservedFactsUnion,
+) -> CheckOutcome:
+    name = "root-cause-discipline"
+    if observed.runStatus.value != "completed":
+        return _na(name, NotApplicableCode.NA_RUN_DID_NOT_COMPLETE)
+    assert observed.report is not None  # completed ⇒ non-null report (schema-invariant)
+    expected_root_cause = expectations.expectedRootCause
+    if expected_root_cause is None:
+        return _na(name, NotApplicableCode.NA_EXPECTATION_NOT_DECLARED)
+    expected_presence = expected_root_cause == "PRESENT"
+    observed_presence = observed.report.rootCausePresent
+    if observed_presence != expected_presence:
+        return _fail(name, CheckReasonCode.ROOT_CAUSE_PRESENCE_MISMATCH)
+    if expected_presence and observed.report.evidenceState != "SUFFICIENT":
+        return _fail(name, CheckReasonCode.ROOT_CAUSE_WITHOUT_SUFFICIENT_EVIDENCE)
+    return _pass(name)
+
+
+def evaluate_metric_evidence_support(
+    expectations: EvaluationExpectations,
+    observed: ObservedFactsUnion,
+) -> CheckOutcome:
+    name = "evidence-support"
+    if observed.runStatus.value != "completed":
+        return _na(name, NotApplicableCode.NA_RUN_DID_NOT_COMPLETE)
+    assert observed.report is not None  # completed ⇒ non-null report (schema-invariant)
+    expected_evidence = expectations.expectedEvidence
+    if expected_evidence is None:
+        return _na(name, NotApplicableCode.NA_EXPECTATION_NOT_DECLARED)
+    report_evidence = observed.report.evidence
+    missing_required = [
+        locator
+        for locator in expected_evidence.requiredLocators
+        if not any(
+            entry.sourceType == locator.sourceType and entry.evidenceId == locator.evidenceId
+            for entry in report_evidence
+        )
+    ]
+    if missing_required:
+        return _fail(name, CheckReasonCode.EVIDENCE_REQUIRED_LOCATOR_MISSING)
+    if observed.report.evidenceState != expected_evidence.state:
+        return _fail(name, CheckReasonCode.EVIDENCE_STATE_MISMATCH)
+    if expected_evidence.requiresTelemetry is True:
+        has_telemetry = any(entry.sourceType == "TOOL_EXECUTION" for entry in report_evidence)
+        if not has_telemetry:
+            return _fail(name, CheckReasonCode.EVIDENCE_TELEMETRY_MISSING)
+    if expected_evidence.minDistinctLocators is not None:
+        distinct = _count_distinct_evidence_locators(report_evidence)
+        if distinct < expected_evidence.minDistinctLocators:
+            return _fail(name, CheckReasonCode.EVIDENCE_CARDINALITY_INSUFFICIENT)
+    return _pass(name)
+
+
+def evaluate_metric_unknown_handling(
+    expectations: EvaluationExpectations,
+    observed: ObservedFactsUnion,
+) -> CheckOutcome:
+    name = "unknown-telemetry-handling"
+    if observed.runStatus.value != "completed":
+        return _na(name, NotApplicableCode.NA_RUN_DID_NOT_COMPLETE)
+    assert observed.report is not None  # completed ⇒ non-null report (schema-invariant)
+    non_probative = (
+        expectations.expectedTelemetryEvidence.nonProbative
+        if expectations.expectedTelemetryEvidence
+        else []
+    )
+    if not non_probative:
+        return _na(name, NotApplicableCode.NA_EXPECTATION_NOT_DECLARED)
+
+    # A. Every declared non-probative telemetry locator was observed as a
+    # completed tool call. A TOOL_EXECUTION locator's evidenceId IS the
+    # toolCallId of the successful execution that produced it.
+    completed_tool_call_ids = [call.toolCallId for call in observed.tools.completed]
+    not_observed = [locator for locator in non_probative if locator.evidenceId not in completed_tool_call_ids]
+    if not_observed:
+        return _fail(name, CheckReasonCode.TELEMETRY_CLASSIFICATION_NOT_OBSERVED)
+
+    # B. The case-declared UNKNOWN response is honored.
+    expected_evidence = expectations.expectedEvidence
+    if expected_evidence is not None and observed.report.evidenceState != expected_evidence.state:
+        return _fail(name, CheckReasonCode.UNKNOWN_TELEMETRY_TREATED_AS_ANSWER)
+    expected_root_cause = expectations.expectedRootCause
+    if expected_root_cause is not None:
+        expected_presence = expected_root_cause == "PRESENT"
+        if observed.report.rootCausePresent != expected_presence:
+            return _fail(name, CheckReasonCode.UNKNOWN_TELEMETRY_TREATED_AS_ANSWER)
+
+    # C. No observed action with non-empty groundedBy is grounded solely on
+    # locators declared non-probative.
+    non_probative_keys = {f"{loc.sourceType}:{loc.evidenceId}" for loc in non_probative}
+    grounded_only_on_unknown = any(
+        action.groundedBy
+        and all(f"{loc.sourceType}:{loc.evidenceId}" in non_probative_keys for loc in action.groundedBy)
+        for action in observed.report.suggestedActions
+    )
+    if grounded_only_on_unknown:
+        return _fail(name, CheckReasonCode.UNKNOWN_TELEMETRY_GROUNDS_ACTION)
+
+    return _pass(name)
+
+
+def evaluate_metric_diagnostic_justification(
+    expectations: EvaluationExpectations,
+    observed: ObservedFactsUnion,
+) -> CheckOutcome:
+    name = "diagnostic-justification"
+    expected_diagnostics = expectations.expectedDiagnostics
+    if expected_diagnostics is None:
+        return _na(name, NotApplicableCode.NA_EXPECTATION_NOT_DECLARED)
+    observed_sequence = [
+        (entry.assessment.evidenceState, entry.assessment.continuationReason)
+        for entry in observed.investigation.assessments
+    ]
+    expected_sequence = [
+        (entry.evidenceState, entry.continuationReason) for entry in expected_diagnostics
+    ]
+    if observed_sequence != expected_sequence:
+        return _fail(name, CheckReasonCode.DIAGNOSTIC_SEQUENCE_MISMATCH)
+    request_count = observed.investigation.diagnosticRequestCount
+    if request_count != len(expected_diagnostics):
+        return _fail(name, CheckReasonCode.DIAGNOSTIC_COUNT_MISMATCH)
+    expected_stop_reason = expectations.expectedStopReason
+    if expected_stop_reason == "NO_JUSTIFIED_DIAGNOSTIC":
+        if request_count >= observed.investigation.bounds.maxDiagnosticToolCalls:
+            return _fail(name, CheckReasonCode.DIAGNOSTIC_STOP_NOT_VOLUNTARY)
+    if expected_stop_reason is not None and observed.investigation.stopReason != expected_stop_reason:
+        return _fail(name, CheckReasonCode.STOP_REASON_MISMATCH)
+    return _pass(name)
+
+
+def evaluate_metric_confidence_calibration(
+    expectations: EvaluationExpectations,
+    observed: ObservedFactsUnion,
+) -> CheckOutcome:
+    name = "confidence-calibration"
+    if observed.runStatus.value != "completed":
+        return _na(name, NotApplicableCode.NA_RUN_DID_NOT_COMPLETE)
+    assert observed.report is not None  # completed ⇒ non-null report (schema-invariant)
+    expected_confidence = expectations.expectedConfidence
+    if expected_confidence is None:
+        return _na(name, NotApplicableCode.NA_EXPECTATION_NOT_DECLARED)
+    confidence = observed.report.confidence
+    if confidence < expected_confidence.min or confidence > expected_confidence.max:
+        return _fail(name, CheckReasonCode.CONFIDENCE_OUT_OF_BAND)
+    return _pass(name)
+
+
+def _match_actions_deterministically(
+    expected_actions: list[ExpectedActionExpectations],
+    observed_actions: list[SuggestedActionFacts],
+) -> list[tuple[ExpectedActionExpectations, SuggestedActionFacts]] | None:
+    """Deterministic type pairing, mirroring evaluation-evaluator.ts: for each
+    expected action in declaration order, match the next unused observed action
+    of the same type. Returns a list of (expected, observed) pairs, or None when
+    the type multiset differs (defensive; the caller checks it first)."""
+    observed_by_type: dict[str, list[int]] = {}
+    for index, action in enumerate(observed_actions):
+        observed_by_type.setdefault(action.type, []).append(index)
+    paired: list[tuple[ExpectedActionExpectations, SuggestedActionFacts]] = []
+    for expected in expected_actions:
+        queue = observed_by_type.get(expected.type)
+        if not queue:
+            return None
+        observed_index = queue.pop(0)
+        paired.append((expected, observed_actions[observed_index]))
+    return paired
+
+
+def evaluate_metric_action_grounding(
+    expectations: EvaluationExpectations,
+    observed: ObservedFactsUnion,
+) -> CheckOutcome:
+    name = "action-grounding"
+    if observed.runStatus.value != "completed":
+        return _na(name, NotApplicableCode.NA_RUN_DID_NOT_COMPLETE)
+    assert observed.report is not None  # completed ⇒ non-null report (schema-invariant)
+    expected_actions = expectations.expectedActions
+    if expected_actions is None:
+        return _na(name, NotApplicableCode.NA_EXPECTATION_NOT_DECLARED)
+    observed_actions = observed.report.suggestedActions
+
+    expected_types = sorted(action.type for action in expected_actions)
+    observed_types = sorted(action.type for action in observed_actions)
+    if expected_types != observed_types:
+        return _fail(name, CheckReasonCode.ACTION_TYPE_SET_MISMATCH)
+
+    paired = _match_actions_deterministically(expected_actions, observed_actions)
+    if paired is None:
+        return _fail(name, CheckReasonCode.ACTION_TYPE_SET_MISMATCH)
+
+    for expected, observed_action in paired:
+        missing_required = any(
+            not any(
+                grounded.sourceType == locator.sourceType and grounded.evidenceId == locator.evidenceId
+                for grounded in observed_action.groundedBy
+            )
+            for locator in expected.requiredGrounding
+        )
+        if missing_required:
+            return _fail(name, CheckReasonCode.ACTION_REQUIRED_GROUNDING_MISSING)
+
+    for expected, observed_action in paired:
+        allowed_keys = {f"{loc.sourceType}:{loc.evidenceId}" for loc in expected.allowedGrounding}
+        has_not_allowed = any(
+            f"{grounded.sourceType}:{grounded.evidenceId}" not in allowed_keys
+            for grounded in observed_action.groundedBy
+        )
+        if has_not_allowed:
+            return _fail(name, CheckReasonCode.ACTION_GROUNDING_NOT_ALLOWED)
+
+    for _, observed_action in paired:
+        keys = [f"{grounded.sourceType}:{grounded.evidenceId}" for grounded in observed_action.groundedBy]
+        if len(set(keys)) != len(keys):
+            return _fail(name, CheckReasonCode.ACTION_GROUNDING_DUPLICATED)
+
+    return _pass(name)
+
+
+def evaluate_metric_approval_gate(
+    expectations: EvaluationExpectations,
+    observed: ObservedFactsUnion,
+) -> CheckOutcome:
+    name = "approval-gate"
+    expected_approval = expectations.expectedApproval
+    if expected_approval is None:
+        return _na(name, NotApplicableCode.NA_EXPECTATION_NOT_DECLARED)
+    # Mirrors TS's `runStatus === "completed" && suggestedActions.length >= 1`.
+    # The extra `report is not None` guard only fires on completed-with-null
+    # report, which the schema rejects — it exists purely to satisfy the
+    # union-typed `report` for the static checker.
+    report = observed.report
+    eligible = observed.runStatus.value == "completed" and report is not None and len(report.suggestedActions) >= 1
+    expected_eligible = expected_approval == "ELIGIBLE"
+    if eligible != expected_eligible:
+        return _fail(name, CheckReasonCode.APPROVAL_ELIGIBILITY_MISMATCH)
+    return _pass(name)
+
+
+def evaluate_metric_bounds_respected(
+    expectations: EvaluationExpectations,
+    observed: ObservedFactsUnion,
+) -> CheckOutcome:
+    name = "bounds-respected"
+    investigation = observed.investigation
+    provider_turns_used = investigation.providerTurnsUsed
+    diagnostic_request_count = investigation.diagnosticRequestCount
+    bounds = investigation.bounds
+    usage = investigation.usage
+    if provider_turns_used > bounds.maxProviderTurns:
+        return _fail(name, CheckReasonCode.TURN_BOUND_EXCEEDED)
+    if diagnostic_request_count > bounds.maxDiagnosticToolCalls:
+        return _fail(name, CheckReasonCode.TOOL_BOUND_EXCEEDED)
+    max_total_tokens = expectations.expectedBounds.maxTotalTokens if expectations.expectedBounds else None
+    total_tokens = usage.inputTokens + usage.outputTokens
+    if max_total_tokens is not None and total_tokens > max_total_tokens:
+        return _fail(name, CheckReasonCode.TOKEN_BUDGET_EXCEEDED)
+    return _pass(name)
+
+
+def evaluate_metric_deterministic_recovery(
+    expectations: EvaluationExpectations,
+    observed: ObservedFactsUnion,
+) -> CheckOutcome:
+    name = "deterministic-recovery"
+    if observed.runStatus.value == "completed":
+        return _na(name, NotApplicableCode.NA_NO_RECOVERY_PATH_EXERCISED)
+    expected_recovery = expectations.expectedRecovery
+    if expected_recovery is None:
+        # Unreachable in a validated dataset (validation rule 12 requires
+        # expectedRecovery on every failed case); defensive outcome keeps the
+        # exactly-nine invariant intact for synthetic scorer inputs.
+        return _na(name, NotApplicableCode.NA_EXPECTATION_NOT_DECLARED)
+    if observed.failedStage != expected_recovery.failedStage:
+        return _fail(name, CheckReasonCode.RECOVERY_STAGE_MISMATCH)
+    forbidden_completed_tool_call_ids = expected_recovery.forbiddenCompletedToolCallIds or []
+    if forbidden_completed_tool_call_ids:
+        completed_tool_call_ids = [call.toolCallId for call in observed.tools.completed]
+        present = [call_id for call_id in forbidden_completed_tool_call_ids if call_id in completed_tool_call_ids]
+        if present:
+            return _fail(name, CheckReasonCode.RECOVERY_SIDE_EFFECT_OBSERVED)
+    report_presence = observed.report is not None
+    if report_presence != expected_recovery.reportProduced:
+        return _fail(name, CheckReasonCode.RECOVERY_REPORT_PRESENCE_MISMATCH)
+    return _pass(name)
+
+
+def evaluate_case(case_input: EvaluationCaseInputV2) -> CaseScoreResult:
     expectations = case_input.expectations
     observed = case_input.observed
 
@@ -295,14 +643,26 @@ def evaluate_case(case_input: EvaluationCaseInputV1) -> CaseScoreResult:
         *evaluate_tool(expectations.tool, observed.tools),
         *evaluate_report(expectations.report, observed),
         *evaluate_failure(expectations, observed),
+        evaluate_metric_root_cause_discipline(expectations, observed),
+        evaluate_metric_evidence_support(expectations, observed),
+        evaluate_metric_unknown_handling(expectations, observed),
+        evaluate_metric_diagnostic_justification(expectations, observed),
+        evaluate_metric_confidence_calibration(expectations, observed),
+        evaluate_metric_action_grounding(expectations, observed),
+        evaluate_metric_approval_gate(expectations, observed),
+        evaluate_metric_bounds_respected(expectations, observed),
+        evaluate_metric_deterministic_recovery(expectations, observed),
     ]
+
+    _assert_exactly_nine_metric_checks(checks)
 
     return CaseScoreResult(
         case_id=case_input.caseId,
-        passed=all(check.passed for check in checks),
+        # A case passes iff no check has status FAIL (OpsPilot #59 Checkpoint A §3).
+        passed=all(check.status != CheckStatus.FAIL for check in checks),
         checks=checks,
     )
 
 
-def score_cases(cases: list[EvaluationCaseInputV1]) -> list[CaseScoreResult]:
+def score_cases(cases: list[EvaluationCaseInputV2]) -> list[CaseScoreResult]:
     return [evaluate_case(case) for case in cases]

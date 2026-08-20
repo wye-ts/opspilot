@@ -1,17 +1,28 @@
-"""Pydantic v2 models for the frozen v1 evaluation contract.
+"""Pydantic v2 models for the active v2 evaluation contract.
 
 Mirrors, field-for-field, the TypeScript source of truth:
-  - apps/worker/src/evaluation/v1-types.ts      (EvaluationSuiteInputV1 / V1 result shapes)
+  - apps/worker/src/evaluation/v2-types.ts      (EvaluationSuiteInputV2 / V2 result shapes)
   - apps/worker/src/evaluation/types.ts         (EvaluationExpectations / EvaluationMetrics)
-  - apps/worker/src/evaluation/observed-facts.ts (ObservedFacts discriminated union)
+  - apps/worker/src/evaluation/observed-facts.ts (ObservedFacts discriminated union, v2)
   - apps/worker/src/evaluation/json-value.ts    (JsonValue + the JSON-safety invariants)
   - packages/contracts/src/agent-orchestrator.ts (AgentOrchestratorErrorCode)
-  - packages/contracts/src/resolution-report.ts  (EvidenceReference.sourceType, SuggestedAction.type)
+  - packages/contracts/src/resolution-report.ts  (EvidenceReference.sourceType,
+                                                   SuggestedAction.type, category,
+                                                   recommendationDisposition)
+  - packages/contracts/src/evidence-assessment.ts (EvidenceAssessment)
+  - packages/contracts/src/evidence.ts           (EvidenceLocator)
+  - packages/contracts/src/investigation-event.ts (ToolFailureCode)
+  - packages/contracts/src/investigation-execution-stage.ts (InvestigationExecutionStage)
 
-One deliberate exception: `EvaluationRunResultV1` (the POST/GET /evaluations
+One deliberate exception: `EvaluationRunResultV2` (the POST/GET /evaluations
 response body) is the persisted HTTP evaluation *resource*, not a byte-for-
-byte mirror of TS's `EvaluationSuiteResultV1` scorer-result type — it adds
+byte mirror of TS's `EvaluationSuiteResultV2` scorer-result type — it adds
 the persisted `id`. See the comment above that class.
+
+The frozen v1 contract has moved, byte-for-byte, into the unwired
+`opspilot_evaluation.legacy_v1` package (the offline oracle for
+ts-parity-v1.json); the active service accepts contractVersion 2 only
+(OpsPilot #59 Checkpoint A §5/§6).
 
 Every model uses extra="forbid" so a malformed/contradictory wire shape is
 rejected by Pydantic itself rather than silently coerced (see the Phase 2
@@ -31,7 +42,7 @@ MAX_CASES = 200
 # ---------------------------------------------------------------------------
 # Strict per-field markers for request-side primitive fields (see the "Strict
 # Pydantic request typing" fix). Pydantic's lax mode coerces wrong primitives
-# ("false" -> False, 1 -> True, 123 -> "123"); the frozen v1 contract requires
+# ("false" -> False, 1 -> True, 123 -> "123"); the v2 contract requires
 # the wire types to be rejected instead, so every str/bool/list[str] request
 # field is marked strict. Enum and Literal[enum] fields are deliberately left
 # lax: their closed membership already rejects wrong primitives (a number can
@@ -45,6 +56,17 @@ MAX_CASES = 200
 _StrictStr = Annotated[str, Strict()]
 _StrictBool = Annotated[bool, Strict()]
 _StrictStrList = Annotated[list[_StrictStr], Strict()]
+
+# Checkpoint B numeric-domain alignment: every count/token field (distinct
+# locator cardinality, token budgets, investigation usage, metric ratio
+# numerator/denominator, case totals) is a strict non-negative integer.
+# Strict() rejects floats (1.5, 2.0), booleans (true/false), and numeric
+# strings ("2") that lax int would silently coerce; Field(ge=0) rejects
+# negatives. This must match the TypeScript number().int().nonnegative()
+# dataset-validation domain exactly, so the local and service scorers accept
+# and reject the same thresholds. Fractional fields such as confidence are
+# deliberately NOT marked with this (see ExpectedConfidenceExpectations).
+_StrictNonNegativeInt = Annotated[int, Strict(), Field(ge=0)]
 
 # ---------------------------------------------------------------------------
 # JsonValue — mirrors json-value.ts's toJsonValue() invariants that still
@@ -132,6 +154,81 @@ class SchemaOrGroundingExpectation(StrEnum):
     INVALID = "INVALID"
 
 
+# The v2 three-state check status (OpsPilot #59 Checkpoint A §3). Mirrors
+# types.ts's EvaluationCheckStatus. At Checkpoint A the active scorer emits
+# PASS/FAIL only; NOT_APPLICABLE is structurally supported but never emitted.
+class CheckStatus(StrEnum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+# v2 observed-facts additions — mirrored from the closed vocabularies in
+# packages/contracts (IncidentCategory / RecommendationDisposition from
+# resolution-report.ts, EvidenceState from evidence-assessment.ts,
+# InvestigationExecutionStage from investigation-execution-stage.ts,
+# ToolFailureCode from investigation-event.ts).
+class IncidentCategory(StrEnum):
+    SERVICE_DEGRADATION = "SERVICE_DEGRADATION"
+    RATE_LIMITING = "RATE_LIMITING"
+    AUTHENTICATION = "AUTHENTICATION"
+    CONFIGURATION = "CONFIGURATION"
+    DATA_QUALITY = "DATA_QUALITY"
+    UNKNOWN = "UNKNOWN"
+
+
+class EvidenceState(StrEnum):
+    SUFFICIENT = "SUFFICIENT"
+    INSUFFICIENT = "INSUFFICIENT"
+    CONFLICTING = "CONFLICTING"
+
+
+class RecommendationDisposition(StrEnum):
+    ACTIONABLE = "ACTIONABLE"
+    ADVISORY = "ADVISORY"
+
+
+class InvestigationExecutionStage(StrEnum):
+    INVESTIGATION_CREATED = "INVESTIGATION_CREATED"
+    AGENT_ANALYSIS = "AGENT_ANALYSIS"
+    DIAGNOSTIC_EXECUTION = "DIAGNOSTIC_EXECUTION"
+    REPORT_GENERATION = "REPORT_GENERATION"
+
+
+class InvestigationStopReason(StrEnum):
+    SUFFICIENT_EVIDENCE = "SUFFICIENT_EVIDENCE"
+    NO_JUSTIFIED_DIAGNOSTIC = "NO_JUSTIFIED_DIAGNOSTIC"
+    BOUND_EXHAUSTED = "BOUND_EXHAUSTED"
+
+
+class ContinuationReason(StrEnum):
+    NO_EVIDENCE_YET = "NO_EVIDENCE_YET"
+    STATUS_UNRESOLVED = "STATUS_UNRESOLVED"
+    SCOPE_NOT_COVERED = "SCOPE_NOT_COVERED"
+    CONFLICT_UNRESOLVED = "CONFLICT_UNRESOLVED"
+
+
+class ToolFailureCode(StrEnum):
+    TOOL_NOT_FOUND = "TOOL_NOT_FOUND"
+    TOOL_INPUT_INVALID = "TOOL_INPUT_INVALID"
+    TOOL_EXECUTION_FAILED = "TOOL_EXECUTION_FAILED"
+    TOOL_OUTPUT_INVALID = "TOOL_OUTPUT_INVALID"
+
+
+# Issue #59 Checkpoint B — the two new closed-vocabulary expectation markers
+# (spec §5). Mirrors types.ts's inline literals:
+#   expectedRootCause?: "PRESENT" | "ABSENT"
+#   expectedApproval?: "ELIGIBLE" | "NOT_ELIGIBLE"
+class ExpectedRootCause(StrEnum):
+    PRESENT = "PRESENT"
+    ABSENT = "ABSENT"
+
+
+class ExpectedApproval(StrEnum):
+    ELIGIBLE = "ELIGIBLE"
+    NOT_ELIGIBLE = "NOT_ELIGIBLE"
+
+
 # ---------------------------------------------------------------------------
 # Shared entry shapes (requested/executed/completed tool calls, evidence)
 # ---------------------------------------------------------------------------
@@ -159,12 +256,108 @@ class ToolCompletedEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
     toolName: _StrictStr
     toolCallId: _StrictStr
+    # v2 (OpsPilot #59 Checkpoint A §4.3/§4.4): the normalized JSON-safe output
+    # of the successful execution that produced the TOOL_COMPLETED event.
+    # Never fabricated for a failed/terminal execution.
+    output: JsonValue
+
+    @field_validator("output")
+    @classmethod
+    def _output_is_json_safe(cls, value: JsonValue) -> JsonValue:
+        assert_json_safe(value)
+        return value
+
+
+class ToolCompletedExpectationEntry(BaseModel):
+    """Expectation-side completed tool call — mirrors types.ts's inline
+    expectedCompleted entry (`{ toolName, toolCallId }`), which carries NO
+    output: output is observed-only (on tools.completed), and the evaluator
+    compares completed calls purely by toolCallId presence.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    toolName: _StrictStr
+    toolCallId: _StrictStr
 
 
 class EvidenceEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
     evidenceId: _StrictStr
     sourceType: EvidenceSourceType
+
+
+# ---------------------------------------------------------------------------
+# v2 observed-facts additions (OpsPilot #59 Checkpoint A §4.4): the
+# Milestone-11 observation facts carried by both ObservedFacts branches.
+# ---------------------------------------------------------------------------
+
+
+class EvidenceLocator(BaseModel):
+    """A low-level (sourceType, evidenceId) pair — mirrors EvidenceLocator
+    from packages/contracts/src/evidence.ts."""
+
+    model_config = ConfigDict(extra="forbid")
+    evidenceId: _StrictStr
+    sourceType: EvidenceSourceType
+
+
+class EvidenceAssessment(BaseModel):
+    """The validated continuation assessment recorded on a TOOL_REQUESTED event.
+
+    Mirrors EvidenceAssessment from packages/contracts/src/evidence-assessment.ts
+    structurally. The cross-field invariants that schema enforces with its
+    superRefine (SUFFICIENT may not accompany a request, locator distinctness,
+    CONFLICTING requires >= 2 locators, NO_EVIDENCE_YET requires zero locators)
+    are producer-side: the orchestrator already validated them before emitting
+    the event. No active Checkpoint-A check consumes assessment semantics, so
+    this side deliberately re-imposes only the structural shape (closed enums,
+    bounded cardinality), not the cross-field rules — those arrive with
+    Checkpoint B's assessment-driven checks.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    evidenceState: EvidenceState
+    continuationReason: ContinuationReason
+    supportedBy: list[EvidenceLocator] = Field(max_length=10)
+
+
+class AssessmentFacts(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    toolCallId: _StrictStr
+    toolName: _StrictStr
+    assessment: EvidenceAssessment
+
+
+class ToolFailureFacts(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    toolCallId: _StrictStr
+    toolName: _StrictStr
+    failureCode: ToolFailureCode
+
+
+class InvestigationBounds(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    maxProviderTurns: _StrictNonNegativeInt
+    maxDiagnosticToolCalls: _StrictNonNegativeInt
+
+
+class InvestigationUsage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    inputTokens: _StrictNonNegativeInt
+    outputTokens: _StrictNonNegativeInt
+    providerCalls: _StrictNonNegativeInt
+
+
+class InvestigationFacts(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    providerTurnsUsed: _StrictNonNegativeInt
+    diagnosticRequestCount: _StrictNonNegativeInt
+    forcedFinalization: _StrictBool
+    stopReason: InvestigationStopReason | None
+    assessments: list[AssessmentFacts]
+    toolFailures: list[ToolFailureFacts]
+    bounds: InvestigationBounds
+    usage: InvestigationUsage
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +405,7 @@ class ToolExpectations(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expectedRequested: list[ToolRequestedEntry] | None = None
     expectedExecuted: list[ToolExecutedEntry] | None = None
-    expectedCompleted: list[ToolCompletedEntry] | None = None
+    expectedCompleted: list[ToolCompletedExpectationEntry] | None = None
     forbiddenExecutedToolNames: _StrictStrList | None = None
     forbiddenCompletedToolCallIds: _StrictStrList | None = None
 
@@ -249,6 +442,82 @@ class FailureExpectations(BaseModel):
     expectedCode: ErrorCode
 
 
+# ---------------------------------------------------------------------------
+# Issue #59 Checkpoint B — the nine #59 metric expectation sub-models (spec
+# §5). Field-for-field mirrors of types.ts's inline expectation shapes. Each
+# optional field rejects explicit null (omission only) and each model uses
+# extra="forbid", consistent with the rest of the v2 contract.
+# ---------------------------------------------------------------------------
+
+
+class ExpectedEvidenceExpectations(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    state: EvidenceState
+    requiredLocators: list[EvidenceLocator]
+    requiresTelemetry: _StrictBool | None = None
+    minDistinctLocators: _StrictNonNegativeInt | None = None
+
+    _reject_null_fields = _reject_explicit_null("requiresTelemetry", "minDistinctLocators")
+
+
+class ExpectedTelemetryEvidenceExpectations(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    probative: list[EvidenceLocator]
+    nonProbative: list[EvidenceLocator]
+
+
+class ExpectedDiagnosticExpectation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    evidenceState: EvidenceState
+    continuationReason: ContinuationReason
+
+
+# Confidence bounds are continuous/fractional quantities — never integer
+# semantics. Strict() rejects booleans and numeric strings that lax float
+# would coerce, while still accepting every valid JSON number, including
+# integers (0 -> 0.0, 1 -> 1.0); Field(ge=0.0, le=1.0) rejects NaN,
+# ±Infinity, negatives, and values above 1. This mirrors the TypeScript
+# "typeof number && Number.isFinite, then 0 <= min <= max <= 1" rule in
+# dataset-validation.ts Rule 1, so the local and service scorers accept and
+# reject the same confidence bounds.
+_StrictConfidence = Annotated[float, Strict(), Field(ge=0.0, le=1.0)]
+
+
+class ExpectedConfidenceExpectations(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    min: _StrictConfidence
+    max: _StrictConfidence
+
+    @model_validator(mode="after")
+    def _min_le_max(self) -> ExpectedConfidenceExpectations:
+        if self.min > self.max:
+            raise ValueError("expectedConfidence.min must be <= expectedConfidence.max")
+        return self
+
+
+class ExpectedActionExpectations(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: ActionType
+    requiredGrounding: list[EvidenceLocator]
+    allowedGrounding: list[EvidenceLocator]
+
+
+class ExpectedBoundsExpectations(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    maxTotalTokens: _StrictNonNegativeInt | None = None
+
+    _reject_null_fields = _reject_explicit_null("maxTotalTokens")
+
+
+class ExpectedRecoveryExpectations(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    failedStage: InvestigationExecutionStage
+    forbiddenCompletedToolCallIds: _StrictStrList | None = None
+    reportProduced: _StrictBool
+
+    _reject_null_fields = _reject_explicit_null("forbiddenCompletedToolCallIds")
+
+
 class EvaluationExpectations(BaseModel):
     model_config = ConfigDict(extra="forbid")
     runStatus: RunStatus
@@ -256,8 +525,33 @@ class EvaluationExpectations(BaseModel):
     tool: ToolExpectations | None = None
     report: ReportExpectations | None = None
     failure: FailureExpectations | None = None
+    expectedRootCause: ExpectedRootCause | None = None
+    expectedEvidence: ExpectedEvidenceExpectations | None = None
+    expectedTelemetryEvidence: ExpectedTelemetryEvidenceExpectations | None = None
+    expectedDiagnostics: list[ExpectedDiagnosticExpectation] | None = None
+    expectedStopReason: InvestigationStopReason | None = None
+    expectedConfidence: ExpectedConfidenceExpectations | None = None
+    expectedActions: list[ExpectedActionExpectations] | None = None
+    expectedApproval: ExpectedApproval | None = None
+    expectedBounds: ExpectedBoundsExpectations | None = None
+    expectedRecovery: ExpectedRecoveryExpectations | None = None
 
-    _reject_null_fields = _reject_explicit_null("retrieval", "tool", "report", "failure")
+    _reject_null_fields = _reject_explicit_null(
+        "retrieval",
+        "tool",
+        "report",
+        "failure",
+        "expectedRootCause",
+        "expectedEvidence",
+        "expectedTelemetryEvidence",
+        "expectedDiagnostics",
+        "expectedStopReason",
+        "expectedConfidence",
+        "expectedActions",
+        "expectedApproval",
+        "expectedBounds",
+        "expectedRecovery",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +560,9 @@ class EvaluationExpectations(BaseModel):
 # runStatus "failed" requires a non-null errorCode and report: null. Pydantic
 # rejects any wire body that contradicts this pairing (see the "malformed
 # contradictory completed/failed shapes rejected by Pydantic" requirement).
+# v2 adds `investigation` to BOTH branches and `failedStage` (null on a
+# completed run, the failed stage on a failed run), and extends
+# tools.completed[].output and the completed report fields.
 # ---------------------------------------------------------------------------
 
 
@@ -282,10 +579,25 @@ class ToolFacts(BaseModel):
     completed: list[ToolCompletedEntry]
 
 
+class SuggestedActionFacts(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: ActionType
+    groundedBy: list[EvidenceLocator]
+
+
 class ReportFacts(BaseModel):
     model_config = ConfigDict(extra="forbid")
     evidence: list[EvidenceEntry]
     suggestedActionTypes: list[ActionType]
+    # v2 additions (OpsPilot #59 Checkpoint A §4.4): structured report metadata
+    # only — never report prose (no rootCause text, summary text, or action
+    # payload prose crosses the evaluation boundary for #59).
+    category: IncidentCategory
+    rootCausePresent: _StrictBool
+    confidence: float
+    evidenceState: EvidenceState
+    recommendationDisposition: RecommendationDisposition
+    suggestedActions: list[SuggestedActionFacts]
 
 
 class ObservedFactsCompleted(BaseModel):
@@ -295,6 +607,8 @@ class ObservedFactsCompleted(BaseModel):
     retrieval: RetrievalFacts
     tools: ToolFacts
     report: ReportFacts
+    investigation: InvestigationFacts
+    failedStage: None = None
 
 
 class ObservedFactsFailed(BaseModel):
@@ -304,6 +618,8 @@ class ObservedFactsFailed(BaseModel):
     retrieval: RetrievalFacts
     tools: ToolFacts
     report: None = None
+    investigation: InvestigationFacts
+    failedStage: InvestigationExecutionStage
 
 
 ObservedFacts = Annotated[
@@ -313,36 +629,36 @@ ObservedFacts = Annotated[
 
 
 # ---------------------------------------------------------------------------
-# Suite-level request — mirrors v1-types.ts's EvaluationCaseInputV1 / EvaluationSuiteInputV1
+# Suite-level request — mirrors v2-types.ts's EvaluationCaseInputV2 / EvaluationSuiteInputV2
 # ---------------------------------------------------------------------------
 
 
-class EvaluationCaseInputV1(BaseModel):
+class EvaluationCaseInputV2(BaseModel):
     model_config = ConfigDict(extra="forbid")
     caseId: _StrictStr = Field(min_length=1, max_length=128)
     expectations: EvaluationExpectations
     observed: ObservedFacts
 
 
-class EvaluationSuiteInputV1(BaseModel):
+class EvaluationSuiteInputV2(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    contractVersion: Literal[1]
+    contractVersion: Literal[2]
     datasetId: _StrictStr = Field(min_length=1)
-    cases: list[EvaluationCaseInputV1] = Field(min_length=1, max_length=MAX_CASES)
+    cases: list[EvaluationCaseInputV2] = Field(min_length=1, max_length=MAX_CASES)
 
     @field_validator("contractVersion", mode="before")
     @classmethod
     def _contract_version_is_number(cls, value: object) -> object:
         # `contractVersion` is an integer literal on the wire: reject strings
-        # ("1") and booleans, while still accepting every valid JSON number
-        # that equals 1 (including 1.0 — 1 vs 1.0 must never become an
+        # ("2") and booleans, while still accepting every valid JSON number
+        # that equals 2 (including 2.0 — 2 vs 2.0 must never become an
         # artificial contract-version mismatch).
         if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError("contractVersion must be the number 1")
+            raise ValueError("contractVersion must be the number 2")
         return value
 
     @model_validator(mode="after")
-    def _no_duplicate_case_ids(self) -> EvaluationSuiteInputV1:
+    def _no_duplicate_case_ids(self) -> EvaluationSuiteInputV2:
         seen: set[str] = set()
         for case in self.cases:
             if case.caseId in seen:
@@ -354,48 +670,62 @@ class EvaluationSuiteInputV1(BaseModel):
 # ---------------------------------------------------------------------------
 # Suite-level result.
 #
-# EvaluationCheckV1 and EvaluationCaseResultV1 below mirror v1-types.ts's
+# EvaluationCheckV2 and EvaluationCaseResultV2 below mirror v2-types.ts's
 # same-named types field-for-field: they are the deterministic scorer/parity
 # shape, exercised directly (no HTTP, no `id`) in test_scorer_parity.py's
 # parity-oracle comparisons against the TS-owned fixture. Never echoes
-# per-check expected/observed values (those are TS-internal-only).
+# per-check expected/observed values (those are TS-internal-only). The
+# three-state status/reason pairing is enforced at CheckOutcome construction
+# in scorer.py (a PASS check has no reason code; a FAIL carries a
+# CheckReasonCode; a NOT_APPLICABLE carries a NotApplicableCode).
 #
-# EvaluationRunResultV1, by contrast, is deliberately NOT a byte-for-byte
-# mirror of TS's `EvaluationSuiteResultV1` — it is the persisted HTTP
+# EvaluationRunResultV2, by contrast, is deliberately NOT a byte-for-byte
+# mirror of TS's `EvaluationSuiteResultV2` — it is the persisted HTTP
 # evaluation *resource* that POST/GET /evaluations return (see the task
 # spec's "GET /evaluations/{id}" and "At suite level return: ... persisted
 # evaluation id ..."), a superset that adds the persisted `id` on top of the
-# TS scorer-result fields. Do not rename this back to `EvaluationSuiteResultV1`
+# TS scorer-result fields. Do not rename this back to `EvaluationSuiteResultV2`
 # — that name already belongs to the narrower TS parity type and reusing it
 # here previously implied an exact-mirror guarantee this model does not make.
 # ---------------------------------------------------------------------------
 
 
-class EvaluationCheckV1(BaseModel):
+class EvaluationCheckV2(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
-    passed: bool
+    status: CheckStatus
     reasonCode: str | None
 
 
-class EvaluationCaseResultV1(BaseModel):
+class EvaluationCaseResultV2(BaseModel):
     model_config = ConfigDict(extra="forbid")
     caseId: str
     passed: bool
-    checks: list[EvaluationCheckV1]
+    checks: list[EvaluationCheckV2]
 
 
 class MetricRatio(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    numerator: int
-    denominator: int
+    numerator: _StrictNonNegativeInt
+    denominator: _StrictNonNegativeInt
+
+
+# The zero ratio used as the default for the nine #59 fields below. The
+# ACTIVE scorer always fills all nine with real aggregates (never a default),
+# and the GET read path synthesizes 0/0 for pre-B v2 rows explicitly (see
+# api._read_metrics), so every wire response carries them. The default is a
+# defensive fallback only — the frozen v1 oracle owns its own six-metric
+# EvaluationMetricsV1 (legacy_v1/schemas_v1.py) and no longer constructs this
+# model (Checkpoint B remediation), so nothing relies on these defaults.
+def _zero_ratio() -> MetricRatio:
+    return MetricRatio(numerator=0, denominator=0)
 
 
 class EvaluationMetrics(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    totalCases: int
-    passedCases: int
-    failedCases: int
+    totalCases: _StrictNonNegativeInt
+    passedCases: _StrictNonNegativeInt
+    failedCases: _StrictNonNegativeInt
     passRate: float
     retrievalTop1: MetricRatio
     retrievalHitAt3: MetricRatio
@@ -403,12 +733,25 @@ class EvaluationMetrics(BaseModel):
     evidenceGroundingCorrectness: MetricRatio
     toolCorrectness: MetricRatio
     expectedStatusCorrectness: MetricRatio
+    # Issue #59 Checkpoint B — the nine #59 metric ratios (spec §5/§11). Same
+    # { numerator, denominator } wire shape as the six above; N/A counts are
+    # derived by the formatter from each case's check results, never carried
+    # on the ratio itself.
+    rootCauseDiscipline: MetricRatio = Field(default_factory=_zero_ratio)
+    evidenceSupport: MetricRatio = Field(default_factory=_zero_ratio)
+    unknownHandling: MetricRatio = Field(default_factory=_zero_ratio)
+    diagnosticJustification: MetricRatio = Field(default_factory=_zero_ratio)
+    confidenceCalibration: MetricRatio = Field(default_factory=_zero_ratio)
+    actionGrounding: MetricRatio = Field(default_factory=_zero_ratio)
+    approvalGate: MetricRatio = Field(default_factory=_zero_ratio)
+    boundsRespected: MetricRatio = Field(default_factory=_zero_ratio)
+    deterministicRecovery: MetricRatio = Field(default_factory=_zero_ratio)
 
 
-class EvaluationRunResultV1(BaseModel):
+class EvaluationRunResultV2(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    contractVersion: Literal[1]
+    contractVersion: Literal[2]
     datasetId: str
     id: str
-    cases: list[EvaluationCaseResultV1]
+    cases: list[EvaluationCaseResultV2]
     metrics: EvaluationMetrics

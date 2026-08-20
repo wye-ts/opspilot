@@ -42,8 +42,14 @@ describe("createRecordingToolRegistry", () => {
     const output = await wrapped.execute({ serviceSlug: "notification-service" });
 
     expect(output).toEqual({ serviceSlug: "notification-service", status: "DEGRADED" });
+    // v2: a successful execute attaches the normalized `output` to the
+    // recorded entry (never fabricated for a thrown/terminal execution).
     expect(recorder).toEqual([
-      { toolName: "get_service_status", input: { serviceSlug: "notification-service" } },
+      {
+        toolName: "get_service_status",
+        input: { serviceSlug: "notification-service" },
+        output: { serviceSlug: "notification-service", status: "DEGRADED" },
+      },
     ]);
   });
 
@@ -65,8 +71,16 @@ describe("createRecordingToolRegistry", () => {
     await wrapped.execute({ serviceSlug: "billing-service" });
 
     expect(recorder).toEqual([
-      { toolName: "get_service_status", input: { serviceSlug: "auth-service" } },
-      { toolName: "get_service_status", input: { serviceSlug: "billing-service" } },
+      {
+        toolName: "get_service_status",
+        input: { serviceSlug: "auth-service" },
+        output: { serviceSlug: "auth-service", status: "OPERATIONAL" },
+      },
+      {
+        toolName: "get_service_status",
+        input: { serviceSlug: "billing-service" },
+        output: { serviceSlug: "billing-service", status: "OUTAGE" },
+      },
     ]);
   });
 });

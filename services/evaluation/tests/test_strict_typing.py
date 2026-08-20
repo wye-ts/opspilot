@@ -1,6 +1,6 @@
-"""Fix (MAJOR): request-side v1 models reject wrong JSON primitive types
+"""Fix (MAJOR): request-side v2 models reject wrong JSON primitive types
 instead of coercing them. Every malformed request must 422 and persist zero
-runs, while approved behaviors (valid JSON numbers, 1 vs 1.0 equivalence,
+runs, while approved behaviors (valid JSON numbers, 2 vs 2.0 equivalence,
 omitted/null discriminants, omitted optional expectations) stay accepted.
 """
 
@@ -16,6 +16,19 @@ from opspilot_evaluation.db.models import EvaluationRun
 from opspilot_evaluation.db.session import get_sessionmaker
 
 pytestmark = pytest.mark.asyncio
+
+
+def _investigation() -> dict:
+    return {
+        "providerTurnsUsed": 0,
+        "diagnosticRequestCount": 0,
+        "forcedFinalization": False,
+        "stopReason": None,
+        "assessments": [],
+        "toolFailures": [],
+        "bounds": {"maxProviderTurns": 4, "maxDiagnosticToolCalls": 3},
+        "usage": {"inputTokens": 0, "outputTokens": 0, "providerCalls": 0},
+    }
 
 
 def _case() -> dict:
@@ -37,18 +50,28 @@ def _case() -> dict:
             "tools": {
                 "requested": [{"toolName": "get_service_status", "toolCallId": "call-1"}],
                 "executed": [],
-                "completed": [{"toolName": "get_service_status", "toolCallId": "call-1"}],
+                # v2 observed completed entries carry a JSON-safe output; these
+                # tests never compare outputs, so null is a valid placeholder.
+                "completed": [{"toolName": "get_service_status", "toolCallId": "call-1", "output": None}],
             },
             "report": {
                 "evidence": [{"evidenceId": "ev-1", "sourceType": "RAG_CHUNK"}],
                 "suggestedActionTypes": [],
+                "category": "UNKNOWN",
+                "rootCausePresent": False,
+                "confidence": 0.0,
+                "evidenceState": "INSUFFICIENT",
+                "recommendationDisposition": "ADVISORY",
+                "suggestedActions": [],
             },
+            "investigation": _investigation(),
+            "failedStage": None,
         },
     }
 
 
 def _suite() -> dict:
-    return {"contractVersion": 1, "datasetId": "strict-typing", "cases": [_case()]}
+    return {"contractVersion": 2, "datasetId": "strict-typing", "cases": [_case()]}
 
 
 def _set_path(root: dict, path: str, value: object) -> dict:
@@ -87,7 +110,7 @@ WRONG_PRIMITIVES = [
     ("number where string required (nested toolName)", "observed.tools.requested.0.toolName", 123),
     ("bool where string required (nested toolCallId)", "observed.tools.completed.0.toolCallId", True),
     ("number where enum required (nested sourceType)", "observed.report.evidence.0.sourceType", 5),
-    ("string where integer literal required (contractVersion)", "contractVersion", "1"),
+    ("string where integer literal required (contractVersion)", "contractVersion", "2"),
     ("bool where integer literal required (contractVersion)", "contractVersion", True),
 ]
 
@@ -110,17 +133,37 @@ async def test_wrong_primitive_type_rejected_with_422_and_zero_runs(
 
 
 async def test_valid_json_numbers_still_accepted(client: AsyncClient) -> None:
-    # `1` vs `1.0` must never become an artificial mismatch: 1.0 is a valid
-    # JSON number equal to the literal 1, so it must be accepted and coerced
+    # `2` vs `2.0` must never become an artificial mismatch: 2.0 is a valid
+    # JSON number equal to the literal 2, so it must be accepted and coerced
     # to the canonical persisted value.
     suite = _suite()
-    suite["contractVersion"] = 1.0
+    suite["contractVersion"] = 2.0
     response = await client.post("/evaluations", json=suite)
     assert response.status_code == 201
-    assert response.json()["contractVersion"] == 1
+    assert response.json()["contractVersion"] == 2
 
 
 async def test_control_valid_suite_still_persists(client: AsyncClient) -> None:
     # Control: the same suite with only correct primitive types must succeed.
     response = await client.post("/evaluations", json=_suite())
     assert response.status_code == 201
+
+
+async def test_wrong_confidence_primitives_rejected_with_422_and_zero_runs(client: AsyncClient) -> None:
+    # Confidence bounds must be finite JSON numbers in [0, 1]: booleans and
+    # numeric strings are rejected (and persist zero runs) rather than coerced
+    # into a valid band (the pre-fix lax `float` coerced true->1.0).
+    for value in (False, True, "0.5"):
+        for field in ("min", "max"):
+            suite = _suite()
+            band = {"min": 0.5, "max": 0.5}
+            band[field] = value
+            suite["cases"][0]["expectations"]["expectedConfidence"] = band
+
+            response = await client.post("/evaluations", json=suite)
+            assert response.status_code == 422, (field, value)
+
+            sessionmaker = get_sessionmaker()
+            async with sessionmaker() as session:
+                result = await session.execute(select(EvaluationRun))
+                assert result.scalars().all() == [], (field, value)
