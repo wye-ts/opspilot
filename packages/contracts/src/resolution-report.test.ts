@@ -22,11 +22,15 @@ const causalSufficientReport = {
       sourceType: "RAG_CHUNK",
       finding:
         "The runbook identifies upstream rate limiting as a known cause of delayed notifications.",
+      // Issue #55: at least one entry must declare ROOT_CAUSE support
+      // whenever rootCause is non-null (2.2b) — this is that entry.
+      supports: ["ROOT_CAUSE"],
     },
     {
       evidenceId: "tool-execution-001",
       sourceType: "TOOL_EXECUTION",
       finding: "The notification service currently reports DEGRADED.",
+      supports: [],
     },
   ],
   suggestedActions: [
@@ -117,11 +121,13 @@ const conflictingActionableEscalation = {
       evidenceId: "call-1",
       sourceType: "TOOL_EXECUTION",
       finding: "Probe reported DEGRADED.",
+      supports: [],
     },
     {
       evidenceId: "call-2",
       sourceType: "TOOL_EXECUTION",
       finding: "Probe reported OPERATIONAL for the same claim.",
+      supports: [],
     },
   ],
   recommendationDisposition: "ACTIONABLE",
@@ -139,9 +145,13 @@ const conflictingActionableEscalation = {
 };
 
 // E — SUFFICIENT non-causal conclusion: rootCause null, ADVISORY, zero actions.
+// Issue #55: evidence's `supports` is explicitly re-stripped to [] here
+// (never inherited from causalSufficientReport's ROOT_CAUSE-supporting
+// entry) — 2.2a forbids ROOT_CAUSE support whenever rootCause is null.
 const sufficientNonCausalAdvisory = {
   ...causalSufficientReport,
   rootCause: null,
+  evidence: causalSufficientReport.evidence.map((entry) => ({ ...entry, supports: [] })),
   recommendationDisposition: "ADVISORY",
   suggestedActions: [],
 };
@@ -169,11 +179,14 @@ describe("ResolutionReportSchema (strict new-write contract)", () => {
 
   it("accepts SUFFICIENT + rootCause null (a grounded non-causal conclusion)", () => {
     // P1-1: the invariant is one-way — sufficient evidence may carry a null
-    // rootCause for a "no fault observed / healthy" verdict.
+    // rootCause for a "no fault observed / healthy" verdict. Issue #55:
+    // supports is stripped to [] since 2.2a forbids ROOT_CAUSE support when
+    // rootCause is null.
     expect(
       ResolutionReportSchema.safeParse({
         ...causalSufficientReport,
         rootCause: null,
+        evidence: causalSufficientReport.evidence.map((entry) => ({ ...entry, supports: [] })),
       }).success,
     ).toBe(true);
   });
@@ -386,6 +399,137 @@ describe("ResolutionReportSchema (strict new-write contract)", () => {
         code: "custom",
       });
     }
+  });
+
+  // Issue #55 §2/§4 — the structured, per-claim evidence contract (narrow
+  // scope): supports distinctness, 2.2a (negative), and 2.2b (positive,
+  // write-only).
+  describe("evidence.supports (Issue #55)", () => {
+    it("accepts an entry declaring multiple distinct claims", () => {
+      const result = ResolutionReportSchema.safeParse({
+        ...causalSufficientReport,
+        evidence: [
+          { ...causalSufficientReport.evidence[0]!, supports: ["ROOT_CAUSE", "CUSTOMER_IMPACT"] },
+          causalSufficientReport.evidence[1]!,
+        ],
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects an entry with a duplicated claim value in supports", () => {
+      const result = ResolutionReportSchema.safeParse({
+        ...causalSufficientReport,
+        evidence: [
+          { ...causalSufficientReport.evidence[0]!, supports: ["ROOT_CAUSE", "ROOT_CAUSE"] },
+          causalSufficientReport.evidence[1]!,
+        ],
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(summarizeReportValidationIssues(result.error)).toContainEqual(
+          expect.objectContaining({ path: ["evidence", 0, "supports"] }),
+        );
+      }
+    });
+
+    it("rejects more than three claims in supports", () => {
+      const result = ResolutionReportSchema.safeParse({
+        ...causalSufficientReport,
+        evidence: [
+          {
+            ...causalSufficientReport.evidence[0]!,
+            // Only three claims exist in the closed vocabulary, so a fourth
+            // (repeated) entry is the only way to exceed max(3) alongside
+            // the distinctness rule; assert max(3) alone with three real,
+            // distinct values plus one duplicate padding entry is instead
+            // covered by the duplicate test above. This asserts the bound
+            // directly via a raw four-entry array bypassing the type.
+            supports: ["ROOT_CAUSE", "CUSTOMER_IMPACT", "RECOMMENDED_RESOLUTION", "ROOT_CAUSE"] as unknown as (
+              | "ROOT_CAUSE"
+              | "CUSTOMER_IMPACT"
+              | "RECOMMENDED_RESOLUTION"
+            )[],
+          },
+          causalSufficientReport.evidence[1]!,
+        ],
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("2.2a — rejects an entry declaring ROOT_CAUSE support when rootCause is null", () => {
+      const result = ResolutionReportSchema.safeParse({
+        ...causalSufficientReport,
+        rootCause: null,
+        evidence: [
+          { ...causalSufficientReport.evidence[0]!, supports: ["ROOT_CAUSE"] },
+          causalSufficientReport.evidence[1]!,
+        ],
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(summarizeReportValidationIssues(result.error)).toContainEqual(
+          expect.objectContaining({ path: ["evidence", 0, "supports"] }),
+        );
+      }
+    });
+
+    it("2.2a — enforced on the read (Stored) schema too", () => {
+      const result = StoredResolutionReportSchema.safeParse({
+        category: "SERVICE_DEGRADATION",
+        summary: "Notification delivery is delayed for some customers.",
+        customerImpact: "Some password-reset and account-verification emails are delayed.",
+        recommendedResolution: "Monitor the upstream provider and reduce retry pressure.",
+        confidence: 0.9,
+        suggestedActions: [],
+        rootCause: null,
+        evidenceState: "INSUFFICIENT",
+        evidence: [
+          { evidenceId: "tool-execution-001", sourceType: "TOOL_EXECUTION", finding: "x", supports: ["ROOT_CAUSE"] },
+        ],
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("2.2b — write requires at least one ROOT_CAUSE-supporting entry when rootCause is non-null", () => {
+      const result = ResolutionReportSchema.safeParse({
+        ...causalSufficientReport,
+        evidence: causalSufficientReport.evidence.map((entry) => ({ ...entry, supports: [] })),
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(summarizeReportValidationIssues(result.error)).toContainEqual(
+          expect.objectContaining({ path: ["evidence"] }),
+        );
+      }
+    });
+
+    it("2.2b — REQUIRED: is NOT enforced on read — a legacy stored row with non-null rootCause and no supports key normalizes to [] and stays readable", () => {
+      // The exact BLOCKER-fix scenario from the plan (§2.2/§2.3/acceptance
+      // criterion 4): a pre-#55 stored row with a non-null rootCause and no
+      // `supports` key at all on any evidence entry must remain readable.
+      const legacyReportNoSupportsKey = {
+        category: "SERVICE_DEGRADATION",
+        summary: "Notification delivery is delayed for some customers.",
+        rootCause: "The notification service is degraded after repeated upstream rate-limit responses.",
+        customerImpact: "Some password-reset and account-verification emails are delayed.",
+        recommendedResolution: "Monitor the upstream provider and reduce retry pressure.",
+        confidence: 0.9,
+        evidence: [
+          {
+            evidenceId: "tool-execution-001",
+            sourceType: "TOOL_EXECUTION",
+            finding: "The notification service currently reports DEGRADED.",
+            // `supports` deliberately ABSENT — the exact pre-#55 shape.
+          },
+        ],
+        suggestedActions: [],
+      };
+      const result = StoredResolutionReportSchema.safeParse(legacyReportNoSupportsKey);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.evidence.every((entry) => entry.supports.length === 0)).toBe(true);
+      }
+    });
   });
 });
 

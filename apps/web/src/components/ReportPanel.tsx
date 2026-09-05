@@ -78,6 +78,33 @@ export function ReportPanel({ outcome, failedStageLabel = null }: ReportPanelPro
 
   const { report } = outcome;
 
+  // Issue #55 (narrow scope): group evidence by the report claim it declares
+  // supporting, instead of one flat list. An entry with an empty `supports`
+  // (including every legacy row read before this field existed — normalized
+  // to `[]` on read) falls through to the final "Other evidence" section,
+  // unchanged from the old flat rendering. An entry naming more than one
+  // claim appears under each one it declares — the honest rendering of a
+  // many-to-many relationship the model itself declared, never silently
+  // deduplicated to a single section.
+  const rootCauseEvidence = report.evidence.filter((entry) => entry.supports?.includes("ROOT_CAUSE"));
+  const customerImpactEvidence = report.evidence.filter((entry) => entry.supports?.includes("CUSTOMER_IMPACT"));
+  const recommendedResolutionEvidence = report.evidence.filter((entry) =>
+    entry.supports?.includes("RECOMMENDED_RESOLUTION"),
+  );
+  const otherEvidence = report.evidence.filter((entry) => (entry.supports?.length ?? 0) === 0);
+
+  function evidenceList(entries: typeof report.evidence) {
+    return (
+      <ul className="report-panel-evidence">
+        {entries.map((item) => (
+          <li key={`${item.sourceType}:${item.evidenceId}`}>
+            <span className="mono">{item.sourceType}</span> — {item.finding}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
   return (
     <section className="report-panel" aria-labelledby="report-heading">
       <div className="report-panel-header">
@@ -107,33 +134,43 @@ export function ReportPanel({ outcome, failedStageLabel = null }: ReportPanelPro
         </div>
         <div className="report-panel-field">
           <dt>Root cause</dt>
-          <dd>{rootCauseDisplay(report)}</dd>
+          <dd>
+            {rootCauseDisplay(report)}
+            {rootCauseEvidence.length > 0 && evidenceList(rootCauseEvidence)}
+          </dd>
         </div>
         <div className="report-panel-field">
           <dt>Customer impact</dt>
-          <dd>{report.customerImpact}</dd>
+          <dd>
+            {report.customerImpact}
+            {customerImpactEvidence.length > 0 && evidenceList(customerImpactEvidence)}
+          </dd>
         </div>
         <div className="report-panel-field">
           <dt>Recommended resolution</dt>
-          <dd>{report.recommendedResolution}</dd>
+          <dd>
+            {report.recommendedResolution}
+            {recommendedResolutionEvidence.length > 0 && evidenceList(recommendedResolutionEvidence)}
+          </dd>
         </div>
         {/* Final UX Pilot fidelity pass, HQ item 6 — Evidence now uses the
             same dt/dd label pattern as every other section instead of a
             standalone <h3>, so all five section labels read identically
-            (small, uppercase, muted), matching the reference exactly. */}
+            (small, uppercase, muted), matching the reference exactly.
+            Issue #55: this section is now "Other evidence" whenever any
+            entry above was claim-linked and pulled into a field-specific
+            sub-list — it never re-lists an entry already shown above. When
+            no entry declares any claim link (e.g. every legacy row, or a
+            genuinely general-context-only report), the label stays
+            "Evidence" and this is the only evidence section rendered,
+            exactly matching today's behavior. */}
         <div className="report-panel-field">
-          <dt>Evidence</dt>
+          <dt>{report.evidence.length > otherEvidence.length ? "Other evidence" : "Evidence"}</dt>
           <dd>
-            {report.evidence.length === 0 ? (
-              "No evidence was recorded."
+            {otherEvidence.length === 0 ? (
+              report.evidence.length === 0 ? "No evidence was recorded." : "Every evidence entry is linked to a claim above."
             ) : (
-              <ul className="report-panel-evidence">
-                {report.evidence.map((item) => (
-                  <li key={item.evidenceId}>
-                    <span className="mono">{item.sourceType}</span> — {item.finding}
-                  </li>
-                ))}
-              </ul>
+              evidenceList(otherEvidence)
             )}
           </dd>
         </div>

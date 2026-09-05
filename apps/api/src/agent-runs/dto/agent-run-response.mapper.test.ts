@@ -44,7 +44,7 @@ const REPORT: ResolutionReport = {
   customerImpact: "c",
   recommendedResolution: "rr",
   confidence: 0.5,
-  evidence: [{ evidenceId: "run-1-call-1", sourceType: "TOOL_EXECUTION", finding: "f" }],
+  evidence: [{ evidenceId: "run-1-call-1", sourceType: "TOOL_EXECUTION", finding: "f", supports: ["ROOT_CAUSE"] }],
   suggestedActions: [],
   evidenceState: "SUFFICIENT",
   // Issue #60 Checkpoint B: the new-write ResolutionReport contract requires

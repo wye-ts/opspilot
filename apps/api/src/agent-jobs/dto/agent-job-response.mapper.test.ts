@@ -226,7 +226,7 @@ describe("mapInvestigationStateResponse — stopReason (issue #58 Checkpoint C �
           report: report({
             evidenceState: "SUFFICIENT",
             rootCause: null,
-            evidence: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "auth-service reported OPERATIONAL." }],
+            evidence: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "auth-service reported OPERATIONAL.", supports: [] }],
           }),
         },
         events: [eventRecord(1, "AGENT_STARTED")],
@@ -242,7 +242,7 @@ describe("mapInvestigationStateResponse — stopReason (issue #58 Checkpoint C �
     // (StoredResolutionReportSchema, evidenceState optional).
     const legacyReport = report({
       rootCause: "notification-service is degraded.",
-      evidence: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "degraded." }],
+      evidence: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "degraded.", supports: [] }],
     });
     expect(legacyReport).not.toHaveProperty("evidenceState");
 
@@ -270,5 +270,44 @@ describe("mapInvestigationStateResponse — stopReason (issue #58 Checkpoint C �
       }),
     );
     expect(data.stopReason).toBeNull();
+  });
+
+  // Issue #55 (narrow scope) §4 sequencing 3b — the "passes through
+  // structurally" assumption in the plan's §2.6 asserted from reading the
+  // file's pattern must be proven with a real test: a stored report with
+  // non-empty evidence.supports must survive mapInvestigationStateResponse's
+  // serialization exactly, closing the "assumed, not yet proven" gap the
+  // plan calls out.
+  it("Issue #55 — mapInvestigationStateResponse preserves evidence[].supports through serialization unchanged", () => {
+    const supportedReport = report({
+      evidenceState: "SUFFICIENT",
+      rootCause: "notification-service is degraded.",
+      evidence: [
+        {
+          evidenceId: "call-1",
+          sourceType: "TOOL_EXECUTION",
+          finding: "notification-service reported status DEGRADED.",
+          supports: ["ROOT_CAUSE", "CUSTOMER_IMPACT"],
+        },
+        {
+          evidenceId: "runbook-1",
+          sourceType: "RAG_CHUNK",
+          finding: "General context.",
+          supports: [],
+        },
+      ],
+    });
+
+    const data = mapInvestigationStateResponse(
+      state({
+        outcome: { type: "COMPLETED", report: supportedReport },
+        events: [eventRecord(1, "AGENT_STARTED")],
+      }),
+    );
+
+    expect(data.outcome).toEqual({ type: "COMPLETED", report: supportedReport });
+    if (data.outcome?.type !== "COMPLETED") throw new Error("unreachable");
+    expect(data.outcome.report.evidence[0]?.supports).toEqual(["ROOT_CAUSE", "CUSTOMER_IMPACT"]);
+    expect(data.outcome.report.evidence[1]?.supports).toEqual([]);
   });
 });

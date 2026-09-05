@@ -26,6 +26,7 @@ import {
   EvidenceStateSchema as _EvidenceStateSchema,
 } from "./evidence-assessment";
 import {
+  EvidenceClaimSchema as _EvidenceClaimSchema,
   EvidenceReferenceSchema as _EvidenceReferenceSchema,
   IncidentCategorySchema as _IncidentCategorySchema,
   RecommendationDispositionSchema as _RecommendationDispositionSchema,
@@ -101,6 +102,7 @@ export const ContinuationReasonSchema = _ContinuationReasonSchema;
 export const deriveInvestigationStopReason = _deriveInvestigationStopReason;
 export const EvidenceAssessmentSchema = _EvidenceAssessmentSchema;
 export const EvidenceStateSchema = _EvidenceStateSchema;
+export const EvidenceClaimSchema = _EvidenceClaimSchema;
 export const EvidenceReferenceSchema = _EvidenceReferenceSchema;
 export const IncidentCategorySchema = _IncidentCategorySchema;
 export const RecommendationDispositionSchema = _RecommendationDispositionSchema;
@@ -157,6 +159,7 @@ export type {
   InvestigationStopReason,
 } from "./evidence-assessment";
 export type {
+  EvidenceClaim,
   EvidenceReference,
   IncidentCategory,
   RecommendationDisposition,

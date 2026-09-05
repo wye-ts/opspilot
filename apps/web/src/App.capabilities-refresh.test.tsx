@@ -71,7 +71,7 @@ function liveRunDetail(): AgentRunDetail {
         customerImpact: "c",
         recommendedResolution: "rr",
         confidence: 0.6,
-        evidence: [{ evidenceId: "e-1", sourceType: "TOOL_EXECUTION", finding: "f" }],
+        evidence: [{ evidenceId: "e-1", sourceType: "TOOL_EXECUTION", finding: "f", supports: [] }],
         suggestedActions: [],
       },
     },

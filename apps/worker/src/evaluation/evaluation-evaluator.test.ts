@@ -31,7 +31,7 @@ const VALID_REPORT: ResolutionReport = {
   customerImpact: "impact",
   recommendedResolution: "resolution",
   confidence: 0.5,
-  evidence: [{ evidenceId: "e1", sourceType: "TOOL_EXECUTION", finding: "finding" }],
+  evidence: [{ evidenceId: "e1", sourceType: "TOOL_EXECUTION", finding: "finding", supports: ["ROOT_CAUSE"] }],
   evidenceState: "SUFFICIENT",
   recommendationDisposition: "ACTIONABLE",
   suggestedActions: [

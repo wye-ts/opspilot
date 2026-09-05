@@ -59,11 +59,13 @@ function buildDemoScenario(): FakeAgentScenario {
         evidenceId: DEMO_TOOL_CALL_ID,
         sourceType: "TOOL_EXECUTION",
         finding: "notification-service reported status DEGRADED.",
+        supports: ["ROOT_CAUSE"],
       },
       {
         evidenceId: DEMO_RAG_CHUNK_ID,
         sourceType: "RAG_CHUNK",
         finding: "Runbook confirms notification-service degradation is a known failure mode.",
+        supports: [],
       },
     ],
     evidenceState: "SUFFICIENT",

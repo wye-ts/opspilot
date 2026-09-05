@@ -43,6 +43,7 @@ function buildDemoScenario(): FakeAgentScenario {
         evidenceId: DEMO_TOOL_CALL_ID,
         sourceType: "TOOL_EXECUTION",
         finding: "notification-service reported status DEGRADED.",
+        supports: ["ROOT_CAUSE"],
       },
     ],
     evidenceState: "SUFFICIENT",

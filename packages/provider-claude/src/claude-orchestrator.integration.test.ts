@@ -62,6 +62,7 @@ const REPORT: ResolutionReport = {
       evidenceId: TOOL_CALL_ID,
       sourceType: "TOOL_EXECUTION",
       finding: "get_service_status returned DEGRADED for notification-service.",
+      supports: ["ROOT_CAUSE"],
     },
   ],
   evidenceState: "SUFFICIENT",
@@ -80,10 +81,13 @@ function reportCiting(...evidenceIds: string[]): ResolutionReport {
     customerImpact: "Customers experience delayed notification emails.",
     recommendedResolution: "Escalate to the notifications on-call engineer.",
     confidence: 0.8,
-    evidence: evidenceIds.map((evidenceId) => ({
+    evidence: evidenceIds.map((evidenceId, index) => ({
       evidenceId,
       sourceType: "TOOL_EXECUTION",
       finding: `get_service_status returned DEGRADED for notification-service (${evidenceId}).`,
+      // Issue #55: at least one entry must declare ROOT_CAUSE support since
+      // rootCause is non-null here — the first entry carries it.
+      supports: index === 0 ? ["ROOT_CAUSE"] : [],
     })),
     evidenceState: "SUFFICIENT",
     recommendationDisposition: "ADVISORY",
@@ -282,6 +286,7 @@ describe("orchestrator through the Claude adapter (mocked transport)", () => {
               evidenceId: "toolu_invented_by_the_model",
               sourceType: "TOOL_EXECUTION",
               finding: "fabricated",
+              supports: ["ROOT_CAUSE"],
             },
           ],
         }),

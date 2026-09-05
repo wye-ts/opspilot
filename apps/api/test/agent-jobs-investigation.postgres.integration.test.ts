@@ -91,10 +91,13 @@ function completedReport(callIds: readonly string[]): ResolutionReport {
     customerImpact: "Impact assessed via repeated diagnostics.",
     recommendedResolution: "Monitor the affected services.",
     confidence: 0.8,
-    evidence: callIds.map((callId) => ({
+    evidence: callIds.map((callId, index) => ({
       evidenceId: callId,
       sourceType: "TOOL_EXECUTION",
       finding: `Tool call ${callId} completed successfully.`,
+      // Issue #55: rootCause is non-null, so at least one entry must declare
+      // ROOT_CAUSE support — the first entry carries it.
+      supports: index === 0 ? ["ROOT_CAUSE"] : [],
     })),
     evidenceState: "SUFFICIENT",
     suggestedActions: [],
@@ -173,6 +176,7 @@ function insufficientReport(callIds: readonly string[]): ResolutionReport {
       evidenceId: callId,
       sourceType: "TOOL_EXECUTION",
       finding: `Tool call ${callId} was inconclusive.`,
+      supports: [],
     })),
     evidenceState: "INSUFFICIENT",
     suggestedActions: [],
@@ -192,6 +196,7 @@ function conflictingReport(callIds: readonly string[]): ResolutionReport {
       evidenceId: callId,
       sourceType: "TOOL_EXECUTION",
       finding: index === 0 ? `Tool call ${callId} reported DEGRADED.` : `Tool call ${callId} reported OPERATIONAL.`,
+      supports: [],
     })),
     evidenceState: "CONFLICTING",
     suggestedActions: [],
@@ -211,6 +216,7 @@ function sufficientNonCausalReport(callIds: readonly string[]): ResolutionReport
       evidenceId: callId,
       sourceType: "TOOL_EXECUTION",
       finding: `Tool call ${callId} reported OPERATIONAL — no degradation found.`,
+      supports: [],
     })),
     evidenceState: "SUFFICIENT",
     suggestedActions: [],

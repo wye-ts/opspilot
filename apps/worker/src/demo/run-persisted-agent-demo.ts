@@ -45,6 +45,7 @@ function buildDemoScenario(): FakeAgentScenario {
         evidenceId: DEMO_TOOL_CALL_ID,
         sourceType: "TOOL_EXECUTION",
         finding: "billing-service reported status OUTAGE.",
+        supports: ["ROOT_CAUSE"],
       },
     ],
     evidenceState: "SUFFICIENT",

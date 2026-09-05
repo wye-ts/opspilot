@@ -95,6 +95,10 @@ export function createDeterministicScenario(job: AgentJobRecord): FakeAgentScena
         evidenceId: toolCallId,
         sourceType: "TOOL_EXECUTION",
         finding: `get_service_status completed successfully for ${serviceSlug}. Its returned status value is not persisted by this milestone.`,
+        // Issue #55 (narrow scope): rootCause is always null in this
+        // deterministic scenario (see above), so 2.2a/2.2b never apply —
+        // this entry never claims to back a specific report claim.
+        supports: [],
       },
     ],
     // Opt-in only (docs/13-approval-workflow.md §14): an exact, case-sensitive

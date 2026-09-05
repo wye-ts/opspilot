@@ -29,7 +29,7 @@ const VALID_REPORT = {
   customerImpact: "Impact",
   recommendedResolution: "Resolution",
   confidence: 0.8,
-  evidence: [{ evidenceId: "chunk-1", sourceType: "RAG_CHUNK", finding: "Finding" }],
+  evidence: [{ evidenceId: "chunk-1", sourceType: "RAG_CHUNK", finding: "Finding", supports: ["ROOT_CAUSE"] }],
   suggestedActions: [],
   evidenceState: "SUFFICIENT",
   // Issue #60 Checkpoint B: the new-write contract requires
@@ -47,7 +47,7 @@ const MODERN_ACTIONABLE_REPORT = {
   customerImpact: "Impact",
   recommendedResolution: "Update the customer with the diagnostic outcome.",
   confidence: 0.8,
-  evidence: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "Finding" }],
+  evidence: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "Finding", supports: ["ROOT_CAUSE"] }],
   suggestedActions: [
     {
       type: "DRAFT_CUSTOMER_REPLY",
@@ -498,8 +498,11 @@ describe("toReportWrite / fromReportRead", () => {
     expect(() => toReportWrite({ summary: "missing required fields" })).toThrow(PersistenceError);
   });
 
-  it("fromReportRead keeps reading a pre-#58 legacy report (no evidenceState)", () => {
-    expect(fromReportRead(LEGACY_REPORT)).toEqual(LEGACY_REPORT);
+  it("fromReportRead keeps reading a pre-#58 legacy report (no evidenceState), normalizing missing evidence.supports to [] (Issue #55 §2.3)", () => {
+    expect(fromReportRead(LEGACY_REPORT)).toEqual({
+      ...LEGACY_REPORT,
+      evidence: LEGACY_REPORT.evidence.map((entry) => ({ ...entry, supports: [] })),
+    });
   });
 
   it("fromReportRead fails closed on a corrupt legacy report (rootCause null)", () => {
@@ -527,6 +530,27 @@ describe("toReportWrite / fromReportRead", () => {
     expect(read.suggestedActions[0]?.groundedBy).toEqual([
       { evidenceId: "call-1", sourceType: "TOOL_EXECUTION" },
     ]);
+  });
+
+  // Issue #55 (narrow scope) §4 sequencing 3a: a database-mapper test proving
+  // `supports` survives the real write -> stored JSON -> read normalization
+  // unchanged, the same round-trip pattern already used for `groundedBy`/
+  // `recommendationDisposition` above — not merely re-asserted by the
+  // broader `toEqual(written)` check above, but called out explicitly so a
+  // future refactor that drops `supports` from either mapper fails loudly
+  // and specifically here.
+  it("Issue #55 — a report with non-trivial evidence.supports survives toReportWrite -> stored JSON -> fromReportRead exactly", () => {
+    const reportWithSupports = {
+      ...MODERN_ACTIONABLE_REPORT,
+      evidence: [
+        { evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "Finding", supports: ["ROOT_CAUSE", "CUSTOMER_IMPACT"] },
+      ],
+    };
+    const written = toReportWrite(reportWithSupports);
+    const storedJson = JSON.parse(JSON.stringify(written)) as unknown;
+    const read = fromReportRead(storedJson);
+
+    expect(read.evidence[0]?.supports).toEqual(["ROOT_CAUSE", "CUSTOMER_IMPACT"]);
   });
 
   // G1 — #58-era legacy compatibility: no recommendationDisposition marker and

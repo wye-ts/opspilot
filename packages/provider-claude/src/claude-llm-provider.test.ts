@@ -320,6 +320,16 @@ describe("buildSystemPrompt", () => {
       expect(prompt).toContain("INSUFFICIENT allows zero to ten");
       expect(prompt).toContain("evidenceId: 1-128 characters");
       expect(prompt).toContain("finding: 1-500 characters");
+      // Issue #55 (narrow scope): the supports bound and both root-cause
+      // linkage rules, since Anthropic's strict tool-use JSON Schema subset
+      // cannot express the closed-vocabulary/distinctness/cross-field rules.
+      expect(prompt).toContain(
+        "supports: an array of 0 to 3 entries, each exactly one of ROOT_CAUSE, CUSTOMER_IMPACT, or",
+      );
+      expect(prompt).toContain("RECOMMENDED_RESOLUTION, with no duplicate values");
+      expect(prompt).toContain("Never include ROOT_CAUSE when rootCause is");
+      expect(prompt).toContain("null. When rootCause is non-null, at least one evidence entry's supports must include");
+      expect(prompt).toContain("ROOT_CAUSE.");
 
       // suggestedActions: array count plus every action type's payload fields.
       expect(prompt).toContain("an array of 0 to 3 entries");
@@ -392,6 +402,47 @@ describe("buildSystemPrompt", () => {
       expect(prompt).toContain('"evidenceState": "INSUFFICIENT"');
       expect(prompt).toContain('"type": "DRAFT_CUSTOMER_REPLY"');
       expect(prompt).toContain('"groundedBy": [{ "evidenceId": "<copied exactly from the tool_result>"');
+    }
+  });
+
+  // Issue #55 (narrow scope) — a real gap flagged by independent review: the
+  // three worked examples above must not just READ as plausible prose, they
+  // must each be a schema-valid ResolutionReportSchema report. Extracts every
+  // top-level `{...}` JSON block from REPORT_FIELD_BOUNDS (the three worked
+  // examples) and parses+validates each one directly, rather than asserting
+  // on substrings.
+  it("every worked example in the prompt is a schema-valid ResolutionReportSchema report", () => {
+    const prompt = buildSystemPrompt("INVESTIGATION", 3);
+    // REPORT_FIELD_BOUNDS's worked examples are complete top-level JSON
+    // objects starting at column 0 and ending at a bare closing brace (with
+    // an optional back-tick immediately after the final one, from the
+    // template literal's own closing delimiter) — extracted via a balanced
+    // brace scan rather than a regex, since the objects nest.
+    const examples: string[] = [];
+    for (let i = 0; i < prompt.length; i++) {
+      if (prompt[i] !== "{" || (i > 0 && prompt[i - 1] !== "\n")) continue;
+      let depth = 0;
+      let end = -1;
+      for (let j = i; j < prompt.length; j++) {
+        if (prompt[j] === "{") depth++;
+        else if (prompt[j] === "}") {
+          depth--;
+          if (depth === 0) {
+            end = j;
+            break;
+          }
+        }
+      }
+      if (end === -1) continue;
+      examples.push(prompt.slice(i, end + 1));
+      i = end;
+    }
+
+    expect(examples).toHaveLength(3);
+    for (const [index, example] of examples.entries()) {
+      const parsed: unknown = JSON.parse(example);
+      const result = ResolutionReportSchema.safeParse(parsed);
+      expect(result.success, `worked example ${index} failed: ${JSON.stringify(!result.success ? result.error.issues : null)}`).toBe(true);
     }
   });
 
@@ -662,7 +713,7 @@ describe("normalizeClaudeMessage", () => {
       confidence: 0.7,
       evidenceState: "SUFFICIENT",
       evidence: [
-        { evidenceId: "tool-execution-001", sourceType: "TOOL_EXECUTION", finding: "Reports DEGRADED." },
+        { evidenceId: "tool-execution-001", sourceType: "TOOL_EXECUTION", finding: "Reports DEGRADED.", supports: [] },
       ],
       recommendationDisposition: "ADVISORY",
     };
