@@ -245,6 +245,7 @@ describe("live smoke bounded multi-step run (MINOR closure fix)", () => {
                   evidenceId: TOOL_CALL_IDS[2],
                   sourceType: "TOOL_EXECUTION",
                   finding: "notification-service reported status DEGRADED.",
+                  supports: ["ROOT_CAUSE"],
                 },
               ],
               evidenceState: "SUFFICIENT",

@@ -13,7 +13,7 @@ const baseReport: StoredResolutionReport = {
   customerImpact: "Some customers saw failed requests.",
   recommendedResolution: "Monitor and escalate if it continues.",
   confidence: 0.75,
-  evidence: [{ evidenceId: "ev-1", sourceType: "TOOL_EXECUTION", finding: "get_service_status completed successfully." }],
+  evidence: [{ evidenceId: "ev-1", sourceType: "TOOL_EXECUTION", finding: "get_service_status completed successfully.", supports: [] }],
   suggestedActions: [],
 };
 
@@ -150,4 +150,70 @@ describe("ReportPanel", () => {
 
   // RUNNING is excluded at the type level now — App.tsx
   // never mounts this component for a RUNNING outcome at all.
+
+  // Issue #55 (narrow scope): evidence groups by the report claim it
+  // declares supporting, instead of one flat list.
+  describe("claim-grouped evidence rendering (Issue #55)", () => {
+    it("renders a legacy row (every entry supports: []) exactly as before, in a single 'Evidence' section", () => {
+      render(<ReportPanel outcome={{ type: "COMPLETED", report: baseReport }} />);
+      expect(screen.getByText("Evidence")).toBeInTheDocument();
+      expect(screen.queryByText("Other evidence")).toBeNull();
+      expect(screen.getByText(/get_service_status completed successfully/)).toBeInTheDocument();
+    });
+
+    it("groups a ROOT_CAUSE-linked entry under Root cause, and leaves an unlinked entry under Other evidence", () => {
+      const report: StoredResolutionReport = {
+        ...baseReport,
+        evidence: [
+          {
+            evidenceId: "ev-1",
+            sourceType: "TOOL_EXECUTION",
+            finding: "the-root-cause-evidence-finding",
+            supports: ["ROOT_CAUSE"],
+          },
+          {
+            evidenceId: "ev-2",
+            sourceType: "RAG_CHUNK",
+            finding: "the-unlinked-evidence-finding",
+            supports: [],
+          },
+        ],
+      };
+      render(<ReportPanel outcome={{ type: "COMPLETED", report }} />);
+
+      // The linked entry appears directly under Root cause...
+      const rootCauseDd = screen.getByText("Root cause").closest("div")?.querySelector("dd");
+      expect(rootCauseDd?.textContent).toContain("the-root-cause-evidence-finding");
+      // ...and the unlinked entry appears under the now-relabeled "Other evidence".
+      expect(screen.getByText("Other evidence")).toBeInTheDocument();
+      const otherDd = screen.getByText("Other evidence").closest("div")?.querySelector("dd");
+      expect(otherDd?.textContent).toContain("the-unlinked-evidence-finding");
+      expect(otherDd?.textContent).not.toContain("the-root-cause-evidence-finding");
+    });
+
+    it("renders an entry under every claim it declares, when it supports more than one — never silently deduplicated", () => {
+      const report: StoredResolutionReport = {
+        ...baseReport,
+        evidence: [
+          {
+            evidenceId: "ev-multi",
+            sourceType: "TOOL_EXECUTION",
+            finding: "the-multi-claim-finding",
+            supports: ["ROOT_CAUSE", "CUSTOMER_IMPACT"],
+          },
+        ],
+      };
+      render(<ReportPanel outcome={{ type: "COMPLETED", report }} />);
+
+      const rootCauseDd = screen.getByText("Root cause").closest("div")?.querySelector("dd");
+      const customerImpactDd = screen.getByText("Customer impact").closest("div")?.querySelector("dd");
+      expect(rootCauseDd?.textContent).toContain("the-multi-claim-finding");
+      expect(customerImpactDd?.textContent).toContain("the-multi-claim-finding");
+    });
+
+    it("keeps the section labeled 'Evidence' (not 'Other evidence') when no entry declares any claim link", () => {
+      render(<ReportPanel outcome={{ type: "COMPLETED", report: baseReport }} />);
+      expect(screen.queryByText("Other evidence")).toBeNull();
+    });
+  });
 });

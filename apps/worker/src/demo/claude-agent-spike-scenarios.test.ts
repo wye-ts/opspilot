@@ -22,7 +22,7 @@ const validReport: ResolutionReport = {
   recommendedResolution: "Monitor notification-service until it recovers.",
   confidence: 0.8,
   evidence: [
-    { evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "notification-service reported DEGRADED." },
+    { evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "notification-service reported DEGRADED.", supports: ["ROOT_CAUSE"] },
   ],
   evidenceState: "SUFFICIENT",
   recommendationDisposition: "ADVISORY",
@@ -170,6 +170,7 @@ describe("runForcedFinalizationProbe", () => {
             evidenceId: "toolu_get_service_status_1",
             sourceType: "TOOL_EXECUTION",
             finding: "invented id, not the real call-1 toolCallId",
+            supports: ["ROOT_CAUSE"],
           },
         ],
       }),
@@ -219,7 +220,7 @@ describe("runForcedFinalizationProbe", () => {
       buildReportSubmissionResult({
         ...validReport,
         evidence: [
-          { evidenceId: "call-999", sourceType: "TOOL_EXECUTION", finding: "wrong id" },
+          { evidenceId: "call-999", sourceType: "TOOL_EXECUTION", finding: "wrong id", supports: ["ROOT_CAUSE"] },
         ],
       }),
     );

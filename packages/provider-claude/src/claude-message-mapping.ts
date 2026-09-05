@@ -186,6 +186,10 @@ required, in addition to whatever the tool schema shows:
   - evidenceId: 1-128 characters.
   - sourceType: exactly "RAG_CHUNK" or "TOOL_EXECUTION".
   - finding: 1-500 characters.
+  - supports: an array of 0 to 3 entries, each exactly one of ROOT_CAUSE, CUSTOMER_IMPACT, or
+    RECOMMENDED_RESOLUTION, with no duplicate values. Never include ROOT_CAUSE when rootCause is
+    null. When rootCause is non-null, at least one evidence entry's supports must include
+    ROOT_CAUSE.
 - recommendationDisposition: ALWAYS required, exactly one of ACTIONABLE or
   ADVISORY — your model-declared judgment of the recommended resolution.
   ACTIONABLE when it is a concrete next step a human/operator can take;
@@ -224,7 +228,7 @@ Example of an ACTIONABLE report (SUFFICIENT, causal, grounded action):
   "evidenceState": "SUFFICIENT",
   "recommendationDisposition": "ACTIONABLE",
   "evidence": [
-    { "evidenceId": "<copied exactly from the tool_result>", "sourceType": "TOOL_EXECUTION", "finding": "get_service_status reported DEGRADED." }
+    { "evidenceId": "<copied exactly from the tool_result>", "sourceType": "TOOL_EXECUTION", "finding": "get_service_status reported DEGRADED.", "supports": ["ROOT_CAUSE"] }
   ],
   "suggestedActions": [
     {
@@ -248,7 +252,7 @@ would be fabrication:
   "evidenceState": "SUFFICIENT",
   "recommendationDisposition": "ADVISORY",
   "evidence": [
-    { "evidenceId": "<copied exactly from the tool_result>", "sourceType": "TOOL_EXECUTION", "finding": "get_service_status reported OPERATIONAL." }
+    { "evidenceId": "<copied exactly from the tool_result>", "sourceType": "TOOL_EXECUTION", "finding": "get_service_status reported OPERATIONAL.", "supports": [] }
   ],
   "suggestedActions": []
 }
@@ -265,7 +269,7 @@ action is appropriate (no sufficiency gate):
   "evidenceState": "INSUFFICIENT",
   "recommendationDisposition": "ACTIONABLE",
   "evidence": [
-    { "evidenceId": "<copied exactly from the tool_result>", "sourceType": "TOOL_EXECUTION", "finding": "get_service_status reported UNKNOWN." }
+    { "evidenceId": "<copied exactly from the tool_result>", "sourceType": "TOOL_EXECUTION", "finding": "get_service_status reported UNKNOWN.", "supports": [] }
   ],
   "suggestedActions": [
     {

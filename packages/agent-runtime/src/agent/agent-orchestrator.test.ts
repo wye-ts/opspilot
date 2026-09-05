@@ -79,6 +79,9 @@ const validReport = {
       evidenceId: "call-1",
       sourceType: "TOOL_EXECUTION",
       finding: "notification-service reported status DEGRADED.",
+      // Issue #55: rootCause is non-null, so at least one entry must declare
+      // ROOT_CAUSE support (2.2b).
+      supports: ["ROOT_CAUSE"],
     },
   ],
   // Issue #60 Checkpoint B: the accepted Checkpoint-A write contract requires
@@ -96,6 +99,9 @@ const validReportWithRagEvidence = {
       evidenceId: "rag-chunk-1",
       sourceType: "RAG_CHUNK",
       finding: "Knowledge base article KB-42 describes this failure mode.",
+      // Issue #55: rootCause (inherited from validReport) is non-null, so
+      // 2.2b requires ROOT_CAUSE support somewhere.
+      supports: ["ROOT_CAUSE"],
     },
   ],
 };
@@ -874,6 +880,11 @@ describe("runAgentOrchestrator", () => {
                 evidenceId: "call-999",
                 sourceType: "TOOL_EXECUTION",
                 finding: "notification-service reported status DEGRADED.",
+                // Issue #55: rootCause (inherited from validReport) is
+                // non-null, so 2.2b requires ROOT_CAUSE support somewhere —
+                // this keeps the report schema-VALID so the test actually
+                // exercises evidence-grounding rejection, not 2.2b.
+                supports: ["ROOT_CAUSE"],
               },
             ],
           },
@@ -931,11 +942,15 @@ describe("runAgentOrchestrator", () => {
                 evidenceId: "call-1",
                 sourceType: "TOOL_EXECUTION",
                 finding: "notification-service reported status DEGRADED.",
+                // Issue #55: rootCause (inherited from validReport) is
+                // non-null, so 2.2b requires ROOT_CAUSE support somewhere.
+                supports: ["ROOT_CAUSE"],
               },
               {
                 evidenceId: "rag-chunk-2",
                 sourceType: "RAG_CHUNK",
                 finding: "Knowledge base article KB-42 describes this failure mode.",
+                supports: [],
               },
             ],
           },
@@ -969,6 +984,11 @@ describe("runAgentOrchestrator", () => {
                 evidenceId: "rag-chunk-unknown",
                 sourceType: "RAG_CHUNK",
                 finding: "Knowledge base article KB-42 describes this failure mode.",
+                // Issue #55: rootCause (inherited from validReport) is
+                // non-null, so 2.2b requires ROOT_CAUSE support somewhere —
+                // this keeps the report schema-VALID so the test exercises
+                // evidence-grounding rejection, not 2.2b.
+                supports: ["ROOT_CAUSE"],
               },
             ],
           },
@@ -1057,7 +1077,7 @@ describe("runAgentOrchestrator — AgentOrchestratorParams invariants", () => {
           rawInput: {
             ...validReport,
             evidence: [
-              { evidenceId: sampleChunk.chunkId, sourceType: "RAG_CHUNK", finding: "Matches." },
+              { evidenceId: sampleChunk.chunkId, sourceType: "RAG_CHUNK", finding: "Matches.", supports: ["ROOT_CAUSE"] },
             ],
           },
         },
@@ -1236,6 +1256,7 @@ describe("runAgentOrchestrator — retrieval integration", () => {
                 evidenceId: sampleChunk.chunkId,
                 sourceType: "RAG_CHUNK",
                 finding: "Runbook describes this exact degradation.",
+                supports: ["ROOT_CAUSE"],
               },
             ],
           },
@@ -1313,6 +1334,7 @@ describe("runAgentOrchestrator — retrieval integration", () => {
                 evidenceId: "runbook-auth-failures-001",
                 sourceType: "RAG_CHUNK",
                 finding: "Not actually retrieved this run.",
+                supports: ["ROOT_CAUSE"],
               },
             ],
           },
@@ -1367,11 +1389,13 @@ describe("runAgentOrchestrator — retrieval integration", () => {
                 evidenceId: "call-1",
                 sourceType: "TOOL_EXECUTION",
                 finding: "notification-service reported status DEGRADED.",
+                supports: ["ROOT_CAUSE"],
               },
               {
                 evidenceId: sampleChunk.chunkId,
                 sourceType: "RAG_CHUNK",
                 finding: "Runbook describes this exact degradation.",
+                supports: [],
               },
             ],
           },
@@ -2258,7 +2282,7 @@ describe("runAgentOrchestrator — bounded multi-step diagnostic loop (issue #57
       buildNToolsThenReportScenario(2, {
         ...validReport,
         evidence: [
-          { evidenceId: "call-2", sourceType: "TOOL_EXECUTION", finding: "notification-service reported status DEGRADED." },
+          { evidenceId: "call-2", sourceType: "TOOL_EXECUTION", finding: "notification-service reported status DEGRADED.", supports: ["ROOT_CAUSE"] },
         ],
       }),
     );
@@ -2277,8 +2301,8 @@ describe("runAgentOrchestrator — bounded multi-step diagnostic loop (issue #57
       buildNToolsThenReportScenario(2, {
         ...validReport,
         evidence: [
-          { evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "first finding" },
-          { evidenceId: "call-2", sourceType: "TOOL_EXECUTION", finding: "second finding" },
+          { evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "first finding", supports: ["ROOT_CAUSE"] },
+          { evidenceId: "call-2", sourceType: "TOOL_EXECUTION", finding: "second finding", supports: [] },
         ],
       }),
     );
@@ -2297,8 +2321,8 @@ describe("runAgentOrchestrator — bounded multi-step diagnostic loop (issue #57
       buildNToolsThenReportScenario(2, {
         ...validReport,
         evidence: [
-          { evidenceId: "call-2", sourceType: "TOOL_EXECUTION", finding: "real finding" },
-          { evidenceId: "call-999", sourceType: "TOOL_EXECUTION", finding: "invented finding" },
+          { evidenceId: "call-2", sourceType: "TOOL_EXECUTION", finding: "real finding", supports: ["ROOT_CAUSE"] },
+          { evidenceId: "call-999", sourceType: "TOOL_EXECUTION", finding: "invented finding", supports: [] },
         ],
       }),
     );
@@ -2393,6 +2417,7 @@ describe("runAgentOrchestrator — evidence-aware continuation (issue #58 Checkp
       evidenceId: string;
       sourceType: "TOOL_EXECUTION";
       finding: string;
+      supports: string[];
     }>;
   }): unknown {
     return {
@@ -2436,6 +2461,7 @@ describe("runAgentOrchestrator — evidence-aware continuation (issue #58 Checkp
         evidenceId: "call-1",
         sourceType: "TOOL_EXECUTION",
         finding: "notification-service reported status DEGRADED.",
+        supports: ["ROOT_CAUSE"],
       },
     ]);
     // The loop stopped after one diagnostic — no second request merely to
@@ -2528,11 +2554,13 @@ describe("runAgentOrchestrator — evidence-aware continuation (issue #58 Checkp
                   evidenceId: "call-1",
                   sourceType: "TOOL_EXECUTION",
                   finding: "unknown-service reported UNKNOWN — inconclusive.",
+                  supports: [],
                 },
                 {
                   evidenceId: "call-2",
                   sourceType: "TOOL_EXECUTION",
                   finding: "notification-service reported status DEGRADED.",
+                  supports: ["ROOT_CAUSE"],
                 },
               ],
             }),
@@ -2585,6 +2613,7 @@ describe("runAgentOrchestrator — evidence-aware continuation (issue #58 Checkp
                 evidenceId: "call-1",
                 sourceType: "TOOL_EXECUTION",
                 finding: "unknown-service status could not be confirmed (UNKNOWN).",
+                supports: [],
               },
             ],
           }),
@@ -2726,9 +2755,9 @@ describe("runAgentOrchestrator — evidence-aware continuation (issue #58 Checkp
               evidenceState: "INSUFFICIENT",
               rootCause: null,
               evidence: [
-                { evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "first check." },
-                { evidenceId: "call-2", sourceType: "TOOL_EXECUTION", finding: "second check." },
-                { evidenceId: "call-3", sourceType: "TOOL_EXECUTION", finding: "third check." },
+                { evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "first check.", supports: [] },
+                { evidenceId: "call-2", sourceType: "TOOL_EXECUTION", finding: "second check.", supports: [] },
+                { evidenceId: "call-3", sourceType: "TOOL_EXECUTION", finding: "third check.", supports: [] },
               ],
             }),
           };
@@ -2785,6 +2814,7 @@ describe("runAgentOrchestrator — evidence-aware continuation (issue #58 Checkp
                 evidenceId: "call-1",
                 sourceType: "TOOL_EXECUTION",
                 finding: "auth-service reported status OPERATIONAL — no degradation found.",
+                supports: [],
               },
             ],
           }),
@@ -2859,6 +2889,7 @@ describe("runAgentOrchestrator — genuine current-run conflict (issue #58 Check
     evidenceId: string;
     sourceType: "TOOL_EXECUTION";
     finding: string;
+    supports: string[];
   }>): unknown {
     return {
       category: "SERVICE_DEGRADATION",
@@ -2915,8 +2946,8 @@ describe("runAgentOrchestrator — genuine current-run conflict (issue #58 Check
           kind: "report_submission",
           usage,
           rawInput: conflictingReportVariant([
-            { evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "payments-gateway reported DEGRADED." },
-            { evidenceId: "call-2", sourceType: "TOOL_EXECUTION", finding: "payments-gateway reported OPERATIONAL." },
+            { evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "payments-gateway reported DEGRADED.", supports: [] },
+            { evidenceId: "call-2", sourceType: "TOOL_EXECUTION", finding: "payments-gateway reported OPERATIONAL.", supports: [] },
           ]),
         },
       ],
@@ -3023,9 +3054,9 @@ describe("runAgentOrchestrator — genuine current-run conflict (issue #58 Check
             kind: "report_submission",
             usage,
             rawInput: conflictingReportVariant([
-              { evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "payments-gateway reported DEGRADED." },
-              { evidenceId: "call-2", sourceType: "TOOL_EXECUTION", finding: "payments-gateway reported OPERATIONAL." },
-              { evidenceId: "call-3", sourceType: "TOOL_EXECUTION", finding: "A third check did not adjudicate the disagreement." },
+              { evidenceId: "call-1", sourceType: "TOOL_EXECUTION", finding: "payments-gateway reported DEGRADED.", supports: [] },
+              { evidenceId: "call-2", sourceType: "TOOL_EXECUTION", finding: "payments-gateway reported OPERATIONAL.", supports: [] },
+              { evidenceId: "call-3", sourceType: "TOOL_EXECUTION", finding: "A third check did not adjudicate the disagreement.", supports: [] },
             ]),
           };
         },

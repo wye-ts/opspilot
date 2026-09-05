@@ -103,7 +103,7 @@ const APPROVAL_ELIGIBLE_REPORT = {
   customerImpact: "Impact.",
   recommendedResolution: "Draft a customer-facing reply acknowledging the diagnostic check for a human to review.",
   confidence: 0.5,
-  evidence: [{ evidenceId: "e-1", sourceType: "TOOL_EXECUTION" as const, finding: "f" }],
+  evidence: [{ evidenceId: "e-1", sourceType: "TOOL_EXECUTION" as const, finding: "f", supports: ["ROOT_CAUSE" as const] }],
   evidenceState: "SUFFICIENT" as const,
   recommendationDisposition: "ACTIONABLE" as const,
   suggestedActions: [

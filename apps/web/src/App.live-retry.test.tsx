@@ -74,7 +74,7 @@ function liveRunDetail(): AgentRunDetail {
         recommendedResolution: "Scale the upstream pool.",
         confidence: 0.6,
         evidence: [
-          { evidenceId: "job-1-call-1", sourceType: "TOOL_EXECUTION", finding: "get_service_status completed." },
+          { evidenceId: "job-1-call-1", sourceType: "TOOL_EXECUTION", finding: "get_service_status completed.", supports: [] },
         ],
         suggestedActions: [],
       },

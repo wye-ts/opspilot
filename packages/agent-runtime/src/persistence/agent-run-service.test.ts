@@ -41,7 +41,7 @@ const VALID_REPORT: ResolutionReport = {
   customerImpact: "Impact",
   recommendedResolution: "Resolution",
   confidence: 0.8,
-  evidence: [{ evidenceId: TOOL_CALL_ID, sourceType: "TOOL_EXECUTION", finding: "Finding" }],
+  evidence: [{ evidenceId: TOOL_CALL_ID, sourceType: "TOOL_EXECUTION", finding: "Finding", supports: ["ROOT_CAUSE"] }],
   suggestedActions: [],
   evidenceState: "SUFFICIENT",
   // Issue #60 Checkpoint B: the new-write contract requires

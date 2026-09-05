@@ -55,10 +55,13 @@ function completedReport(callIds: readonly string[]): ResolutionReport {
     customerImpact: "Impact assessed via repeated diagnostics.",
     recommendedResolution: "Monitor the affected services.",
     confidence: 0.8,
-    evidence: callIds.map((callId) => ({
+    evidence: callIds.map((callId, index) => ({
       evidenceId: callId,
       sourceType: "TOOL_EXECUTION",
       finding: `Tool call ${callId} completed successfully.`,
+      // Issue #55: rootCause is non-null, so at least one entry must declare
+      // ROOT_CAUSE support — the first entry carries it.
+      supports: index === 0 ? ["ROOT_CAUSE"] : [],
     })),
     evidenceState: "SUFFICIENT",
     suggestedActions: [],

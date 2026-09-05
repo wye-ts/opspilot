@@ -51,7 +51,11 @@ const ELIGIBLE_REPORT = {
   customerImpact: "Impact.",
   recommendedResolution: "Draft a customer-facing reply acknowledging the diagnostic check for a human to review.",
   confidence: 0.5,
-  evidence: [{ evidenceId: "e-1", sourceType: "TOOL_EXECUTION", finding: "f" }],
+  evidence: [
+    // Issue #55 §2.2b: rootCause is non-null, so at least one entry must
+    // declare ROOT_CAUSE support on write.
+    { evidenceId: "e-1", sourceType: "TOOL_EXECUTION", finding: "f", supports: ["ROOT_CAUSE"] },
+  ],
   evidenceState: "SUFFICIENT",
   recommendationDisposition: "ACTIONABLE",
   suggestedActions: [

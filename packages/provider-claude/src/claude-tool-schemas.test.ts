@@ -287,6 +287,22 @@ describe("SUBMIT_RESOLUTION_REPORT_TOOL", () => {
     expect(description).toContain("Never invent a locator for groundedBy");
   });
 
+  // Issue #55 (narrow scope): the tool description teaches the per-claim
+  // `supports` contract — closed vocabulary, distinctness, 2.2a, and 2.2b —
+  // because the strict JSON Schema subset cannot express the cross-field
+  // ROOT_CAUSE-linkage semantics.
+  it("teaches the supports claim-linkage rules in the tool description", () => {
+    const description = SUBMIT_RESOLUTION_REPORT_TOOL.description;
+    expect(description).toContain(
+      "declare `supports`: the closed set of report claims it backs (`ROOT_CAUSE`, `CUSTOMER_IMPACT`, `RECOMMENDED_RESOLUTION`)",
+    );
+    expect(description).toContain("`supports` values must be distinct");
+    expect(description).toContain("Never declare `ROOT_CAUSE` support when `rootCause` is null");
+    expect(description).toContain(
+      "When `rootCause` is non-null, at least one evidence entry must declare `ROOT_CAUSE` support",
+    );
+  });
+
   // Issue #60 §4a/§4b: recommendationDisposition is structurally required at the
   // top level (write-required) — asserted on the ACTUAL emitted strict schema.
   it("exposes recommendationDisposition to Claude as a required top-level enum", () => {

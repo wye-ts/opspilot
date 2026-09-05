@@ -30,16 +30,75 @@ export const RecommendationDispositionSchema = z.enum(["ACTIONABLE", "ADVISORY"]
 
 export type RecommendationDisposition = z.infer<typeof RecommendationDispositionSchema>;
 
+// Issue #55 (narrow scope): the closed set of report claims an evidence
+// entry may declare it backs. `summary` is deliberately NOT a linkable claim
+// (docs/reviews/24-issue-55-structured-evidence-plan.md §2.1) — it restates
+// the other fields rather than standing as an independent conclusion.
+export const EvidenceClaimSchema = z.enum([
+  "ROOT_CAUSE",
+  "CUSTOMER_IMPACT",
+  "RECOMMENDED_RESOLUTION",
+]);
+
+export type EvidenceClaim = z.infer<typeof EvidenceClaimSchema>;
+
 // The report's evidence entry = the low-level locator primitive + finding
-// prose. Built from the locator via `.extend()` (Issue #58, Revision 3 P1-1):
-// the locator carries no superRefine, so `.extend()` is safe here, and it
-// preserves `.strict()` — the emitted shape is byte-identical to today's
-// EvidenceReferenceSchema (evidenceId/sourceType/finding, strict).
+// prose + the per-claim links it declares. Built from the locator via
+// `.extend()` (Issue #58, Revision 3 P1-1): the locator carries no
+// superRefine, so `.extend()` is safe here, and it preserves `.strict()`.
+//
+// `supports` carries no `.default([])` here — this is the WRITE shape (Issue
+// #55 §2.1), mirroring the #60 groundedBy write/read split: a producer must
+// always supply the key explicitly (an empty array is a valid, honest
+// declaration — see the "supports: [] is valid on write" decision below),
+// and the read-side StoredResolutionReportSchema below overrides this field
+// with `.default([])` for legacy stored rows that never carried it.
+//
+// Decision (HQ recommendation, owner-confirmed): `supports: []` is valid on
+// write. `evidence` itself carries no `.min(1)` requirement for a truthful
+// zero-evidence report (#58 P1-3); forcing every entry to name a claim would
+// impose a stricter rule on this one field than the rest of the contract
+// uses anywhere else, and would penalize honestly-contextual evidence that
+// doesn't back one specific claim.
 export const EvidenceReferenceSchema = EvidenceLocatorSchema.extend({
   finding: z.string().min(1).max(500),
+  supports: z.array(EvidenceClaimSchema).max(3),
+}).superRefine((entry, ctx) => {
+  // `supports` is a SET, not a list: duplicate claim values within one
+  // entry are rejected (e.g. ["ROOT_CAUSE", "ROOT_CAUSE"]). Expressed as an
+  // addIssue-based superRefine addition, matching the style already used for
+  // groundedBy duplicate detection elsewhere in this file — not a chained
+  // `.refine()` on the array in isolation.
+  if (new Set(entry.supports).size !== entry.supports.length) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["supports"],
+      message: "supports must not repeat the same claim value.",
+    });
+  }
 });
 
 export type EvidenceReference = z.infer<typeof EvidenceReferenceSchema>;
+
+// The READ-side evidence entry: `supports` normalizes a missing legacy key
+// to `[]` (Issue #55 §2.3), the same normalization pattern already used for
+// `groundedBy` on suggested actions (#60). A pre-this-change stored row has
+// no `supports` key at all and must keep reading as "no claim links
+// recorded" rather than failing to read. The duplicate-value superRefine
+// still applies — it has no legacy-compatibility hazard (an absent key
+// normalizes to `[]`, which is trivially non-duplicate).
+const StoredEvidenceReferenceSchema = EvidenceLocatorSchema.extend({
+  finding: z.string().min(1).max(500),
+  supports: z.array(EvidenceClaimSchema).max(3).default([]),
+}).superRefine((entry, ctx) => {
+  if (new Set(entry.supports).size !== entry.supports.length) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["supports"],
+      message: "supports must not repeat the same claim value.",
+    });
+  }
+});
 
 // Issue #60 §4b: the three payload shapes are single-sourced here and shared by
 // the structurally-distinct write and read action schemas below — one source of
@@ -198,7 +257,21 @@ const RESOLUTION_REPORT_SHAPE = {
 //     #60 marker is present;
 //   - duplicate groundedBy check: ALWAYS for every parsed action;
 //   - groundedBy ⊆ report.evidence check: ALWAYS for every parsed action.
-function applyReportEvidenceInvariants({ requireGroundedActions }: { requireGroundedActions: boolean }) {
+function applyReportEvidenceInvariants({
+  requireGroundedActions,
+  requirePositiveRootCauseSupport,
+}: {
+  requireGroundedActions: boolean;
+  // Issue #55 §2.2b — WRITE-ONLY, never applied unconditionally. `true` only
+  // for ResolutionReportSchema (the write contract). Every pre-#58 legacy
+  // stored report with a non-null rootCause has evidence entries with no
+  // `supports` key at all (normalized to `supports: []` on read by
+  // StoredEvidenceReferenceSchema) — an unconditional 2.2b would reject every
+  // one of those historical rows as failing StoredResolutionReportSchema,
+  // making them unreadable through the API/UI. 2.2a (the negative rule) has
+  // no equivalent hazard and stays enforced unconditionally below.
+  requirePositiveRootCauseSupport: boolean;
+}) {
   return (
     report: {
       // Optional-with-undefined under exactOptionalPropertyTypes: the shared
@@ -252,6 +325,46 @@ function applyReportEvidenceInvariants({ requireGroundedActions }: { requireGrou
           message: "ADVISORY requires exactly zero suggested actions.",
         });
       }
+    }
+
+    // 2.5. Evidence claim-linkage invariants (Issue #55 §2.2). Applied to
+    // EVERY entry regardless of legacy/#60-marker status — a `supports`
+    // value is either honestly empty or names a claim that actually holds in
+    // this report; there is no legacy variant of these two rules to gate.
+    //
+    // 2.2a — negative direction: no evidence entry may declare ROOT_CAUSE
+    // support when the report's own rootCause is null. Citing support for a
+    // claim that does not exist is exactly the kind of fabricated-grounding
+    // case #58/#60 already treat as fail-closed. Enforced on BOTH read and
+    // write — it has no legacy-compatibility hazard (a null rootCause is
+    // representable identically on legacy and modern rows).
+    for (const [index, entry] of report.evidence.entries()) {
+      if (report.rootCause === null && entry.supports.includes("ROOT_CAUSE")) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["evidence", index, "supports"],
+          message: "An evidence entry may not declare ROOT_CAUSE support when rootCause is null.",
+        });
+      }
+    }
+
+    // 2.2b — positive direction, WRITE-ONLY (see requirePositiveRootCauseSupport's
+    // doc comment above the factory): when rootCause is non-null, at least
+    // one distinct evidence entry must declare ROOT_CAUSE support. Without
+    // this, a report could assert a definitive root cause while every
+    // evidence entry carries supports: [] — schema-valid, but the new
+    // per-claim contract would be silently optional and the UI could
+    // reproduce today's unlinked-root-cause behavior exactly.
+    if (
+      requirePositiveRootCauseSupport &&
+      report.rootCause !== null &&
+      !report.evidence.some((entry) => entry.supports.includes("ROOT_CAUSE"))
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["evidence"],
+        message: "A non-null rootCause requires at least one evidence entry to declare ROOT_CAUSE support.",
+      });
     }
 
     // 3. Grounding validation — iterates every parsed action REGARDLESS of the
@@ -357,7 +470,9 @@ function applyReportEvidenceInvariants({ requireGroundedActions }: { requireGrou
 export const ResolutionReportSchema = z
   .object(RESOLUTION_REPORT_SHAPE)
   .strict()
-  .superRefine(applyReportEvidenceInvariants({ requireGroundedActions: true }));
+  .superRefine(
+    applyReportEvidenceInvariants({ requireGroundedActions: true, requirePositiveRootCauseSupport: true }),
+  );
 
 // Read-compat ONLY (used solely by fromReportRead): evidenceState optional
 // for pre-#58 rows and recommendationDisposition optional for pre-#60 rows.
@@ -399,10 +514,18 @@ export const StoredResolutionReportSchema = z
     ...RESOLUTION_REPORT_SHAPE,
     evidenceState: EvidenceStateSchema.optional(),
     recommendationDisposition: RecommendationDispositionSchema.optional(),
+    // Issue #55 §2.3: overrides the write-shape `evidence` field with the
+    // legacy-normalizing read element (StoredEvidenceReferenceSchema), the
+    // same spread-and-override pattern already used for suggestedActions
+    // just below — a missing `supports` key normalizes to `[]` rather than
+    // failing to read.
+    evidence: z.array(StoredEvidenceReferenceSchema).max(10),
     suggestedActions: z.array(SuggestedActionSchema).max(3),
   })
   .strict()
-  .superRefine(applyReportEvidenceInvariants({ requireGroundedActions: false }));
+  .superRefine(
+    applyReportEvidenceInvariants({ requireGroundedActions: false, requirePositiveRootCauseSupport: false }),
+  );
 
 export type IncidentCategory = z.infer<typeof IncidentCategorySchema>;
 export type ResolutionReport = z.infer<typeof ResolutionReportSchema>;

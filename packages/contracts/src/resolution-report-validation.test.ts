@@ -15,6 +15,7 @@ const validReport = {
       evidenceId: "call-1",
       sourceType: "TOOL_EXECUTION",
       finding: "notification-service reported status DEGRADED.",
+      supports: ["ROOT_CAUSE"],
     },
   ],
   suggestedActions: [],
