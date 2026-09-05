@@ -25,7 +25,11 @@ const VALID_REPORT = {
   customerImpact: "Impact",
   recommendedResolution: "Resolution",
   confidence: 0.8,
-  evidence: [{ evidenceId: "chunk-1", sourceType: "RAG_CHUNK", finding: "Finding" }],
+  evidence: [
+    // Issue #55 §2.2b: rootCause is non-null, so at least one entry must
+    // declare ROOT_CAUSE support on write.
+    { evidenceId: "chunk-1", sourceType: "RAG_CHUNK", finding: "Finding", supports: ["ROOT_CAUSE"] },
+  ],
   evidenceState: "SUFFICIENT",
   suggestedActions: [],
   // Issue #60 Checkpoint B: the new-write contract requires
