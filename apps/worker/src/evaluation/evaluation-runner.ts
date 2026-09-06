@@ -2,7 +2,7 @@ import opspilotAgentRuntime from "@opspilot/agent-runtime";
 import type { AgentConversationMessage, StoredRunbookChunk } from "@opspilot/agent-runtime";
 import type { InvestigationEventPayload } from "@opspilot/contracts";
 
-import { InMemoryKeywordRunbookRetriever } from "../rag/in-memory-runbook-retriever";
+import { InMemoryKeywordRunbookRetriever } from "../rag";
 import { resolveCorpus } from "./dataset-validation";
 import { alwaysFailsTool } from "./fixtures/always-fails-tool";
 import { buildObservedFacts } from "./observed-facts";

@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import type { StoredRunbookChunk } from "@opspilot/agent-runtime";
 
 import { INJECTION_PROBE_CHUNK, RunbookLoadError, loadDefaultRunbookCorpus } from "../rag";
-import type { RunbookCorpusLoadResult, RunbookLoadErrorCategory } from "../rag/markdown-runbook-loader";
+import type { RunbookCorpusLoadResult, RunbookLoadErrorCategory } from "../rag";
 import { validateEvaluationDataset } from "./dataset-validation";
 import { EVALUATION_CASES } from "./evaluation-dataset";
 import { formatEvaluationReport } from "./evaluation-formatter";

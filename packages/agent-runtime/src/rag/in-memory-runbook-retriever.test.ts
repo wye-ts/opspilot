@@ -1,10 +1,8 @@
-import opspilotAgentRuntime from "@opspilot/agent-runtime";
+import { validateRetrievedChunks } from "./retrieval-validation";
 import { describe, expect, it } from "vitest";
 
 import { InMemoryKeywordRunbookRetriever } from "./in-memory-runbook-retriever";
-import type { StoredRunbookChunk } from "@opspilot/agent-runtime";
-
-const { validateRetrievedChunks } = opspilotAgentRuntime;
+import type { StoredRunbookChunk } from "./runbook-retriever";
 
 // A small, self-contained, multi-topic fixture — not the production
 // Markdown-backed corpus (see load-default-runbook-corpus.test.ts for that),
