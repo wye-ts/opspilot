@@ -1791,6 +1791,14 @@ dd {
   color: var(--color-text-muted);
 }
 
+/* Issue #56 — canonical Agent Activity's failed status (a tool request whose
+   matching TOOL_FAILED arrived, or a terminal/validation failure fact),
+   same danger token the Progress Timeline's own failed nodes already use
+   (.investigation-progress-node--failed above). */
+.trace-timeline-step--failed {
+  color: var(--color-danger-text);
+}
+
 .trace-timeline-label {
   margin: 0;
   /* Final UX Pilot fidelity pass — the reference's text-xs log rows, normal

@@ -2207,7 +2207,7 @@ export function App() {
             Agent activity
           </h2>
         </div>
-        <TraceTimeline trace={run.trace} />
+        <TraceTimeline trace={run.trace} events={events} executionStageDerivation={executionStageDerivation} />
       </section>
     ) : null;
 
