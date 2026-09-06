@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import type { InvestigationEventRecord } from "@opspilot/contracts";
 
 import type { AgentTraceEvent } from "../api/types";
 import { TraceTimeline } from "./TraceTimeline";
@@ -76,5 +77,116 @@ describe("TraceTimeline", () => {
     expect(screen.getByText("Technical details")).toBeInTheDocument();
     expect(screen.getByText("get_service_status")).toBeInTheDocument();
     expect(screen.getByText("call_01")).toBeInTheDocument();
+  });
+});
+
+// Issue #56 — richer Agent Activity sourced from the canonical investigation
+// event stream, gated on the SAME reducer-validated `executionStageDerivation`
+// the Progress Timeline already trusts (never the origin-only marker alone).
+describe("TraceTimeline — canonical investigation events (Issue #56)", () => {
+  it("renders the richer canonical vocabulary, including a type Agent Activity never showed before (TOOL_FAILED)", () => {
+    const events: InvestigationEventRecord[] = [
+      { runId: "run-1", sequence: 1, recordedAt: "2026-01-01T00:00:00.000Z", payload: { type: "RUN_CREATED" } },
+      { runId: "run-1", sequence: 2, recordedAt: "2026-01-01T00:00:01.000Z", payload: { type: "AGENT_STARTED" } },
+      {
+        runId: "run-1",
+        sequence: 3,
+        recordedAt: "2026-01-01T00:00:02.000Z",
+        payload: { type: "TOOL_REQUESTED", toolCallId: "c1", toolName: "get_service_status" },
+      },
+      {
+        runId: "run-1",
+        sequence: 4,
+        recordedAt: "2026-01-01T00:00:03.000Z",
+        payload: { type: "TOOL_FAILED", toolCallId: "c1", toolName: "get_service_status", failureCode: "TOOL_EXECUTION_FAILED" },
+      },
+      {
+        runId: "run-1",
+        sequence: 5,
+        recordedAt: "2026-01-01T00:00:04.000Z",
+        payload: { type: "RUN_FAILED", failureCode: "TOOL_EXECUTION_FAILED", failedStage: "DIAGNOSTIC_EXECUTION" },
+      },
+    ];
+    render(
+      <TraceTimeline
+        trace={[]}
+        events={events}
+        executionStageDerivation={{ kind: "canonical", stages: [] }}
+      />,
+    );
+
+    const items = screen.getAllByRole("listitem");
+    expect(items).toHaveLength(5);
+    expect(items[0]).toHaveTextContent("Investigation created");
+    expect(items[1]).toHaveTextContent("Agent started analyzing the ticket");
+    expect(items[2]).toHaveTextContent("Checking service status");
+    expect(items[4]).toHaveTextContent("Investigation failed");
+
+    // The failed tool request must never show the "running" (in-flight) glyph.
+    const steps = [...document.querySelectorAll(".trace-timeline-step")];
+    expect(steps[2]!.className).not.toContain("running");
+  });
+
+  it("resolves a TOOL_REQUESTED whose matching TOOL_FAILED arrives later to a failed status, not running or completed", () => {
+    const events: InvestigationEventRecord[] = [
+      {
+        runId: "run-1",
+        sequence: 1,
+        recordedAt: "2026-01-01T00:00:00.000Z",
+        payload: { type: "TOOL_REQUESTED", toolCallId: "c1", toolName: "get_service_status" },
+      },
+      {
+        runId: "run-1",
+        sequence: 2,
+        recordedAt: "2026-01-01T00:00:01.000Z",
+        payload: { type: "TOOL_FAILED", toolCallId: "c1", toolName: "get_service_status", failureCode: "TOOL_EXECUTION_FAILED" },
+      },
+    ];
+    const { container } = render(
+      <TraceTimeline trace={[]} events={events} executionStageDerivation={{ kind: "canonical", stages: [] }} />,
+    );
+    const steps = [...container.querySelectorAll(".trace-timeline-step")];
+    expect(steps[0]).toHaveClass("trace-timeline-step--failed");
+    expect(steps[0]!.textContent).toBe("✕");
+  });
+
+  it("gives REPORT_VALIDATED the same completed status as legacy REPORT_GENERATED (strict-superset regression guard)", () => {
+    const events: InvestigationEventRecord[] = [
+      { runId: "run-1", sequence: 1, recordedAt: "2026-01-01T00:00:00.000Z", payload: { type: "RUN_CREATED" } },
+      { runId: "run-1", sequence: 2, recordedAt: "2026-01-01T00:00:01.000Z", payload: { type: "REPORT_VALIDATED" } },
+    ];
+    const { container } = render(
+      <TraceTimeline trace={[]} events={events} executionStageDerivation={{ kind: "canonical", stages: [] }} />,
+    );
+    const steps = [...container.querySelectorAll(".trace-timeline-step")];
+    expect(steps[1]).toHaveClass("trace-timeline-step--completed");
+    expect(steps[1]!.textContent).toBe("✓");
+  });
+
+  it("renders a fail-closed unavailable message for a canonical-invalid stream, never falling back to legacy trace or crashing", () => {
+    const trace: AgentTraceEvent[] = [{ type: "TOOL_REQUESTED", toolCallId: "c1", toolName: "get_service_status" }];
+    const events: InvestigationEventRecord[] = [
+      { runId: "run-1", sequence: 1, recordedAt: "2026-01-01T00:00:00.000Z", payload: { type: "RUN_CREATED" } },
+    ];
+    expect(() =>
+      render(
+        <TraceTimeline
+          trace={trace}
+          events={events}
+          executionStageDerivation={{ kind: "canonical-invalid", lastGoodStages: null }}
+        />,
+      ),
+    ).not.toThrow();
+
+    expect(screen.getByText(/Agent activity detail isn't available/)).toBeInTheDocument();
+    // Never the legacy fallback for corrupt canonical data.
+    expect(screen.queryByText("Checking service status")).toBeNull();
+    expect(screen.queryByRole("list")).toBeNull();
+  });
+
+  it("falls back to the legacy trace when executionStageDerivation is omitted (default prop, zero regression)", () => {
+    const trace: AgentTraceEvent[] = [{ type: "REPORT_GENERATED" }];
+    render(<TraceTimeline trace={trace} />);
+    expect(screen.getByText("Resolution report generated")).toBeInTheDocument();
   });
 });
