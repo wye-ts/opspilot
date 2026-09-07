@@ -69,6 +69,10 @@ COPY --from=build /app/packages/agent-runtime/dist packages/agent-runtime/dist
 COPY --from=build /app/packages/provider-claude/dist packages/provider-claude/dist
 COPY packages/database/prisma            packages/database/prisma
 COPY packages/database/prisma.config.ts  packages/database/prisma.config.ts
+# Runtime data, not build output: apps/api's RUNBOOK_RETRIEVER loads this
+# corpus from disk at startup (issue #72 — see docs/08-cicd-deployment.md
+# §17/§23). Copied from the build context directly, not --from=build.
+COPY runbooks                            runbooks
 COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/opspilot-entrypoint
 
 # Build-time assertions: fail the build now, not at container start. Node's

@@ -1,7 +1,10 @@
 import {
   getServiceStatusTool,
+  type AgentTurnInput,
+  type FakeAgentScenario,
   type FakeProviderTurn,
   type FakeProviderTurnResolver,
+  type RagContextEntry,
 } from "@opspilot/agent-runtime";
 import { AgentTraceEventSchema } from "@opspilot/contracts";
 import type { AgentJobRecord } from "@opspilot/database";
@@ -22,36 +25,93 @@ function buildJob(overrides: Partial<AgentJobRecord> = {}): AgentJobRecord {
 // The scenario's turns array is typed as the §12 union
 // (FakeProviderTurn | FakeProviderTurnResolver)[] because the fake provider
 // accepts either a literal turn or a deterministic function of the turn input.
-// createDeterministicScenario only ever emits literal turns, so these helpers
-// reject a resolver-form entry outright and narrow the literal.
+// Issue #72 §2.4: createDeterministicScenario now ALWAYS emits resolver-form
+// turns (both react to input.conversation's rag_context entry, if any), so
+// these helpers resolve a resolver against a supplied (or default,
+// no-rag-context) AgentTurnInput before narrowing the literal — this is what
+// keeps every pre-#72 assertion below unchanged: it exercises the honest
+// no-match branch, byte-identical to the old static turns.
 type TurnEntry = FakeProviderTurn | FakeProviderTurnResolver;
 
-function isLiteralTurn(entry: TurnEntry | undefined): entry is FakeProviderTurn {
-  return typeof entry !== "function";
+const SAMPLE_RAG_CHUNK: RagContextEntry = {
+  evidenceId: "runbook-billing-invoice-formatting-001",
+  sourceType: "RAG_CHUNK",
+  runbookId: "billing-invoice-formatting-runbook",
+  title: "Billing Invoice Formatting Issues",
+  content: "Describes a known billing invoice PDF formatting failure mode.",
+};
+
+function noRagContextInput(overrides: Partial<AgentTurnInput> = {}): AgentTurnInput {
+  return {
+    turnIndex: 0,
+    phase: "INVESTIGATION",
+    maxOutputTokens: 4096,
+    conversation: [],
+    diagnosticCallsRemaining: 1,
+    ...overrides,
+  };
+}
+
+function ragContextInput(entries: readonly RagContextEntry[] = [SAMPLE_RAG_CHUNK]): AgentTurnInput {
+  return noRagContextInput({ conversation: [{ role: "rag_context", entries }] });
+}
+
+function resolveTurn(entry: TurnEntry | undefined, input: AgentTurnInput): FakeProviderTurn {
+  if (entry === undefined) {
+    throw new Error("expected a scripted turn entry");
+  }
+  return typeof entry === "function" ? entry(input) : entry;
 }
 
 function expectToolRequestTurn(
   turn: TurnEntry | undefined,
+  input: AgentTurnInput = noRagContextInput(),
 ): Extract<FakeProviderTurn, { kind: "diagnostic_tool_requests" }> {
-  if (!isLiteralTurn(turn) || turn.kind !== "diagnostic_tool_requests") {
+  const resolved = resolveTurn(turn, input);
+  if (resolved.kind !== "diagnostic_tool_requests") {
     throw new Error("expected a diagnostic_tool_requests turn");
   }
-  return turn;
+  return resolved;
 }
 
 function expectReportSubmissionTurn(
   turn: TurnEntry | undefined,
+  input: AgentTurnInput = noRagContextInput(),
 ): Extract<FakeProviderTurn, { kind: "report_submission" }> {
-  if (!isLiteralTurn(turn) || turn.kind !== "report_submission") {
+  const resolved = resolveTurn(turn, input);
+  if (resolved.kind !== "report_submission") {
     throw new Error("expected a report_submission turn");
   }
-  return turn;
+  return resolved;
+}
+
+function resolveScenarioTurns(
+  scenario: FakeAgentScenario,
+  input: AgentTurnInput,
+): readonly FakeProviderTurn[] {
+  return scenario.turns.map((entry) => resolveTurn(entry, input));
 }
 
 describe("createDeterministicScenario", () => {
+  // Issue #72 §2.4: both turns are now resolver functions, so two calls'
+  // `turns` arrays hold distinct function instances (never structurally
+  // equal via toEqual) even though they resolve identically for the same
+  // job. "Deterministic/repeatable" now means: resolving both scenarios
+  // against the SAME AgentTurnInput yields identical turn literals — checked
+  // for both the no-rag-context and rag-context cases, so the resolvers'
+  // own determinism (not just the closed-over `report`/`toolCallId`/
+  // `serviceSlug` values) is what's actually under test.
   it("is deterministic/repeatable for the same job", () => {
     const job = buildJob();
-    expect(createDeterministicScenario(job)).toEqual(createDeterministicScenario(job));
+    const scenarioA = createDeterministicScenario(job);
+    const scenarioB = createDeterministicScenario(job);
+    expect(scenarioA.id).toBe(scenarioB.id);
+    expect(resolveScenarioTurns(scenarioA, noRagContextInput())).toEqual(
+      resolveScenarioTurns(scenarioB, noRagContextInput()),
+    );
+    expect(resolveScenarioTurns(scenarioA, ragContextInput())).toEqual(
+      resolveScenarioTurns(scenarioB, ragContextInput()),
+    );
   });
 
   it("derives billing-service from a summary mentioning billing", () => {
@@ -332,6 +392,114 @@ describe("opt-in TICKET-APPROVAL-DEMO suggested action (docs/13-approval-workflo
 
     expect(substringReport.suggestedActions).toEqual([]);
     expect(caseMismatchReport.suggestedActions).toEqual([]);
+  });
+});
+
+// Issue #72 §2.4: both turns are resolver functions that independently derive
+// whatever RAG-dependent content they need from their own AgentTurnInput at
+// call time — the first turn's tool-request assessment and the second turn's
+// report evidence must each truthfully reflect whether a rag_context entry is
+// present in the conversation passed to THAT turn, without either resolver
+// reading or mutating state the other wrote.
+describe("issue #72: rag_context-aware resolvers", () => {
+  it("first turn claims NO_EVIDENCE_YET with an empty supportedBy when no rag_context is present — unchanged from today", () => {
+    const job = buildJob({ ticketContext: { ticketId: "T-11", summary: "billing errors reported" } });
+    const scenario = createDeterministicScenario(job);
+    const firstTurn = expectToolRequestTurn(scenario.turns[0], noRagContextInput());
+    expect(firstTurn.requests[0]?.rawAssessment).toEqual({
+      evidenceState: "INSUFFICIENT",
+      continuationReason: "NO_EVIDENCE_YET",
+      supportedBy: [],
+    });
+  });
+
+  it("first turn cites the retrieved chunk with a truthful STATUS_UNRESOLVED continuationReason when a rag_context entry is present", () => {
+    const job = buildJob({ ticketContext: { ticketId: "T-12", summary: "billing errors reported" } });
+    const scenario = createDeterministicScenario(job);
+    const firstTurn = expectToolRequestTurn(scenario.turns[0], ragContextInput());
+    expect(firstTurn.requests[0]?.rawAssessment).toEqual({
+      evidenceState: "INSUFFICIENT",
+      continuationReason: "STATUS_UNRESOLVED",
+      supportedBy: [{ evidenceId: SAMPLE_RAG_CHUNK.evidenceId, sourceType: "RAG_CHUNK" }],
+    });
+  });
+
+  it("second turn's report keeps exactly today's single TOOL_EXECUTION evidence entry when no rag_context is present", () => {
+    const job = buildJob({ ticketContext: { ticketId: "T-13", summary: "billing errors reported" } });
+    const scenario = createDeterministicScenario(job);
+    const secondTurn = expectReportSubmissionTurn(scenario.turns[1], noRagContextInput());
+    const report = secondTurn.rawInput as DeterministicReportShape;
+    expect(report.evidence).toHaveLength(1);
+    expect(report.evidence[0]?.sourceType).toBe("TOOL_EXECUTION");
+  });
+
+  it("second turn's report adds a RAG_CHUNK evidence entry citing the retrieved chunk id when a rag_context entry is present", () => {
+    const job = buildJob({ ticketContext: { ticketId: "T-14", summary: "billing errors reported" } });
+    const scenario = createDeterministicScenario(job);
+    const secondTurn = expectReportSubmissionTurn(scenario.turns[1], ragContextInput());
+    const report = secondTurn.rawInput as DeterministicReportShape;
+    expect(report.evidence).toHaveLength(2);
+    const ragEntry = report.evidence.find((entry) => entry.sourceType === "RAG_CHUNK");
+    expect(ragEntry?.evidenceId).toBe(SAMPLE_RAG_CHUNK.evidenceId);
+    // The RAG finding must never attribute a returned status value to the
+    // runbook (that belongs to the separate TOOL_EXECUTION entry, and a
+    // runbook document never returns one) — Codex review round-3 finding on
+    // issue #72: the original wording said "its returned status value is not
+    // persisted," which misattributes the tool's limitation to the runbook.
+    expect(ragEntry?.finding).not.toMatch(/status value/i);
+    expect(ragEntry?.finding).toMatch(/does not establish/i);
+    // The original TOOL_EXECUTION entry is preserved unchanged alongside it.
+    expect(report.evidence.some((entry) => entry.sourceType === "TOOL_EXECUTION")).toBe(true);
+    // rootCause stays null in this deterministic scenario (§2.2a): the added
+    // entry must not declare ROOT_CAUSE support for a root cause that doesn't
+    // exist.
+    expect(report.rootCause).toBeNull();
+  });
+
+  it("second turn's RAG finding never attributes a mismatched runbook to the derived service slug", () => {
+    // Codex review round-3 finding (MAJOR): deriveServiceSlug's fixed keyword
+    // order (billing checked before auth) and the real retriever's own
+    // independent ranking can disagree on a mixed-topic summary — e.g.
+    // "billing authentication failures" derives billing-service, but the
+    // retriever might rank an unrelated Authentication Failures runbook
+    // first. The scenario must not assert an evidence-to-service
+    // relationship it never checked.
+    const job = buildJob({
+      ticketContext: { ticketId: "T-16", summary: "billing authentication failures" },
+    });
+    expect(job.ticketContext.summary.toLowerCase().indexOf("billing")).toBeLessThan(
+      job.ticketContext.summary.toLowerCase().indexOf("auth"),
+    ); // confirms billing-service (not auth-service) is what gets derived below
+    const mismatchedRagEntry: RagContextEntry = {
+      evidenceId: "runbook-authentication-failures-001",
+      sourceType: "RAG_CHUNK",
+      runbookId: "authentication-failures-runbook",
+      title: "Authentication Failures",
+      content: "Describes a known auth-service failure mode.",
+    };
+    const scenario = createDeterministicScenario(job);
+    const secondTurn = expectReportSubmissionTurn(scenario.turns[1], ragContextInput([mismatchedRagEntry]));
+    const report = secondTurn.rawInput as DeterministicReportShape;
+    const ragEntry = report.evidence.find((entry) => entry.sourceType === "RAG_CHUNK");
+    // The finding names the runbook the retriever actually returned, but
+    // must not claim it relates to billing-service (the independently
+    // derived, unrelated diagnostic-tool slug) or any other service slug.
+    expect(ragEntry?.finding).toContain("Authentication Failures");
+    expect(ragEntry?.finding).not.toMatch(/billing-service|auth-service|relevant to/i);
+  });
+
+  it("both resolvers see the rag_context entry independently — one turn's input carrying it does not leak into the other turn's default (no-rag-context) resolution", () => {
+    const job = buildJob({ ticketContext: { ticketId: "T-15", summary: "billing errors reported" } });
+    const scenario = createDeterministicScenario(job);
+    // Resolve the report-submission turn WITH rag_context, and the
+    // tool-request turn WITHOUT it — proving neither resolver holds shared
+    // mutable state the other wrote.
+    const firstTurn = expectToolRequestTurn(scenario.turns[0], noRagContextInput());
+    const secondTurn = expectReportSubmissionTurn(scenario.turns[1], ragContextInput());
+    const assessment = firstTurn.requests[0]?.rawAssessment as { continuationReason: string } | undefined;
+    expect(assessment?.continuationReason).toBe("NO_EVIDENCE_YET");
+    const report = secondTurn.rawInput as DeterministicReportShape;
+    expect(report.evidence.some((entry) => entry.sourceType === "RAG_CHUNK")).toBe(true);
   });
 });
 

@@ -1,7 +1,7 @@
 import { Module } from "@nestjs/common";
 import type { NestExpressApplication } from "@nestjs/platform-express";
 import { Test } from "@nestjs/testing";
-import { AgentRunServiceError, type AgentRunService, type ToolRegistry } from "@opspilot/agent-runtime";
+import { AgentRunServiceError, type AgentRunService, type RunbookRetriever, type ToolRegistry } from "@opspilot/agent-runtime";
 import { PersistenceError } from "@opspilot/database";
 import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,6 +22,7 @@ import {
   AGENT_PROVIDER_FACTORY,
   LIVE_RUN_ADMISSION,
   RUN_EXECUTION_CONFIG,
+  RUNBOOK_RETRIEVER,
   TOOL_REGISTRY,
   USAGE_HOOKS,
 } from "../src/execution/execution.tokens";
@@ -47,6 +48,10 @@ const fakeAgentRunService: AgentRunService = {
 };
 const fakeToolRegistry = { find: vi.fn() } as unknown as ToolRegistry;
 const fakeProviderFactory: AgentProviderFactory = { createProvider: vi.fn() };
+// Issue #72: AgentRunsController now also depends on RUNBOOK_RETRIEVER. This
+// suite is about HTTP transport, not retrieval, so a retriever that never
+// returns a chunk is sufficient — the controller must still be constructible.
+const fakeRunbookRetriever: RunbookRetriever = { retrieve: vi.fn().mockResolvedValue([]) };
 // The safest posture a deployment can be in: deterministic by default, no live
 // capability, kill switch off. This suite exercises the HTTP transport, which
 // should not depend on the live path at all — and with this config a stray LIVE
@@ -82,6 +87,7 @@ const fakeAgentRunApprovalService: AgentRunApprovalService = {
     },
     { provide: USAGE_HOOKS, useValue: createApiUsageHooks() },
     { provide: AGENT_RUN_APPROVAL_SERVICE, useValue: fakeAgentRunApprovalService },
+    { provide: RUNBOOK_RETRIEVER, useValue: fakeRunbookRetriever },
   ],
 })
 class HttpTransportTestModule {}

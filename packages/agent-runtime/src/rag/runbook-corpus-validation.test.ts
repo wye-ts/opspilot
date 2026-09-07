@@ -36,6 +36,24 @@ describe("validateStoredRunbookChunks", () => {
     expect(validateStoredRunbookChunks([{ ...validChunk, chunkId: "" }])).toMatch(/chunkId/);
   });
 
+  it("passes for a chunkId at exactly the 128-character bound", () => {
+    const chunkId = `a${"-a".repeat(63)}`; // 127 chars; pad to exactly 128
+    const paddedChunkId = chunkId.padEnd(128, "a");
+    expect(validateStoredRunbookChunks([{ ...validChunk, chunkId: paddedChunkId }])).toBeNull();
+  });
+
+  it("rejects a chunkId longer than the 128-character bound RetrievalSummaryEntrySchema enforces downstream", () => {
+    // Codex review round-3 finding (MAJOR) on issue #72: this loader is now
+    // wired into apps/api's deployed startup path — a corpus that loads
+    // successfully here but produces a chunkId RetrievalSummaryEntrySchema
+    // (packages/contracts) later rejects fails a real run mid-flight instead
+    // of failing container startup loudly.
+    const tooLongChunkId = "a".repeat(129);
+    expect(validateStoredRunbookChunks([{ ...validChunk, chunkId: tooLongChunkId }])).toMatch(
+      /longer than 128 characters/,
+    );
+  });
+
   it("rejects a missing/empty runbookId", () => {
     expect(validateStoredRunbookChunks([{ ...validChunk, runbookId: "" }])).toMatch(/runbookId/);
   });

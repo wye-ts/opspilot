@@ -41,6 +41,16 @@ import { RetrieverError as _RetrieverError } from "./rag/runbook-retriever";
 import { validateRetrievalInput as _validateRetrievalInput, validateRetrievedChunks as _validateRetrievedChunks } from "./rag/retrieval-validation";
 import { formatRagContext as _formatRagContext } from "./rag/rag-context-formatting";
 import { INJECTION_PROBE_CHUNK as _INJECTION_PROBE_CHUNK } from "./rag/injection-probe-fixture";
+import { InMemoryKeywordRunbookRetriever as _InMemoryKeywordRunbookRetriever } from "./rag/in-memory-runbook-retriever";
+import {
+  MarkdownRunbookCorpusLoader as _MarkdownRunbookCorpusLoader,
+  RunbookLoadError as _RunbookLoadError,
+} from "./rag/markdown-runbook-loader";
+import {
+  loadDefaultRunbookCorpus as _loadDefaultRunbookCorpus,
+  resolveDefaultRunbooksDir as _resolveDefaultRunbooksDir,
+} from "./rag/load-default-runbook-corpus";
+import { validateStoredRunbookChunks as _validateStoredRunbookChunks } from "./rag/runbook-corpus-validation";
 
 export const createAgentRunService = _createAgentRunService;
 export const createPrismaAgentRunRepository = _createPrismaAgentRunRepository;
@@ -63,6 +73,12 @@ export const validateRetrievalInput = _validateRetrievalInput;
 export const validateRetrievedChunks = _validateRetrievedChunks;
 export const formatRagContext = _formatRagContext;
 export const INJECTION_PROBE_CHUNK = _INJECTION_PROBE_CHUNK;
+export const InMemoryKeywordRunbookRetriever = _InMemoryKeywordRunbookRetriever;
+export const MarkdownRunbookCorpusLoader = _MarkdownRunbookCorpusLoader;
+export const RunbookLoadError = _RunbookLoadError;
+export const loadDefaultRunbookCorpus = _loadDefaultRunbookCorpus;
+export const resolveDefaultRunbooksDir = _resolveDefaultRunbooksDir;
+export const validateStoredRunbookChunks = _validateStoredRunbookChunks;
 
 export type { AgentRunRepositoryInterface } from "./persistence/agent-run-repository-interface";
 export type {
@@ -144,3 +160,10 @@ export type {
   StoredRunbookChunk,
 } from "./rag/runbook-retriever";
 export type RetrieverError = InstanceType<typeof RetrieverError>;
+export type RunbookLoadError = InstanceType<typeof RunbookLoadError>;
+export type {
+  MarkdownRunbookCorpusLoaderOptions,
+  RunbookCorpusLoader,
+  RunbookCorpusLoadResult,
+  RunbookLoadErrorCategory,
+} from "./rag/markdown-runbook-loader";

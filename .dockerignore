@@ -19,13 +19,16 @@ coverage
 .plans
 .DS_Store
 
-# Documentation, review artifacts, offline evaluation, and runbooks are not
-# runtime dependencies of the deployed API (see docs/08-cicd-deployment.md
-# §23 — the deployed path performs zero runbook retrieval) and must never
-# reach the image.
+# Documentation, review artifacts, and offline evaluation fixtures are not
+# runtime dependencies of the deployed API and must never reach the image.
+#
+# `runbooks/` was excluded here for the same reason until issue #72 wired a
+# deterministic retriever into the deployed apps/api path (see
+# docs/08-cicd-deployment.md §17/§23): the API now loads this corpus at
+# container startup, so it is real runtime data and must reach the image —
+# see the Dockerfile's runtime stage, which COPYs it in directly.
 docs
 evals
-runbooks
 /*.diff
 /*-review-summary.txt
 

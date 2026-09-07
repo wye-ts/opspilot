@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { StoredRunbookChunk } from "@opspilot/agent-runtime";
 
-import { RunbookLoadError } from "../rag/markdown-runbook-loader";
+import { RunbookLoadError } from "../rag";
 import { aggregateMetrics } from "./evaluation-metrics";
 import type { EvaluationScorer } from "./evaluation-scorer";
 import {
