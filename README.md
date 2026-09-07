@@ -110,7 +110,7 @@ only the safe deterministic configuration.
 | Persisted trace and report | Implemented in PostgreSQL | Available through Neon PostgreSQL |
 | Approval recording | Implemented; approve/reject decisions are persisted | Available for the approval demo scenario |
 | Real Claude provider | Implemented for worker scripts and per-run API selection, behind a token, rate limit, concurrency lease, and durable daily budget | Disabled; no public paid model execution |
-| Browser/API RAG | Not wired; RAG exists in worker/offline evaluation paths | Unavailable |
+| Browser/API RAG | Implemented — deterministic retriever wired into both FAKE and LIVE run paths | Available; a matching ticket summary produces `RAG_CHUNK` evidence |
 | Action execution | Not implemented | Unavailable |
 | Authentication/RBAC | Not implemented | Unavailable |
 | Live progress streaming | Not implemented | Unavailable; timeline is returned after synchronous completion |
@@ -179,10 +179,16 @@ See [Agent Run API](docs/12-agent-run-api.md) for the request and error contract
 ### RAG boundary
 
 Runbook retrieval, retrieval validation, evidence grounding, deterministic RAG demos, and offline
-evaluation exist in `apps/worker` and `packages/agent-runtime`; see
-[RAG Design](docs/05-rag-design.md). The public browser/API execution path does not currently
-retrieve runbooks. `apps/api` wires no runbook retriever, and `runbooks/` is excluded from the
-production image.
+evaluation exist in `packages/agent-runtime`; see [RAG Design](docs/05-rag-design.md). Since issue
+[#72](https://github.com/wye-ts/opspilot/issues/72), the public browser/API execution path *does*
+retrieve runbooks: `apps/api` constructs one deterministic `RUNBOOK_RETRIEVER` at container startup
+from the corpus shipped in `runbooks/`, and every run — FAKE or LIVE — resolves a per-ticket query
+against it. A matching ticket summary produces a `RAG_CHUNK` evidence entry in the persisted report;
+a non-matching one produces the same tool-only evidence the deployed path has always produced.
+
+What is still offline-only: `VoyageRunbookRetriever` (real embedding-based semantic search) stays in
+`apps/worker` and is not wired into any deployed path — the deployed retrieval is deterministic
+keyword/token-overlap scoring, not semantic search.
 
 ## Live validation evidence
 
@@ -314,7 +320,8 @@ pnpm --filter @opspilot/worker run test:claude:live
 GitHub Actions runs type checks, unit tests, production builds, the frontend bundle guard,
 PostgreSQL integration tests, migration drift checks, and a Docker smoke workflow. The production
 image serves the React bundle and NestJS API together, runs committed migrations before startup,
-uses a non-root runtime user, and excludes worker source, Voyage AI, and runbooks.
+uses a non-root runtime user, excludes worker source and Voyage AI, and — since issue #72 — ships
+the `runbooks/` corpus the deployed API loads at startup.
 
 The deployed topology is:
 

@@ -399,9 +399,10 @@ middleware is registered in (before Nest's own routing — see
 this exact framework/library combination), and the SPA fallback's own explicit, case-aware `/v1`
 exclusion (below).
 
-`apps/worker` is **not** deployed — it has no build script, the API never imports it, and its
-runbook path resolution is source-relative (see §17). No queue, no second service, no CDN, no
-pgvector.
+`apps/worker` is **not** deployed — it has no build script and the API never imports it. Since
+issue #72, the runbook corpus loader itself lives in `packages/agent-runtime` (not `apps/worker`)
+and IS reachable from the deployed API, which loads it from compiled `dist/` output — see §13's
+boundary table and §23. No queue, no second service, no CDN, no pgvector.
 
 ### Middleware order
 
@@ -488,7 +489,7 @@ individual `node_modules` subdirectories would break them — see
 | A worker **process** | absent — the entrypoint execs the API only |
 | `@anthropic-ai/sdk` | **present** since PR 6B1 — `apps/api` can execute a requested `LIVE` run, so the SDK is part of `@opspilot/api`'s production closure via `@opspilot/provider-claude`. Reachable only from the server-side provider path: `apps/web` depends on neither the SDK nor the provider package, so it cannot enter the browser bundle. CI asserts both directions — the SDK resolves from `packages/provider-claude`, does **not** resolve from `apps/web`, and the web build guard fails on the SDK specifier, on `ANTHROPIC_API_KEY`, and on a literal `sk-ant-*` credential. |
 | `voyageai` | absent — still excluded by the `--filter "@opspilot/api..."` production install |
-| `runbooks/` | absent — the deployed API never reads them (§17) |
+| `runbooks/` | **present** since issue #72 — `apps/api`'s `RUNBOOK_RETRIEVER` loads this corpus at container startup (§23); copied directly from the build context, not compiled output |
 | `.env`, any secret | absent — `.dockerignore` excludes `.env`/`.env.*`; the container reads real environment variables only |
 | `apps/worker/package.json` | **present** — an inert manifest required by the frozen-lockfile workspace install; not worth pruning |
 
@@ -789,18 +790,28 @@ stays explicitly demo-oriented until authentication and abuse controls exist.
 The repository contains real retrieval-augmented-generation work: a provider-neutral
 `RunbookRetriever`, deterministic in-memory retrieval, application-assigned evidence IDs,
 evidence-grounding validation, prompt-injection test scenarios, and file-backed runbooks with
-deterministic ordering. That work is real and is fairly described as repository/offline-evaluation
-work.
+deterministic ordering.
 
-**The first deployed browser flow does not exercise any of it.** `apps/api` wires
-`InMemoryToolRegistry([getServiceStatusTool])` and no retriever at all — runbook loading exists only
-in `apps/worker`, which is not deployed (§12), and `runbooks/` is excluded from the runtime image
-entirely (§13). The deployed FAKE-provider path performs **zero** runbook retrieval.
+**As of issue #72, the deployed browser flow exercises the deterministic half of this work.**
+`packages/agent-runtime` (relocated from `apps/worker` — §13's boundary table) houses the
+`InMemoryKeywordRunbookRetriever` and its corpus loader. `apps/api` constructs one
+`RUNBOOK_RETRIEVER` at container startup from the `runbooks/` corpus shipped in the image (§13),
+and passes it — together with a per-job retrieval query derived from the ticket's own summary —
+into both the FAKE and LIVE `executeAndPersist` call sites. A ticket summary matching a seeded
+runbook topic produces a real `RAG_CHUNK` evidence entry in the persisted report and a
+`RETRIEVAL_COMPLETED` trace event; a non-matching summary produces exactly the tool-only evidence
+the deployed path has always produced. A corpus-load failure at startup fails the container loudly
+rather than silently running retriever-less.
+
+**What remains offline-only:** `VoyageRunbookRetriever` — real embedding-based semantic search —
+stays in `apps/worker` and is not wired into any deployed path (FAKE or LIVE). The deployed
+retrieval is deterministic keyword/token-overlap scoring, not semantic search.
 
 Any description of this system — this document, the README, an architecture diagram, or a résumé
-bullet — must keep that distinction explicit: retrieval is implemented and evaluated **offline**; the
-**public demo** runs the deterministic provider path only. Production/deployed RAG, real embeddings,
-and a real provider are later, unstarted milestones.
+bullet — must keep that distinction explicit: **deterministic** retrieval is wired into the deployed
+API path (both FAKE and LIVE); **semantic/embedding** retrieval is implemented and evaluated
+**offline only** — wiring it into a deployed path, with the external-cost safety envelope a real
+embedding API call would require, is a later, unstarted milestone.
 
 ---
 
