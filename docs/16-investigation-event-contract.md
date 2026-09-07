@@ -82,7 +82,7 @@ Three axes that must never be merged into one enum:
 
 2. **Run status** — `RUNNING | COMPLETED | FAILED`, the existing `AgentRun.status` / `AgentRunOutcome.type` (`packages/database/src/types.ts`, untouched). Orthogonal to stage: status answers "is the run still going," a stage answers "what is it doing." Never a member of the stage enum; it enters the reducer as a separate `runStatus` parameter.
 
-3. **Frontend-only presentation stages** — LIVE-availability preflight and approval loading. Neither has a backend execution event behind it. They remain entirely in `apps/web` and are **not** referenced anywhere in `packages/contracts`. The frontend has not yet adopted this contract at all — that adoption is #38 work.
+3. **Frontend-only presentation stages** — LIVE-availability preflight and approval loading. Neither has a backend execution event behind it. They remain entirely in `apps/web` and are **not** referenced anywhere in `packages/contracts`. (Stale as of #38's merge: the frontend has since adopted the rest of this contract — `apps/web/src/investigation-progress/execution-stage-derivation.ts` imports `deriveExecutionStageProgress`/`hasCanonicalInvestigationLifecycleMarker` directly from `@opspilot/contracts`. Only these two frontend-only presentation stages stay outside it, which was always the intended boundary.)
 
 ---
 

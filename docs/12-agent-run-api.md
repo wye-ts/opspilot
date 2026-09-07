@@ -12,17 +12,19 @@
 
 ## 1. Scope
 
-`apps/api` is a NestJS application exposing eight HTTP endpoints over the persistence and agent-runtime packages built in this and the prior milestone:
+`apps/api` is a NestJS application exposing HTTP endpoints over the persistence and agent-runtime packages built in this and later milestones. **This list was originally "eight endpoints" as of Milestone 6B/6C/production-deployment; two more were added since and are marked below** — 10 endpoints as of issue #72:
 
 ```text
 POST /v1/agent-jobs
 POST /v1/agent-jobs/:jobId/runs
 GET  /v1/agent-jobs/:jobId
+GET  /v1/agent-jobs/:jobId/investigation   # added later — issue #34/#38, Timeline live-progress work
 GET  /v1/agent-runs/:runId
 POST /v1/agent-runs/:runId/approval
 GET  /v1/agent-runs/:runId/approval
 GET  /v1/health/live
 GET  /v1/health/ready
+GET  /v1/capabilities                      # added later — issue #19/#39, LIVE admission/public-trial work
 ```
 
 Milestone 6C (see `docs/13-approval-workflow.md`) adds the approval pair: `POST /v1/agent-runs/:runId/approval` and `GET /v1/agent-runs/:runId/approval`, recording a human approve/reject decision against a completed run's suggested actions. The workflow records a decision only — it never executes, simulates executing, or schedules execution of the approved action.
@@ -47,7 +49,7 @@ This milestone (6B) does **not** add a React UI, a job queue, CI/CD, deployment 
 
 ### Why synchronous `201`, not queue-backed `202`
 
-`POST /v1/agent-jobs/:jobId/runs` runs the full orchestrator loop in the request handler and returns the terminal, persisted result as `201 Created` with a `Location` header pointing at the created run. A future queue-backed design (`docs/03-technical-design.md` §16) would instead enqueue the run and return `202 Accepted` immediately, with the caller polling or subscribing for the terminal result. This milestone deliberately keeps the simpler synchronous shape — the deterministic fake provider always completes in milliseconds, so there is no latency problem to hide behind a queue yet, and a synchronous handler is far simpler to reason about while `apps/api` is still local-only and unauthenticated.
+`POST /v1/agent-jobs/:jobId/runs` runs the full orchestrator loop in the request handler and returns the terminal, persisted result as `201 Created` with a `Location` header pointing at the created run. A future queue-backed design (`docs/03-technical-design.md` §16) would instead enqueue the run and return `202 Accepted` immediately, with the caller polling or subscribing for the terminal result. This milestone deliberately keeps the simpler synchronous shape — the deterministic fake provider always completes in milliseconds, so there is no latency problem to hide behind a queue yet, and a synchronous handler is far simpler to reason about while `apps/api` is still local-only and unauthenticated *at Milestone 6B*. (Auth was added later for LIVE runs specifically — see §7's update note; the synchronous-vs-queued shape itself is unchanged and unrelated to that.)
 
 ---
 
@@ -328,7 +330,14 @@ The scenario's `toolCallId` is `` `${job.id}-call-1` `` — scoped to the **job*
 
 ---
 
-## 7. No-auth warning
+## 7. No-auth warning (Milestone 6B snapshot — superseded, see below)
+
+**This section describes the Milestone 6B state only, before LIVE execution existed.** As of
+Milestone 8 (`docs/08-cicd-deployment.md` §25) the deployed API does have authentication for LIVE
+runs — the private `LIVE_RUN_ACCESS_TOKEN` path and the Turnstile-verified public-trial path — and
+a real live-model code path exists and is reachable on the public deployment today (see
+`README.md` "Provider selection and safety"). The claims below were true only for the
+FAKE-only, pre-Milestone-8 API and are kept for historical record.
 
 `apps/api` has **no authentication, authorization, or network exposure hardening** of its own — this
 remains true regardless of `HOST`. Locally, `HOST` defaults to `127.0.0.1`, so nothing changes for

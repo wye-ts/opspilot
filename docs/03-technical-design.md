@@ -822,7 +822,19 @@ erDiagram
 
 ## 12. API Design
 
-**What actually exists today:** a smaller, local-only, synchronous NestJS API — `apps/api`, exposing exactly four endpoints (`POST /v1/agent-jobs`, `POST /v1/agent-jobs/:jobId/runs`, `GET /v1/agent-jobs/:jobId`, `GET /v1/agent-runs/:runId`) over a deterministic fake LLM provider, no health/tickets/pending-actions/runbooks endpoints, no SSE streaming, no idempotency keys, no auth — is implemented and documented in full in `docs/12-agent-run-api.md`. This section (§12) remains the target design for a *later* milestone; it is not yet built. Read `docs/12-agent-run-api.md` for what is actually running.
+**What actually exists today (stale note, correct as of PR 6B1 only — see below for current state):**
+originally, a smaller, local-only, synchronous NestJS API — `apps/api`, exposing exactly four
+endpoints over a deterministic fake LLM provider, no health/pending-actions/runbooks endpoints, no
+SSE streaming, no idempotency keys, no auth. **Every one of those gaps has since closed**: the API
+now has 9 endpoints across `agent-jobs`, `agent-runs`, `agent-run-approvals`, `health`, and
+`capabilities` controllers; `Idempotency-Key`-equivalent enforcement exists via the mandatory
+`LIVE_RUN_IDEMPOTENCY_KEY_HEADER` on run creation; auth exists via the private
+`LIVE_RUN_ACCESS_TOKEN` path and the Turnstile-verified public-trial path (`docs/08-cicd-deployment.md`
+§25); `/v1/health/live` and `/v1/health/ready` are live and used as the Render health check. **SSE
+streaming is the one gap that genuinely remains open** — progress is client-polled (issue #38), not
+pushed. This section (§12) below still describes an unbuilt SSE/tickets/pending-actions/runbooks
+design beyond what's shipped; treat it as aspirational, not current. Read `docs/12-agent-run-api.md`
+for what is actually running.
 
 ### 12.1 API Conventions
 

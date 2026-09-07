@@ -643,7 +643,9 @@ the public-demo safeguards — shared access token, rate limit, concurrency limi
 budget — to exist first. Adding the key and flipping the switch are deliberately two separate
 actions, so neither alone starts spending.
 Making the public demo live-LLM-capable is a separate milestone with its own safeguards (rate
-limiting, budget controls, protected access) and is explicitly not enabled here.
+limiting, budget controls, protected access); §25.4 covers the private-token rollout and current
+status, and issue #39 (public trial, currently enabled on the deployment) is the separate
+anonymous-visitor path.
 
 Render supplies `PORT` itself; `main.ts` already reads it through the same validated `resolveServerConfig()` used everywhere else (§13 in `docs/12-agent-run-api.md` is unaffected — this is additive).
 
@@ -1024,10 +1026,16 @@ client sent, which would make every rate-limit bucket client-selectable.
 > Until then, treat client-supplied `X-Forwarded-For` as untrusted and rely on
 > the **global daily cap**, not on per-IP limiting.
 
-### 25.4 Remaining rollout steps
+### 25.4 Remaining rollout step (private access-token path)
 
-Each requires explicit owner authorization and none has been performed. **The
-order matters, and step 1 is one step, not two.**
+Steps 1, 2, and 4 below (`ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL`, `ANTHROPIC_MAX_RETRIES=0`,
+`LIVE_AGENT_RUNS_ENABLED=true`) are **shared prerequisites** with the public-trial path (issue
+#39) and are already satisfied — the public trial is enabled on the deployment today (Turnstile-
+verified, one run/visitor/day; see "Provider selection and safety" in `README.md`). Only step 3
+(`LIVE_RUN_ACCESS_TOKEN`) is specific to the **private, owner-token** LIVE path and remains
+outstanding: no token is configured, so that path stays disabled. Step 5 (empirical
+`TRUST_PROXY_HOPS` verification, §25.3) has not been recorded either way. Each remaining step
+requires explicit owner authorization.
 
 1. Set `ANTHROPIC_API_KEY` **and** `ANTHROPIC_MODEL` together, then restart.
 
@@ -1051,10 +1059,14 @@ order matters, and step 1 is one step, not two.**
 5. Verify `TRUST_PROXY_HOPS` empirically (§25.3) and record the result.
 6. Execute one live run and capture the evidence.
 
-Steps 1–3 are all reversible and none of them starts spending: after step 3 the
-deployment is fully configured, still `FAKE`-only, and still refuses every LIVE
-request. Step 4 is the single action that makes paid execution possible.
+Step 3 (`LIVE_RUN_ACCESS_TOKEN`) is the only step outstanding for this private path: steps 1, 2,
+and 4 are already satisfied as shared public-trial prerequisites (see above), so the deployment
+does **not** currently refuse every LIVE request — the public trial path accepts Turnstile-verified
+anonymous requests. Setting the token would additionally open the private path; until it is set,
+an unauthenticated request with no Turnstile token is still refused (no tokenless, unlimited LIVE
+mode — see "Provider selection and safety" in `README.md`).
 
-**The public deployment is not portfolio-ready until live evidence exists.**
-Shipping the safeguards is not the same as demonstrating a live run, and this
-milestone deliberately claims only the former.
+**This section's private-token path specifically remains unexercised on the current deployment**
+— that is what step 3 (`LIVE_RUN_ACCESS_TOKEN`) would close. Live evidence exists for both other
+claims: the private path was exercised and evidenced in a prior controlled rollout (see "Live
+validation evidence" in `README.md`), and the public trial path is live on the deployment today.

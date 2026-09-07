@@ -31,11 +31,12 @@ Render's free service may need time to wake after being idle.
 > including diagnostic tool use, structured report generation, suggested actions, approval handoff,
 > usage/cost persistence, and safe rollback to FAKE-only mode.
 
-Three distinct modes exist, and only one is public today: the **public FAKE demo** above (always
-available, no token, no cost); a **separately verified, owner-only controlled LIVE Claude run**
-(evidence linked below); and a **planned rate-limited public LIVE trial** (heavily limited,
-anonymous, server-authorized — tracked as Milestone 9 issue
-[#39](https://github.com/wye-ts/opspilot/issues/39), not yet built).
+Three distinct modes exist, and two are public today: the **public FAKE demo** above (always
+available, no token, no cost) and a **rate-limited public LIVE trial** (Turnstile-verified,
+one run/visitor/day, small global run and cost ceilings, concurrency 1 — enabled on the public
+deployment per [#39](https://github.com/wye-ts/opspilot/issues/39); `GET /v1/capabilities` reports
+current visitor quota). A **separately verified, owner-only controlled LIVE Claude run** (evidence
+linked below) also exists via the private access-token path.
 
 The public FAKE demo was independently verified against commit `7df3d92` on 2026-08-01 — browser
 walkthrough, health checks, and persistence proof via the public API. See
@@ -161,18 +162,21 @@ reconciliation. Their honest strengths differ and are documented rather than glo
 - **cost figures are a lower bound** — an abandoned-but-billed retry attempt is not observable,
   which is why the public path forbids SDK retries outright.
 
-Three separate conditions must all hold before a paid request is possible, and none implies the
-others: Anthropic configuration present, `LIVE_AGENT_RUNS_ENABLED=true`, and a configured
-`LIVE_RUN_ACCESS_TOKEN`. Adding a key alone does not enable paid execution, and enabling the kill
-switch without a token **fails startup** rather than exposing a tokenless public LIVE path — there
-is no public tokenless mode.
+Two admission paths exist under the same `LIVE_AGENT_RUNS_ENABLED` kill switch, and a request
+uses exactly one: the **private path** (`LIVE_RUN_ACCESS_TOKEN`, for the owner) and the **public
+trial path** (`LIVE_PUBLIC_TRIAL_ENABLED=true`, Turnstile-verified, one run/visitor/day — issue
+[#39](https://github.com/wye-ts/opspilot/issues/39)). Startup fails rather than expose a tokenless
+LIVE path with neither admission control configured — there is no unauthenticated, unlimited LIVE
+mode.
 
-The public Render service sets `AGENT_RUN_PROVIDER_MODE=FAKE` and `LIVE_AGENT_RUNS_ENABLED=false`,
-declares both secrets with no values, and does not provide public paid Claude execution by default.
-A controlled, owner-authorized LIVE run has since been executed and verified against this
-deployment — see [Live validation evidence](#live-validation-evidence) — but public LIVE access
-remains disabled; see [CI/CD and deployment](docs/08-cicd-deployment.md) §25 for the remaining
-rollout steps toward broader LIVE availability, each of which requires explicit owner authorization.
+The public Render service currently runs with the **public trial path enabled**
+(`LIVE_AGENT_RUNS_ENABLED=true`, `LIVE_PUBLIC_TRIAL_ENABLED=true`): any visitor can trigger one
+Turnstile-verified LIVE Claude run per day, bounded by the public daily run/cost ceilings above.
+The **private access-token path remains disabled** (no `LIVE_RUN_ACCESS_TOKEN` configured) — a
+controlled, owner-authorized LIVE run was separately executed and verified against this deployment
+via that path before it was turned back off; see [Live validation evidence](#live-validation-evidence).
+See [CI/CD and deployment](docs/08-cicd-deployment.md) §25 for the safeguard design and rollout
+history, each enablement step requiring explicit owner authorization.
 
 See [Agent Run API](docs/12-agent-run-api.md) for the request and error contracts.
 
@@ -200,8 +204,10 @@ OpsPilot was validated against a real Claude model in a controlled production ro
   strict runtime validation and fail-closed behavior.
 - Re-test: completed successfully in LIVE mode with `get_service_status`, a persisted resolution
   report, two suggested actions, and a pending human-approval decision.
-- Final posture: public LIVE access was disabled again and the deployed demo returned to
-  deterministic FAKE mode.
+- Final posture at the time: the private access-token LIVE path was disabled again and the
+  deployed demo returned to deterministic FAKE mode. (Current status differs: the separate public
+  trial path, issue #39, is enabled today — see "Provider selection and safety" above. The
+  private token path described in this section remains disabled.)
 
 Evidence:
 - [Initial LIVE smoke failure](docs/evidence/06c-live-claude-smoke-failure.md)
@@ -334,23 +340,12 @@ See [CI/CD and Deployment](docs/08-cicd-deployment.md).
 
 ## Roadmap
 
-**Milestone 8 — Real LLM Provider Integration** ([milestone](https://github.com/wye-ts/opspilot/milestone/8)): substantially complete. Protected LIVE Claude execution, access-token protection, rate/concurrency/attempt/budget safeguards, idempotent recovery, and strict report validation are all live. The `REPORT_SCHEMA_INVALID` production issue is fixed and closed (PR [#32](https://github.com/wye-ts/opspilot/pull/32)). One issue remains open: [#25 — capture live deployment evidence and finalize portfolio documentation](https://github.com/wye-ts/opspilot/issues/25).
+**Milestones 1–9** (Docs & Planning through Live Investigation Timeline & Progress UX): closed. Protected LIVE Claude execution, the canonical investigation event contract, incremental trace persistence, timeline polling/resume, and the rate-limited public LIVE trial (#39, enabled on the public deployment — see above) all shipped.
 
-**Milestone 9 — Live Investigation Timeline & Progress UX** ([milestone](https://github.com/wye-ts/opspilot/milestone/9)): upgrades the Investigation Timeline from a post-completion audit trail into the primary live execution feedback surface. Tracked as:
+**Milestone 10 — Visual System Refresh** ([milestone](https://github.com/wye-ts/opspilot/milestone/10)): closed. Refreshed the OpsPilot product identity and provider-card visual system (#41), upgraded evidence into a structured, traceable contract (#55), and mapped real trace data into a richer Agent Activity presentation (#56). See `docs/14-web-ui.md`.
 
-- [#40](https://github.com/wye-ts/opspilot/issues/40) — umbrella: upgrade the investigation timeline into a live progress tracker
-- [#34](https://github.com/wye-ts/opspilot/issues/34) — Phase A: show immediate frontend-known investigation stages
-- [#35](https://github.com/wye-ts/opspilot/issues/35) — progressively reveal report, actions, and approval after execution
-- [#39](https://github.com/wye-ts/opspilot/issues/39) — add a rate-limited public LIVE trial for portfolio visitors (blocked by #34)
-- [#36](https://github.com/wye-ts/opspilot/issues/36) — define the investigation timeline stage and event contract
-- [#37](https://github.com/wye-ts/opspilot/issues/37) — persist investigation stages and trace events incrementally (blocked by #36)
-- [#38](https://github.com/wye-ts/opspilot/issues/38) — poll active runs and resume timeline state after refresh (blocked by #37)
+**Milestone 11 — Agent Investigation Depth & Actionability** ([milestone](https://github.com/wye-ts/opspilot/milestone/11)): closed. Added bounded multi-step diagnostic investigation (#57), made diagnostic continuation depend on evidence sufficiency (#58), aligned suggested actions with report recommendations (#59), and added deterministic evaluation coverage for multi-step investigation (#60).
 
-Execution order: finish remaining Milestone 8 evidence cleanup (#25) → Phase A immediate feedback (#34) → validate with delayed/failure fixtures → rate-limited public LIVE trial (#39) → canonical event contract and incremental persistence (#36, #37) → polling and refresh/reconnect recovery (#38).
+**Milestone 12 — Runbook Retrieval Wired to the Deployed API** ([milestone](https://github.com/wye-ts/opspilot/milestone/12)): closed. Wired runbook retrieval into both the FAKE and LIVE Agent Run API paths (#72) — see the capability table above.
 
-The public LIVE trial keeps three modes distinct: `FAKE` demo (always available), a heavily-limited, server-authorized public LIVE trial (anonymous, one run/visitor/day, small global run and cost ceilings, concurrency 1), and private LIVE (existing owner access token, unchanged).
-
-Deferred (not part of Milestone 9):
-
-- [#41](https://github.com/wye-ts/opspilot/issues/41) — refresh the OpsPilot visual system, backlogged until Timeline hierarchy and interaction are validated; not yet assigned to a milestone (Milestone 10 has not been created).
-- Tabs/workspace navigation remains deferred with no active issue.
+No milestone is currently open. Tabs/workspace navigation and a historical run list remain deferred with no active issue.
