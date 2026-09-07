@@ -5,6 +5,7 @@ import {
   type ExecuteAndPersistResult,
   type ReplayLiveRunResult,
   type RunProviderUsageSummary,
+  type RunbookRetriever,
   type ToolRegistry,
 } from "@opspilot/agent-runtime";
 import {
@@ -26,6 +27,7 @@ import {
   AGENT_RUN_SERVICE,
   LIVE_RUN_ADMISSION,
   RUN_EXECUTION_CONFIG,
+  RUNBOOK_RETRIEVER,
   TOOL_REGISTRY,
   USAGE_HOOKS,
 } from "../execution/execution.tokens";
@@ -39,6 +41,7 @@ import { logEventEmissionFailure } from "../execution/event-emission-log";
 import { logReportValidationFailure } from "../execution/report-validation-log";
 import { createRunAbortHandles } from "../execution/run-abort-context";
 import { PUBLIC_TRIAL_DEFAULTS, type RunExecutionConfig } from "../execution/run-execution-config";
+import { buildRetrievalInput } from "../execution/retrieval-input";
 import type { ApiUsageHooks } from "../execution/usage-hooks";
 import { UuidParamSchema } from "../validation/uuid-param.schema";
 import { ZodParamValidationPipe, ZodValidationPipe } from "../validation/zod-validation.pipe";
@@ -140,6 +143,7 @@ export class AgentRunsController {
     @Inject(RUN_EXECUTION_CONFIG) private readonly config: RunExecutionConfig,
     @Inject(LIVE_RUN_ADMISSION) private readonly admission: LiveRunAdmissionController,
     @Inject(USAGE_HOOKS) private readonly usageHooks: ApiUsageHooks,
+    @Inject(RUNBOOK_RETRIEVER) private readonly retriever: RunbookRetriever,
   ) {}
 
   @Post("agent-jobs/:jobId/runs")
@@ -183,6 +187,12 @@ export class AgentRunsController {
         // locks and returns (see docs/12-agent-run-api.md).
         createProvider: (job) => this.providerFactory.createProvider(job, "FAKE"),
         toolRegistry: this.toolRegistry,
+        // Issue #72 §2.2: the same RUNBOOK_RETRIEVER singleton and per-job
+        // query-derivation reach both the FAKE and LIVE call sites — the
+        // corpus is loaded once at startup and scored in-memory, so wiring it
+        // here carries no per-call external cost (see plan §5, out of scope).
+        retriever: this.retriever,
+        retrievalInputFactory: buildRetrievalInput,
         onReportSchemaInvalid: logReportValidationFailure,
         onEventEmissionFailure: logEventEmissionFailure,
       });
@@ -311,6 +321,10 @@ export class AgentRunsController {
         createProvider: (job, collector) =>
           this.providerFactory.createProvider(job, "LIVE", collector),
         toolRegistry: this.toolRegistry,
+        // Issue #72 §2.2: same retriever/factory as the FAKE call site above —
+        // see that call site's comment.
+        retriever: this.retriever,
+        retrievalInputFactory: buildRetrievalInput,
         outputBudget: this.config.liveRunSafeguards.outputBudget,
         usageHooks: this.usageHooks,
         // PUBLIC (issue #39) is a fixed, non-configurable 1 — never

@@ -39,6 +39,7 @@ import {
 } from "../agent/agent-orchestrator";
 import type { AgentConversationMessage, LlmProvider } from "../providers/llm-provider";
 import { resolveAbortProvenance, type RunAbortContext } from "../providers/run-abort-context";
+import type { RetrievalInput } from "../rag/runbook-retriever";
 import {
   AgentRunConfigurationError,
   AgentRunServiceError,
@@ -237,6 +238,24 @@ export interface ExecuteAndPersistParams<
    */
   readonly createProvider: (job: AgentJobRecord, collector?: TCollector) => LlmProvider;
   readonly modelIdentifier?: string | null;
+  /**
+   * Issue #72 §2.2 (round-2 review correction): resolved into a concrete
+   * `retrievalInput` HERE, immediately after `started.job` becomes available
+   * — the same authoritative locked read this method already performs —
+   * never inside the orchestrator. `AgentOrchestratorParams.retrievalInput`
+   * stays a plain `RetrievalInput`, unchanged, because the orchestrator has
+   * no `AgentJobRecord` in scope to resolve a factory against; advertising a
+   * factory shape it could not execute would reopen the "no
+   * orchestrator/contract change" scope boundary this field exists to avoid.
+   *
+   * Present together with `retriever` or omitted together with it — see the
+   * same all-or-nothing validation `AgentOrchestratorParams` already applies
+   * to `retriever`/`retrievalInput` (agent-orchestrator.ts's
+   * `validateOrchestratorParams`); this field is simply the per-job-derived
+   * source of that value for a caller (apps/api) that only has a `jobId`
+   * until the locked row is read.
+   */
+  readonly retrievalInputFactory?: (job: AgentJobRecord) => RetrievalInput;
   /**
    * REQUIRED, all four, when `providerMode` is `"LIVE"`; FORBIDDEN, all four,
    * otherwise. Optional in the type only because a FAKE call must be able to omit
@@ -762,6 +781,14 @@ export function createAgentRunService(repository: AgentRunRepositoryInterface): 
         summary: started.job.ticketContext.summary,
       };
 
+      // Issue #72 §2.2 (round-2 review correction): resolved HERE, against
+      // the same authoritative `started.job` the ticket context message
+      // above was just built from — never inside the orchestrator, which has
+      // no AgentJobRecord in scope. Absent when the caller supplied no
+      // factory, matching `params.retrievalInput`'s existing optionality.
+      const resolvedRetrievalInput: RetrievalInput | undefined =
+        params.retrievalInputFactory?.(started.job) ?? params.retrievalInput;
+
       // A single signal source. `abortContext.signal` — when supplied — is
       // ALREADY the merged deadline/disconnect signal (see
       // createRunAbortHandles), so it takes precedence over a bare `signal`.
@@ -818,7 +845,7 @@ export function createAgentRunService(repository: AgentRunRepositoryInterface): 
           // be undefined) would fail to typecheck.
           ...(params.allowedRagChunkIds !== undefined ? { allowedRagChunkIds: params.allowedRagChunkIds } : {}),
           ...(params.retriever !== undefined ? { retriever: params.retriever } : {}),
-          ...(params.retrievalInput !== undefined ? { retrievalInput: params.retrievalInput } : {}),
+          ...(resolvedRetrievalInput !== undefined ? { retrievalInput: resolvedRetrievalInput } : {}),
           ...(params.outputBudget !== undefined ? { outputBudget: params.outputBudget } : {}),
           // Scope: this reaches the provider turns only; tool, retrieval, and
           // persistence cancellation are not wired in this milestone.

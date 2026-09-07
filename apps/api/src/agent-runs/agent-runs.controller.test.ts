@@ -1,4 +1,4 @@
-import { AgentRunServiceError, type AgentRunService, type ToolRegistry } from "@opspilot/agent-runtime";
+import { AgentRunServiceError, type AgentRunService, type RunbookRetriever, type ToolRegistry } from "@opspilot/agent-runtime";
 import type { AgentJobRecord, PersistedAgentRun } from "@opspilot/database";
 import { LiveRunAdmissionError, PersistenceError } from "@opspilot/database";
 import { describe, expect, it, vi } from "vitest";
@@ -80,6 +80,15 @@ function buildFakeProviderFactory(): AgentProviderFactory {
   return { createProvider: vi.fn() };
 }
 
+// Issue #72 §2.2: a structural fake for the one seam RUNBOOK_RETRIEVER
+// provides. No test in this file exercises retrieval behavior itself (that
+// lives in agent-orchestrator.test.ts and deterministic-scenario.test.ts) —
+// this fixture exists only so AgentRunsController's constructor is
+// satisfiable; it is never expected to be called.
+function buildFakeRetriever(): RunbookRetriever {
+  return { retrieve: vi.fn().mockResolvedValue([]) };
+}
+
 function buildFakeResponse() {
   // `once`/`off` are what createRequestAbortHandle attaches; a LIVE run needs
   // them, and a FAKE run never touches them. `cookie` is what
@@ -152,6 +161,7 @@ function buildController(
     readonly providerFactory?: AgentProviderFactory;
     readonly isBudgetOpen?: () => Promise<boolean>;
     readonly logDecision?: LiveRunAdmissionDecisionLogger;
+    readonly retriever?: RunbookRetriever;
     // Issue #39 — only meaningful when `config.livePublicTrial.enabled`.
     readonly turnstileVerifier?: Parameters<typeof createLiveRunAdmissionController>[0]["turnstileVerifier"];
     readonly visitorIdentity?: Parameters<typeof createLiveRunAdmissionController>[0]["visitorIdentity"];
@@ -172,6 +182,7 @@ function buildController(
       ...(overrides.visitorIdentity ? { visitorIdentity: overrides.visitorIdentity } : {}),
     }),
     createApiUsageHooks(),
+    overrides.retriever ?? buildFakeRetriever(),
   );
 }
 
