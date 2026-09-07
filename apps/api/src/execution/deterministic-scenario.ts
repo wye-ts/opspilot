@@ -214,7 +214,7 @@ export function createDeterministicScenario(job: AgentJobRecord): FakeAgentScena
         const ragEvidenceEntry: EvidenceReference = {
           evidenceId: ragEntry.evidenceId,
           sourceType: "RAG_CHUNK",
-          finding: `Runbook "${ragEntry.title}" describes a pattern relevant to ${serviceSlug}. Its returned status value is not persisted by this milestone.`,
+          finding: `Runbook "${ragEntry.title}" was matched to this ticket's summary and describes a general pattern relevant to ${serviceSlug}. It does not establish the service's current status — that requires the separate diagnostic tool call.`,
           supports: [],
         };
         return {

@@ -441,6 +441,13 @@ describe("issue #72: rag_context-aware resolvers", () => {
     expect(report.evidence).toHaveLength(2);
     const ragEntry = report.evidence.find((entry) => entry.sourceType === "RAG_CHUNK");
     expect(ragEntry?.evidenceId).toBe(SAMPLE_RAG_CHUNK.evidenceId);
+    // The RAG finding must never attribute a returned status value to the
+    // runbook (that belongs to the separate TOOL_EXECUTION entry, and a
+    // runbook document never returns one) — Codex review round-3 finding on
+    // issue #72: the original wording said "its returned status value is not
+    // persisted," which misattributes the tool's limitation to the runbook.
+    expect(ragEntry?.finding).not.toMatch(/status value/i);
+    expect(ragEntry?.finding).toMatch(/does not establish/i);
     // The original TOOL_EXECUTION entry is preserved unchanged alongside it.
     expect(report.evidence.some((entry) => entry.sourceType === "TOOL_EXECUTION")).toBe(true);
     // rootCause stays null in this deterministic scenario (§2.2a): the added

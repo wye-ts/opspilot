@@ -187,6 +187,11 @@ describe("issue #72: runbook retrieval reaches the deployed FAKE-provider path e
       (entry) => entry.sourceType === "RAG_CHUNK",
     );
     expect(ragEntry?.evidenceId).toBe("runbook-billing-invoice-formatting-001");
+    // Codex review round-3 finding on issue #72: the RAG finding must not
+    // attribute a returned status value to the runbook (a runbook document
+    // never returns one — that limitation belongs to the separate
+    // TOOL_EXECUTION entry, which does describe the tool call).
+    expect(ragEntry?.finding).not.toMatch(/status value/i);
 
     const retrievalEvent = emittedEvents.find((event) => event.type === "RETRIEVAL_COMPLETED");
     if (retrievalEvent?.type !== "RETRIEVAL_COMPLETED") {
