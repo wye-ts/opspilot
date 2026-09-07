@@ -214,7 +214,15 @@ export function createDeterministicScenario(job: AgentJobRecord): FakeAgentScena
         const ragEvidenceEntry: EvidenceReference = {
           evidenceId: ragEntry.evidenceId,
           sourceType: "RAG_CHUNK",
-          finding: `Runbook "${ragEntry.title}" was matched to this ticket's summary and describes a general pattern relevant to ${serviceSlug}. It does not establish the service's current status — that requires the separate diagnostic tool call.`,
+          // Codex review round-3 finding (MAJOR): deriveServiceSlug's
+          // keyword-order guess and the retriever's own independent ranking
+          // can disagree on a mixed-topic summary (e.g. "billing
+          // authentication failures") — asserting the retrieved runbook is
+          // "relevant to ${serviceSlug}" would claim a relationship the
+          // retrieval result itself never established. State only what
+          // retrieval actually proves: this runbook matched the ticket's own
+          // summary text, nothing about which service it pertains to.
+          finding: `Runbook "${ragEntry.title}" was matched to this ticket's summary. It does not establish the service's current status — that requires the separate diagnostic tool call.`,
           supports: [],
         };
         return {

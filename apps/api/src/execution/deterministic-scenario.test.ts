@@ -456,6 +456,38 @@ describe("issue #72: rag_context-aware resolvers", () => {
     expect(report.rootCause).toBeNull();
   });
 
+  it("second turn's RAG finding never attributes a mismatched runbook to the derived service slug", () => {
+    // Codex review round-3 finding (MAJOR): deriveServiceSlug's fixed keyword
+    // order (billing checked before auth) and the real retriever's own
+    // independent ranking can disagree on a mixed-topic summary — e.g.
+    // "billing authentication failures" derives billing-service, but the
+    // retriever might rank an unrelated Authentication Failures runbook
+    // first. The scenario must not assert an evidence-to-service
+    // relationship it never checked.
+    const job = buildJob({
+      ticketContext: { ticketId: "T-16", summary: "billing authentication failures" },
+    });
+    expect(job.ticketContext.summary.toLowerCase().indexOf("billing")).toBeLessThan(
+      job.ticketContext.summary.toLowerCase().indexOf("auth"),
+    ); // confirms billing-service (not auth-service) is what gets derived below
+    const mismatchedRagEntry: RagContextEntry = {
+      evidenceId: "runbook-authentication-failures-001",
+      sourceType: "RAG_CHUNK",
+      runbookId: "authentication-failures-runbook",
+      title: "Authentication Failures",
+      content: "Describes a known auth-service failure mode.",
+    };
+    const scenario = createDeterministicScenario(job);
+    const secondTurn = expectReportSubmissionTurn(scenario.turns[1], ragContextInput([mismatchedRagEntry]));
+    const report = secondTurn.rawInput as DeterministicReportShape;
+    const ragEntry = report.evidence.find((entry) => entry.sourceType === "RAG_CHUNK");
+    // The finding names the runbook the retriever actually returned, but
+    // must not claim it relates to billing-service (the independently
+    // derived, unrelated diagnostic-tool slug) or any other service slug.
+    expect(ragEntry?.finding).toContain("Authentication Failures");
+    expect(ragEntry?.finding).not.toMatch(/billing-service|auth-service|relevant to/i);
+  });
+
   it("both resolvers see the rag_context entry independently — one turn's input carrying it does not leak into the other turn's default (no-rag-context) resolution", () => {
     const job = buildJob({ ticketContext: { ticketId: "T-15", summary: "billing errors reported" } });
     const scenario = createDeterministicScenario(job);
