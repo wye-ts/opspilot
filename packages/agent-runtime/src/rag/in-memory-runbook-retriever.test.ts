@@ -114,6 +114,32 @@ describe("InMemoryKeywordRunbookRetriever", () => {
     expect(results).toEqual([]);
   });
 
+  // Real production failure (LIVE run, 2026-09-07): "i cannot send message to
+  // my client" scored > 0 against three topically unrelated runbook chunks
+  // purely because each one's own prose happened to contain "to" — the only
+  // non-stopword-filtered token the un-fixed tokenizer extracted from this
+  // query. Retrieval then handed those three irrelevant chunks to a LIVE
+  // Claude call as "evidence", which is the proximate cause the run's
+  // PROVIDER_PROTOCOL_INVALID failure traces back to.
+  it("returns an empty array for a query built entirely from stopwords/function words", async () => {
+    const retriever = new InMemoryKeywordRunbookRetriever(FULL_CORPUS);
+    const results = await retriever.retrieve({
+      query: "i cannot send message to my client",
+      topK: 5,
+    });
+    expect(results).toEqual([]);
+  });
+
+  it("still matches on a real topical token even alongside stopwords", async () => {
+    const retriever = new InMemoryKeywordRunbookRetriever(FULL_CORPUS);
+    const results = await retriever.retrieve({
+      query: "I am unable to authenticate and cannot log in",
+      topK: 5,
+    });
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0]?.runbookId).toBe("auth-failures-runbook");
+  });
+
   it("always returns output that passes the shared retrieval validator", async () => {
     const retriever = new InMemoryKeywordRunbookRetriever(FULL_CORPUS);
     const queries = ["notification", "authentication failures", "database connection", "billing invoice"];
