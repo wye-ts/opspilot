@@ -5,7 +5,7 @@ import path from "node:path";
 import { Module } from "@nestjs/common";
 import type { NestExpressApplication } from "@nestjs/platform-express";
 import { Test } from "@nestjs/testing";
-import type { AgentRunService, ToolRegistry } from "@opspilot/agent-runtime";
+import type { AgentRunService, RunbookRetriever, ToolRegistry } from "@opspilot/agent-runtime";
 import type { PrismaClientHandle } from "@opspilot/database";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -24,6 +24,7 @@ import {
   AGENT_PROVIDER_FACTORY,
   LIVE_RUN_ADMISSION,
   RUN_EXECUTION_CONFIG,
+  RUNBOOK_RETRIEVER,
   TOOL_REGISTRY,
   USAGE_HOOKS,
 } from "../src/execution/execution.tokens";
@@ -52,6 +53,11 @@ const fakeAgentRunService: AgentRunService = {
 };
 const fakeToolRegistry = { find: vi.fn() } as unknown as ToolRegistry;
 const fakeProviderFactory: AgentProviderFactory = { createProvider: vi.fn() };
+// Issue #72: AgentRunsController now also depends on RUNBOOK_RETRIEVER. This
+// suite is about static-asset routing, not retrieval, so a retriever that
+// never returns a chunk is sufficient — the controller must still be
+// constructible.
+const fakeRunbookRetriever: RunbookRetriever = { retrieve: vi.fn().mockResolvedValue([]) };
 // The safest posture a deployment can be in: deterministic by default, no live
 // capability, kill switch off. This suite is about static-asset routing and
 // should not depend on the live path at all.
@@ -84,6 +90,7 @@ const fakePrismaHandle = { prisma: { $queryRaw: fakeQueryRaw } } as unknown as P
     },
     { provide: USAGE_HOOKS, useValue: createApiUsageHooks() },
     { provide: PRISMA_CLIENT_HANDLE, useValue: fakePrismaHandle },
+    { provide: RUNBOOK_RETRIEVER, useValue: fakeRunbookRetriever },
   ],
 })
 class StaticAssetsTestModule {}
