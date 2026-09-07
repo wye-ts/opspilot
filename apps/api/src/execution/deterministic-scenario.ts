@@ -1,5 +1,10 @@
-import type { FakeAgentScenario } from "@opspilot/agent-runtime";
-import type { ResolutionReport } from "@opspilot/contracts";
+import type {
+  AgentTurnInput,
+  FakeAgentScenario,
+  FakeProviderTurnResolver,
+  RagContextEntry,
+} from "@opspilot/agent-runtime";
+import type { EvidenceReference, ResolutionReport } from "@opspilot/contracts";
 import type { AgentJobRecord } from "@opspilot/database";
 
 // Bounded, deterministic keyword -> service slug mapping (§12.2). Checked in
@@ -35,6 +40,26 @@ function deriveServiceSlug(summary: string): string {
 
 function truncateSummary(summary: string): string {
   return summary.length > SUMMARY_TRUNCATE_LENGTH ? summary.slice(0, SUMMARY_TRUNCATE_LENGTH) : summary;
+}
+
+// Issue #72 §2.4: both turn resolvers derive whatever RAG-dependent content
+// they need from their OWN AgentTurnInput.conversation at call time — neither
+// reads nor mutates anything the other resolver wrote (FakeProviderTurnResolver's
+// purity contract, and this file's own documented purity invariant above).
+// A rag_context message is injected by the orchestrator at most once, before
+// the first provider call, and only when retrieval returned at least one
+// chunk (agent-orchestrator.ts). This scenario cites exactly the top-ranked
+// (first) entry — the same "one representative citation" scope the plan
+// specifies; it never invents a ranking of its own.
+function findRetrievedRagEntry(
+  conversation: AgentTurnInput["conversation"],
+): RagContextEntry | undefined {
+  for (const message of conversation) {
+    if (message.role === "rag_context" && message.entries.length > 0) {
+      return message.entries[0];
+    }
+  }
+  return undefined;
 }
 
 // A pure function of job.id / job.ticketContext.ticketId / job.ticketContext.summary
@@ -138,26 +163,66 @@ export function createDeterministicScenario(job: AgentJobRecord): FakeAgentScena
   return {
     id: `deterministic-${job.id}`,
     turns: [
-      {
-        kind: "diagnostic_tool_requests",
-        usage: FIXED_TOKEN_USAGE,
-        requests: [
-          {
-            toolCallId,
-            toolName: "get_service_status",
-            input: { serviceSlug },
-            // Issue #58 Checkpoint B: the single diagnostic request runs before
-            // any evidence exists, so its assessment is the run-state-consistent
-            // NO_EVIDENCE_YET claim the orchestrator's V0 + A3 guards require.
-            rawAssessment: {
-              evidenceState: "INSUFFICIENT",
-              continuationReason: "NO_EVIDENCE_YET",
-              supportedBy: [],
+      // Issue #72 §2.4: a resolver, not a static literal — it independently
+      // inspects its own AgentTurnInput.conversation for a rag_context entry
+      // on every invocation. Absent (the honest no-match case): byte-identical
+      // to today's unconditional NO_EVIDENCE_YET claim. Present: the run
+      // already holds RAG evidence by the time this turn is resolved (the
+      // orchestrator injects rag_context before turn 0 — agent-orchestrator.ts),
+      // so the only run-state-consistent claim the A3 guard admits is a
+      // non-NO_EVIDENCE_YET reason citing that evidence — STATUS_UNRESOLVED,
+      // truthfully: this scenario still hasn't invoked get_service_status yet.
+      ((input: AgentTurnInput) => {
+        const ragEntry = findRetrievedRagEntry(input.conversation);
+        return {
+          kind: "diagnostic_tool_requests",
+          usage: FIXED_TOKEN_USAGE,
+          requests: [
+            {
+              toolCallId,
+              toolName: "get_service_status",
+              input: { serviceSlug },
+              rawAssessment:
+                ragEntry === undefined
+                  ? {
+                      evidenceState: "INSUFFICIENT",
+                      continuationReason: "NO_EVIDENCE_YET",
+                      supportedBy: [],
+                    }
+                  : {
+                      evidenceState: "INSUFFICIENT",
+                      continuationReason: "STATUS_UNRESOLVED",
+                      supportedBy: [{ evidenceId: ragEntry.evidenceId, sourceType: "RAG_CHUNK" }],
+                    },
             },
-          },
-        ],
-      },
-      { kind: "report_submission", usage: FIXED_TOKEN_USAGE, rawInput: report },
+          ],
+        };
+      }) satisfies FakeProviderTurnResolver,
+      // Issue #72 §2.4: likewise a resolver — `report` above is the honest
+      // no-match baseline, closed over here but never mutated; this builds a
+      // FRESH report value on every invocation, appending one RAG_CHUNK
+      // evidence entry (citing the same chunk the first turn's resolver saw)
+      // only when this turn's own conversation carries a rag_context entry.
+      // rootCause stays null either way (§2.2a: an entry may not declare
+      // ROOT_CAUSE support when rootCause is null), so the added entry's
+      // `supports` is always [].
+      ((input: AgentTurnInput) => {
+        const ragEntry = findRetrievedRagEntry(input.conversation);
+        if (ragEntry === undefined) {
+          return { kind: "report_submission", usage: FIXED_TOKEN_USAGE, rawInput: report };
+        }
+        const ragEvidenceEntry: EvidenceReference = {
+          evidenceId: ragEntry.evidenceId,
+          sourceType: "RAG_CHUNK",
+          finding: `Runbook "${ragEntry.title}" describes a pattern relevant to ${serviceSlug}. Its returned status value is not persisted by this milestone.`,
+          supports: [],
+        };
+        return {
+          kind: "report_submission",
+          usage: FIXED_TOKEN_USAGE,
+          rawInput: { ...report, evidence: [...report.evidence, ragEvidenceEntry] },
+        };
+      }) satisfies FakeProviderTurnResolver,
     ],
   };
 }
