@@ -51,11 +51,15 @@ import {
   BM25RunbookRetriever as _BM25RunbookRetriever,
   DEFAULT_BM25_RETRIEVER_MIN_SCORE as _DEFAULT_BM25_RETRIEVER_MIN_SCORE,
 } from "./rag/bm25-runbook-retriever";
-import { computeCorpusContentHash as _computeCorpusContentHash } from "./rag/corpus-content-hash";
+import { computeCorpusContentHash as _computeCorpusContentHash, sha256 as _sha256 } from "./rag/corpus-content-hash";
 import {
   computeRetrieverFingerprint as _computeRetrieverFingerprint,
   CURRENT_RETRIEVER_FINGERPRINTS as _CURRENT_RETRIEVER_FINGERPRINTS,
 } from "./rag/retriever-fingerprints";
+import {
+  cosineSimilarity as _cosineSimilarity,
+  l2Norm as _l2Norm,
+} from "./rag/cosine-similarity";
 import {
   STOPWORDS as _STOPWORDS,
   tokenize as _tokenize,
@@ -102,8 +106,11 @@ export const tokenize = _tokenize;
 export const tokenizeQuery = _tokenizeQuery;
 export const STOPWORDS = _STOPWORDS;
 export const computeCorpusContentHash = _computeCorpusContentHash;
+export const sha256 = _sha256;
 export const computeRetrieverFingerprint = _computeRetrieverFingerprint;
 export const CURRENT_RETRIEVER_FINGERPRINTS = _CURRENT_RETRIEVER_FINGERPRINTS;
+export const cosineSimilarity = _cosineSimilarity;
+export const l2Norm = _l2Norm;
 export const MarkdownRunbookCorpusLoader = _MarkdownRunbookCorpusLoader;
 export const RunbookLoadError = _RunbookLoadError;
 export const loadDefaultRunbookCorpus = _loadDefaultRunbookCorpus;

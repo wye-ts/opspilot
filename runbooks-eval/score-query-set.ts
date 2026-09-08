@@ -40,7 +40,6 @@
  *     undefined for a query with no correct answer.
  */
 
-import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
@@ -48,7 +47,7 @@ import {
   BM25RunbookRetriever,
   DEFAULT_BM25_RETRIEVER_MIN_SCORE,
 } from "../packages/agent-runtime/src/rag/bm25-runbook-retriever";
-import { computeCorpusContentHash } from "../packages/agent-runtime/src/rag/corpus-content-hash";
+import { computeCorpusContentHash, sha256 } from "../packages/agent-runtime/src/rag/corpus-content-hash";
 import {
   DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE,
   InMemoryKeywordRunbookRetriever,
@@ -92,15 +91,12 @@ export interface QuerySetScores {
   readonly retrievers: Readonly<Record<string, RetrieverScores>>;
 }
 
-function sha256(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
-}
-
-// computeCorpusContentHash lives in packages/agent-runtime (imported above)
-// rather than here, because apps/worker's eval CLI must re-derive the SAME
-// hash from its own freshly-loaded corpus at run time — a second copy would
-// defeat the freshness check the first time either was edited. See that
-// module's comment. computeRetrieverFingerprint/CURRENT_RETRIEVER_FINGERPRINTS
+// computeCorpusContentHash/sha256 live in packages/agent-runtime (imported at
+// the top of this file) rather than being defined here, because apps/worker's
+// eval CLI must re-derive the SAME hash from its own freshly-loaded corpus at
+// run time — a second copy would defeat the freshness check the first time
+// either was edited. See that module's comment.
+// computeRetrieverFingerprint/CURRENT_RETRIEVER_FINGERPRINTS
 // (retriever-fingerprints.ts, also in the shared package) follow the same
 // rule for retriever CONFIGURATION freshness (Codex-review MAJOR fix,
 // verified against source: without a shared fingerprint source, this
