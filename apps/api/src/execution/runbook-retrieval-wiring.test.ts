@@ -246,12 +246,27 @@ describe("issue #72: runbook retrieval reaches the deployed FAKE-provider path e
   // call as retrieved evidence. Runs the REAL on-disk corpus (not a synthetic
   // fixture) through the same wiring the deployed API uses, proving the fix
   // holds against production data, not just the unit-test corpus.
+  //
+  // Query note (updated for issue #74's corpus expansion): the original
+  // production repro string itself contains real content tokens ("send",
+  // "message", "client") that happened not to match anything in the 5-file
+  // corpus this test was first written against — it was never actually a
+  // pure-stopword query, just one that got lucky. Growing the corpus to 16
+  // files legitimately introduced matches for "send" (notification-rate-limit)
+  // and "client" (storage-upload-corruption), which is correct retriever
+  // behavior, not a regression — those ARE real topical tokens once a chunk
+  // using them exists. This query is a different, deliberately verified
+  // all-stopword string (every token confirmed to be in
+  // in-memory-runbook-retriever.ts's own STOPWORDS list) that preserves the
+  // test's actual intent — a query with zero non-stopword tokens must
+  // retrieve nothing against the real corpus — without depending on which
+  // content tokens future runbooks may or may not introduce.
   it("a ticket summary built entirely from function words retrieves nothing and completes with tool-only evidence", async () => {
     const job: AgentJobRecord = {
       id: "33333333-3333-3333-3333-333333333333",
       ticketContext: {
         ticketId: "TICKET-RAG-WIRING-3",
-        summary: "i cannot send message to my client.",
+        summary: "this is not what we were doing and it cannot be about that.",
       },
       externalTicketId: "TICKET-RAG-WIRING-3",
       createdAt: "2026-01-01T00:00:00.000Z",

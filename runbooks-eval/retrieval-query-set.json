@@ -170,7 +170,7 @@
     {
       "id": "q-nearmiss-004",
       "group": "near_miss",
-      "query": "outbound sends rejected once the tenant allowance is exceeded",
+      "query": "outbound sends rejected once the tenant allowance reaches capacity like a full bucket",
       "expectedChunkIds": ["runbook-notification-rate-limit-001"],
       "distractorChunkIds": ["runbook-storage-quota-exhaustion-001"]
     },
