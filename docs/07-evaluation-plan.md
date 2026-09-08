@@ -6,7 +6,7 @@
 | Version | 2.0 |
 | Status | Implemented |
 | Project | OpsPilot |
-| Purpose | Describe the fully offline, deterministic evaluation harness that regression-tests the RAG + agent vertical slice: the fixed 20-case dataset, the stage-aware evaluator, the fifteen aggregate metrics (six legacy + nine Milestone-11), the three-state check outcome model, and the CLI report |
+| Purpose | Describe the fully offline, deterministic evaluation harness that regression-tests the RAG + agent vertical slice: the fixed 22-case dataset, the stage-aware evaluator, the fifteen aggregate metrics (six legacy + nine Milestone-11), the three-state check outcome model, and the CLI report |
 | Related Documents | `docs/04-agent-design.md`, `docs/05-rag-design.md` §10, `docs/10-engineering-challenges.md` §4 (Challenge 2), `services/evaluation/README.md` (Python evaluation service, §10 below) |
 
 ---
@@ -61,11 +61,12 @@ Modules, under `apps/worker/src/evaluation/`:
 | `types.ts` | `EvaluationCase`, `EvaluationExpectations`, `CorpusProfile`, `ToolProfile`, `EvaluationCaseResult`, `EvaluationCheckResult`, `EvaluationMetrics` (six original + nine #59 ratio fields), and the harness-wide constant `EVALUATION_TOP_K = 3`. |
 | `v2-types.ts` | The active v2 cross-language contract: `EVALUATION_CONTRACT_VERSION = 2`, `EVALUATION_DATASET_ID = "opspilot-deterministic-v2"`, `EvaluationCheckV2` (three-state discriminated union), `EvaluationSuiteInputV2`/`ResultV2`. |
 | `fixtures/always-fails-tool.ts` | `alwaysFailsTool` — an evaluation-only `DiagnosticToolDefinition` whose `execute()` always throws. Never registered in production/demo/live-spike wiring. |
+| `fixtures/adversarial-tool-output-tool.ts` | `adversarialToolOutputTool` — an evaluation-only-by-default `DiagnosticToolDefinition` reusing the real `get_service_status` NAME but returning adversarial content. Also deliberately reused (intra-package import, not a new cross-package dependency) by the live-spike script's Scenario C — see Issue #77 §2.1. |
 | `cases/topic-runbook-cases.ts` | Cases 1–6: per-topic retrieval + tool + report, plus the irrelevant-query case (extended by #59). |
-| `cases/evidence-grounding-cases.ts` | Cases 7, 8, 15: fabricated RAG evidence, fabricated tool evidence, and the injection-probe case. |
+| `cases/evidence-grounding-cases.ts` | Cases 7, 8, 15, 21, 22: fabricated RAG evidence, fabricated tool evidence, the injection-probe case, fabricated tool-output evidence, and adversarial tool-input shape. |
 | `cases/protocol-and-failure-cases.ts` | Cases 9–14: unknown tool, invalid input, protocol error, missing final report, tool execution failure, malformed report. |
 | `cases/checkpoint-b-cases.ts` | Cases 16–20: the five #59 Milestone-11 cases. |
-| `evaluation-dataset.ts` | Assembles the 20 cases into `EVALUATION_CASES`, in the fixed approved order. |
+| `evaluation-dataset.ts` | Assembles the 22 cases into `EVALUATION_CASES`, in the fixed approved order. |
 | `dataset-validation.ts` | `validateEvaluationDataset(...)` — every structural rule in §5, including bounded case-id slug validation, using only fixed messages; also exports `resolveCorpus`, shared with the runner. |
 | `recording-tool-registry.ts` | `createRecordingToolRegistry(...)` — wraps each tool's `execute()` to record `{toolName, input}` (and, on success, `output`) before delegating, without altering lookup/execute behavior. |
 | `recording-provider.ts` | `createRecordingProvider(...)` — records a `runAgentTurn` attempt **before** delegating (so a thrown provider call is still counted) and stamps the returned `usage` on success. |
@@ -78,7 +79,7 @@ Modules, under `apps/worker/src/evaluation/`:
 | `legacy-v1/` | The frozen v1 offline oracle: `v1-types.ts`, `evaluator-v1.ts`, `metrics-v1.ts`, `local-scorer-v1.ts`, `parity-v1.test.ts`. Unwired from the active runtime. |
 | `run-eval.ts` | CLI composition root: `runEvaluation` (load corpus, validate, run), `resolveEvaluationRun` (the sole catch boundary), `renderEvaluationOutput`, `main()`. See §7. |
 
-## 3. Case Inventory (20 cases, fixed order)
+## 3. Case Inventory (22 cases, fixed order)
 
 | # | Case ID | Corpus | Tool profile | Status / code |
 |---|---|---|---|---|
@@ -102,20 +103,31 @@ Modules, under `apps/worker/src/evaluation/`:
 | 18 | `unknown-telemetry-insufficient` | default | default | completed |
 | 19 | `conflicting-signals-unresolved` | default | default | completed |
 | 20 | `bound-exhausted-finalization` | default | default | completed |
+| 21 | `fabricated-tool-output-evidence` | default | with-adversarial-tool-output | failed / `REPORT_EVIDENCE_INVALID` |
+| 22 | `adversarial-tool-input-shape` | default | default | failed / `TOOL_INPUT_INVALID` |
 
 Cases 1–6 exercise retrieval + tool + report end to end, using queries built
 from a target chunk's exact title tokens (the deterministic keyword
 retriever scores a title-token match at `+2`, a content-token match at `+1`)
-so the expected top-ranked chunk is provably dominant. Cases 7, 8, and 15
-each submit a schema-valid report citing evidence that was never actually
-produced in that run — a real-but-unretrieved chunk id, another case's
-tool-execution id, and a fabricated id planted inside adversarial retrieved
-content, respectively — proving evidence grounding rejects all three the
-same way. Cases 9–14 exercise the orchestrator's failure paths: unknown
-tool, invalid tool input, a malformed multi-request turn, a tool request on
-the required-report turn, a tool whose execution throws, and a
+so the expected top-ranked chunk is provably dominant. Cases 7, 8, 15, and
+21 each submit a schema-valid report citing evidence that was never
+actually produced in that run — a real-but-unretrieved chunk id, another
+case's tool-execution id, a fabricated id planted inside adversarial
+retrieved content, and a fabricated id planted inside adversarial tool
+OUTPUT content, respectively — proving evidence grounding rejects all four
+the same way regardless of which channel (RAG or tool) carried the
+adversarial payload. Cases 9–14 exercise the orchestrator's failure paths:
+unknown tool, invalid tool input, a malformed multi-request turn, a tool
+request on the required-report turn, a tool whose execution throws, and a
 schema-invalid report body. Cases 16–20 are the #59 Milestone-11 cases
-added at Checkpoint B (§11).
+added at Checkpoint B (§11). Cases 21–22 are the Issue #77 structural
+adversarial-case-expansion additions: case 21 closes the tool-output-channel
+gap in the fabricated-evidence coverage that cases 7/8 already exercise for
+RAG/tool-execution IDs; case 22 proves the real `get_service_status` tool's
+`.strict()` input schema rejects an attacker-plausible extra field
+(`adminOverride`), not merely a degenerate bad value (case 10's empty
+string).
+
 
 ### 3.1 The eight required scenario classes
 
@@ -153,8 +165,12 @@ negative evaluator vectors (§11.6).
 Each case declares a `CorpusProfile` (`"default"` → the real loaded
 Markdown corpus; `"injection-probe"` → exactly `[INJECTION_PROBE_CHUNK]`), a
 `ToolProfile` (`"default"` → `get_service_status`; `"with-always-fails-tool"`
-→ that plus the evaluation-only `always_fails` fixture), a `FakeAgentScenario`
-(the exact turns fed to the real orchestrator), and `EvaluationExpectations`.
+→ that plus the evaluation-only `always_fails` fixture;
+`"with-adversarial-tool-output"` → the evaluation-only
+`adversarial_tool_output` fixture, reusing the real `get_service_status`
+tool NAME but backed by adversarial content, in place of the real tool —
+see Issue #77 §2.1), a `FakeAgentScenario` (the exact turns fed to the real
+orchestrator), and `EvaluationExpectations`.
 
 Expectations split into two categories:
 
@@ -400,7 +416,7 @@ LLM/embedding provider).
   — every case in this dataset uses a valid, in-bounds query/topK.
 - `TOOL_OUTPUT_INVALID` is not exercised — `get_service_status`'s output is
   always schema-valid.
-- This is a fixed, 20-case regression harness, not a statistical quality
+- This is a fixed, 22-case regression harness, not a statistical quality
   benchmark, an LLM-as-a-judge system, or a large-scale evaluation corpus.
 - No live Claude or Voyage evaluation and no dashboard are part of this
   slice. Persistence is no longer deferred — see §10: the default `SERVICE`
@@ -667,7 +683,7 @@ side of the exact-bound state is exercised there instead.
 
 ### 11.6 Negative evaluator vectors
 
-The 20-case acceptance dataset is green by construction. Proof that the
+The 22-case acceptance dataset is green by construction. Proof that the
 metrics reject bad shapes lives in a dedicated, shared negative-vector
 fixture — `apps/worker/src/evaluation/fixtures/negative-vectors-v2.json` — a
 list of synthetic `{ id, expectations, observed, expectedFailures }` scorer
