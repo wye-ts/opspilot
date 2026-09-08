@@ -32,11 +32,24 @@ const EXPECTED_CASE_IDS = [
   "unknown-telemetry-insufficient",
   "conflicting-signals-unresolved",
   "bound-exhausted-finalization",
+  // Issue #77 §2.3 — two new structural adversarial cases (positions 21-22),
+  // appended at the true end of the fixed order.
+  "fabricated-tool-output-evidence",
+  "adversarial-tool-input-shape",
 ];
 
 describe("EVALUATION_CASES", () => {
-  it("contains exactly the 20 approved case ids, in the approved order", () => {
+  it("contains exactly the 22 approved case ids, in the approved order", () => {
     expect(EVALUATION_CASES.map((evaluationCase) => evaluationCase.id)).toEqual(EXPECTED_CASE_IDS);
+  });
+
+  // Issue #77 §4 (Codex-review round-1 BLOCKER missingTest): proves the two
+  // new cases occupy the true end of the fixed order (positions 21/22 of
+  // 22), not merely that SOME 22-entry array contains their ids somewhere.
+  it("places the two new structural cases at positions 21 and 22", () => {
+    expect(EVALUATION_CASES).toHaveLength(22);
+    expect(EVALUATION_CASES[20]?.id).toBe("fabricated-tool-output-evidence");
+    expect(EVALUATION_CASES[21]?.id).toBe("adversarial-tool-input-shape");
   });
 
   it("has no duplicate case ids", () => {
@@ -134,7 +147,7 @@ describe("EVALUATION_CASES", () => {
     expect(case5Action.payload.body).not.toMatch(/working on a fix/i);
   });
 
-  it("passes every declared expectation for all 20 cases when run against the real corpus and real components", async () => {
+  it("passes every declared expectation for all 22 cases when run against the real corpus and real components", async () => {
     const corpusLoad = await loadDefaultRunbookCorpus();
 
     const caseInputs = await runEvaluationSuite({
@@ -149,24 +162,25 @@ describe("EVALUATION_CASES", () => {
     expect(failures).toEqual([]);
 
     const metrics = suiteResult.metrics;
-    expect(metrics.totalCases).toBe(20);
-    expect(metrics.passedCases).toBe(20);
+    expect(metrics.totalCases).toBe(22);
+    expect(metrics.passedCases).toBe(22);
     expect(metrics.failedCases).toBe(0);
-    // The six v1 ratios are scope-based (cases declaring the relevant
-    // expectation). The 5 new cases shift the scopes as follows:
-    //   retrievalTop1: +4 (cases 16,17,19,20 declare expectedTop1; case 18 is
-    //     expectedNoResults) -> 10/10
-    //   retrievalHitAt3: +2 (cases 16,19 declare expectedInTopK) -> 4/4
-    //   schemaHandlingCorrectness: +5 (every new case declares schemaExpectation) -> 15/15
-    //   evidenceGroundingCorrectness: +5 -> 14/14
-    //   toolCorrectness: +5 (every new case declares tool expectations) -> 16/16
-    //   expectedStatusCorrectness: +5 -> 20/20
+    // The two new Issue #77 structural cases shift the six v1 ratio scopes
+    // as follows (both declare tool + schema/grounding + expectedStatus
+    // expectations; neither declares a retrieval expectation, so
+    // retrievalTop1/retrievalHitAt3 are unchanged from the 20-case suite):
+    //   retrievalTop1: unchanged -> 10/10
+    //   retrievalHitAt3: unchanged -> 4/4
+    //   schemaHandlingCorrectness: +2 -> 16/16
+    //   evidenceGroundingCorrectness: +2 -> 15/15
+    //   toolCorrectness: +2 (each declares tool expectations) -> 18/18
+    //   expectedStatusCorrectness: +2 -> 22/22
     expect(metrics.retrievalTop1).toEqual({ numerator: 10, denominator: 10 });
     expect(metrics.retrievalHitAt3).toEqual({ numerator: 4, denominator: 4 });
-    expect(metrics.schemaHandlingCorrectness).toEqual({ numerator: 15, denominator: 15 });
-    expect(metrics.evidenceGroundingCorrectness).toEqual({ numerator: 14, denominator: 14 });
-    expect(metrics.toolCorrectness).toEqual({ numerator: 16, denominator: 16 });
-    expect(metrics.expectedStatusCorrectness).toEqual({ numerator: 20, denominator: 20 });
+    expect(metrics.schemaHandlingCorrectness).toEqual({ numerator: 16, denominator: 16 });
+    expect(metrics.evidenceGroundingCorrectness).toEqual({ numerator: 15, denominator: 15 });
+    expect(metrics.toolCorrectness).toEqual({ numerator: 18, denominator: 18 });
+    expect(metrics.expectedStatusCorrectness).toEqual({ numerator: 22, denominator: 22 });
   });
 
   it("A: every scored case emits exactly one outcome per #59 metric check, in the fixed METRIC_CHECK_NAMES order", async () => {
@@ -180,7 +194,7 @@ describe("EVALUATION_CASES", () => {
     const suiteInput = buildEvaluationSuiteInputV2(EVALUATION_DATASET_ID, caseInputs);
     const suiteResult = new LocalEvaluationScorer().score(suiteInput);
 
-    expect(suiteResult.cases).toHaveLength(20);
+    expect(suiteResult.cases).toHaveLength(22);
     for (const caseResult of suiteResult.cases) {
       // Exactly the nine metric names, once each, in the fixed order — no
       // missing outcome (which the exactly-nine guard would reject anyway),

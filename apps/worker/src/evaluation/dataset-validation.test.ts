@@ -323,6 +323,16 @@ describe("validateEvaluationDataset", () => {
     expect(messages.join(" ")).not.toContain("SENTINEL-bogus-profile");
   });
 
+  // Issue #77 §6 step 1 (test-first): a case declaring the new
+  // "with-adversarial-tool-output" ToolProfile value must be ACCEPTED by
+  // dataset validation — proving the exhaustive toolProfile check was
+  // actually extended for this value, not merely that the old two values
+  // still work.
+  it("accepts a case declaring the with-adversarial-tool-output toolProfile", () => {
+    const messages = validate([baseCase({ toolProfile: "with-adversarial-tool-output" })]);
+    expect(messages.some((m) => m.includes("toolProfile must be"))).toBe(false);
+  });
+
   it("collects messages across every case rather than stopping at the first failure", () => {
     const messages = validate([
       baseCase({ id: "case-a", expectations: { runStatus: "completed" } }),
