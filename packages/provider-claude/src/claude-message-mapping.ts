@@ -180,8 +180,15 @@ required, in addition to whatever the tool schema shows:
   - CONFLICTING requires at least two DISTINCT entries — evidence that
     genuinely disagrees (never two entries about the same single
     observation).
-  - INSUFFICIENT allows zero to ten: zero is truthful when nothing was
-    gathered; do not pad an empty investigation with invented entries.
+  - INSUFFICIENT allows zero to ten: zero is truthful ONLY when no
+    diagnostic tool was called and nothing was gathered — do not pad an
+    empty investigation with invented entries. If ANY diagnostic tool was
+    called this run, its result is a real TOOL_EXECUTION observation and
+    must be listed here as its own evidence entry (with supports: [] when
+    it does not establish a specific claim) EVEN WHEN it returned UNKNOWN,
+    inconclusive, or otherwise failed to confirm a root cause — "not
+    evidence of health" (investigation guidance) means it cannot justify a
+    root cause, never that it can be omitted from this array.
   Never submit more than ten entries total. Each entry:
   - evidenceId: 1-128 characters.
   - sourceType: exactly "RAG_CHUNK" or "TOOL_EXECUTION".
@@ -207,7 +214,11 @@ required, in addition to whatever the tool schema shows:
   { evidenceId, sourceType } copied exactly, character-for-character, from an
   entry already present in this same report's "evidence" array — never
   invented, never derived from prose, and never repeated (all locators
-  distinct). Each entry's payload has its own length bounds:
+  distinct). If the observation you want to cite (including an inconclusive
+  or UNKNOWN tool result) is not already an entry in "evidence", add it there
+  FIRST — a suggested action can never be grounded in an observation the
+  report's own evidence array does not also list. Each entry's payload has
+  its own length bounds:
   - type UPDATE_TICKET_STATUS: payload.reason is 1-500 characters.
   - type CREATE_ESCALATION: payload.team is 1-100 characters;
     payload.reason is 1-500 characters.
@@ -294,6 +305,10 @@ conversation.`;
 // match). Issue #60 Checkpoint A's disposition/grounding report guidance
 // (REPORT_FIELD_BOUNDS above) is a further behavior-changing prompt update
 // that advances the logical prompt version to opspilot-agent-v3 (§20.4; the
+// AGENT_PROMPT_VERSION default is updated to match). Issue #80's fix to
+// REPORT_FIELD_BOUNDS (explicit "an inconclusive/UNKNOWN tool result must
+// still be listed in evidence before it can ground a suggested action")
+// advances the logical prompt version again to opspilot-agent-v4 (§20.4; the
 // AGENT_PROMPT_VERSION default is updated to match).
 // Deliberately appended on the INVESTIGATION phase only: the
 // FINALIZATION turn is a forced report submission with no diagnostic decision

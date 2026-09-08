@@ -355,6 +355,31 @@ describe("buildSystemPrompt", () => {
     }
   });
 
+  // Issue #80: a real LIVE run submitted a report with evidence: [] and
+  // evidenceState INSUFFICIENT, but still cited an UNKNOWN-result tool call
+  // in two suggestedActions[].groundedBy entries — REPORT_SCHEMA_INVALID at
+  // the "groundedBy entries must each appear in report.evidence" invariant.
+  // The gap was prompt-clarity, not schema behavior: nothing told the model
+  // that an inconclusive/UNKNOWN tool result must still be listed in
+  // "evidence" before it can be cited in groundedBy. Both halves of the fix
+  // (evidence-cardinality guidance, groundedBy guidance) must be present on
+  // both phases, same reasoning as the umbrella test above.
+  it("states that an UNKNOWN/inconclusive tool result must still be listed in evidence before it can ground a suggested action (Issue #80)", () => {
+    for (const phase of ["INVESTIGATION", "FINALIZATION"] as const) {
+      const prompt = buildSystemPrompt(phase, 3);
+
+      expect(prompt).toContain("zero is truthful ONLY when no");
+      expect(prompt).toContain("diagnostic tool was called and nothing was gathered");
+      expect(prompt).toContain(
+        "must be listed here as its own evidence entry (with supports: [] when",
+      );
+      expect(prompt).toContain("EVEN WHEN it returned UNKNOWN,");
+      expect(prompt).toContain(
+        "add it there\n  FIRST — a suggested action can never be grounded in an observation the",
+      );
+    }
+  });
+
   // The prompt half of the defense in depth behind the LIVE incident: the tool
   // schema already marked suggestedActions required and Claude still omitted
   // it, so the prose must state the requirement AND tie the empty value to the

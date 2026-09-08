@@ -1237,7 +1237,7 @@ AGENT_MAX_FINALIZATION_TURNS=1
 AGENT_MAX_REPORT_REPAIR_ATTEMPTS=1
 AGENT_MAX_DIAGNOSTIC_TOOL_CALLS=5
 AGENT_TIMEOUT_MS=90000
-AGENT_PROMPT_VERSION=opspilot-agent-v3
+AGENT_PROMPT_VERSION=opspilot-agent-v4
 ```
 
 There is no single `AGENT_MAX_TURNS` variable — investigation turns, the reserved finalization turn, and report-repair attempts are separate, independently configured budgets (§13.2). A prior revision of this document used `AGENT_MAX_TURNS=6` as a single combined limit; that variable no longer exists and must not be reintroduced as a shortcut, because it cannot express the "reserved, not shared" relationship between investigation and finalization turns.
