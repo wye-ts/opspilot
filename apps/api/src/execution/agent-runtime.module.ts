@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import {
   createAgentRunService,
   createPrismaAgentRunRepository,
+  DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE,
   getServiceStatusTool,
   InMemoryKeywordRunbookRetriever,
   InMemoryToolRegistry,
@@ -51,7 +52,15 @@ import { AGENT_RUN_SERVICE, RUNBOOK_RETRIEVER, TOOL_REGISTRY } from "./execution
       provide: RUNBOOK_RETRIEVER,
       useFactory: async (): Promise<RunbookRetriever> => {
         const corpusLoad = await loadDefaultRunbookCorpus();
-        return new InMemoryKeywordRunbookRetriever(corpusLoad.chunks);
+        // Issue #75 §2.4: the enforced minimum-score floor comes from the
+        // retriever module's own named constant — the SAME value
+        // evaluation-runner.ts and runbooks-eval/score-query-set.ts import.
+        // Never a literal re-declared here; two independently-passed numbers
+        // that agree today are exactly what silently drifts apart later.
+        return new InMemoryKeywordRunbookRetriever(
+          corpusLoad.chunks,
+          DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE,
+        );
       },
     },
   ],

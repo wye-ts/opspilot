@@ -640,11 +640,63 @@ class EvaluationCaseInputV2(BaseModel):
     observed: ObservedFacts
 
 
+class MetricRatioInput(BaseModel):
+    """Request-side {numerator, denominator} pair — mirrors v2-types.ts's
+    MetricRatioInput. Structurally identical to the response-side MetricRatio
+    below, but declared separately so request-side strictness is explicit and
+    the two can never drift into each other by accident."""
+
+    model_config = ConfigDict(extra="forbid")
+    numerator: _StrictNonNegativeInt
+    denominator: _StrictNonNegativeInt
+
+
+class GroupedMetricRatiosInput(BaseModel):
+    """Per-query-group ratios for the three SCORED groups. true_negative is
+    deliberately absent: recall@k and MRR are undefined for a query with no
+    correct answer (that group has its own falsePositiveRate)."""
+
+    model_config = ConfigDict(extra="forbid")
+    exact: MetricRatioInput
+    paraphrase: MetricRatioInput
+    nearMiss: MetricRatioInput
+
+
+class RetrievalQualityMetricsInput(BaseModel):
+    """Milestone 13 Issue B (#75) — precomputed retrieval-quality numbers for
+    EXACTLY ONE named retriever, mirroring v2-types.ts's
+    RetrievalQualityMetricsInput field-for-field.
+
+    This service NEVER computes these: it copies them straight into the
+    persisted EvaluationMetrics (see api.create_evaluation). The corpus,
+    retriever, and labeled query set all live in TypeScript; porting them here
+    would create a second scoring implementation that silently drifts (the
+    plan's §0 decision gate rejects exactly that).
+
+    `retrieverName` records WHICH retriever this run reports on — comparing two
+    retrievers means two runs, not one run carrying both.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    retrieverName: _StrictStr = Field(min_length=1, max_length=64)
+    corpusContentHash: _StrictStr = Field(min_length=1, max_length=128)
+    recallAtK: GroupedMetricRatiosInput
+    meanReciprocalRank: GroupedMetricRatiosInput
+    falsePositiveRate: MetricRatioInput
+
+
 class EvaluationSuiteInputV2(BaseModel):
     model_config = ConfigDict(extra="forbid")
     contractVersion: Literal[2]
     datasetId: _StrictStr = Field(min_length=1)
     cases: list[EvaluationCaseInputV2] = Field(min_length=1, max_length=MAX_CASES)
+    # Optional (omission only — explicit null is rejected, matching every other
+    # optional field in this contract). Absent on an ordinary case-only run,
+    # in which case the persisted metrics carry the zero-ratio default and a
+    # null retrievalQualityProvenance.
+    retrievalQualityMetrics: RetrievalQualityMetricsInput | None = None
+
+    _reject_null_retrieval_quality = _reject_explicit_null("retrievalQualityMetrics")
 
     @field_validator("contractVersion", mode="before")
     @classmethod
@@ -721,6 +773,29 @@ def _zero_ratio() -> MetricRatio:
     return MetricRatio(numerator=0, denominator=0)
 
 
+class GroupedMetricRatios(BaseModel):
+    """Response-side per-group ratios — the mirror of TS's nested
+    EvaluationMetrics.recallAtK / .meanReciprocalRank shape."""
+
+    model_config = ConfigDict(extra="forbid")
+    exact: MetricRatio
+    paraphrase: MetricRatio
+    nearMiss: MetricRatio
+
+
+def zero_grouped_ratios() -> GroupedMetricRatios:
+    """The 0/0 "not evaluated" default for a case-only run — distinct from
+    0/N ("evaluated, scored zero"), the same distinction _read_metrics already
+    relies on for the #59 generation."""
+    return GroupedMetricRatios(exact=_zero_ratio(), paraphrase=_zero_ratio(), nearMiss=_zero_ratio())
+
+
+class RetrievalQualityProvenance(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    retrieverName: str
+    corpusContentHash: str
+
+
 class EvaluationMetrics(BaseModel):
     model_config = ConfigDict(extra="forbid")
     totalCases: _StrictNonNegativeInt
@@ -746,6 +821,27 @@ class EvaluationMetrics(BaseModel):
     approvalGate: MetricRatio = Field(default_factory=_zero_ratio)
     boundsRespected: MetricRatio = Field(default_factory=_zero_ratio)
     deterministicRecovery: MetricRatio = Field(default_factory=_zero_ratio)
+
+    # Milestone 13 Issue B (#75) — retrieval-quality metrics, PRECOMPUTED
+    # against runbooks-eval/retrieval-query-set.json and passed through
+    # unchanged from EvaluationSuiteInputV2.retrievalQualityMetrics. Unlike the
+    # fifteen ratios above, these are NOT derived from this run's own case
+    # checks: they change when the corpus or query set changes (tracked by
+    # retrievalQualityProvenance.corpusContentHash), not when a different case
+    # suite runs. See the plan's §0 decision gate.
+    #
+    # All four use the MetricRatio shape; meanReciprocalRank is NOT a bare
+    # float — it is encoded in sixths as exact integers (6/3/2/0 per query,
+    # denominator = queryCount * 6) precisely so no language-specific rounding
+    # mode (Python banker's rounding vs. JS round-half-up) can make the two
+    # services persist different values for the identical computation.
+    recallAtK: GroupedMetricRatios = Field(default_factory=zero_grouped_ratios)
+    meanReciprocalRank: GroupedMetricRatios = Field(default_factory=zero_grouped_ratios)
+    falsePositiveRate: MetricRatio = Field(default_factory=_zero_ratio)
+    # Non-null iff the three fields above came from a real retrieval-quality
+    # run. Without it, two persisted runs scored against different retrievers
+    # would be indistinguishable once the originating request is gone.
+    retrievalQualityProvenance: RetrievalQualityProvenance | None = None
 
 
 class EvaluationRunResultV2(BaseModel):

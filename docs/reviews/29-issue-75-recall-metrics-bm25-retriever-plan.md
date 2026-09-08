@@ -70,6 +70,39 @@ the same way.
 
 ---
 
+## 0. Review-provenance correction (2026-09-08)
+
+The version of this plan first committed as `9cec936` mislabeled its own review history: it cited
+"Codex round-1" and "Codex round-2" findings throughout, implying two independent Codex review
+passes. **Only one `pnpm agent:codex-review` call was ever made against this plan** (2026-09-08
+00:05 UTC-7, recorded in `.agent/codex/review-findings.json` / `.agent/logs/codex-review.log`),
+producing exactly four findings:
+
+1. **[BLOCKER]** Nested retrieval metrics do not map to the flat persistence schema.
+2. **[MAJOR]** Retriever identity and score provenance are discarded before persistence.
+3. **[MAJOR]** The plan defines two incompatible MRR wire schemas.
+4. **[MAJOR]** The claimed runtime corpus freshness check has no corpus binding.
+
+Every in-line "Codex round-1"/"Codex round-2" citation below has been corrected to one of two real
+states, checked against the finding list above:
+
+- Where the citation matches one of the four real findings, it is now labeled plainly
+  **"Codex-review [SEVERITY] fix"** (no round number — there was only one round).
+- Where the citation described a fifth/sixth "finding" **not present** in the actual review output
+  (the retriever-keyed `score-query-set.ts` output/CLI-selector requirement, and the
+  `evaluation-runner.ts` second threshold-construction-site gap), it is now labeled
+  **"self-identified during drafting — not a Codex finding"**. Both of these design points are
+  still adopted in this plan on their own technical merits (verified against source directly, same
+  as any other design decision here) — they were simply never raised by the actual review, and
+  attributing them to it was inaccurate.
+
+Per owner instruction (2026-09-08): this correction is a relabeling pass only. No additional
+`agent:codex-review` round is being run to re-validate the plan; the four real findings above were
+already fixed in the design sections below before this plan was first committed, and that remains
+the basis for proceeding to implementation.
+
+---
+
 ## 1. Current-state findings
 
 | Area | File / symbol | What it does today |

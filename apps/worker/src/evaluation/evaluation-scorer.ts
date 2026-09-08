@@ -46,7 +46,11 @@ export class LocalEvaluationScorer implements EvaluationScorer {
   score(input: EvaluationSuiteInputV2): EvaluationSuiteResultV2 {
     const results = input.cases.map((caseInput) => evaluateCase(caseInput));
     const cases = results.map(toEvaluationCaseResultV2);
-    const metrics = aggregateMetrics(cases);
+    // Milestone 13 Issue B (#75): input.retrievalQualityMetrics is copied
+    // straight through into the persisted metrics — never recomputed here.
+    // Absent input yields the zero-ratio default and a null provenance (see
+    // aggregateMetrics/retrievalQualityFields).
+    const metrics = aggregateMetrics(cases, input.retrievalQualityMetrics);
 
     return {
       contractVersion: input.contractVersion,

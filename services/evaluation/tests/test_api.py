@@ -43,6 +43,38 @@ NEW_METRIC_NAMES = (
     "boundsRespected",
     "deterministicRecovery",
 )
+# Milestone 13 Issue B (#75) — the third generation: the seven FLAT persisted
+# names the nested wire shape maps onto (see MILESTONE_13_METRIC_PATHS).
+MILESTONE_13_METRIC_NAMES = (
+    "recallAtKExact",
+    "recallAtKParaphrase",
+    "recallAtKNearMiss",
+    "meanReciprocalRankExact",
+    "meanReciprocalRankParaphrase",
+    "meanReciprocalRankNearMiss",
+    "falsePositiveRate",
+)
+
+
+def _retrieval_quality_input(retriever_name: str = "bm25") -> dict:
+    """A realistic precomputed retrieval-quality payload — MRR encoded in
+    sixths (6/3/2/0 per query, denominator = queryCount * 6), matching
+    runbooks-eval/score-query-set.ts's output."""
+    return {
+        "retrieverName": retriever_name,
+        "corpusContentHash": "a" * 64,
+        "recallAtK": {
+            "exact": {"numerator": 10, "denominator": 10},
+            "paraphrase": {"numerator": 9, "denominator": 10},
+            "nearMiss": {"numerator": 12, "denominator": 12},
+        },
+        "meanReciprocalRank": {
+            "exact": {"numerator": 60, "denominator": 60},
+            "paraphrase": {"numerator": 55, "denominator": 60},
+            "nearMiss": {"numerator": 58, "denominator": 72},
+        },
+        "falsePositiveRate": {"numerator": 3, "denominator": 8},
+    }
 
 
 def _minimal_investigation() -> dict:
@@ -108,10 +140,19 @@ def _metric_rows(run_id: uuid.UUID, names: tuple[str, ...]) -> list[EvaluationMe
     ]
 
 
-async def _seed_v2_run(metric_names: tuple[str, ...]) -> str:
+async def _seed_v2_run(
+    metric_names: tuple[str, ...],
+    *,
+    retriever_name: str | None = None,
+    corpus_hash: str | None = None,
+) -> str:
     """Seeds a contractVersion-2 run directly (bypassing POST) with a valid
     case/check and exactly the given metric rows — used to exercise the GET
-    read-compatibility path for persisted shapes POST can no longer produce."""
+    read-compatibility path for persisted shapes POST can no longer produce.
+
+    The two provenance columns default to NULL/NULL (every pre-Milestone-13
+    row) and can be set independently so the partial-provenance corruption
+    case is reachable at all."""
     run_id = uuid.uuid4()
     case_result_id = uuid.uuid4()
     now = datetime.now(UTC)
@@ -124,6 +165,8 @@ async def _seed_v2_run(metric_names: tuple[str, ...]) -> str:
         passed_cases=1,
         failed_cases=0,
         pass_rate=1.0,
+        retrieval_quality_retriever_name=retriever_name,
+        retrieval_quality_corpus_hash=corpus_hash,
         completed_at=now,
     )
     case = EvaluationCaseResult(
@@ -466,10 +509,14 @@ async def test_check_order_and_expectations_observed_persist(client: AsyncClient
         assert case_row.observed == parsed_case.observed.model_dump(mode="json")
 
 
-async def test_metrics_persist_with_all_fifteen_names(client: AsyncClient) -> None:
-    # Issue #59 Checkpoint B §11: the six v1 ratios plus the nine #59 ratios
+async def test_metrics_persist_with_all_twenty_two_names(client: AsyncClient) -> None:
+    # Issue #59 Checkpoint B §11 plus Milestone 13 Issue B (#75): the six v1
+    # ratios, the nine #59 ratios, and the seven flat Milestone-13 names
+    # (MILESTONE_13_METRIC_NAMES — the nested recallAtK/meanReciprocalRank
+    # groups flattened via the explicit mapping table, plus falsePositiveRate)
     # are all persisted as ratio rows (numerator/denominator); N/A counts are
-    # derived by the formatter and never persisted.
+    # derived by the formatter and never persisted, and the two provenance
+    # values live on the run row, not here.
     suite = _minimal_suite([_minimal_case()])
     response = await client.post("/evaluations", json=suite)
     evaluation_id = uuid.UUID(response.json()["id"])
@@ -497,6 +544,13 @@ async def test_metrics_persist_with_all_fifteen_names(client: AsyncClient) -> No
         "approvalGate",
         "boundsRespected",
         "deterministicRecovery",
+        "recallAtKExact",
+        "recallAtKParaphrase",
+        "recallAtKNearMiss",
+        "meanReciprocalRankExact",
+        "meanReciprocalRankParaphrase",
+        "meanReciprocalRankNearMiss",
+        "falsePositiveRate",
     }
 
 
@@ -528,8 +582,8 @@ async def test_get_pre_b_v2_row_is_served_with_zero_evaluated_new_ratios(client:
     assert stored_names == set(ORIGINAL_METRIC_NAMES)
 
 
-async def test_get_current_b_v2_row_round_trips_all_fifteen_metrics(client: AsyncClient) -> None:
-    # A normal Checkpoint-B v2 run — all fifteen metric rows — still reads back
+async def test_get_current_v2_row_round_trips_every_metric_field(client: AsyncClient) -> None:
+    # A normal current v2 run — all twenty-two metric rows — still reads back
     # exactly: GET returns the identical persisted resource.
     suite = _minimal_suite([_minimal_case()])
     post_response = await client.post("/evaluations", json=suite)
@@ -546,7 +600,183 @@ async def test_get_current_b_v2_row_round_trips_all_fifteen_metrics(client: Asyn
         "passRate",
         *ORIGINAL_METRIC_NAMES,
         *NEW_METRIC_NAMES,
+        # Milestone 13 Issue B (#75): NESTED on the wire (the flat
+        # MILESTONE_13_METRIC_NAMES exist only as persisted row names), plus
+        # the nullable provenance sibling.
+        "recallAtK",
+        "meanReciprocalRank",
+        "falsePositiveRate",
+        "retrievalQualityProvenance",
     }
+
+
+# ---------------------------------------------------------------------------
+# Milestone 13 Issue B (#75) — retrieval-quality passthrough, provenance, and
+# the third read-compatibility shape.
+# ---------------------------------------------------------------------------
+
+
+async def test_case_only_run_persists_zero_retrieval_quality_and_null_provenance(
+    client: AsyncClient,
+) -> None:
+    # No retrievalQualityMetrics on the request: the four new fields must read
+    # as the 0/0 "not evaluated" default with a null provenance, and BOTH
+    # provenance columns must be NULL on the row.
+    suite = _minimal_suite([_minimal_case()])
+    response = await client.post("/evaluations", json=suite)
+    assert response.status_code == 201
+    metrics = response.json()["metrics"]
+
+    zero = {"numerator": 0, "denominator": 0}
+    assert metrics["recallAtK"] == {"exact": zero, "paraphrase": zero, "nearMiss": zero}
+    assert metrics["meanReciprocalRank"] == {"exact": zero, "paraphrase": zero, "nearMiss": zero}
+    assert metrics["falsePositiveRate"] == zero
+    assert metrics["retrievalQualityProvenance"] is None
+
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        row = await session.get(EvaluationRun, uuid.UUID(response.json()["id"]))
+        assert row is not None
+        assert row.retrieval_quality_retriever_name is None
+        assert row.retrieval_quality_corpus_hash is None
+
+
+async def test_retrieval_quality_metrics_are_copied_through_unchanged(client: AsyncClient) -> None:
+    # The service NEVER computes these (it has no corpus, retriever, or query
+    # set): the persisted values must be byte-identical to what was submitted,
+    # and the provenance must name the submitted retriever and corpus hash.
+    supplied = _retrieval_quality_input("bm25")
+    suite = _minimal_suite([_minimal_case()])
+    suite["retrievalQualityMetrics"] = supplied
+
+    response = await client.post("/evaluations", json=suite)
+    assert response.status_code == 201
+    metrics = response.json()["metrics"]
+
+    assert metrics["recallAtK"] == supplied["recallAtK"]
+    assert metrics["meanReciprocalRank"] == supplied["meanReciprocalRank"]
+    assert metrics["falsePositiveRate"] == supplied["falsePositiveRate"]
+    assert metrics["retrievalQualityProvenance"] == {
+        "retrieverName": "bm25",
+        "corpusContentHash": supplied["corpusContentHash"],
+    }
+
+    # And it survives a GET round-trip identically.
+    fetched = await client.get(f"/evaluations/{response.json()['id']}")
+    assert fetched.status_code == 200
+    assert fetched.json()["metrics"] == metrics
+
+
+async def test_two_runs_scored_against_different_retrievers_stay_distinguishable(
+    client: AsyncClient,
+) -> None:
+    # Plan §7 criterion 9: without persisted provenance these two runs would be
+    # indistinguishable once the originating request context is gone.
+    ids = {}
+    for retriever_name in ("keyword", "bm25"):
+        supplied = _retrieval_quality_input(retriever_name)
+        supplied["falsePositiveRate"] = {
+            "numerator": 3 if retriever_name == "bm25" else 5,
+            "denominator": 8,
+        }
+        suite = _minimal_suite([_minimal_case()])
+        suite["retrievalQualityMetrics"] = supplied
+        response = await client.post("/evaluations", json=suite)
+        assert response.status_code == 201
+        ids[retriever_name] = response.json()["id"]
+
+    read_back = {}
+    for retriever_name, evaluation_id in ids.items():
+        fetched = await client.get(f"/evaluations/{evaluation_id}")
+        assert fetched.status_code == 200
+        read_back[retriever_name] = fetched.json()["metrics"]
+
+    assert read_back["keyword"]["retrievalQualityProvenance"]["retrieverName"] == "keyword"
+    assert read_back["bm25"]["retrievalQualityProvenance"]["retrieverName"] == "bm25"
+    assert read_back["keyword"]["falsePositiveRate"] != read_back["bm25"]["falsePositiveRate"]
+
+
+async def test_get_pre_milestone_13_row_synthesizes_zero_ratios_and_null_provenance(
+    client: AsyncClient,
+) -> None:
+    # The THIRD read-compatibility shape: a persisted 15-metric run (6+9, no
+    # Milestone-13 rows, both provenance columns NULL) must still read
+    # successfully, with the new ratios synthesized as 0/0 — exactly as the
+    # existing two-shape logic already does for the #59 generation.
+    run_id = await _seed_v2_run(ORIGINAL_METRIC_NAMES + NEW_METRIC_NAMES)
+
+    response = await client.get(f"/evaluations/{run_id}")
+    assert response.status_code == 200
+    metrics = response.json()["metrics"]
+
+    zero = {"numerator": 0, "denominator": 0}
+    assert metrics["recallAtK"] == {"exact": zero, "paraphrase": zero, "nearMiss": zero}
+    assert metrics["meanReciprocalRank"] == {"exact": zero, "paraphrase": zero, "nearMiss": zero}
+    assert metrics["falsePositiveRate"] == zero
+    assert metrics["retrievalQualityProvenance"] is None
+
+    # No backfill: the read path must not write the missing rows.
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        result = await session.execute(
+            select(EvaluationMetric).where(EvaluationMetric.evaluation_run_id == uuid.UUID(run_id))
+        )
+        stored_names = {row.name for row in result.scalars().all()}
+    assert stored_names == set(ORIGINAL_METRIC_NAMES + NEW_METRIC_NAMES)
+
+
+async def test_get_partial_milestone_13_metric_corruption_fails_closed(client: AsyncClient) -> None:
+    # Same all-or-nothing rule as the #59 generation, applied to the seven
+    # Milestone-13 rows.
+    run_id = await _seed_v2_run(
+        ORIGINAL_METRIC_NAMES + NEW_METRIC_NAMES + MILESTONE_13_METRIC_NAMES[:3]
+    )
+
+    response = await client.get(f"/evaluations/{run_id}")
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "INTERNAL_ERROR"
+
+
+@pytest.mark.parametrize(
+    ("retriever_name", "corpus_hash"),
+    [("bm25", None), (None, "a" * 64)],
+)
+async def test_get_partial_provenance_fails_closed(
+    client: AsyncClient, retriever_name: str | None, corpus_hash: str | None
+) -> None:
+    # Exactly one provenance column set is an internal data inconsistency —
+    # rejected via INTERNAL_ERROR, never guessed at (plan §3).
+    run_id = await _seed_v2_run(
+        ORIGINAL_METRIC_NAMES + NEW_METRIC_NAMES,
+        retriever_name=retriever_name,
+        corpus_hash=corpus_hash,
+    )
+
+    response = await client.get(f"/evaluations/{run_id}")
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "INTERNAL_ERROR"
+
+
+async def test_explicit_null_retrieval_quality_metrics_rejected(client: AsyncClient) -> None:
+    # Omission is the only accepted way to skip an optional field in this
+    # contract — explicit null is rejected, same as every other optional field.
+    suite = _minimal_suite([_minimal_case()])
+    suite["retrievalQualityMetrics"] = None
+
+    response = await client.post("/evaluations", json=suite)
+    assert response.status_code == 422
+
+
+async def test_retrieval_quality_metrics_rejects_unknown_field(client: AsyncClient) -> None:
+    # extra="forbid" on the new models, consistent with the rest of the v2
+    # contract — e.g. a trueNegative group that recall@k must never carry.
+    supplied = _retrieval_quality_input()
+    supplied["recallAtK"]["trueNegative"] = {"numerator": 0, "denominator": 8}
+    suite = _minimal_suite([_minimal_case()])
+    suite["retrievalQualityMetrics"] = supplied
+
+    response = await client.post("/evaluations", json=suite)
+    assert response.status_code == 422
 
 
 async def test_get_partial_new_metric_corruption_fails_closed(client: AsyncClient) -> None:

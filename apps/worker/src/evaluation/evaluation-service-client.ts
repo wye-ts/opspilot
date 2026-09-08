@@ -200,6 +200,42 @@ const METRIC_RATIO_NAMES = [
 
 type MetricRatioName = (typeof METRIC_RATIO_NAMES)[number];
 
+// Milestone 13 Issue B (#75): the three nested retrieval-quality groups, in
+// the frozen EvaluationMetrics field order. Nested, not flat, on the wire —
+// the flat<->nested mapping lives at the persistence boundary only (see
+// MILESTONE_13_METRIC_PATHS in evaluation-metrics.ts and api.py).
+const RETRIEVAL_QUALITY_GROUP_FIELDS = ["exact", "paraphrase", "nearMiss"] as const;
+
+function parseGroupedRatios(
+  value: unknown,
+  path: string,
+): EvaluationMetrics["recallAtK"] {
+  if (!isRecord(value)) throw malformed(`expected an object at ${path}`);
+  const groups = {} as Record<
+    (typeof RETRIEVAL_QUALITY_GROUP_FIELDS)[number],
+    { readonly numerator: number; readonly denominator: number }
+  >;
+  for (const field of RETRIEVAL_QUALITY_GROUP_FIELDS) {
+    groups[field] = parseMetricRatio(value[field], `${path}.${field}`);
+  }
+  return groups;
+}
+
+// `null` (never `undefined`) for a run with no retrieval-quality input, so the
+// shape serializes identically regardless of language/JSON library — the same
+// convention EvaluationCheckV2.reasonCode already follows.
+function parseRetrievalQualityProvenance(
+  value: unknown,
+  path: string,
+): EvaluationMetrics["retrievalQualityProvenance"] {
+  if (value === null) return null;
+  if (!isRecord(value)) throw malformed(`expected an object or null at ${path}`);
+  return {
+    retrieverName: expectNonEmptyString(value.retrieverName, `${path}.retrieverName`),
+    corpusContentHash: expectNonEmptyString(value.corpusContentHash, `${path}.corpusContentHash`),
+  };
+}
+
 function parseMetrics(value: unknown, path: string): EvaluationMetrics {
   if (!isRecord(value)) throw malformed(`expected an object at ${path}`);
 
@@ -214,7 +250,20 @@ function parseMetrics(value: unknown, path: string): EvaluationMetrics {
     metricRatios[ratioName] = parseMetricRatio(value[ratioName], `${path}.${ratioName}`);
   }
 
-  return { totalCases, passedCases, failedCases, passRate, ...metricRatios };
+  return {
+    totalCases,
+    passedCases,
+    failedCases,
+    passRate,
+    ...metricRatios,
+    recallAtK: parseGroupedRatios(value.recallAtK, `${path}.recallAtK`),
+    meanReciprocalRank: parseGroupedRatios(value.meanReciprocalRank, `${path}.meanReciprocalRank`),
+    falsePositiveRate: parseMetricRatio(value.falsePositiveRate, `${path}.falsePositiveRate`),
+    retrievalQualityProvenance: parseRetrievalQualityProvenance(
+      value.retrievalQualityProvenance,
+      `${path}.retrievalQualityProvenance`,
+    ),
+  };
 }
 
 // The single strict entry point for any /evaluations response body. Every
@@ -311,10 +360,24 @@ function validateSemanticConsistency(
   // bounds-checking: a returned metric that differs from the recomputed value
   // — negative counts, numerator > denominator, a passRate outside [0,1], an
   // inconsistent total, a miscounted ratio — is a contradiction.
-  assertMetricsMatch(resource.metrics, aggregateMetrics(resource.cases));
+  // Milestone 13 Issue B (#75): the retrieval-quality fields are pass-through
+  // data, so the recompute baseline is fed the SAME submitted input the
+  // service was given. On a GET-by-id there is no submitted request, so those
+  // fields are compared only when a POST supplied them (see
+  // assertMetricsMatch's `compareRetrievalQuality` flag) — a persisted run's
+  // stored numbers cannot be re-derived from its cases by construction.
+  assertMetricsMatch(
+    resource.metrics,
+    aggregateMetrics(resource.cases, submitted?.retrievalQualityMetrics),
+    submitted !== undefined,
+  );
 }
 
-function assertMetricsMatch(returned: EvaluationMetrics, recomputed: EvaluationMetrics): void {
+function assertMetricsMatch(
+  returned: EvaluationMetrics,
+  recomputed: EvaluationMetrics,
+  compareRetrievalQuality: boolean,
+): void {
   const contradict = (path: string): never => {
     throw malformed(`metrics.${path} contradicts the returned cases`);
   };
@@ -332,6 +395,45 @@ function assertMetricsMatch(returned: EvaluationMetrics, recomputed: EvaluationM
     }
     if (returnedRatio.denominator !== recomputedRatio.denominator) {
       contradict(`${ratioName}.denominator`);
+    }
+  }
+
+  if (!compareRetrievalQuality) return;
+
+  // The service must have echoed the submitted retrieval-quality numbers
+  // EXACTLY — it is forbidden from computing or adjusting them (plan §2.2), so
+  // any difference means the response is not a faithful scoring of what was
+  // submitted.
+  const assertRatio = (
+    a: { readonly numerator: number; readonly denominator: number },
+    b: { readonly numerator: number; readonly denominator: number },
+    label: string,
+  ): void => {
+    if (a.numerator !== b.numerator) contradict(`${label}.numerator`);
+    if (a.denominator !== b.denominator) contradict(`${label}.denominator`);
+  };
+
+  for (const field of RETRIEVAL_QUALITY_GROUP_FIELDS) {
+    assertRatio(returned.recallAtK[field], recomputed.recallAtK[field], `recallAtK.${field}`);
+    assertRatio(
+      returned.meanReciprocalRank[field],
+      recomputed.meanReciprocalRank[field],
+      `meanReciprocalRank.${field}`,
+    );
+  }
+  assertRatio(returned.falsePositiveRate, recomputed.falsePositiveRate, "falsePositiveRate");
+
+  const returnedProvenance = returned.retrievalQualityProvenance;
+  const recomputedProvenance = recomputed.retrievalQualityProvenance;
+  if ((returnedProvenance === null) !== (recomputedProvenance === null)) {
+    contradict("retrievalQualityProvenance");
+  }
+  if (returnedProvenance !== null && recomputedProvenance !== null) {
+    if (returnedProvenance.retrieverName !== recomputedProvenance.retrieverName) {
+      contradict("retrievalQualityProvenance.retrieverName");
+    }
+    if (returnedProvenance.corpusContentHash !== recomputedProvenance.corpusContentHash) {
+      contradict("retrievalQualityProvenance.corpusContentHash");
     }
   }
 }

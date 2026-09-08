@@ -182,4 +182,71 @@ export interface EvaluationMetrics {
   readonly approvalGate: { readonly numerator: number; readonly denominator: number };
   readonly boundsRespected: { readonly numerator: number; readonly denominator: number };
   readonly deterministicRecovery: { readonly numerator: number; readonly denominator: number };
+
+  // Milestone 13 Issue B (#75) — retrieval-quality metrics, PRECOMPUTED
+  // against runbooks-eval/retrieval-query-set.json by
+  // runbooks-eval/score-query-set.ts and passed through unchanged by both
+  // scorers. NOT derived from this run's own EvaluationCaseResultV2 checks
+  // (see the plan's decision gate, docs/reviews/29-...-plan.md §0/§2.2).
+  //
+  // A future reader must not assume these update per-run the way the fifteen
+  // ratios above do: they change when the CORPUS or the QUERY SET changes
+  // (tracked by retrievalQualityProvenance.corpusContentHash), not when a
+  // different case suite runs.
+  //
+  // All four sub-metrics use the same { numerator, denominator } MetricRatio
+  // shape as every other field here — meanReciprocalRank is deliberately NOT a
+  // bare float. Because EVALUATION_TOP_K = 3 bounds every reciprocal rank to
+  // {1, 1/2, 1/3, 0}, it is encoded in SIXTHS as exact integers (6/3/2/0 per
+  // query, denominator = queryCount * 6): a float mean converted back via
+  // round(mean * denominator) is lossy and diverges by language at exact tie
+  // points (Python banker's rounding vs. JS round-half-up), which would defeat
+  // the cross-service parity guarantee this schema exists to provide.
+  //
+  // recall@k/MRR are computed for exact/paraphrase/nearMiss only —
+  // both are undefined for a true_negative query, which has no correct answer;
+  // falsePositiveRate is the true_negative group's own metric.
+  readonly recallAtK: {
+    readonly exact: { readonly numerator: number; readonly denominator: number };
+    readonly paraphrase: { readonly numerator: number; readonly denominator: number };
+    readonly nearMiss: { readonly numerator: number; readonly denominator: number };
+  };
+  readonly meanReciprocalRank: {
+    readonly exact: { readonly numerator: number; readonly denominator: number };
+    readonly paraphrase: { readonly numerator: number; readonly denominator: number };
+    readonly nearMiss: { readonly numerator: number; readonly denominator: number };
+  };
+  readonly falsePositiveRate: { readonly numerator: number; readonly denominator: number };
+
+  // Nullable provenance sibling: non-null iff the three fields above were
+  // populated from a real retrieval-quality run rather than left at the
+  // zero-default. Without it, two persisted runs — one scored against the
+  // keyword retriever, one against BM25 — would be indistinguishable once the
+  // originating request context is gone.
+  readonly retrievalQualityProvenance: {
+    readonly retrieverName: string;
+    readonly corpusContentHash: string;
+  } | null;
 }
+
+// The zero-ratio default used for the four Milestone-13 fields on an ordinary
+// case-only run (no retrievalQualityMetrics input). 0/0 means "not evaluated",
+// distinct from 0/N which means "evaluated, scored zero" — the same
+// distinction the #59 generation's read path already relies on.
+export const ZERO_RETRIEVAL_QUALITY_METRICS: Pick<
+  EvaluationMetrics,
+  "recallAtK" | "meanReciprocalRank" | "falsePositiveRate" | "retrievalQualityProvenance"
+> = {
+  recallAtK: {
+    exact: { numerator: 0, denominator: 0 },
+    paraphrase: { numerator: 0, denominator: 0 },
+    nearMiss: { numerator: 0, denominator: 0 },
+  },
+  meanReciprocalRank: {
+    exact: { numerator: 0, denominator: 0 },
+    paraphrase: { numerator: 0, denominator: 0 },
+    nearMiss: { numerator: 0, denominator: 0 },
+  },
+  falsePositiveRate: { numerator: 0, denominator: 0 },
+  retrievalQualityProvenance: null,
+};

@@ -16,6 +16,7 @@ import {
   EvaluationServiceUnsupportedVersionError,
 } from "./evaluation-service-errors";
 import { METRIC_CHECK_NAMES } from "./evaluation-evaluator";
+import { ZERO_RETRIEVAL_QUALITY_METRICS } from "./types";
 import type { EvaluationSuiteInputV2, EvaluationSuiteResultV2 } from "./v2-types";
 
 // ---------------------------------------------------------------------------
@@ -136,6 +137,12 @@ function nineRatios(
   ) as Record<MetricRatioKey, { numerator: number; denominator: number }>;
 }
 
+// Milestone 13 Issue B (#75): the four retrieval-quality fields at their
+// zero/absent default. Every fixture here submits MINIMAL_INPUT, which carries
+// no retrievalQualityMetrics, so the response must echo exactly this — the
+// service is forbidden from inventing values for them.
+const MILESTONE_13_DEFAULTS = ZERO_RETRIEVAL_QUALITY_METRICS;
+
 // Loose, fully-mutable fixture type. Tests deliberately build broken variants
 // (wrong primitives, bogus reason codes, missing fields) that would not
 // typecheck against PersistedEvaluationRunV2 — the client must reject those
@@ -177,6 +184,7 @@ function validResourceJson(id: string = EVALUATION_ID): MutableResource {
       toolCorrectness: { numerator: 0, denominator: 0 },
       expectedStatusCorrectness: { numerator: 1, denominator: 1 },
       ...nineRatios(1, 1),
+      ...MILESTONE_13_DEFAULTS,
     },
   };
 }
@@ -214,6 +222,7 @@ function failingResourceJson(): MutableResource {
       toolCorrectness: { numerator: 0, denominator: 0 },
       expectedStatusCorrectness: { numerator: 0, denominator: 1 },
       ...nineRatios(0, 0),
+      ...MILESTONE_13_DEFAULTS,
     },
   };
 }
@@ -243,6 +252,7 @@ function expectedScorerResult(): EvaluationSuiteResultV2 {
       toolCorrectness: { numerator: 0, denominator: 0 },
       expectedStatusCorrectness: { numerator: 1, denominator: 1 },
       ...nineRatios(1, 1),
+      ...MILESTONE_13_DEFAULTS,
     },
   };
 }
@@ -423,6 +433,7 @@ function twoCaseAllPassedResource(): Record<string, unknown> {
       toolCorrectness: { numerator: 0, denominator: 0 },
       expectedStatusCorrectness: { numerator: 2, denominator: 2 },
       ...nineRatios(2, 2),
+      ...MILESTONE_13_DEFAULTS,
     },
   };
 }
@@ -628,6 +639,7 @@ describe("HttpEvaluationScorer — POST requires exactly nine #59 metric outcome
         toolCorrectness: { numerator: 0, denominator: 0 },
         expectedStatusCorrectness: { numerator: 1, denominator: 1 },
         ...nineRatios(0, 0),
+        ...MILESTONE_13_DEFAULTS,
       },
     };
 

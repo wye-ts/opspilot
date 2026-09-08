@@ -1,5 +1,47 @@
-import type { EvaluationMetrics } from "./types";
-import type { EvaluationCaseResultV2 } from "./v2-types";
+import { ZERO_RETRIEVAL_QUALITY_METRICS, type EvaluationMetrics } from "./types";
+import type { EvaluationCaseResultV2, RetrievalQualityMetricsInput } from "./v2-types";
+
+// ---------------------------------------------------------------------------
+// Milestone 13 Issue B (#75) §3 — the explicit, hand-written mapping between
+// EvaluationMetrics's NESTED wire shape and the FLAT per-metric-name rows the
+// evaluation_metrics table stores. The exact mirror of api.py's
+// MILESTONE_13_METRIC_PATHS: same seven flat names, same order, same nested
+// paths, so a reviewer checking one side against the other finds them
+// structurally identical rather than independently re-derived.
+//
+// Deliberately NOT generic getattr/setattr-style introspection: a typo or a
+// schema-shape change must fail typecheck immediately, not at runtime.
+// ---------------------------------------------------------------------------
+export const MILESTONE_13_METRIC_PATHS = [
+  ["recallAtKExact", ["recallAtK", "exact"]],
+  ["recallAtKParaphrase", ["recallAtK", "paraphrase"]],
+  ["recallAtKNearMiss", ["recallAtK", "nearMiss"]],
+  ["meanReciprocalRankExact", ["meanReciprocalRank", "exact"]],
+  ["meanReciprocalRankParaphrase", ["meanReciprocalRank", "paraphrase"]],
+  ["meanReciprocalRankNearMiss", ["meanReciprocalRank", "nearMiss"]],
+  // Not nested — a top-level MetricRatio, so the second path segment is null.
+  ["falsePositiveRate", ["falsePositiveRate", null]],
+] as const satisfies readonly (readonly [string, readonly [keyof EvaluationMetrics, string | null]])[];
+
+export const MILESTONE_13_METRIC_NAMES: readonly string[] = MILESTONE_13_METRIC_PATHS.map(
+  ([flatName]) => flatName,
+);
+
+// Nested -> flat, for a persistence/wire boundary that stores one row per
+// metric name (the same resolution _persist_evaluation performs in Python).
+export function toFlatMilestone13Metrics(
+  metrics: EvaluationMetrics,
+): Readonly<Record<string, { readonly numerator: number; readonly denominator: number }>> {
+  const flat: Record<string, { readonly numerator: number; readonly denominator: number }> = {};
+  for (const [flatName, [group, field]] of MILESTONE_13_METRIC_PATHS) {
+    const groupValue = metrics[group];
+    flat[flatName] =
+      field === null
+        ? (groupValue as { readonly numerator: number; readonly denominator: number })
+        : (groupValue as Record<string, { readonly numerator: number; readonly denominator: number }>)[field]!;
+  }
+  return flat;
+}
 
 const TOOL_CHECK_NAMES = [
   "tool-requested",
@@ -51,7 +93,35 @@ function toolCorrectnessRatio(
   return { numerator: passing.length, denominator: declaring.length };
 }
 
-export function aggregateMetrics(results: readonly EvaluationCaseResultV2[]): EvaluationMetrics {
+// Milestone 13 Issue B (#75): the four retrieval-quality fields are COPIED
+// from the suite input, never recomputed here — aggregateMetrics operates only
+// on case results, and a labeled query-set record is not an EvaluationCase and
+// produces no check. When no input is supplied, the fields fall back to the
+// zero-ratio default and provenance is null.
+export function retrievalQualityFields(
+  input: RetrievalQualityMetricsInput | undefined,
+): Pick<
+  EvaluationMetrics,
+  "recallAtK" | "meanReciprocalRank" | "falsePositiveRate" | "retrievalQualityProvenance"
+> {
+  if (input === undefined) return ZERO_RETRIEVAL_QUALITY_METRICS;
+  return {
+    recallAtK: input.recallAtK,
+    meanReciprocalRank: input.meanReciprocalRank,
+    falsePositiveRate: input.falsePositiveRate,
+    retrievalQualityProvenance: {
+      retrieverName: input.retrieverName,
+      corpusContentHash: input.corpusContentHash,
+    },
+  };
+}
+
+// `retrievalQuality` is pass-through data, not something this function derives
+// (see retrievalQualityFields above and the plan's §0 decision gate).
+export function aggregateMetrics(
+  results: readonly EvaluationCaseResultV2[],
+  retrievalQuality?: RetrievalQualityMetricsInput,
+): EvaluationMetrics {
   const totalCases = results.length;
   const passedCases = results.filter((result) => result.passed).length;
   const failedCases = totalCases - passedCases;
@@ -81,5 +151,6 @@ export function aggregateMetrics(results: readonly EvaluationCaseResultV2[]): Ev
     approvalGate: simpleRatio(results, "approval-gate"),
     boundsRespected: simpleRatio(results, "bounds-respected"),
     deterministicRecovery: simpleRatio(results, "deterministic-recovery"),
+    ...retrievalQualityFields(retrievalQuality),
   };
 }

@@ -22,6 +22,11 @@ import {
   EvaluationServiceError,
   type EvaluationServiceErrorCategory,
 } from "./evaluation-service-errors";
+import {
+  RetrievalQualityConfigError,
+  resolveRetrievalQualityMetrics,
+  type RetrievalQualityEnv,
+} from "./retrieval-quality-config";
 import type { EvaluationCase, EvaluationMetrics } from "./types";
 import { buildEvaluationSuiteInputV2, EVALUATION_DATASET_ID, type EvaluationCaseResultV2 } from "./v2-types";
 
@@ -55,6 +60,10 @@ export interface EvaluationDependencies {
   // instead of resolving one from scorerSelection. Undefined in real use —
   // createEvaluationScorer(scorerSelection) is the only production path.
   readonly scorer?: EvaluationScorer;
+  // Milestone 13 Issue B (#75) §2.5: the environment the opt-in
+  // retrieval-quality flags are read from. Injectable so tests exercise every
+  // branch without mutating process.env; main() passes the real process.env.
+  readonly env: RetrievalQualityEnv;
 }
 
 const DEFAULT_DEPENDENCIES: EvaluationDependencies = {
@@ -63,6 +72,10 @@ const DEFAULT_DEPENDENCIES: EvaluationDependencies = {
   injectionProbeChunk: INJECTION_PROBE_CHUNK,
   runSuite: runEvaluationSuite,
   scorerSelection: DEFAULT_EVALUATION_SCORER_SELECTION,
+  // Empty by default: a direct/test caller supplying no env gets the
+  // pre-#75 behavior (no retrieval-quality attachment) rather than
+  // accidentally picking up whatever is set in the ambient process.
+  env: {},
 };
 
 // Composition root: loads the real Markdown corpus once, validates the
@@ -94,12 +107,25 @@ export async function runEvaluation(
     return { kind: "configuration-error", message: validationMessages[0]! };
   }
 
+  // Milestone 13 Issue B (#75) §2.5. Resolved AFTER the corpus load so the
+  // artifact's stored corpusContentHash is checked against the corpus this run
+  // actually loaded — a stale artifact fails closed here even if
+  // `score-query-set.ts --check` was never run. Undefined (the default) leaves
+  // the four new metric fields at their zero-ratio defaults with a null
+  // provenance. May throw RetrievalQualityConfigError, which main() renders as
+  // a configuration error.
+  const retrievalQualityMetrics = resolveRetrievalQualityMetrics(deps.env, defaultCorpus);
+
   const caseInputs = await deps.runSuite({
     cases: deps.cases,
     defaultCorpus,
     injectionProbeChunk: deps.injectionProbeChunk,
   });
-  const suiteInput = buildEvaluationSuiteInputV2(EVALUATION_DATASET_ID, caseInputs);
+  const suiteInput = buildEvaluationSuiteInputV2(
+    EVALUATION_DATASET_ID,
+    caseInputs,
+    retrievalQualityMetrics,
+  );
 
   const scorer = deps.scorer ?? createEvaluationScorer(deps.scorerSelection);
   const suiteResult = await scorer.score(suiteInput);
@@ -133,6 +159,13 @@ export async function resolveEvaluationRun(
   } catch (error) {
     if (error instanceof RunbookLoadError) {
       return { kind: "setup-error", category: error.category };
+    }
+    // A fail-closed retrieval-quality misconfiguration (missing selector,
+    // unknown retriever, stale artifact) is a CONFIGURATION error, not an
+    // unexpected failure — its already-safe, application-authored message is
+    // the only thing rendered.
+    if (error instanceof RetrievalQualityConfigError) {
+      return { kind: "outcome", outcome: { kind: "configuration-error", message: error.message } };
     }
     if (error instanceof EvaluationServiceError) {
       return { kind: "scoring-error", category: error.category };
@@ -246,7 +279,7 @@ async function main(): Promise<void> {
   let rendered: RenderedEvaluationOutput;
   try {
     const scorerSelection = resolveScorerSelectionFromEnv(process.env);
-    const resolution = await resolveEvaluationRun({ scorerSelection });
+    const resolution = await resolveEvaluationRun({ scorerSelection, env: process.env });
     rendered = renderEvaluationOutput(resolution);
   } catch (error) {
     if (error instanceof EvaluationScorerConfigError) {

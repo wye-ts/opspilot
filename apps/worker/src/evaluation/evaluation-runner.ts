@@ -2,7 +2,7 @@ import opspilotAgentRuntime from "@opspilot/agent-runtime";
 import type { AgentConversationMessage, StoredRunbookChunk } from "@opspilot/agent-runtime";
 import type { InvestigationEventPayload } from "@opspilot/contracts";
 
-import { InMemoryKeywordRunbookRetriever } from "../rag";
+import { DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE, InMemoryKeywordRunbookRetriever } from "../rag";
 import { resolveCorpus } from "./dataset-validation";
 import { alwaysFailsTool } from "./fixtures/always-fails-tool";
 import { buildObservedFacts } from "./observed-facts";
@@ -43,7 +43,15 @@ async function runOneCase(
   // reused across cases except the read-only default corpus array itself
   // (see docs/07-evaluation-plan.md).
   const effectiveCorpus = resolveCorpus(evaluationCase.corpusProfile, defaultCorpus, injectionProbeChunk);
-  const retriever = new InMemoryKeywordRunbookRetriever(effectiveCorpus);
+  // Issue #75 §2.4: the behavioral suite scores against the SAME enforced
+  // threshold production uses (apps/api's RUNBOOK_RETRIEVER), imported from
+  // the single named constant — not the legacy zero-threshold default. Without
+  // this, a case whose expected chunk scores between 0 and the frozen floor
+  // would pass the eval suite while failing in production.
+  const retriever = new InMemoryKeywordRunbookRetriever(
+    effectiveCorpus,
+    DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE,
+  );
   const recorder: RecordedToolExecution[] = [];
   const toolRegistry = createRecordingToolRegistry(resolveTools(evaluationCase.toolProfile), recorder);
   const provider = new FakeLlmProvider(evaluationCase.scenario);
