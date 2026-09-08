@@ -1,10 +1,16 @@
 /**
  * Issue #75 — minimum-score threshold calibration (plan §2.4).
+ * Issue #76 §2.4 — generalized with an explicit `step` parameter to support
+ * the frozen-embedding candidate's fractional cosine-similarity score scale
+ * (plan §0 fix 4: the pre-#76 integer-only sweep could never select a
+ * nonzero threshold for any score below 1.0, which cosine similarity almost
+ * always is).
  *
  * The frozen `DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE` /
- * `DEFAULT_BM25_RETRIEVER_MIN_SCORE` values are the OUTPUT of this procedure,
- * which is committed (not just its resulting number) so it can be re-run
- * whenever the corpus or query set changes.
+ * `DEFAULT_BM25_RETRIEVER_MIN_SCORE` / `DEFAULT_FIXTURE_RETRIEVER_MIN_SCORE`
+ * values are the OUTPUT of this procedure, which is committed (not just its
+ * resulting number) so it can be re-run whenever the corpus, query set, or
+ * (for frozen-embedding) the fixture changes.
  *
  * Run:
  *   pnpm exec tsx runbooks-eval/calibrate-min-score.ts
@@ -25,23 +31,31 @@
  *   must still clear the floor (a threshold that silences a correct answer is
  *   not a candidate at any exclusion rate).
  *
- *   Choice: the SMALLEST integer threshold that excludes at least half of the
- *   calibration distractor scores while satisfying the constraint above. If no
- *   integer threshold excludes half of them (which is the real, observed case
- *   for the keyword retriever — its correct answers and its distractors overlap
- *   on the same small integer score scale, so the constraint binds first), the
- *   SMALLEST integer achieving the maximum exclusion the constraint allows is
- *   chosen, and the shortfall is reported explicitly rather than silently
- *   relaxing the correct-answer constraint. Smallest-of-equals matters: two
- *   thresholds that exclude the same distractors are not equivalent for
- *   anything outside the calibration set (a higher one suppresses strictly
- *   more real answers for no measured benefit), so the smallest is the
- *   demonstrably sufficient one.
+ *   Choice: the SMALLEST threshold, at the given step granularity, that
+ *   excludes at least half of the calibration distractor scores while
+ *   satisfying the constraint above. If no candidate excludes half of them
+ *   (which is the real, observed case for the keyword retriever — its
+ *   correct answers and its distractors overlap on the same small integer
+ *   score scale, so the constraint binds first), the SMALLEST candidate
+ *   achieving the maximum exclusion the constraint allows is chosen, and
+ *   the shortfall is reported explicitly rather than silently relaxing the
+ *   correct-answer constraint. Smallest-of-equals matters: two thresholds
+ *   that exclude the same distractors are not equivalent for anything
+ *   outside the calibration set (a higher one suppresses strictly more real
+ *   answers for no measured benefit), so the smallest is the demonstrably
+ *   sufficient one.
+ *
+ *   Step: the sweep operates on INTEGER TICKS of an explicit step size
+ *   (default 1, matching keyword/BM25's pre-#76 integer behavior exactly —
+ *   a regression test asserts this), converting only the CHOSEN tick back
+ *   to a real score once, at the end, rather than sweeping fractional
+ *   scores directly (which would accumulate floating-point drift across
+ *   iterations). frozen-embedding calibrates at step 0.01.
  *
  * The result is written to `runbooks-eval/min-score-calibration.json` and must
- * agree with the two exported constants; `--check` recomputes and fails
- * closed on any disagreement (so a corpus/query-set/scoring edit that moves
- * the calibrated value cannot silently leave the constants stale).
+ * agree with the exported constants; `--check` recomputes and fails
+ * closed on any disagreement (so a corpus/query-set/scoring/fixture edit that
+ * moves the calibrated value cannot silently leave the constants stale).
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -51,15 +65,18 @@ import {
   BM25RunbookRetriever,
   DEFAULT_BM25_RETRIEVER_MIN_SCORE,
 } from "../packages/agent-runtime/src/rag/bm25-runbook-retriever";
+import { FixtureBackedRunbookRetriever, DEFAULT_FIXTURE_RETRIEVER_MIN_SCORE } from "../packages/agent-runtime/src/rag/fixture-backed-runbook-retriever";
 import {
   DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE,
   InMemoryKeywordRunbookRetriever,
 } from "../packages/agent-runtime/src/rag/in-memory-runbook-retriever";
 import { loadDefaultRunbookCorpus } from "../packages/agent-runtime/src/rag/load-default-runbook-corpus";
 import type { RunbookRetriever, StoredRunbookChunk } from "../packages/agent-runtime/src/rag/runbook-retriever";
+import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS } from "./embedding-fixture-config";
 import { parseQuerySet, QUERY_SET_PATH, type QueryRecord } from "./validate-query-set";
 
 const CALIBRATION_PATH = path.resolve(__dirname, "min-score-calibration.json");
+const EMBEDDING_FIXTURE_PATH = path.resolve(__dirname, "embedding-fixture.json");
 
 // Mirrors apps/worker/src/evaluation/types.ts's EVALUATION_TOP_K, following
 // validate-query-set.ts's existing local-mirror convention (runbooks-eval/ has
@@ -68,6 +85,7 @@ const EVALUATION_TOP_K = 3;
 
 export interface RetrieverCalibration {
   readonly retrieverName: string;
+  readonly step: number;
   readonly chosenMinScore: number;
   readonly distractorScores: readonly number[];
   readonly excludedDistractorCount: number;
@@ -102,11 +120,21 @@ async function rawScore(
   return results.find((entry) => entry.chunkId === chunkId)?.score ?? 0;
 }
 
+// Number of decimal places `step` itself carries — used once, at the end, to
+// convert the chosen integer tick back into a real score without
+// accumulating floating-point drift across the sweep loop (plan §0 fix 4).
+function decimalPlacesFor(step: number): number {
+  const text = step.toString();
+  const dotIndex = text.indexOf(".");
+  return dotIndex === -1 ? 0 : text.length - dotIndex - 1;
+}
+
 export async function calibrateRetriever(
   retrieverName: string,
   build: (corpus: readonly StoredRunbookChunk[]) => RunbookRetriever,
   corpus: readonly StoredRunbookChunk[],
   queries: readonly QueryRecord[],
+  step = 1,
 ): Promise<RetrieverCalibration> {
   const chunksById = new Map(corpus.map((chunk) => [chunk.chunkId, chunk]));
   const retriever = build(corpus);
@@ -143,20 +171,20 @@ export async function calibrateRetriever(
   if (!Number.isFinite(lowestCorrectTop1Score)) lowestCorrectTop1Score = 0;
 
   const distractorExclusionTarget = Math.ceil(distractorScores.length / 2);
-  const maxAllowed = Math.floor(lowestCorrectTop1Score);
 
-  // Smallest integer threshold meeting the exclusion target while never
-  // exceeding the lowest correct-answer score. When the target is
-  // unreachable under that constraint, fall back to the SMALLEST integer
-  // achieving the maximum exclusion the constraint does allow.
-  const excludedAt = (candidate: number): number =>
-    distractorScores.filter((score) => score < candidate).length;
+  // Sweep integer TICKS of `step` (plan §0 fix 4): tick 0 = score 0, tick 1
+  // = score `step`, etc. maxAllowedTicks is the largest tick whose score
+  // does not exceed the correct-answer constraint. For step=1 this is
+  // identical, tick-for-tick, to the pre-#76 integer sweep.
+  const maxAllowedTicks = Math.floor(lowestCorrectTop1Score / step);
+  const excludedAtTick = (tick: number): number =>
+    distractorScores.filter((score) => score < tick * step).length;
 
-  let chosen = 0;
+  let chosenTick = 0;
   let targetMet = false;
-  for (let candidate = 0; candidate <= maxAllowed; candidate += 1) {
-    if (excludedAt(candidate) >= distractorExclusionTarget) {
-      chosen = candidate;
+  for (let tick = 0; tick <= maxAllowedTicks; tick += 1) {
+    if (excludedAtTick(tick) >= distractorExclusionTarget) {
+      chosenTick = tick;
       targetMet = true;
       break;
     }
@@ -164,19 +192,22 @@ export async function calibrateRetriever(
 
   if (!targetMet) {
     let bestExcluded = -1;
-    for (let candidate = 0; candidate <= maxAllowed; candidate += 1) {
-      const excluded = excludedAt(candidate);
+    for (let tick = 0; tick <= maxAllowedTicks; tick += 1) {
+      const excluded = excludedAtTick(tick);
       if (excluded > bestExcluded) {
         bestExcluded = excluded;
-        chosen = candidate;
+        chosenTick = tick;
       }
     }
   }
 
-  const excludedDistractorCount = excludedAt(chosen);
+  // Converted ONCE, at the end — see decimalPlacesFor's comment.
+  const chosen = Number((chosenTick * step).toFixed(decimalPlacesFor(step)));
+  const excludedDistractorCount = excludedAtTick(chosenTick);
 
   return {
     retrieverName,
+    step,
     chosenMinScore: chosen,
     distractorScores,
     excludedDistractorCount,
@@ -187,18 +218,29 @@ export async function calibrateRetriever(
   };
 }
 
+// Reads and JSON.parses the committed fixture — plain file I/O, no import of
+// apps/worker (which generated it) needed; both processes treat
+// runbooks-eval/embedding-fixture.json as the shared artifact.
+function readRawFixture(): unknown {
+  return JSON.parse(readFileSync(EMBEDDING_FIXTURE_PATH, "utf8"));
+}
+
 export async function computeCalibration(): Promise<CalibrationResult> {
   const corpusLoad = await loadDefaultRunbookCorpus();
-  const { querySet, errors } = parseQuerySet(readFileSync(QUERY_SET_PATH, "utf8"));
+  const rawQuerySetText = readFileSync(QUERY_SET_PATH, "utf8");
+  const { querySet, errors } = parseQuerySet(rawQuerySetText);
   if (querySet === null) {
     throw new Error(`retrieval-query-set.json is malformed: ${errors.join("; ")}`);
   }
 
+  const rawFixture = readRawFixture();
+
   return {
     procedure:
-      "smallest integer minScore excluding >= half of the 12 near_miss queries' own distractor " +
-      "scores (raw, pre-threshold) while every exact/paraphrase query's own correct top answer " +
-      "still clears the floor; the 8 true_negative queries are held out for falsePositiveRate",
+      "smallest threshold (at the given step granularity) excluding >= half of the 12 near_miss " +
+      "queries' own distractor scores (raw, pre-threshold) while every exact/paraphrase query's own " +
+      "correct top answer still clears the floor; the 8 true_negative queries are held out for " +
+      "falsePositiveRate",
     retrievers: [
       await calibrateRetriever(
         "keyword",
@@ -212,16 +254,37 @@ export async function computeCalibration(): Promise<CalibrationResult> {
         corpusLoad.chunks,
         querySet.queries,
       ),
+      // minScore: 0 here is REQUIRED, not a default — plan §0a fix 1: a
+      // nonzero minScore would make the retriever silently exclude
+      // below-threshold chunks from its own result set, so calibration
+      // would score its own already-filtered output rather than the true
+      // raw cosine similarity.
+      await calibrateRetriever(
+        "frozen-embedding",
+        (corpus) =>
+          new FixtureBackedRunbookRetriever(
+            corpus,
+            querySet.queries.map((record) => ({ id: record.id, query: record.query })),
+            rawQuerySetText,
+            rawFixture,
+            EMBEDDING_MODEL,
+            EMBEDDING_DIMENSIONS,
+            0,
+          ),
+        corpusLoad.chunks,
+        querySet.queries,
+        0.01,
+      ),
     ],
   };
 }
 
 function render(result: CalibrationResult): string {
-  const lines: string[] = ["Minimum-score threshold calibration (issue #75 §2.4)", ""];
+  const lines: string[] = ["Minimum-score threshold calibration (issue #75 §2.4, generalized #76 §2.4)", ""];
   for (const entry of result.retrievers) {
     const sorted = [...entry.distractorScores].sort((a, b) => a - b);
     lines.push(
-      `${entry.retrieverName}:`,
+      `${entry.retrieverName} (step=${entry.step}):`,
       `  near_miss distractor scores (n=${sorted.length}): ${sorted.map((s) => s.toFixed(3)).join(", ")}`,
       `  lowest correct top-answer score across exact+paraphrase: ${entry.lowestCorrectTop1Score.toFixed(3)}`,
       `  chosen minScore: ${entry.chosenMinScore}`,
@@ -243,6 +306,7 @@ function serialize(result: CalibrationResult): string {
 const FROZEN_CONSTANTS: Readonly<Record<string, number>> = {
   keyword: DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE,
   bm25: DEFAULT_BM25_RETRIEVER_MIN_SCORE,
+  "frozen-embedding": DEFAULT_FIXTURE_RETRIEVER_MIN_SCORE,
 };
 
 async function main(): Promise<void> {
@@ -253,6 +317,7 @@ async function main(): Promise<void> {
   console.log(render(result));
 
   const constantMismatches = result.retrievers
+    .filter((entry) => entry.retrieverName in FROZEN_CONSTANTS)
     .filter((entry) => FROZEN_CONSTANTS[entry.retrieverName] !== entry.chosenMinScore)
     .map(
       (entry) =>

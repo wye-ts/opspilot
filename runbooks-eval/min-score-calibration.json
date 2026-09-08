@@ -1,8 +1,9 @@
 {
-  "procedure": "smallest integer minScore excluding >= half of the 12 near_miss queries' own distractor scores (raw, pre-threshold) while every exact/paraphrase query's own correct top answer still clears the floor; the 8 true_negative queries are held out for falsePositiveRate",
+  "procedure": "smallest threshold (at the given step granularity) excluding >= half of the 12 near_miss queries' own distractor scores (raw, pre-threshold) while every exact/paraphrase query's own correct top answer still clears the floor; the 8 true_negative queries are held out for falsePositiveRate",
   "retrievers": [
     {
       "retrieverName": "keyword",
+      "step": 1,
       "chosenMinScore": 2,
       "distractorScores": [
         6,
@@ -26,6 +27,7 @@
     },
     {
       "retrieverName": "bm25",
+      "step": 1,
       "chosenMinScore": 6,
       "distractorScores": [
         5.875282792818572,
@@ -44,6 +46,30 @@
       "excludedDistractorCount": 3,
       "distractorExclusionTarget": 6,
       "lowestCorrectTop1Score": 6.108176638481397,
+      "constraintSatisfied": true,
+      "targetMet": false
+    },
+    {
+      "retrieverName": "frozen-embedding",
+      "step": 0.01,
+      "chosenMinScore": 0.41,
+      "distractorScores": [
+        0.46413725052168564,
+        0.4768115457646178,
+        0.4428242623862634,
+        0.5109476590521789,
+        0.5795094188731309,
+        0.5942843391651007,
+        0.49645837666225434,
+        0.475262232365281,
+        0.4889725083739835,
+        0.40470289349261096,
+        0.5160008009547983,
+        0.3547412212823931
+      ],
+      "excludedDistractorCount": 2,
+      "distractorExclusionTarget": 6,
+      "lowestCorrectTop1Score": 0.4277599682836591,
       "constraintSatisfied": true,
       "targetMet": false
     }
