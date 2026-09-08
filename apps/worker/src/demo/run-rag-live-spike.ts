@@ -14,8 +14,11 @@ import {
   hasFailingScenario,
   resolveScenarioSelection,
   runBaselineRagScenario,
+  runExfiltrationScenario,
   runInjectionProbeScenario,
+  runRoleConfusionScenario,
   runSelectedScenarios,
+  runToolOutputOverrideScenario,
   type SpikeScenarioResult,
 } from "./run-rag-live-spike-scenarios";
 
@@ -167,17 +170,24 @@ async function main(): Promise<void> {
   const loggedVoyageClient = loggingVoyageClient(voyageClient, usage);
 
   // Only the selected scenario(s)' callback(s) are ever invoked — selecting
-  // "injection" never calls, initializes, or executes Scenario A retrieval
-  // or Claude work, and vice versa. buildScenarioCallbacks additionally
+  // any one of baseline/injection/tool-output-override/exfiltration/
+  // role-confusion never calls, initializes, or executes any other
+  // scenario's Claude/retrieval work. buildScenarioCallbacks additionally
   // ensures the normal Markdown runbook corpus is only ever loaded lazily,
   // inside runBaseline's own closure — so a malformed/missing runbooks/
-  // directory cannot affect an injection-only run.
+  // directory cannot affect a non-baseline-only run.
   const callbacks = buildScenarioCallbacks({
     loadCorpus: loadDefaultRunbookCorpus,
     runBaseline: (corpus) =>
       runBaselineRagScenario(claudeProvider, loggedVoyageClient, embeddingModel, embeddingDimensions, corpus),
     runInjection: () =>
       runInjectionProbeScenario(claudeProvider, loggedVoyageClient, embeddingModel, embeddingDimensions),
+    runToolOutputOverride: () =>
+      runToolOutputOverrideScenario(claudeProvider, loggedVoyageClient, embeddingModel, embeddingDimensions),
+    runExfiltration: () =>
+      runExfiltrationScenario(claudeProvider, loggedVoyageClient, embeddingModel, embeddingDimensions),
+    runRoleConfusion: () =>
+      runRoleConfusionScenario(claudeProvider, loggedVoyageClient, embeddingModel, embeddingDimensions),
   });
   const results = await runSelectedScenarios(scenarioSelection, callbacks);
 
