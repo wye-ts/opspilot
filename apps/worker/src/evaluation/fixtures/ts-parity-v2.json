@@ -596,8 +596,7 @@
           "completed": true,
           "chunkIds": [
             "runbook-auth-failures-001",
-            "runbook-auth-failures-002",
-            "runbook-billing-invoice-formatting-001"
+            "runbook-auth-failures-002"
           ]
         },
         "tools": {
@@ -854,9 +853,7 @@
         "retrieval": {
           "completed": true,
           "chunkIds": [
-            "runbook-database-connection-saturation-001",
-            "runbook-billing-invoice-formatting-001",
-            "runbook-notification-queue-backlog-002"
+            "runbook-database-connection-saturation-001"
           ]
         },
         "tools": {
@@ -2959,8 +2956,7 @@
           "completed": true,
           "chunkIds": [
             "runbook-auth-failures-001",
-            "runbook-auth-failures-002",
-            "runbook-billing-invoice-formatting-001"
+            "runbook-auth-failures-002"
           ]
         },
         "tools": {
@@ -3822,8 +3818,7 @@
           "completed": true,
           "chunkIds": [
             "runbook-auth-failures-001",
-            "runbook-auth-failures-002",
-            "runbook-billing-invoice-formatting-001"
+            "runbook-auth-failures-002"
           ]
         },
         "tools": {
@@ -4483,6 +4478,39 @@
     "deterministicRecovery": {
       "numerator": 9,
       "denominator": 9
-    }
+    },
+    "recallAtK": {
+      "exact": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "paraphrase": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "nearMiss": {
+        "numerator": 0,
+        "denominator": 0
+      }
+    },
+    "meanReciprocalRank": {
+      "exact": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "paraphrase": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "nearMiss": {
+        "numerator": 0,
+        "denominator": 0
+      }
+    },
+    "falsePositiveRate": {
+      "numerator": 0,
+      "denominator": 0
+    },
+    "retrievalQualityProvenance": null
   }
 }

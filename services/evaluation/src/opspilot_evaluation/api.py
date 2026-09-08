@@ -32,7 +32,12 @@ from opspilot_evaluation.schemas import (
     EvaluationMetrics,
     EvaluationRunResultV2,
     EvaluationSuiteInputV2,
+    GroupedMetricRatios,
+    GroupedMetricRatiosInput,
     MetricRatio,
+    RetrievalQualityMetricsInput,
+    RetrievalQualityProvenance,
+    zero_grouped_ratios,
 )
 from opspilot_evaluation.scoring.metrics import aggregate_metrics
 from opspilot_evaluation.scoring.scorer import CaseScoreResult, score_cases
@@ -70,7 +75,32 @@ NEW_METRIC_NAMES = (
     "boundsRespected",
     "deterministicRecovery",
 )
-METRIC_NAMES = ORIGINAL_METRIC_NAMES + NEW_METRIC_NAMES
+
+# Milestone 13 Issue B (#75) §3 — the explicit, hand-written bidirectional
+# mapping between EvaluationMetrics's NESTED wire shape and the FLAT
+# evaluation_metrics rows. `_metric_ratio` is `getattr(metrics, name)`; it has
+# no path to reach `metrics.recallAtK.exact` from the flat string
+# "recallAtKExact", so this table supplies it explicitly.
+#
+# Deliberately NOT generic getattr/setattr introspection: a typo or a
+# schema-shape change must fail tests/typecheck immediately rather than at
+# runtime. The TS mirror lives in apps/worker/src/evaluation/evaluation-metrics.ts
+# (MILESTONE_13_METRIC_PATHS) with the same seven names in the same order.
+#
+# Each entry: (flat persisted name, path into the nested model). A None second
+# segment means the field is a top-level MetricRatio, not nested.
+MILESTONE_13_METRIC_PATHS: tuple[tuple[str, tuple[str, str | None]], ...] = (
+    ("recallAtKExact", ("recallAtK", "exact")),
+    ("recallAtKParaphrase", ("recallAtK", "paraphrase")),
+    ("recallAtKNearMiss", ("recallAtK", "nearMiss")),
+    ("meanReciprocalRankExact", ("meanReciprocalRank", "exact")),
+    ("meanReciprocalRankParaphrase", ("meanReciprocalRank", "paraphrase")),
+    ("meanReciprocalRankNearMiss", ("meanReciprocalRank", "nearMiss")),
+    ("falsePositiveRate", ("falsePositiveRate", None)),
+)
+MILESTONE_13_METRIC_NAMES = tuple(flat_name for flat_name, _ in MILESTONE_13_METRIC_PATHS)
+
+METRIC_NAMES = ORIGINAL_METRIC_NAMES + NEW_METRIC_NAMES + MILESTONE_13_METRIC_NAMES
 
 
 @router.get("/health")
@@ -83,6 +113,19 @@ async def health() -> dict[str, str]:
 def _metric_ratio(metrics: EvaluationMetrics, name: str) -> MetricRatio:
     ratio: MetricRatio = getattr(metrics, name)
     return ratio
+
+
+def _milestone_13_ratio(metrics: EvaluationMetrics, path: tuple[str, str | None]) -> MetricRatio:
+    """Resolves ONE nested Milestone-13 path explicitly (never a flat getattr
+    the model does not support). Two segments -> nested group field; a None
+    second segment -> a top-level MetricRatio."""
+    group, field = path
+    group_value = getattr(metrics, group)
+    if field is None:
+        ratio: MetricRatio = group_value
+        return ratio
+    nested: MetricRatio = getattr(group_value, field)
+    return nested
 
 
 def _read_metrics(run: EvaluationRun) -> EvaluationMetrics:
@@ -124,10 +167,31 @@ def _read_metrics(run: EvaluationRun) -> EvaluationMetrics:
         logger.error("evaluation.read_metrics_partial_new", extra={"present": present_new})
         raise EvaluationApiError("INTERNAL_ERROR")
 
+    # Third generation, exactly the same all-or-nothing rule as the second.
+    present_m13 = [name for name in MILESTONE_13_METRIC_NAMES if name in stored]
+    if present_m13 and len(present_m13) != len(MILESTONE_13_METRIC_NAMES):
+        logger.error("evaluation.read_metrics_partial_milestone_13", extra={"present": present_m13})
+        raise EvaluationApiError("INTERNAL_ERROR")
+
     new_ratios = {
         name: stored[name] if name in stored else MetricRatio(numerator=0, denominator=0)
         for name in NEW_METRIC_NAMES
     }
+
+    # Flat -> nested, via the same explicit table used on the write path.
+    m13_flat = {
+        name: stored[name] if name in stored else MetricRatio(numerator=0, denominator=0)
+        for name in MILESTONE_13_METRIC_NAMES
+    }
+    m13_nested: dict[str, dict[str, MetricRatio]] = {}
+    m13_top_level: dict[str, MetricRatio] = {}
+    for flat_name, (group, field) in MILESTONE_13_METRIC_PATHS:
+        if field is None:
+            m13_top_level[group] = m13_flat[flat_name]
+        else:
+            m13_nested.setdefault(group, {})[field] = m13_flat[flat_name]
+
+    provenance = _read_provenance(run)
 
     return EvaluationMetrics(
         totalCases=run.total_cases,
@@ -136,7 +200,37 @@ def _read_metrics(run: EvaluationRun) -> EvaluationMetrics:
         passRate=run.pass_rate,
         **{name: stored[name] for name in ORIGINAL_METRIC_NAMES},
         **new_ratios,
+        # Named explicitly rather than spread: the three Milestone-13 fields
+        # have two different types (GroupedMetricRatios vs. MetricRatio), which
+        # a single **dict cannot express to a type checker. The mapping table
+        # above still drives WHICH flat row feeds each slot.
+        recallAtK=GroupedMetricRatios(**m13_nested["recallAtK"]),
+        meanReciprocalRank=GroupedMetricRatios(**m13_nested["meanReciprocalRank"]),
+        falsePositiveRate=m13_top_level["falsePositiveRate"],
+        retrievalQualityProvenance=provenance,
     )
+
+
+def _read_provenance(run: EvaluationRun) -> RetrievalQualityProvenance | None:
+    """Reconstructs retrievalQualityProvenance from the two nullable
+    evaluation_runs columns.
+
+    Both NULL -> None (every pre-Milestone-13 row, and every ordinary case-only
+    run). Both set -> the provenance object. EXACTLY ONE set is an internal
+    data inconsistency — the same "fail closed on a malformed partial shape"
+    discipline already applied to NEW_METRIC_NAMES above. Never guess.
+    """
+    name = run.retrieval_quality_retriever_name
+    corpus_hash = run.retrieval_quality_corpus_hash
+    if name is None and corpus_hash is None:
+        return None
+    if name is None or corpus_hash is None:
+        logger.error(
+            "evaluation.read_metrics_partial_provenance",
+            extra={"has_name": name is not None, "has_hash": corpus_hash is not None},
+        )
+        raise EvaluationApiError("INTERNAL_ERROR")
+    return RetrievalQualityProvenance(retrieverName=name, corpusContentHash=corpus_hash)
 
 
 async def _persist_evaluation(
@@ -148,6 +242,11 @@ async def _persist_evaluation(
     run_id = uuid.uuid4()
     now = datetime.now(UTC)
 
+    # Both provenance columns are set together or neither is — a row with
+    # exactly one is rejected on read (_read_provenance). NULL/NULL is the
+    # ordinary case-only run, and every pre-Milestone-13 row.
+    provenance = metrics.retrievalQualityProvenance
+
     run = EvaluationRun(
         id=run_id,
         contract_version=suite_input.contractVersion,
@@ -157,6 +256,8 @@ async def _persist_evaluation(
         passed_cases=metrics.passedCases,
         failed_cases=metrics.failedCases,
         pass_rate=metrics.passRate,
+        retrieval_quality_retriever_name=None if provenance is None else provenance.retrieverName,
+        retrieval_quality_corpus_hash=None if provenance is None else provenance.corpusContentHash,
         completed_at=now,
     )
 
@@ -187,8 +288,14 @@ async def _persist_evaluation(
                 )
             )
 
+    milestone_13_paths = dict(MILESTONE_13_METRIC_PATHS)
     for metric_name in METRIC_NAMES:
-        ratio = _metric_ratio(metrics, metric_name)
+        # Nested -> flat, via the explicit table; the flat getattr the older two
+        # generations use cannot reach a nested path.
+        if metric_name in milestone_13_paths:
+            ratio = _milestone_13_ratio(metrics, milestone_13_paths[metric_name])
+        else:
+            ratio = _metric_ratio(metrics, metric_name)
         rows.append(
             EvaluationMetric(
                 evaluation_run_id=run_id,
@@ -203,6 +310,48 @@ async def _persist_evaluation(
     return run_id
 
 
+def _retrieval_quality_fields(
+    supplied: RetrievalQualityMetricsInput | None,
+) -> dict[str, object]:
+    """The four Milestone-13 EvaluationMetrics fields, from the request's
+    precomputed input — copied straight through, never recomputed.
+
+    Absent input -> the zero-ratio default with a null provenance (mirrors
+    retrievalQualityFields in evaluation-metrics.ts exactly).
+    """
+    if supplied is None:
+        return {
+            "recallAtK": zero_grouped_ratios(),
+            "meanReciprocalRank": zero_grouped_ratios(),
+            "falsePositiveRate": MetricRatio(numerator=0, denominator=0),
+            "retrievalQualityProvenance": None,
+        }
+
+    def _grouped(source: GroupedMetricRatiosInput) -> GroupedMetricRatios:
+        return GroupedMetricRatios(
+            exact=MetricRatio(numerator=source.exact.numerator, denominator=source.exact.denominator),
+            paraphrase=MetricRatio(
+                numerator=source.paraphrase.numerator, denominator=source.paraphrase.denominator
+            ),
+            nearMiss=MetricRatio(
+                numerator=source.nearMiss.numerator, denominator=source.nearMiss.denominator
+            ),
+        )
+
+    return {
+        "recallAtK": _grouped(supplied.recallAtK),
+        "meanReciprocalRank": _grouped(supplied.meanReciprocalRank),
+        "falsePositiveRate": MetricRatio(
+            numerator=supplied.falsePositiveRate.numerator,
+            denominator=supplied.falsePositiveRate.denominator,
+        ),
+        "retrievalQualityProvenance": RetrievalQualityProvenance(
+            retrieverName=supplied.retrieverName,
+            corpusContentHash=supplied.corpusContentHash,
+        ),
+    }
+
+
 @router.post("/evaluations", status_code=201)
 async def create_evaluation(
     suite_input: EvaluationSuiteInputV2,
@@ -211,7 +360,13 @@ async def create_evaluation(
     # 1. validate request — done by FastAPI/Pydantic before this body runs.
     # 2. score the whole suite in memory.
     case_results = score_cases(suite_input.cases)
-    metrics = aggregate_metrics(case_results)
+    # Milestone 13 Issue B (#75): aggregate_metrics keeps its "operates only on
+    # case results" contract; the precomputed retrieval-quality numbers are
+    # copied through HERE, at the call site that can actually see suite_input,
+    # and are never recomputed by this service (plan §0 decision gate, §2.2).
+    metrics = aggregate_metrics(case_results).model_copy(
+        update=_retrieval_quality_fields(suite_input.retrievalQualityMetrics)
+    )
 
     # 3-4. persist the complete run/results/checks/metrics in one transaction.
     try:

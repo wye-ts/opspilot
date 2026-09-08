@@ -52,6 +52,17 @@ class EvaluationRun(Base):
     passed_cases: Mapped[int] = mapped_column(Integer, nullable=False)
     failed_cases: Mapped[int] = mapped_column(Integer, nullable=False)
     pass_rate: Mapped[float] = mapped_column(Float, nullable=False)
+    # Milestone 13 Issue B (#75) — retrieval-quality provenance. Both NULL for
+    # every ordinary case-only run (and every pre-Milestone-13 row); both set
+    # together when a run carried precomputed retrieval-quality metrics. A row
+    # with exactly one set is an internal data inconsistency and is rejected on
+    # read via INTERNAL_ERROR (api._read_provenance) — never guessed at.
+    #
+    # These live on the run row rather than in evaluation_metrics because they
+    # are identifying strings, not {numerator, denominator} ratios; that table's
+    # schema has no column that could carry them.
+    retrieval_quality_retriever_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    retrieval_quality_corpus_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

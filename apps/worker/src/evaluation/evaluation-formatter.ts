@@ -11,6 +11,13 @@ function formatPercent(rate: number): string {
   return `${(rate * 100).toFixed(1)}%`;
 }
 
+// Renders a sixths-encoded mean-reciprocal-rank ratio (see types.ts) as both
+// the exact stored integers and the human-readable mean they divide to.
+function formatMean(ratio: { readonly numerator: number; readonly denominator: number }): string {
+  if (ratio.denominator === 0) return `${formatRatio(ratio)} (n/a)`;
+  return `${formatRatio(ratio)} (${(ratio.numerator / ratio.denominator).toFixed(3)})`;
+}
+
 // Issue #59 Checkpoint B §11: a new metric's summary line is
 // `numerator/denominator (n/a_count n/a)`. The N/A count is derived from the
 // case results array (counting NOT_APPLICABLE checks per metric check name) —
@@ -80,6 +87,30 @@ export function formatEvaluationReport(
     `Bounds respected: ${formatMetricRatio(metrics.boundsRespected, results, "bounds-respected")}`,
     `Deterministic recovery: ${formatMetricRatio(metrics.deterministicRecovery, results, "deterministic-recovery")}`,
   );
+
+  // Milestone 13 Issue B (#75): retrieval-quality metrics render ONLY when
+  // this run actually carried them (provenance non-null). An ordinary
+  // case-only run's 0/0 defaults are deliberately not printed — showing
+  // "0/0" for every metric on every run would read as a measured zero rather
+  // than "not measured", and would change the golden CLI report for every
+  // existing invocation.
+  const provenance = metrics.retrievalQualityProvenance;
+  if (provenance !== null) {
+    lines.push(
+      "",
+      `Retrieval quality (retriever: ${provenance.retrieverName})`,
+      `Recall@3 exact: ${formatRatio(metrics.recallAtK.exact)}`,
+      `Recall@3 paraphrase: ${formatRatio(metrics.recallAtK.paraphrase)}`,
+      `Recall@3 near-miss: ${formatRatio(metrics.recallAtK.nearMiss)}`,
+      // Encoded in sixths (see types.ts) — the mean is recovered by division,
+      // exactly as any other ratio is.
+      `MRR exact: ${formatMean(metrics.meanReciprocalRank.exact)}`,
+      `MRR paraphrase: ${formatMean(metrics.meanReciprocalRank.paraphrase)}`,
+      `MRR near-miss: ${formatMean(metrics.meanReciprocalRank.nearMiss)}`,
+      `False-positive rate: ${formatRatio(metrics.falsePositiveRate)}`,
+      `Corpus content hash: ${provenance.corpusContentHash}`,
+    );
+  }
 
   return lines.join("\n");
 }

@@ -1,12 +1,16 @@
 import {
   createAgentRunService,
+  DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE,
   FakeLlmProvider,
   getServiceStatusTool,
   InMemoryKeywordRunbookRetriever,
   InMemoryToolRegistry,
   loadDefaultRunbookCorpus,
   type AgentRunRepositoryInterface,
+  type RunbookRetriever,
 } from "@opspilot/agent-runtime";
+import { AgentRuntimeModule } from "./agent-runtime.module";
+import { RUNBOOK_RETRIEVER } from "./execution.tokens";
 import type { InvestigationEventPayload } from "@opspilot/contracts";
 import type { AgentJobRecord, AgentRunRecord, PersistedAgentRun } from "@opspilot/database";
 import { describe, expect, it } from "vitest";
@@ -296,5 +300,78 @@ describe("issue #72: runbook retrieval reaches the deployed FAKE-provider path e
     expect(result.run.outcome.report.evidence).toHaveLength(1);
     expect(result.run.outcome.report.evidence[0]?.sourceType).toBe("TOOL_EXECUTION");
     expect(emittedEvents).toContainEqual({ type: "RETRIEVAL_COMPLETED", chunks: [] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #75 §2.4 / §7 criterion 3 — the enforced minimum-score threshold is
+// the DEPLOYED retriever's real behavior, from the same named constant every
+// other construction site imports.
+//
+// Rather than re-constructing a retriever the way the module does (which would
+// prove only that this test agrees with itself), these tests reach into
+// AgentRuntimeModule's OWN provider metadata and invoke the real useFactory —
+// so a future edit that drops the threshold argument from the module fails
+// here, not just in a hand-written mirror of it.
+// ---------------------------------------------------------------------------
+
+async function buildDeployedRetriever(): Promise<RunbookRetriever> {
+  const providers = Reflect.getMetadata("providers", AgentRuntimeModule) as readonly {
+    readonly provide?: unknown;
+    readonly useFactory?: () => Promise<RunbookRetriever>;
+  }[];
+  const entry = providers.find((provider) => provider.provide === RUNBOOK_RETRIEVER);
+  if (entry?.useFactory === undefined) {
+    throw new Error("AgentRuntimeModule no longer declares a RUNBOOK_RETRIEVER useFactory provider");
+  }
+  return entry.useFactory();
+}
+
+describe("issue #75: the deployed RUNBOOK_RETRIEVER enforces the frozen minimum-score threshold", () => {
+  it("excludes a chunk scoring below the frozen constant that the unthresholded retriever would return", async () => {
+    const corpusLoad = await loadDefaultRunbookCorpus();
+    // A real query against the real corpus whose top result clears the floor
+    // while two genuine single-token-overlap matches sit below it.
+    const query = "intermittent pdf misalignment";
+
+    const unthresholded = await new InMemoryKeywordRunbookRetriever(corpusLoad.chunks, 0).retrieve({
+      query,
+      topK: 5,
+    });
+    const belowFloor = unthresholded.filter(
+      (chunk) => chunk.score < DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE,
+    );
+    // Guard the fixture's own premise: if the corpus ever changes so that this
+    // query produces no sub-threshold match, the assertion below would pass
+    // vacuously and prove nothing.
+    expect(belowFloor.length).toBeGreaterThan(0);
+
+    const deployed = await (await buildDeployedRetriever()).retrieve({ query, topK: 5 });
+
+    expect(deployed.length).toBeGreaterThan(0);
+    for (const chunk of deployed) {
+      expect(chunk.score).toBeGreaterThanOrEqual(DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE);
+    }
+    const returnedIds = new Set(deployed.map((chunk) => chunk.chunkId));
+    for (const excluded of belowFloor) {
+      expect(returnedIds.has(excluded.chunkId)).toBe(false);
+    }
+  });
+
+  it("uses the SAME constant apps/worker's evaluation-runner does — not an independently-set value", async () => {
+    // The eval harness constructs its own retriever (evaluation-runner.ts's
+    // runOneCase). Both must be the identical configuration, or a case whose
+    // expected chunk scores between the two floors would pass the eval suite
+    // while failing in production.
+    const corpusLoad = await loadDefaultRunbookCorpus();
+    const query = "customers report emails";
+
+    const deployed = await (await buildDeployedRetriever()).retrieve({ query, topK: 5 });
+    const evalHarnessEquivalent = await new InMemoryKeywordRunbookRetriever(
+      corpusLoad.chunks,
+      DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE,
+    ).retrieve({ query, topK: 5 });
+
+    expect(deployed).toEqual(evalHarnessEquivalent);
   });
 });

@@ -8,7 +8,7 @@ import type { StoredRunbookChunk } from "@opspilot/agent-runtime";
 import type { ObservedFacts } from "./observed-facts";
 import { buildParityFixture, computeParityFixture, InvalidParityDatasetError } from "./parity-vectors";
 import { buildEvaluationSuiteInputV2 } from "./v2-types";
-import type { EvaluationCase } from "./types";
+import { ZERO_RETRIEVAL_QUALITY_METRICS, type EvaluationCase } from "./types";
 
 const FIXTURE_PATH = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "ts-parity-v2.json");
 
@@ -275,6 +275,9 @@ describe("buildParityFixture — fails closed on a duplicate caseId even when ca
         approvalGate: { numerator: 0, denominator: 0 },
         boundsRespected: { numerator: 0, denominator: 0 },
         deterministicRecovery: { numerator: 0, denominator: 0 },
+        // Milestone 13 Issue B (#75) — the zero/absent default (no
+        // retrievalQualityMetrics on this synthetic suite input).
+        ...ZERO_RETRIEVAL_QUALITY_METRICS,
       },
     };
 

@@ -20,7 +20,7 @@ import {
   type EvaluationOutcome,
   type EvaluationRunResolution,
 } from "./run-eval";
-import type { EvaluationCase } from "./types";
+import { ZERO_RETRIEVAL_QUALITY_METRICS, type EvaluationCase } from "./types";
 import type { EvaluationCaseInputV2, EvaluationCaseResultV2 } from "./v2-types";
 
 const FIXTURE_CORPUS: readonly StoredRunbookChunk[] = [
@@ -377,6 +377,8 @@ describe("renderEvaluationResolution — three distinct CLI error categories", (
           approvalGate: { numerator: 0, denominator: 0 },
           boundsRespected: { numerator: 0, denominator: 0 },
           deterministicRecovery: { numerator: 0, denominator: 0 },
+          // Milestone 13 Issue B (#75) — zero/absent default.
+          ...ZERO_RETRIEVAL_QUALITY_METRICS,
         },
       },
     };
@@ -414,6 +416,8 @@ describe("renderEvaluationResolution — three distinct CLI error categories", (
           approvalGate: { numerator: 0, denominator: 0 },
           boundsRespected: { numerator: 0, denominator: 0 },
           deterministicRecovery: { numerator: 0, denominator: 0 },
+          // Milestone 13 Issue B (#75) — zero/absent default.
+          ...ZERO_RETRIEVAL_QUALITY_METRICS,
         },
       },
     };

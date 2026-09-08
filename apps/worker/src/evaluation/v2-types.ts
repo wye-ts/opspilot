@@ -29,10 +29,52 @@ export interface EvaluationCaseInputV2 {
   readonly observed: ObservedFacts;
 }
 
+export interface MetricRatioInput {
+  readonly numerator: number;
+  readonly denominator: number;
+}
+
+// Milestone 13 Issue B (#75) — precomputed retrieval-quality numbers for
+// EXACTLY ONE named retriever, carried from the CLI to whichever scorer runs.
+// Neither scorer computes these; both copy them straight through into the
+// persisted EvaluationMetrics (plan §0 decision gate, §2.2).
+//
+// `retrieverName` records WHICH of query-set-scores.json's entries this run
+// reports. Comparing keyword vs. BM25 means running the CLI twice (once per
+// retrieverName) and diffing the two persisted runs — the same "one config per
+// run" shape every other eval-run dimension already follows (e.g.
+// scorerSelection). An unlabeled blob could only ever carry one retriever's
+// numbers while silently claiming to be retriever-agnostic.
+//
+// `corpusContentHash` is the hash the artifact was generated against; the
+// scorers persist it as EvaluationMetrics.retrievalQualityProvenance so a
+// stored run stays attributable to the corpus state that produced it.
+export interface RetrievalQualityMetricsInput {
+  readonly retrieverName: string;
+  readonly corpusContentHash: string;
+  readonly recallAtK: {
+    readonly exact: MetricRatioInput;
+    readonly paraphrase: MetricRatioInput;
+    readonly nearMiss: MetricRatioInput;
+  };
+  readonly meanReciprocalRank: {
+    readonly exact: MetricRatioInput;
+    readonly paraphrase: MetricRatioInput;
+    readonly nearMiss: MetricRatioInput;
+  };
+  readonly falsePositiveRate: MetricRatioInput;
+}
+
 export interface EvaluationSuiteInputV2 {
   readonly contractVersion: typeof EVALUATION_CONTRACT_VERSION;
   readonly datasetId: string;
   readonly cases: readonly EvaluationCaseInputV2[];
+  // Optional: present only when a retrieval-quality run supplies it (via
+  // EVALUATION_INCLUDE_RETRIEVAL_QUALITY, see run-eval.ts). Absent on an
+  // ordinary case-only eval run — including CI's cross-service-parity job —
+  // in which case the four Milestone-13 metric fields read as the zero-default
+  // and retrievalQualityProvenance is null.
+  readonly retrievalQualityMetrics?: RetrievalQualityMetricsInput;
 }
 
 // EvaluationExpectations.tool.expectedExecuted[].input is typed as
@@ -73,8 +115,15 @@ export function buildEvaluationCaseInputV2(
 export function buildEvaluationSuiteInputV2(
   datasetId: string,
   cases: readonly EvaluationCaseInputV2[],
+  retrievalQualityMetrics?: RetrievalQualityMetricsInput,
 ): EvaluationSuiteInputV2 {
-  return { contractVersion: EVALUATION_CONTRACT_VERSION, datasetId, cases };
+  // The key is OMITTED entirely (never set to undefined) when no
+  // retrieval-quality input is supplied, so the JSON body an ordinary run
+  // POSTs to the Python service is byte-identical to the pre-#75 shape — which
+  // matters because that service's models use extra="forbid" and every
+  // existing parity fixture was generated without this field.
+  const base = { contractVersion: EVALUATION_CONTRACT_VERSION, datasetId, cases } as const;
+  return retrievalQualityMetrics === undefined ? base : { ...base, retrievalQualityMetrics };
 }
 
 // The wire/parity check shape: deliberately excludes `expected`/`observed`

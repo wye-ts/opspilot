@@ -1,7 +1,10 @@
 import { validateRetrievedChunks } from "./retrieval-validation";
 import { describe, expect, it } from "vitest";
 
-import { InMemoryKeywordRunbookRetriever } from "./in-memory-runbook-retriever";
+import {
+  DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE,
+  InMemoryKeywordRunbookRetriever,
+} from "./in-memory-runbook-retriever";
 import type { StoredRunbookChunk } from "./runbook-retriever";
 
 // A small, self-contained, multi-topic fixture — not the production
@@ -138,6 +141,52 @@ describe("InMemoryKeywordRunbookRetriever", () => {
     });
     expect(results.length).toBeGreaterThan(0);
     expect(results[0]?.runbookId).toBe("auth-failures-runbook");
+  });
+
+  // --- Issue #75 §2.4: the enforced minimum-score floor --------------------
+
+  it("applies the minScore floor to retrieve()'s real output", async () => {
+    const unfiltered = await new InMemoryKeywordRunbookRetriever(FULL_CORPUS, 0).retrieve({
+      query: "notification service degradation delayed",
+      topK: 5,
+    });
+    expect(unfiltered.length).toBeGreaterThan(1);
+    const lowest = unfiltered[unfiltered.length - 1]!.score;
+    expect(unfiltered[0]!.score).toBeGreaterThan(lowest);
+
+    // A floor strictly above the lowest score must drop at least that entry
+    // without dropping the top one.
+    const filtered = await new InMemoryKeywordRunbookRetriever(FULL_CORPUS, lowest + 1).retrieve({
+      query: "notification service degradation delayed",
+      topK: 5,
+    });
+    expect(filtered.length).toBeLessThan(unfiltered.length);
+    expect(filtered.length).toBeGreaterThan(0);
+    for (const result of filtered) expect(result.score).toBeGreaterThanOrEqual(lowest + 1);
+    // Ranks are recomputed after filtering, never carried over from pre-filter.
+    expect(filtered.map((r) => r.rank)).toEqual(filtered.map((_, index) => index + 1));
+  });
+
+  it("returns nothing at all when the floor exceeds every score", async () => {
+    const retriever = new InMemoryKeywordRunbookRetriever(FULL_CORPUS, 1000);
+    expect(await retriever.retrieve({ query: "notification service degradation", topK: 5 })).toEqual([]);
+  });
+
+  it("defaults minScore to 0 — pre-#75 behavior — when omitted", async () => {
+    const bare = await new InMemoryKeywordRunbookRetriever(FULL_CORPUS).retrieve({
+      query: "notification",
+      topK: 5,
+    });
+    const explicitZero = await new InMemoryKeywordRunbookRetriever(FULL_CORPUS, 0).retrieve({
+      query: "notification",
+      topK: 5,
+    });
+    expect(bare).toEqual(explicitZero);
+  });
+
+  it("exports a frozen default threshold constant", () => {
+    expect(Number.isInteger(DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE)).toBe(true);
+    expect(DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE).toBeGreaterThan(0);
   });
 
   it("always returns output that passes the shared retrieval validator", async () => {

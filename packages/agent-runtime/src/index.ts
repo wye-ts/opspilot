@@ -41,7 +41,26 @@ import { RetrieverError as _RetrieverError } from "./rag/runbook-retriever";
 import { validateRetrievalInput as _validateRetrievalInput, validateRetrievedChunks as _validateRetrievedChunks } from "./rag/retrieval-validation";
 import { formatRagContext as _formatRagContext } from "./rag/rag-context-formatting";
 import { INJECTION_PROBE_CHUNK as _INJECTION_PROBE_CHUNK } from "./rag/injection-probe-fixture";
-import { InMemoryKeywordRunbookRetriever as _InMemoryKeywordRunbookRetriever } from "./rag/in-memory-runbook-retriever";
+import {
+  DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE as _DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE,
+  InMemoryKeywordRunbookRetriever as _InMemoryKeywordRunbookRetriever,
+} from "./rag/in-memory-runbook-retriever";
+import {
+  BM25_B as _BM25_B,
+  BM25_K1 as _BM25_K1,
+  BM25RunbookRetriever as _BM25RunbookRetriever,
+  DEFAULT_BM25_RETRIEVER_MIN_SCORE as _DEFAULT_BM25_RETRIEVER_MIN_SCORE,
+} from "./rag/bm25-runbook-retriever";
+import { computeCorpusContentHash as _computeCorpusContentHash } from "./rag/corpus-content-hash";
+import {
+  computeRetrieverFingerprint as _computeRetrieverFingerprint,
+  CURRENT_RETRIEVER_FINGERPRINTS as _CURRENT_RETRIEVER_FINGERPRINTS,
+} from "./rag/retriever-fingerprints";
+import {
+  STOPWORDS as _STOPWORDS,
+  tokenize as _tokenize,
+  tokenizeQuery as _tokenizeQuery,
+} from "./rag/tokenize";
 import {
   MarkdownRunbookCorpusLoader as _MarkdownRunbookCorpusLoader,
   RunbookLoadError as _RunbookLoadError,
@@ -74,6 +93,17 @@ export const validateRetrievedChunks = _validateRetrievedChunks;
 export const formatRagContext = _formatRagContext;
 export const INJECTION_PROBE_CHUNK = _INJECTION_PROBE_CHUNK;
 export const InMemoryKeywordRunbookRetriever = _InMemoryKeywordRunbookRetriever;
+export const DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE = _DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE;
+export const BM25RunbookRetriever = _BM25RunbookRetriever;
+export const DEFAULT_BM25_RETRIEVER_MIN_SCORE = _DEFAULT_BM25_RETRIEVER_MIN_SCORE;
+export const BM25_K1 = _BM25_K1;
+export const BM25_B = _BM25_B;
+export const tokenize = _tokenize;
+export const tokenizeQuery = _tokenizeQuery;
+export const STOPWORDS = _STOPWORDS;
+export const computeCorpusContentHash = _computeCorpusContentHash;
+export const computeRetrieverFingerprint = _computeRetrieverFingerprint;
+export const CURRENT_RETRIEVER_FINGERPRINTS = _CURRENT_RETRIEVER_FINGERPRINTS;
 export const MarkdownRunbookCorpusLoader = _MarkdownRunbookCorpusLoader;
 export const RunbookLoadError = _RunbookLoadError;
 export const loadDefaultRunbookCorpus = _loadDefaultRunbookCorpus;

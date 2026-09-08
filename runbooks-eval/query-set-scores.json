@@ -1,0 +1,78 @@
+{
+  "corpusContentHash": "0dc04b99dee99bd7a7f37fbc6e09c1eade6e85a051978b379df467299269d59d",
+  "queryContentHash": "b6cfb2373108cc86d5f0544999a04bf4616dcdcb930e0f82c045ccb517f991fd",
+  "retrieverFingerprints": {
+    "keyword": "a89ef97318b1b66c2c8fecd06cf090f6fafd05f575189ecc35f1e8ed5d3aa877",
+    "bm25": "664c39aca0885defdfe49a15312b2b4355e0522bc72cd39a4c464491faa9e4dc"
+  },
+  "retrievers": {
+    "keyword": {
+      "recallAtK": {
+        "exact": {
+          "numerator": 10,
+          "denominator": 10
+        },
+        "paraphrase": {
+          "numerator": 10,
+          "denominator": 10
+        },
+        "nearMiss": {
+          "numerator": 11,
+          "denominator": 12
+        }
+      },
+      "meanReciprocalRank": {
+        "exact": {
+          "numerator": 60,
+          "denominator": 60
+        },
+        "paraphrase": {
+          "numerator": 60,
+          "denominator": 60
+        },
+        "nearMiss": {
+          "numerator": 53,
+          "denominator": 72
+        }
+      },
+      "falsePositiveRate": {
+        "numerator": 8,
+        "denominator": 8
+      }
+    },
+    "bm25": {
+      "recallAtK": {
+        "exact": {
+          "numerator": 10,
+          "denominator": 10
+        },
+        "paraphrase": {
+          "numerator": 10,
+          "denominator": 10
+        },
+        "nearMiss": {
+          "numerator": 10,
+          "denominator": 12
+        }
+      },
+      "meanReciprocalRank": {
+        "exact": {
+          "numerator": 60,
+          "denominator": 60
+        },
+        "paraphrase": {
+          "numerator": 60,
+          "denominator": 60
+        },
+        "nearMiss": {
+          "numerator": 49,
+          "denominator": 72
+        }
+      },
+      "falsePositiveRate": {
+        "numerator": 4,
+        "denominator": 8
+      }
+    }
+  }
+}

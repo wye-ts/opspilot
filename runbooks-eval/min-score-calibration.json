@@ -1,0 +1,51 @@
+{
+  "procedure": "smallest integer minScore excluding >= half of the 12 near_miss queries' own distractor scores (raw, pre-threshold) while every exact/paraphrase query's own correct top answer still clears the floor; the 8 true_negative queries are held out for falsePositiveRate",
+  "retrievers": [
+    {
+      "retrieverName": "keyword",
+      "chosenMinScore": 2,
+      "distractorScores": [
+        6,
+        6,
+        3,
+        8,
+        6,
+        5,
+        3,
+        5,
+        5,
+        1,
+        4,
+        3
+      ],
+      "excludedDistractorCount": 1,
+      "distractorExclusionTarget": 6,
+      "lowestCorrectTop1Score": 3,
+      "constraintSatisfied": true,
+      "targetMet": false
+    },
+    {
+      "retrieverName": "bm25",
+      "chosenMinScore": 6,
+      "distractorScores": [
+        5.875282792818572,
+        6.42343406574954,
+        5.415512323823652,
+        12.194219195293226,
+        10.048265299366609,
+        7.885793249295241,
+        6.626673512495094,
+        8.3736690269067,
+        7.9928951674380695,
+        1.9571973290449391,
+        6.237033777028451,
+        7.341210202692533
+      ],
+      "excludedDistractorCount": 3,
+      "distractorExclusionTarget": 6,
+      "lowestCorrectTop1Score": 6.108176638481397,
+      "constraintSatisfied": true,
+      "targetMet": false
+    }
+  ]
+}
