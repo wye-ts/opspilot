@@ -25,11 +25,15 @@ import { tokenize, tokenizeQuery } from "./tokenize";
 // exact/paraphrase queries is 3, while 11 of the 12 near-miss distractors also
 // score >= 3, so no constraint-satisfying integer reaches the half-exclusion
 // target (2 excludes 1/12). 2 is the smallest integer achieving that maximum
-// allowed exclusion. This is a real property of a small-integer token-overlap
-// score scale where correct answers and plausible distractors are not
-// separable by a global floor — precisely the limitation a corpus-frequency-
-// aware retriever (BM25, whose calibration DOES meet the target at 1) exists
-// to improve on, and exactly the comparison this issue was filed to produce.
+// allowed exclusion. BM25RunbookRetriever's own calibration (see
+// runbooks-eval/min-score-calibration.json) hits the SAME structural limit —
+// its real full-corpus distractor scores also cluster close to its correct
+// answers' scores (3/12 excluded, not the 6/12 target either) — so neither
+// retriever's global floor alone fully separates a plausible-but-wrong match
+// from a correct one on this corpus; #75's real, measured falsePositiveRate
+// numbers (query-set-scores.json) are the actual comparison this issue
+// exists to produce, not a claim that either retriever's threshold alone
+// "solves" false positives.
 export const DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE = 2;
 
 // Deterministic keyword/token-overlap scoring — explicitly not a stand-in for
