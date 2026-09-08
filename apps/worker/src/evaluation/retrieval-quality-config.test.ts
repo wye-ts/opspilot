@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { StoredRunbookChunk } from "@opspilot/agent-runtime";
 
+import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL } from "../../../../runbooks-eval/embedding-fixture-config";
 import {
   computeCorpusContentHash,
   computeEmbeddingFixturePayloadHash,
@@ -30,18 +31,27 @@ const CORPUS_HASH = computeCorpusContentHash(CORPUS);
 const RAW_QUERY_SET_TEXT = '{"queries":["fixture query set text"]}';
 const QUERY_SET_HASH = sha256(RAW_QUERY_SET_TEXT);
 
+// One-hot vectors at the REAL current EMBEDDING_DIMENSIONS — using the real
+// dimensionality (not a toy 2-d vector) exercises the actual
+// EMBEDDING_MODEL/EMBEDDING_DIMENSIONS cross-check (Codex-review MAJOR fix)
+// through the same well-formed default fixture every other test reuses.
+function oneHot(index: number): readonly number[] {
+  return Array.from({ length: EMBEDDING_DIMENSIONS }, (_, i) => (i === index ? 1 : 0));
+}
+
 // A well-formed, hash-consistent embedding fixture (issue #76 §2.5 / round-2
-// fix #3's frozen-embedding fingerprint check).
+// fix #3's frozen-embedding fingerprint check) using the real current
+// EMBEDDING_MODEL/EMBEDDING_DIMENSIONS.
 const RAW_EMBEDDING_FIXTURE = JSON.stringify({
-  embeddingModel: "voyage-4-lite",
-  dimensions: 2,
+  embeddingModel: EMBEDDING_MODEL,
+  dimensions: EMBEDDING_DIMENSIONS,
   corpusContentHash: CORPUS_HASH,
   queryContentHash: QUERY_SET_HASH,
   chunks: [
-    { chunkId: "c-1", vector: [1, 0] },
-    { chunkId: "c-2", vector: [0, 1] },
+    { chunkId: "c-1", vector: oneHot(0) },
+    { chunkId: "c-2", vector: oneHot(1) },
   ],
-  queries: [{ id: "q-1", vector: [1, 0] }],
+  queries: [{ id: "q-1", vector: oneHot(0) }],
 });
 
 const FROZEN_EMBEDDING_FINGERPRINT = (() => {
@@ -63,6 +73,7 @@ const FROZEN_EMBEDDING_FINGERPRINT = (() => {
     },
     DEFAULT_FIXTURE_RETRIEVER_MIN_SCORE,
   );
+
 })();
 
 function ratio(numerator: number, denominator: number) {
@@ -290,6 +301,79 @@ describe("resolveRetrievalQualityMetrics", () => {
         readEmbeddingFixture,
       ),
     ).toThrow(/stale.*configuration|configuration.*no longer matches/);
+  });
+
+  // Codex-review MAJOR fix: the fixture-mismatch check above catches the
+  // fixture disagreeing with ITSELF (via internal reads), but a stale
+  // artifact+fixture that AGREE with each other on an old model/dimensions
+  // must also fail closed against the independently-sourced current expected
+  // configuration — without running score-query-set.ts --check first.
+  it("fails closed when the artifact and fixture agree with each other but both use a stale model", () => {
+    const staleFixture = JSON.stringify({
+      embeddingModel: "voyage-2",
+      dimensions: 1024,
+      corpusContentHash: CORPUS_HASH,
+      queryContentHash: QUERY_SET_HASH,
+      chunks: [
+        { chunkId: "c-1", vector: [1, 0] },
+        { chunkId: "c-2", vector: [0, 1] },
+      ],
+      queries: [{ id: "q-1", vector: [1, 0] }],
+    });
+    const staleFingerprint = computeFrozenEmbeddingFingerprint(
+      {
+        embeddingModel: "voyage-2",
+        dimensions: 1024,
+        corpusContentHash: CORPUS_HASH,
+        queryContentHash: QUERY_SET_HASH,
+        vectorPayloadHash: computeEmbeddingFixturePayloadHash(
+          [
+            { chunkId: "c-1", vector: [1, 0] },
+            { chunkId: "c-2", vector: [0, 1] },
+          ],
+          [{ id: "q-1", vector: [1, 0] }],
+        ),
+      },
+      DEFAULT_FIXTURE_RETRIEVER_MIN_SCORE,
+    );
+
+    expect(() =>
+      resolveRetrievalQualityMetrics(
+        { [INCLUDE_RETRIEVAL_QUALITY_ENV]: "1", [RETRIEVAL_QUALITY_RETRIEVER_ENV]: "frozen-embedding" },
+        CORPUS,
+        read(
+          artifact({
+            retrieverFingerprints: { ...CURRENT_RETRIEVER_FINGERPRINTS, "frozen-embedding": staleFingerprint },
+          }),
+        ),
+        readQuerySet,
+        () => staleFixture,
+      ),
+    ).toThrow(/stale.*embeddingModel/);
+  });
+
+  it("fails closed on a stale-dimensions fixture, even when the artifact and fixture agree with each other", () => {
+    const staleFixture = JSON.stringify({
+      embeddingModel: "voyage-4-lite",
+      dimensions: 512,
+      corpusContentHash: CORPUS_HASH,
+      queryContentHash: QUERY_SET_HASH,
+      chunks: [
+        { chunkId: "c-1", vector: new Array(512).fill(0).map((_, i) => (i === 0 ? 1 : 0)) },
+        { chunkId: "c-2", vector: new Array(512).fill(0).map((_, i) => (i === 1 ? 1 : 0)) },
+      ],
+      queries: [{ id: "q-1", vector: new Array(512).fill(0).map((_, i) => (i === 0 ? 1 : 0)) }],
+    });
+
+    expect(() =>
+      resolveRetrievalQualityMetrics(
+        { [INCLUDE_RETRIEVAL_QUALITY_ENV]: "1", [RETRIEVAL_QUALITY_RETRIEVER_ENV]: "frozen-embedding" },
+        CORPUS,
+        read(artifact()),
+        readQuerySet,
+        () => staleFixture,
+      ),
+    ).toThrow(/stale.*dimensions/);
   });
 
   it("fails closed when retrieverFingerprints is missing or malformed", () => {

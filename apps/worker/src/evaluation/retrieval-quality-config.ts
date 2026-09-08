@@ -46,6 +46,14 @@ import { fileURLToPath } from "node:url";
 
 import type { StoredRunbookChunk } from "@opspilot/agent-runtime";
 
+// The single source of truth for the frozen-embedding candidate's EXPECTED
+// embeddingModel/dimensions — the SAME constants score-query-set.ts and
+// calibrate-min-score.ts already pass into FixtureBackedRunbookRetriever's
+// constructor as expectedEmbeddingModel/expectedDimensions. Importing them
+// here (apps/worker importing FROM runbooks-eval/) is the same safe direction
+// this file already relies on for QUERY_SET_SCORES_PATH/EMBEDDING_FIXTURE_PATH.
+import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL } from "../../../../runbooks-eval/embedding-fixture-config";
+
 // The SAME implementation runbooks-eval/score-query-set.ts uses to stamp the
 // artifact — imported from the shared package, never re-derived here (see
 // packages/agent-runtime/src/rag/corpus-content-hash.ts).
@@ -169,6 +177,33 @@ function deriveFrozenEmbeddingFingerprint(readFixture: () => string): string {
     !Array.isArray(queries)
   ) {
     throw new RetrievalQualityConfigError("embedding-fixture.json is malformed.");
+  }
+  // Codex-review MAJOR fix, verified against source: without this check, the
+  // fingerprint below is derived entirely from the fixture's OWN self-reported
+  // embeddingModel/dimensions — so an artifact generated against a stale
+  // fixture (wrong model/dimensions) can pass this resolver's freshness check
+  // purely because the artifact and the fixture AGREE with each other, even
+  // though neither agrees with what this codebase now actually expects.
+  // FixtureBackedRunbookRetriever's own constructor already rejects that same
+  // fixture (it validates against externally-supplied expectedEmbeddingModel/
+  // expectedDimensions — see packages/agent-runtime/src/rag/
+  // fixture-backed-runbook-retriever.ts), so this resolver must apply the
+  // identical cross-check against the SAME EMBEDDING_MODEL/EMBEDDING_DIMENSIONS
+  // constants score-query-set.ts and calibrate-min-score.ts already wire into
+  // that constructor — never the fixture's own claims about itself.
+  if (embeddingModel !== EMBEDDING_MODEL) {
+    throw new RetrievalQualityConfigError(
+      `embedding-fixture.json is stale — its embeddingModel ("${embeddingModel}") does not match ` +
+        `the expected model ("${EMBEDDING_MODEL}"). Regenerate with ` +
+        "`pnpm --filter @opspilot/worker run generate:embedding-fixture`.",
+    );
+  }
+  if (dimensions !== EMBEDDING_DIMENSIONS) {
+    throw new RetrievalQualityConfigError(
+      `embedding-fixture.json is stale — its dimensions (${dimensions}) do not match the expected ` +
+        `dimensions (${EMBEDDING_DIMENSIONS}). Regenerate with ` +
+        "`pnpm --filter @opspilot/worker run generate:embedding-fixture`.",
+    );
   }
   const vectorPayloadHash = computeEmbeddingFixturePayloadHash(
     chunks as readonly { chunkId: string; vector: readonly number[] }[],
