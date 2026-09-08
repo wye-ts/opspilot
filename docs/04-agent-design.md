@@ -1020,8 +1020,17 @@ Defines:
 `AgentRun.promptVersion` stores a logical version such as:
 
 ```text
-opspilot-agent-v3
+opspilot-agent-v4
 ```
+
+`opspilot-agent-v4` supersedes `opspilot-agent-v3`: Issue #80 fixed a
+prompt-clarity gap in `REPORT_FIELD_BOUNDS` — nothing told the model that an
+inconclusive/UNKNOWN diagnostic tool result must still be listed as its own
+`evidence` entry before a `suggestedActions[].groundedBy` locator may cite
+it, which a real LIVE run hit (`evidence: []` + a groundedBy locator citing
+an uncited tool-call id, rejected by the existing "groundedBy entries must
+each appear in report.evidence" invariant). The schema/validation behavior
+itself is unchanged; only the model-facing prose was tightened.
 
 `opspilot-agent-v3` supersedes `opspilot-agent-v2`: Issue #60 (Checkpoint A)
 changed final-report behavior in the model-facing contract

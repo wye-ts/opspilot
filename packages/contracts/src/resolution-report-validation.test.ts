@@ -173,4 +173,50 @@ describe("summarizeReportValidationIssues", () => {
     expect(serialized).not.toContain("95");
     expect(serialized).not.toContain("hunter2");
   });
+
+  // Issue #80: a real LIVE run failed REPORT_SCHEMA_INVALID with the
+  // production log line collapsed to { path, code: "custom" } for every one
+  // of this schema's superRefine invariants, giving an operator no way to
+  // tell WHICH of several structurally-distinct "custom" checks at a given
+  // path actually tripped (see docs/reviews/*-issue-80-*.md). Every addIssue
+  // call site in resolution-report.ts carries a fixed, hand-written message
+  // literal with no interpolated report data, so surfacing it is safe.
+  it("reports a custom issue's fixed message, never a value, for the groundedBy-not-in-evidence invariant (Issue #80's real failure)", () => {
+    const action = {
+      type: "CREATE_ESCALATION",
+      payload: { team: "Messaging Platform", reason: "Needs manual investigation.", priority: "MEDIUM" },
+      groundedBy: [{ evidenceId: "toolu_not_in_evidence", sourceType: "TOOL_EXECUTION" }],
+    } as const;
+    const issues = parseInvalid({
+      evidence: [],
+      evidenceState: "INSUFFICIENT",
+      rootCause: null,
+      recommendationDisposition: "ACTIONABLE",
+      suggestedActions: [action],
+    });
+
+    expect(issues).toEqual([
+      {
+        path: ["suggestedActions", 0, "groundedBy", 0],
+        code: "custom",
+        message: "suggestedActions[].groundedBy entries must each appear in report.evidence.",
+      },
+    ]);
+    expect(JSON.stringify(issues)).not.toContain("toolu_not_in_evidence");
+  });
+
+  it("never emits a message field for any non-custom issue code", () => {
+    for (const issues of [
+      parseInvalid({ confidence: 70 }),
+      parseInvalid({ evidence: Array.from({ length: 11 }, () => validReport.evidence[0]) }),
+      parseInvalid({ summary: "" }),
+      parseInvalid({ category: "hunter2-not-a-real-category" }),
+      parseInvalid({ confidence: "high" }),
+      parseInvalid({ secretDebugField: "x" }),
+    ]) {
+      for (const issue of issues) {
+        expect(issue).not.toHaveProperty("message");
+      }
+    }
+  });
 });

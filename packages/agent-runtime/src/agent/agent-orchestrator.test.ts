@@ -598,7 +598,13 @@ describe("runAgentOrchestrator", () => {
       expect(result.code).toBe("REPORT_SCHEMA_INVALID");
       // The disposition ↔ action cardinality invariant (F1) is the sole
       // failure — the sanitized diagnostic surfaces exactly that.
-      expect(result.reportValidationIssues).toEqual([{ path: ["suggestedActions"], code: "custom" }]);
+      expect(result.reportValidationIssues).toEqual([
+        {
+          path: ["suggestedActions"],
+          code: "custom",
+          message: "ACTIONABLE requires at least one suggested action.",
+        },
+      ]);
     });
 
     it("ACTIONABLE with an ungrounded suggested action -> REPORT_SCHEMA_INVALID (grounding fails closed)", async () => {
@@ -636,6 +642,63 @@ describe("runAgentOrchestrator", () => {
       // normalizeSubmittedReportInput repair — this is the orchestrator's own
       // fail-closed write path).
       expect(result.trace).toEqual([]);
+    });
+
+    // Issue #80's real production failure: evidence: [] (a truthful "nothing
+    // gathered" INSUFFICIENT report) but suggestedActions[].groundedBy still
+    // cites a tool-call id that was never added as its own evidence entry —
+    // a structurally different violation from the empty-groundedBy case
+    // above (G2/non-empty check), rejected by the SEPARATE "groundedBy
+    // entries must each appear in report.evidence" invariant (F5). Locks the
+    // exact production shape as a permanent regression case, independent of
+    // the REPORT_FIELD_BOUNDS prompt-clarity fix (claude-message-mapping.ts)
+    // this issue also made — the schema's own fail-closed behavior here was
+    // never the bug and must never be loosened to "fix" this class.
+    it("ACTIONABLE with evidence: [] but a suggested action grounded on an uncited tool-call id -> REPORT_SCHEMA_INVALID (Issue #80's real production shape)", async () => {
+      const provider = new FakeLlmProvider({
+        id: "issue-80-ungrounded-in-evidence",
+        turns: [
+          {
+            kind: "report_submission",
+            usage,
+            rawInput: {
+              ...validReport,
+              rootCause: null,
+              evidenceState: "INSUFFICIENT",
+              evidence: [],
+              recommendationDisposition: "ACTIONABLE",
+              suggestedActions: [
+                {
+                  type: "CREATE_ESCALATION",
+                  payload: {
+                    team: "Messaging Platform",
+                    reason: "Automated status checks returned UNKNOWN; needs manual investigation.",
+                    priority: "MEDIUM",
+                  },
+                  groundedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      const result = await runAgentOrchestrator({
+        provider,
+        toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+        initialConversation: [ticketContext],
+      });
+
+      expect(result.status).toBe("failed");
+      if (result.status !== "failed") throw new Error("unreachable");
+      expect(result.code).toBe("REPORT_SCHEMA_INVALID");
+      expect(result.reportValidationIssues).toEqual([
+        {
+          path: ["suggestedActions", 0, "groundedBy", 0],
+          code: "custom",
+          message: "suggestedActions[].groundedBy entries must each appear in report.evidence.",
+        },
+      ]);
     });
   });
 
