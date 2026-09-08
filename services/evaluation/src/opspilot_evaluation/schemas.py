@@ -650,6 +650,27 @@ class MetricRatioInput(BaseModel):
     numerator: _StrictNonNegativeInt
     denominator: _StrictNonNegativeInt
 
+    @model_validator(mode="after")
+    def _is_valid_ratio(self) -> MetricRatioInput:
+        # Codex-review MAJOR fix, verified against source: without this, a
+        # POST body carrying {numerator: 11, denominator: 10} or
+        # {numerator: 1, denominator: 0} parsed successfully and flowed
+        # straight through to a persisted metric above 100% or an undefined
+        # ratio — this pass-through design (plan §0's decision gate) has no
+        # later recomputation step that could ever catch the corruption, so
+        # the request boundary is the only place it can be caught. A single
+        # numerator > denominator check covers BOTH invalid shapes: when
+        # denominator is 0, any positive numerator is already > 0, so a
+        # zero-denominator/positive-numerator ratio is rejected by this same
+        # comparison. The genuine 0/0 "not evaluated" shape correctly passes.
+        # The TS side (apps/worker/src/evaluation/retrieval-quality-config.ts)
+        # applies the identical single-check rule to the committed artifact.
+        if self.numerator > self.denominator:
+            raise ValueError(
+                f"numerator ({self.numerator}) must not exceed denominator ({self.denominator})"
+            )
+        return self
+
 
 class GroupedMetricRatiosInput(BaseModel):
     """Per-query-group ratios for the three SCORED groups. true_negative is

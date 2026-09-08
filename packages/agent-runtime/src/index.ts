@@ -53,6 +53,10 @@ import {
 } from "./rag/bm25-runbook-retriever";
 import { computeCorpusContentHash as _computeCorpusContentHash } from "./rag/corpus-content-hash";
 import {
+  computeRetrieverFingerprint as _computeRetrieverFingerprint,
+  CURRENT_RETRIEVER_FINGERPRINTS as _CURRENT_RETRIEVER_FINGERPRINTS,
+} from "./rag/retriever-fingerprints";
+import {
   STOPWORDS as _STOPWORDS,
   tokenize as _tokenize,
   tokenizeQuery as _tokenizeQuery,
@@ -98,6 +102,8 @@ export const tokenize = _tokenize;
 export const tokenizeQuery = _tokenizeQuery;
 export const STOPWORDS = _STOPWORDS;
 export const computeCorpusContentHash = _computeCorpusContentHash;
+export const computeRetrieverFingerprint = _computeRetrieverFingerprint;
+export const CURRENT_RETRIEVER_FINGERPRINTS = _CURRENT_RETRIEVER_FINGERPRINTS;
 export const MarkdownRunbookCorpusLoader = _MarkdownRunbookCorpusLoader;
 export const RunbookLoadError = _RunbookLoadError;
 export const loadDefaultRunbookCorpus = _loadDefaultRunbookCorpus;

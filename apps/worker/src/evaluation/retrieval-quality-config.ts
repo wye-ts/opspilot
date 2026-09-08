@@ -31,7 +31,7 @@ import type { StoredRunbookChunk } from "@opspilot/agent-runtime";
 // The SAME implementation runbooks-eval/score-query-set.ts uses to stamp the
 // artifact — imported from the shared package, never re-derived here (see
 // packages/agent-runtime/src/rag/corpus-content-hash.ts).
-import { computeCorpusContentHash } from "../rag";
+import { computeCorpusContentHash, CURRENT_RETRIEVER_FINGERPRINTS } from "../rag";
 import type { MetricRatioInput, RetrievalQualityMetricsInput } from "./v2-types";
 
 export const INCLUDE_RETRIEVAL_QUALITY_ENV = "EVALUATION_INCLUDE_RETRIEVAL_QUALITY";
@@ -76,6 +76,25 @@ function parseRatio(value: unknown, path: string): MetricRatioInput {
   if (typeof denominator !== "number" || !Number.isInteger(denominator) || denominator < 0) {
     throw new RetrievalQualityConfigError(
       `query-set-scores.json: ${path}.denominator must be a non-negative integer.`,
+    );
+  }
+  // Codex-review MAJOR fix, verified against source: without this check, an
+  // artifact carrying {numerator: 11, denominator: 10} or {numerator: 1,
+  // denominator: 0} parsed successfully and flowed straight through to a
+  // persisted/reported metric above 100% or a positive numerator over a
+  // zero denominator — the pass-through design (plan §0's own decision gate)
+  // has no later recomputation step that could ever catch this, so the
+  // parser is the only place it can be caught. A single `numerator >
+  // denominator` check correctly covers BOTH invalid shapes: when
+  // denominator is 0, any positive numerator is already > 0, so a
+  // zero-denominator/positive-numerator ratio is rejected by this same
+  // comparison — a separate explicit zero-denominator branch would be
+  // unreachable dead code. The genuine 0/0 "not evaluated" shape (denominator
+  // 0, numerator 0) correctly passes: 0 > 0 is false.
+  if (numerator > denominator) {
+    throw new RetrievalQualityConfigError(
+      `query-set-scores.json: ${path}.numerator (${numerator}) must not exceed ` +
+        `${path}.denominator (${denominator}).`,
     );
   }
   return { numerator, denominator };
@@ -175,6 +194,38 @@ export function resolveRetrievalQualityMetrics(
     throw new RetrievalQualityConfigError(
       `${RETRIEVAL_QUALITY_RETRIEVER_ENV}="${retrieverName}" is not present in ` +
         `query-set-scores.json (available: ${available}).`,
+    );
+  }
+
+  // Codex-review MAJOR fix, verified against source: the corpus-hash check
+  // above catches a CONTENT edit but not a CONFIGURATION edit — changing
+  // DEFAULT_BM25_RETRIEVER_MIN_SCORE, BM25_K1/B, or a keyword-retriever
+  // weight changes what the retriever actually returns without touching the
+  // corpus at all, and a direct eval-CLI invocation with no prior `--check`
+  // run would otherwise attach the stale artifact's numbers silently. Both
+  // this module and score-query-set.ts read the SAME CURRENT_RETRIEVER_FINGERPRINTS
+  // map (retriever-fingerprints.ts) — never independently recomputed — so
+  // this comparison can never itself drift out of sync with what the
+  // artifact was actually stamped with.
+  const storedFingerprints = parsed.retrieverFingerprints;
+  if (!isRecord(storedFingerprints)) {
+    throw new RetrievalQualityConfigError(
+      "query-set-scores.json: retrieverFingerprints must be an object.",
+    );
+  }
+  const storedFingerprint = storedFingerprints[retrieverName];
+  const currentFingerprint = CURRENT_RETRIEVER_FINGERPRINTS[retrieverName];
+  if (currentFingerprint === undefined) {
+    throw new RetrievalQualityConfigError(
+      `${RETRIEVAL_QUALITY_RETRIEVER_ENV}="${retrieverName}" has no known current configuration ` +
+        `fingerprint — it is not one of this codebase's retriever candidates.`,
+    );
+  }
+  if (storedFingerprint !== currentFingerprint) {
+    throw new RetrievalQualityConfigError(
+      `query-set-scores.json is stale — retriever "${retrieverName}"'s configuration (threshold, ` +
+        "scoring parameters) no longer matches what its numbers were computed against. " +
+        "Regenerate with `pnpm exec tsx runbooks-eval/score-query-set.ts`.",
     );
   }
   if (!isRecord(entry)) {

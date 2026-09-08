@@ -45,8 +45,6 @@ import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import {
-  BM25_B,
-  BM25_K1,
   BM25RunbookRetriever,
   DEFAULT_BM25_RETRIEVER_MIN_SCORE,
 } from "../packages/agent-runtime/src/rag/bm25-runbook-retriever";
@@ -56,6 +54,7 @@ import {
   InMemoryKeywordRunbookRetriever,
 } from "../packages/agent-runtime/src/rag/in-memory-runbook-retriever";
 import { loadDefaultRunbookCorpus } from "../packages/agent-runtime/src/rag/load-default-runbook-corpus";
+import { CURRENT_RETRIEVER_FINGERPRINTS } from "../packages/agent-runtime/src/rag/retriever-fingerprints";
 import type { RunbookRetriever, StoredRunbookChunk } from "../packages/agent-runtime/src/rag/runbook-retriever";
 import { parseQuerySet, QUERY_SET_PATH, type QueryRecord } from "./validate-query-set";
 
@@ -101,14 +100,15 @@ function sha256(value: string): string {
 // rather than here, because apps/worker's eval CLI must re-derive the SAME
 // hash from its own freshly-loaded corpus at run time — a second copy would
 // defeat the freshness check the first time either was edited. See that
-// module's comment.
-
-// A hash of a retriever's effective, score-affecting configuration: its class
-// name, its enforced threshold, and every tunable parameter. Changing k1/b or
-// the frozen threshold changes this, which invalidates the artifact.
-function fingerprint(className: string, minScore: number, params: Readonly<Record<string, number>>): string {
-  return sha256(JSON.stringify({ className, minScore, params }));
-}
+// module's comment. computeRetrieverFingerprint/CURRENT_RETRIEVER_FINGERPRINTS
+// (retriever-fingerprints.ts, also in the shared package) follow the same
+// rule for retriever CONFIGURATION freshness (Codex-review MAJOR fix,
+// verified against source: without a shared fingerprint source, this
+// script's own local `fingerprint()` and the runtime check in
+// retrieval-quality-config.ts could independently drift — a config-only
+// change, e.g. editing BM25_K1, would silently invalidate the artifact's
+// fingerprint without the runtime check ever comparing against it, because
+// nothing was actually comparing fingerprints at all).
 
 export interface RetrieverCandidate {
   readonly name: string;
@@ -118,22 +118,18 @@ export interface RetrieverCandidate {
 
 // The candidate set this issue compares. #76 adds a third (frozen-embedding)
 // entry here without any schema change — the artifact is keyed by name.
+// Each candidate's fingerprint is read from CURRENT_RETRIEVER_FINGERPRINTS —
+// the same shared map retrieval-quality-config.ts validates against — never
+// computed locally.
 export const RETRIEVER_CANDIDATES: readonly RetrieverCandidate[] = [
   {
     name: "keyword",
-    fingerprint: fingerprint(
-      "InMemoryKeywordRunbookRetriever",
-      DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE,
-      { titleWeight: 2, contentWeight: 1 },
-    ),
+    fingerprint: CURRENT_RETRIEVER_FINGERPRINTS.keyword,
     build: (corpus) => new InMemoryKeywordRunbookRetriever(corpus, DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE),
   },
   {
     name: "bm25",
-    fingerprint: fingerprint("BM25RunbookRetriever", DEFAULT_BM25_RETRIEVER_MIN_SCORE, {
-      k1: BM25_K1,
-      b: BM25_B,
-    }),
+    fingerprint: CURRENT_RETRIEVER_FINGERPRINTS.bm25,
     build: (corpus) => new BM25RunbookRetriever(corpus, DEFAULT_BM25_RETRIEVER_MIN_SCORE),
   },
 ];

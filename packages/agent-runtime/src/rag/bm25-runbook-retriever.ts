@@ -27,7 +27,7 @@ export const BM25_B = 0.75;
 // BM25 scores are real-valued sums of IDF-weighted terms, not the keyword
 // retriever's small integers, so the two thresholds are on different scales
 // and are calibrated independently.
-export const DEFAULT_BM25_RETRIEVER_MIN_SCORE = 1;
+export const DEFAULT_BM25_RETRIEVER_MIN_SCORE = 6;
 
 interface IndexedChunk {
   readonly chunk: StoredRunbookChunk;

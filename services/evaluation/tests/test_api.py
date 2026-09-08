@@ -667,6 +667,47 @@ async def test_retrieval_quality_metrics_are_copied_through_unchanged(client: As
     assert fetched.json()["metrics"] == metrics
 
 
+# Codex-review MAJOR fix, verified against source: MetricRatioInput accepted
+# any pair of non-negative integers before this fix, letting a numerator
+# exceed its denominator (a reported rate above 100%) or a positive
+# numerator sit over a zero denominator (undefined as a ratio) — with no
+# later recomputation step (this service never computes these values, plan
+# §0's decision gate) that could ever catch the corruption downstream.
+async def test_retrieval_quality_ratio_numerator_exceeding_denominator_is_rejected(
+    client: AsyncClient,
+) -> None:
+    supplied = _retrieval_quality_input("bm25")
+    supplied["falsePositiveRate"] = {"numerator": 9, "denominator": 8}
+    suite = _minimal_suite([_minimal_case()])
+    suite["retrievalQualityMetrics"] = supplied
+
+    response = await client.post("/evaluations", json=suite)
+    assert response.status_code == 422
+
+
+async def test_retrieval_quality_ratio_positive_numerator_zero_denominator_is_rejected(
+    client: AsyncClient,
+) -> None:
+    supplied = _retrieval_quality_input("bm25")
+    supplied["recallAtK"]["exact"] = {"numerator": 1, "denominator": 0}
+    suite = _minimal_suite([_minimal_case()])
+    suite["retrievalQualityMetrics"] = supplied
+
+    response = await client.post("/evaluations", json=suite)
+    assert response.status_code == 422
+
+
+async def test_retrieval_quality_ratio_genuine_zero_zero_is_accepted(client: AsyncClient) -> None:
+    supplied = _retrieval_quality_input("bm25")
+    supplied["falsePositiveRate"] = {"numerator": 0, "denominator": 0}
+    suite = _minimal_suite([_minimal_case()])
+    suite["retrievalQualityMetrics"] = supplied
+
+    response = await client.post("/evaluations", json=suite)
+    assert response.status_code == 201
+    assert response.json()["metrics"]["falsePositiveRate"] == {"numerator": 0, "denominator": 0}
+
+
 async def test_two_runs_scored_against_different_retrievers_stay_distinguishable(
     client: AsyncClient,
 ) -> None:

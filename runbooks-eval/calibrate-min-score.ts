@@ -82,16 +82,24 @@ export interface CalibrationResult {
   readonly retrievers: readonly RetrieverCalibration[];
 }
 
-// Raw (pre-threshold) score of ONE chunk for ONE query, obtained by running
-// the real retriever over a single-chunk corpus — the same technique
-// validate-query-set.ts uses, so scoring never gets re-implemented here.
+// Raw (pre-threshold) score of ONE chunk for ONE query, read from a
+// retriever built against the FULL corpus (Codex-review BLOCKER fix,
+// verified against source: scoring against a single-chunk corpus makes
+// BM25's IDF/length-normalization meaningless — N=1 always, so every
+// distractor calibrates in a fictional one-document scoring space that
+// disagrees with the real 24-chunk corpus every deployed retriever
+// actually scores against). `topK` must be large enough to surface every
+// chunk that scores > 0 for the query — the full corpus size is always
+// sufficient since a retriever never returns more results than it has
+// chunks.
 async function rawScore(
-  build: (corpus: readonly StoredRunbookChunk[]) => RunbookRetriever,
-  chunk: StoredRunbookChunk,
+  retriever: RunbookRetriever,
+  corpusSize: number,
+  chunkId: string,
   query: string,
 ): Promise<number> {
-  const results = await build([chunk]).retrieve({ query, topK: 1 });
-  return results[0]?.score ?? 0;
+  const results = await retriever.retrieve({ query, topK: corpusSize });
+  return results.find((entry) => entry.chunkId === chunkId)?.score ?? 0;
 }
 
 export async function calibrateRetriever(
@@ -108,9 +116,8 @@ export async function calibrateRetriever(
   for (const record of queries) {
     if (record.group !== "near_miss") continue;
     for (const chunkId of record.distractorChunkIds) {
-      const chunk = chunksById.get(chunkId);
-      if (chunk === undefined) continue;
-      distractorScores.push(await rawScore(build, chunk, record.query));
+      if (!chunksById.has(chunkId)) continue;
+      distractorScores.push(await rawScore(retriever, corpus.length, chunkId, record.query));
     }
   }
 

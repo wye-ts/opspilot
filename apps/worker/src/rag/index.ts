@@ -11,6 +11,8 @@ export const {
   BM25RunbookRetriever,
   DEFAULT_BM25_RETRIEVER_MIN_SCORE,
   computeCorpusContentHash,
+  computeRetrieverFingerprint,
+  CURRENT_RETRIEVER_FINGERPRINTS,
   MarkdownRunbookCorpusLoader,
   RunbookLoadError,
   loadDefaultRunbookCorpus,

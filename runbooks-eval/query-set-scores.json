@@ -3,7 +3,7 @@
   "queryContentHash": "b6cfb2373108cc86d5f0544999a04bf4616dcdcb930e0f82c045ccb517f991fd",
   "retrieverFingerprints": {
     "keyword": "a89ef97318b1b66c2c8fecd06cf090f6fafd05f575189ecc35f1e8ed5d3aa877",
-    "bm25": "60f59413dc5b78b93c3ec3075b905394817e86dfeb53795fc0c8a413f3b19fdb"
+    "bm25": "664c39aca0885defdfe49a15312b2b4355e0522bc72cd39a4c464491faa9e4dc"
   },
   "retrievers": {
     "keyword": {
@@ -51,7 +51,7 @@
           "denominator": 10
         },
         "nearMiss": {
-          "numerator": 12,
+          "numerator": 10,
           "denominator": 12
         }
       },
@@ -65,12 +65,12 @@
           "denominator": 60
         },
         "nearMiss": {
-          "numerator": 58,
+          "numerator": 49,
           "denominator": 72
         }
       },
       "falsePositiveRate": {
-        "numerator": 8,
+        "numerator": 4,
         "denominator": 8
       }
     }

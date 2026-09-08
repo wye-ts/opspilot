@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { StoredRunbookChunk } from "@opspilot/agent-runtime";
 
-import { computeCorpusContentHash } from "../rag";
+import { computeCorpusContentHash, CURRENT_RETRIEVER_FINGERPRINTS } from "../rag";
 import {
   INCLUDE_RETRIEVAL_QUALITY_ENV,
   RETRIEVAL_QUALITY_RETRIEVER_ENV,
@@ -21,11 +21,15 @@ function ratio(numerator: number, denominator: number) {
   return { numerator, denominator };
 }
 
+// Fingerprints must be the REAL current ones (not placeholder strings) —
+// this fixture exercises resolveRetrievalQualityMetrics's fingerprint check
+// (added as a Codex-review MAJOR fix), which rejects any artifact whose
+// stored fingerprint disagrees with CURRENT_RETRIEVER_FINGERPRINTS.
 function artifact(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     corpusContentHash: CORPUS_HASH,
     queryContentHash: "b".repeat(64),
-    retrieverFingerprints: { keyword: "f-keyword", bm25: "f-bm25" },
+    retrieverFingerprints: CURRENT_RETRIEVER_FINGERPRINTS,
     retrievers: {
       keyword: {
         recallAtK: { exact: ratio(10, 10), paraphrase: ratio(9, 10), nearMiss: ratio(11, 12) },
@@ -139,6 +143,30 @@ describe("resolveRetrievalQualityMetrics", () => {
     ).toThrow(/stale/);
   });
 
+  // Codex-review MAJOR fix: a corpus-only freshness check cannot catch a
+  // retriever CONFIGURATION change (a threshold, k1/b) — the corpus hash
+  // still matches, so this must be checked independently, and must also
+  // fail WITHOUT any prior `--check` run.
+  it("fails closed when the artifact's stored fingerprint for the selected retriever is stale", () => {
+    expect(() =>
+      resolveRetrievalQualityMetrics(
+        { [INCLUDE_RETRIEVAL_QUALITY_ENV]: "1", [RETRIEVAL_QUALITY_RETRIEVER_ENV]: "bm25" },
+        CORPUS,
+        read(artifact({ retrieverFingerprints: { ...CURRENT_RETRIEVER_FINGERPRINTS, bm25: "stale-fingerprint" } })),
+      ),
+    ).toThrow(/stale.*configuration|configuration.*no longer matches/);
+  });
+
+  it("fails closed when retrieverFingerprints is missing or malformed", () => {
+    expect(() =>
+      resolveRetrievalQualityMetrics(
+        { [INCLUDE_RETRIEVAL_QUALITY_ENV]: "1", [RETRIEVAL_QUALITY_RETRIEVER_ENV]: "bm25" },
+        CORPUS,
+        read(artifact({ retrieverFingerprints: "nope" })),
+      ),
+    ).toThrow(/retrieverFingerprints must be an object/);
+  });
+
   it("fails closed on an unreadable artifact", () => {
     expect(() =>
       resolveRetrievalQualityMetrics(
@@ -183,6 +211,62 @@ describe("resolveRetrievalQualityMetrics", () => {
         read(JSON.stringify(broken)),
       ),
     ).toThrow(/numerator must be a non-negative integer/);
+  });
+
+  // Codex-review MAJOR fix: a ratio is a proportion, not merely a pair of
+  // non-negative integers — without this check an artifact (or a future
+  // Python-service POST body sharing this same validation rule) could carry
+  // a numerator exceeding its denominator (a reported rate above 100%) or a
+  // positive numerator over a zero denominator (undefined as a ratio), and
+  // the pass-through design (plan §0's decision gate) has no later
+  // recomputation step that would ever catch the corruption.
+  it("rejects a ratio whose numerator exceeds its denominator", () => {
+    const broken = JSON.parse(artifact()) as {
+      retrievers: { bm25: { falsePositiveRate: unknown } };
+    };
+    broken.retrievers.bm25.falsePositiveRate = { numerator: 9, denominator: 8 };
+
+    expect(() =>
+      resolveRetrievalQualityMetrics(
+        { [INCLUDE_RETRIEVAL_QUALITY_ENV]: "1", [RETRIEVAL_QUALITY_RETRIEVER_ENV]: "bm25" },
+        CORPUS,
+        read(JSON.stringify(broken)),
+      ),
+    ).toThrow(/must not exceed/);
+  });
+
+  it("rejects a positive numerator over a zero denominator", () => {
+    const broken = JSON.parse(artifact()) as {
+      retrievers: { bm25: { falsePositiveRate: unknown } };
+    };
+    broken.retrievers.bm25.falsePositiveRate = { numerator: 1, denominator: 0 };
+
+    expect(() =>
+      resolveRetrievalQualityMetrics(
+        { [INCLUDE_RETRIEVAL_QUALITY_ENV]: "1", [RETRIEVAL_QUALITY_RETRIEVER_ENV]: "bm25" },
+        CORPUS,
+        read(JSON.stringify(broken)),
+      ),
+      // Any positive numerator over a zero denominator also trips the
+      // numerator > denominator check first (fail-fast ordering) — both are
+      // real rejections of the same invalid ratio, so asserting the actual
+      // (numerator > denominator) message is correct, not a weaker check.
+    ).toThrow(/must not exceed/);
+  });
+
+  it("accepts a genuinely zero ratio (0/0 — the documented absent-metric shape)", () => {
+    const zeroed = JSON.parse(artifact()) as {
+      retrievers: { bm25: { falsePositiveRate: unknown } };
+    };
+    zeroed.retrievers.bm25.falsePositiveRate = { numerator: 0, denominator: 0 };
+
+    expect(() =>
+      resolveRetrievalQualityMetrics(
+        { [INCLUDE_RETRIEVAL_QUALITY_ENV]: "1", [RETRIEVAL_QUALITY_RETRIEVER_ENV]: "bm25" },
+        CORPUS,
+        read(JSON.stringify(zeroed)),
+      ),
+    ).not.toThrow();
   });
 
   it("rejects a flag value other than 1 rather than treating it as truthy", () => {
