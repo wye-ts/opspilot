@@ -237,4 +237,49 @@ describe("issue #72: runbook retrieval reaches the deployed FAKE-provider path e
     expect(result.run.outcome.report.evidence[0]?.sourceType).toBe("TOOL_EXECUTION");
     expect(emittedEvents).toContainEqual({ type: "RETRIEVAL_COMPLETED", chunks: [] });
   });
+
+  // Regression for the real production LIVE failure (2026-09-07, run
+  // 7acb0cc1-...): the un-fixed retriever scored the ticket summary "i cannot
+  // send message to my client" against three unrelated seeded runbooks
+  // (auth-failures, billing-invoice-formatting, notification-degradation)
+  // purely on the shared stopword "to", handing that noise to a LIVE Claude
+  // call as retrieved evidence. Runs the REAL on-disk corpus (not a synthetic
+  // fixture) through the same wiring the deployed API uses, proving the fix
+  // holds against production data, not just the unit-test corpus.
+  it("a ticket summary built entirely from function words retrieves nothing and completes with tool-only evidence", async () => {
+    const job: AgentJobRecord = {
+      id: "33333333-3333-3333-3333-333333333333",
+      ticketContext: {
+        ticketId: "TICKET-RAG-WIRING-3",
+        summary: "i cannot send message to my client.",
+      },
+      externalTicketId: "TICKET-RAG-WIRING-3",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    const corpusLoad = await loadDefaultRunbookCorpus();
+    const retriever = new InMemoryKeywordRunbookRetriever(corpusLoad.chunks);
+    const { repository, emittedEvents } = buildFakeRepository(job);
+    const service = createAgentRunService(repository);
+
+    const result = await service.executeAndPersist({
+      jobId: job.id,
+      providerMode: "FAKE",
+      modelIdentifier: null,
+      createProvider: (resolvedJob) => new FakeLlmProvider(createDeterministicScenario(resolvedJob)),
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      retriever,
+      retrievalInputFactory: buildRetrievalInput,
+    });
+
+    if (result.persistence !== "persisted") {
+      throw new Error(`expected a persisted result, got ${JSON.stringify(result)}`);
+    }
+    expect(result.run.outcome.type).toBe("COMPLETED");
+    if (result.run.outcome.type !== "COMPLETED") throw new Error("unreachable");
+
+    expect(result.run.outcome.report.evidence).toHaveLength(1);
+    expect(result.run.outcome.report.evidence[0]?.sourceType).toBe("TOOL_EXECUTION");
+    expect(emittedEvents).toContainEqual({ type: "RETRIEVAL_COMPLETED", chunks: [] });
+  });
 });

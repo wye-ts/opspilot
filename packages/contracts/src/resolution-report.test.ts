@@ -318,6 +318,7 @@ describe("ResolutionReportSchema (strict new-write contract)", () => {
       expect(summarizeReportValidationIssues(result.error)).toContainEqual({
         path: ["suggestedActions"],
         code: "custom",
+        message: "ACTIONABLE requires at least one suggested action.",
       });
     }
   });
@@ -332,6 +333,7 @@ describe("ResolutionReportSchema (strict new-write contract)", () => {
       expect(summarizeReportValidationIssues(result.error)).toContainEqual({
         path: ["suggestedActions"],
         code: "custom",
+        message: "ADVISORY requires exactly zero suggested actions.",
       });
     }
   });
@@ -378,6 +380,7 @@ describe("ResolutionReportSchema (strict new-write contract)", () => {
       expect(summarizeReportValidationIssues(result.error)).toContainEqual({
         path: ["suggestedActions", 0, "groundedBy"],
         code: "custom",
+        message: "groundedBy must not repeat the same (sourceType, evidenceId) locator.",
       });
     }
   });
@@ -397,6 +400,7 @@ describe("ResolutionReportSchema (strict new-write contract)", () => {
       expect(summarizeReportValidationIssues(result.error)).toContainEqual({
         path: ["suggestedActions", 0, "groundedBy", 0],
         code: "custom",
+        message: "suggestedActions[].groundedBy entries must each appear in report.evidence.",
       });
     }
   });
@@ -698,7 +702,12 @@ describe("StoredResolutionReportSchema (fail-closed legacy read compat)", () => 
     expect(result.success).toBe(false);
     if (result.success) throw new Error("expected the impossible hybrid to be rejected");
     expect(summarizeReportValidationIssues(result.error)).toEqual([
-      { path: ["evidenceState"], code: "custom" },
+      {
+        path: ["evidenceState"],
+        code: "custom",
+        message:
+          "recommendationDisposition present without evidenceState is impossible through any valid write path.",
+      },
     ]);
   });
 });
