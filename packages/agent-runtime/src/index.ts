@@ -56,6 +56,8 @@ import { computeCorpusContentHash as _computeCorpusContentHash, sha256 as _sha25
 import {
   computeRetrieverFingerprint as _computeRetrieverFingerprint,
   CURRENT_RETRIEVER_FINGERPRINTS as _CURRENT_RETRIEVER_FINGERPRINTS,
+  computeFrozenEmbeddingFingerprint as _computeFrozenEmbeddingFingerprint,
+  computeEmbeddingFixturePayloadHash as _computeEmbeddingFixturePayloadHash,
 } from "./rag/retriever-fingerprints";
 import {
   cosineSimilarity as _cosineSimilarity,
@@ -112,6 +114,8 @@ export const computeCorpusContentHash = _computeCorpusContentHash;
 export const sha256 = _sha256;
 export const computeRetrieverFingerprint = _computeRetrieverFingerprint;
 export const CURRENT_RETRIEVER_FINGERPRINTS = _CURRENT_RETRIEVER_FINGERPRINTS;
+export const computeFrozenEmbeddingFingerprint = _computeFrozenEmbeddingFingerprint;
+export const computeEmbeddingFixturePayloadHash = _computeEmbeddingFixturePayloadHash;
 export const cosineSimilarity = _cosineSimilarity;
 export const l2Norm = _l2Norm;
 export const MarkdownRunbookCorpusLoader = _MarkdownRunbookCorpusLoader;
