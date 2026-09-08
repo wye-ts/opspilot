@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import { loadDefaultRunbookCorpus, resolveDefaultRunbooksDir } from "./load-default-runbook-corpus";
 
+// The ORIGINAL seven chunk ids migrated from the pre-#72 TypeScript corpus.
+// Deliberately NOT extended when the corpus grows (issue #74): this constant is
+// the sole input to the "no line breaks in any of the seven migrated chunk
+// bodies" test below, a migration-fidelity constraint that applies only to
+// these seven. Full-corpus assertions use ALL_EXPECTED_CHUNK_IDS instead — the
+// two constants must never be merged.
 const EXPECTED_CHUNK_IDS = [
   "runbook-notification-degradation-001",
   "runbook-notification-queue-backlog-001",
@@ -12,6 +18,33 @@ const EXPECTED_CHUNK_IDS = [
   "runbook-billing-invoice-formatting-001",
 ];
 
+// Issue #74: the seventeen chunk ids added by the eleven new runbook files,
+// which exist to give the retrieval-quality query set (runbooks-eval/) real
+// near-miss and true-negative targets to discriminate against.
+const NEW_CHUNK_IDS = [
+  "runbook-notification-rate-limit-001",
+  "runbook-notification-rate-limit-002",
+  "runbook-identity-provider-outage-001",
+  "runbook-identity-provider-outage-002",
+  "runbook-datastore-replica-lag-001",
+  "runbook-datastore-replica-lag-002",
+  "runbook-public-api-rate-limit-001",
+  "runbook-public-api-rate-limit-002",
+  "runbook-deployment-rollback-001",
+  "runbook-deployment-rollback-002",
+  "runbook-cache-invalidation-001",
+  "runbook-webhook-delivery-001",
+  "runbook-search-index-staleness-001",
+  "runbook-search-index-staleness-002",
+  "runbook-search-query-latency-001",
+  "runbook-storage-quota-exhaustion-001",
+  "runbook-storage-upload-corruption-001",
+];
+
+// The full expanded corpus: the original seven plus the seventeen new ids.
+// Used only by the file-count/chunk-count/full-id-set assertions below.
+const ALL_EXPECTED_CHUNK_IDS = [...EXPECTED_CHUNK_IDS, ...NEW_CHUNK_IDS];
+
 describe("resolveDefaultRunbooksDir", () => {
   it("resolves to a path ending in /runbooks", () => {
     expect(resolveDefaultRunbooksDir()).toMatch(/[/\\]runbooks$/);
@@ -19,12 +52,14 @@ describe("resolveDefaultRunbooksDir", () => {
 });
 
 describe("loadDefaultRunbookCorpus", () => {
-  it("loads the real repository runbooks directory: 5 files, 7 chunks, all expected IDs", async () => {
+  it("loads the real repository runbooks directory: 16 files, 24 chunks, all expected IDs", async () => {
     const result = await loadDefaultRunbookCorpus();
 
-    expect(result.sourceFileCount).toBe(5);
-    expect(result.chunks).toHaveLength(7);
-    expect(result.chunks.map((chunk) => chunk.chunkId).sort()).toEqual([...EXPECTED_CHUNK_IDS].sort());
+    expect(result.sourceFileCount).toBe(16);
+    expect(result.chunks).toHaveLength(24);
+    expect(result.chunks.map((chunk) => chunk.chunkId).sort()).toEqual(
+      [...ALL_EXPECTED_CHUNK_IDS].sort(),
+    );
   });
 
   it("is deterministic across repeated loads", async () => {
@@ -74,6 +109,29 @@ describe("loadDefaultRunbookCorpus", () => {
 
     for (const chunk of migrated) {
       expect(chunk.content).not.toContain("\n");
+    }
+  });
+
+  // Issue #74 regression guard for the constant split above. The
+  // no-line-break rule is a migration-fidelity constraint scoped to the
+  // original seven chunks only; the new runbook files deliberately wrap their
+  // paragraph bodies across physical Markdown lines, so their loaded content
+  // DOES embed "\n". If someone ever merges NEW_CHUNK_IDS into
+  // EXPECTED_CHUNK_IDS (or points the no-line-break test at
+  // ALL_EXPECTED_CHUNK_IDS), that test would start failing on these chunks —
+  // this test states the intended asymmetry explicitly so the split is a
+  // documented invariant rather than an accident of ordering.
+  it("keeps the no-line-break check scoped to the migrated seven: at least one new chunk does contain a line break and is excluded from it", async () => {
+    const result = await loadDefaultRunbookCorpus();
+
+    const newChunks = result.chunks.filter((chunk) => NEW_CHUNK_IDS.includes(chunk.chunkId));
+    expect(newChunks).toHaveLength(NEW_CHUNK_IDS.length);
+
+    const wrapped = newChunks.filter((chunk) => chunk.content.includes("\n"));
+    expect(wrapped.length).toBeGreaterThan(0);
+
+    for (const chunk of wrapped) {
+      expect(EXPECTED_CHUNK_IDS).not.toContain(chunk.chunkId);
     }
   });
 });

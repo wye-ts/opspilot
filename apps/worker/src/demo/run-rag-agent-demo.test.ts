@@ -43,8 +43,8 @@ describe("runRagDemoScenario", () => {
   it("loads the real Markdown corpus and completes successfully", async () => {
     const result = await runRagDemoScenario();
 
-    expect(result.corpusLoad.sourceFileCount).toBe(5);
-    expect(result.corpusLoad.chunks).toHaveLength(7);
+    expect(result.corpusLoad.sourceFileCount).toBe(16);
+    expect(result.corpusLoad.chunks).toHaveLength(24);
     expect(result.agentResult.status).toBe("completed");
   });
 

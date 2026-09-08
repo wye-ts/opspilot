@@ -1,0 +1,291 @@
+{
+  "corpusVersion": "issue-74-initial",
+  "queries": [
+    {
+      "id": "q-exact-001",
+      "group": "exact",
+      "query": "notification service degradation",
+      "expectedChunkIds": ["runbook-notification-degradation-001"],
+      "distractorChunkIds": []
+    },
+    {
+      "id": "q-exact-002",
+      "group": "exact",
+      "query": "notification queue backlog",
+      "expectedChunkIds": [
+        "runbook-notification-queue-backlog-001",
+        "runbook-notification-queue-backlog-002"
+      ],
+      "distractorChunkIds": []
+    },
+    {
+      "id": "q-exact-003",
+      "group": "exact",
+      "query": "authentication failures",
+      "expectedChunkIds": ["runbook-auth-failures-001", "runbook-auth-failures-002"],
+      "distractorChunkIds": []
+    },
+    {
+      "id": "q-exact-004",
+      "group": "exact",
+      "query": "database connection pool saturation",
+      "expectedChunkIds": ["runbook-database-connection-saturation-001"],
+      "distractorChunkIds": []
+    },
+    {
+      "id": "q-exact-005",
+      "group": "exact",
+      "query": "billing invoice pdf formatting",
+      "expectedChunkIds": ["runbook-billing-invoice-formatting-001"],
+      "distractorChunkIds": []
+    },
+    {
+      "id": "q-exact-006",
+      "group": "exact",
+      "query": "notification provider rate limit rejections",
+      "expectedChunkIds": ["runbook-notification-rate-limit-001"],
+      "distractorChunkIds": []
+    },
+    {
+      "id": "q-exact-007",
+      "group": "exact",
+      "query": "public api rate limit exceeded",
+      "expectedChunkIds": ["runbook-public-api-rate-limit-001"],
+      "distractorChunkIds": []
+    },
+    {
+      "id": "q-exact-008",
+      "group": "exact",
+      "query": "deployment rollback decision criteria",
+      "expectedChunkIds": ["runbook-deployment-rollback-001"],
+      "distractorChunkIds": []
+    },
+    {
+      "id": "q-exact-009",
+      "group": "exact",
+      "query": "search reindex procedure",
+      "expectedChunkIds": ["runbook-search-index-staleness-002"],
+      "distractorChunkIds": []
+    },
+    {
+      "id": "q-exact-010",
+      "group": "exact",
+      "query": "datastore read replica lag",
+      "expectedChunkIds": ["runbook-datastore-replica-lag-001"],
+      "distractorChunkIds": []
+    },
+
+    {
+      "id": "q-paraphrase-001",
+      "group": "paraphrase",
+      "query": "emails are stuck and not going out",
+      "expectedChunkIds": ["runbook-notification-degradation-001"],
+      "distractorChunkIds": []
+    },
+    {
+      "id": "q-paraphrase-002",
+      "group": "paraphrase",
+      "query": "queue of pending notifications keeps growing",
+      "expectedChunkIds": ["runbook-notification-queue-backlog-001"],
+      "distractorChunkIds": []
+    },
+    {
+      "id": "q-paraphrase-003",
+      "group": "paraphrase",
+      "query": "customers cannot log in elevated 401",
+      "expectedChunkIds": ["runbook-auth-failures-001"],
+      "distractorChunkIds": []
+    },
+    {
+      "id": "q-paraphrase-004",
+      "group": "paraphrase",
+      "query": "clock drift invalidating tokens",
+      "expectedChunkIds": ["runbook-auth-failures-002"],
+      "distractorChunkIds": []
+    },
+    {
+      "id": "q-paraphrase-005",
+      "group": "paraphrase",
+      "query": "connection pool exhausted intermittent timeouts",
+      "expectedChunkIds": ["runbook-database-connection-saturation-001"],
+      "distractorChunkIds": []
+    },
+    {
+      "id": "q-paraphrase-006",
+      "group": "paraphrase",
+      "query": "sign in requests hang and time out",
+      "expectedChunkIds": ["runbook-identity-provider-outage-001"],
+      "distractorChunkIds": []
+    },
+    {
+      "id": "q-paraphrase-007",
+      "group": "paraphrase",
+      "query": "cached page still showing old content",
+      "expectedChunkIds": ["runbook-cache-invalidation-001"],
+      "distractorChunkIds": []
+    },
+    {
+      "id": "q-paraphrase-008",
+      "group": "paraphrase",
+      "query": "partner webhook endpoint keeps returning 500",
+      "expectedChunkIds": ["runbook-webhook-delivery-001"],
+      "distractorChunkIds": []
+    },
+    {
+      "id": "q-paraphrase-009",
+      "group": "paraphrase",
+      "query": "documents missing from search after import",
+      "expectedChunkIds": ["runbook-search-index-staleness-001"],
+      "distractorChunkIds": []
+    },
+    {
+      "id": "q-paraphrase-010",
+      "group": "paraphrase",
+      "query": "replica behind the primary during a bulk import",
+      "expectedChunkIds": ["runbook-datastore-replica-lag-001"],
+      "distractorChunkIds": []
+    },
+
+    {
+      "id": "q-nearmiss-001",
+      "group": "near_miss",
+      "query": "notification rate limit exceeded",
+      "expectedChunkIds": ["runbook-notification-rate-limit-001"],
+      "distractorChunkIds": ["runbook-public-api-rate-limit-001"]
+    },
+    {
+      "id": "q-nearmiss-002",
+      "group": "near_miss",
+      "query": "rate limit rejections for a client key quota",
+      "expectedChunkIds": ["runbook-public-api-rate-limit-001"],
+      "distractorChunkIds": ["runbook-notification-rate-limit-001"]
+    },
+    {
+      "id": "q-nearmiss-003",
+      "group": "near_miss",
+      "query": "partner integration receiving 429 rejections",
+      "expectedChunkIds": ["runbook-public-api-rate-limit-001"],
+      "distractorChunkIds": ["runbook-notification-rate-limit-001"]
+    },
+    {
+      "id": "q-nearmiss-004",
+      "group": "near_miss",
+      "query": "outbound sends rejected once the tenant allowance is exceeded",
+      "expectedChunkIds": ["runbook-notification-rate-limit-001"],
+      "distractorChunkIds": ["runbook-storage-quota-exhaustion-001"]
+    },
+    {
+      "id": "q-nearmiss-005",
+      "group": "near_miss",
+      "query": "notification delivery delays reported by customers",
+      "expectedChunkIds": ["runbook-notification-degradation-001"],
+      "distractorChunkIds": ["runbook-notification-queue-backlog-002"]
+    },
+    {
+      "id": "q-nearmiss-006",
+      "group": "near_miss",
+      "query": "authentication failures after the upstream provider went down",
+      "expectedChunkIds": ["runbook-identity-provider-outage-001"],
+      "distractorChunkIds": ["runbook-auth-failures-002"]
+    },
+    {
+      "id": "q-nearmiss-007",
+      "group": "near_miss",
+      "query": "identity provider certificate expired",
+      "expectedChunkIds": ["runbook-identity-provider-outage-002"],
+      "distractorChunkIds": ["runbook-auth-failures-002"]
+    },
+    {
+      "id": "q-nearmiss-008",
+      "group": "near_miss",
+      "query": "search results are slow",
+      "expectedChunkIds": ["runbook-search-query-latency-001"],
+      "distractorChunkIds": ["runbook-search-index-staleness-001"]
+    },
+    {
+      "id": "q-nearmiss-009",
+      "group": "near_miss",
+      "query": "results are missing rather than slow",
+      "expectedChunkIds": ["runbook-search-index-staleness-001"],
+      "distractorChunkIds": ["runbook-search-query-latency-001"]
+    },
+    {
+      "id": "q-nearmiss-010",
+      "group": "near_miss",
+      "query": "out of space storing files",
+      "expectedChunkIds": ["runbook-storage-quota-exhaustion-001"],
+      "distractorChunkIds": ["runbook-storage-upload-corruption-001"]
+    },
+    {
+      "id": "q-nearmiss-011",
+      "group": "near_miss",
+      "query": "uploads rejected checksum mismatch",
+      "expectedChunkIds": ["runbook-storage-upload-corruption-001"],
+      "distractorChunkIds": ["runbook-storage-quota-exhaustion-001"]
+    },
+    {
+      "id": "q-nearmiss-012",
+      "group": "near_miss",
+      "query": "stale reads across services sharing the replica",
+      "expectedChunkIds": ["runbook-datastore-replica-lag-001"],
+      "distractorChunkIds": ["runbook-database-connection-saturation-001"]
+    },
+
+    {
+      "id": "q-truenegative-001",
+      "group": "true_negative",
+      "query": "notification service maintenance window schedule",
+      "expectedChunkIds": [],
+      "distractorChunkIds": ["runbook-notification-degradation-001"]
+    },
+    {
+      "id": "q-truenegative-002",
+      "group": "true_negative",
+      "query": "how do I request a refund on my invoice",
+      "expectedChunkIds": [],
+      "distractorChunkIds": ["runbook-billing-invoice-formatting-001"]
+    },
+    {
+      "id": "q-truenegative-003",
+      "group": "true_negative",
+      "query": "gdpr data export request for a customer",
+      "expectedChunkIds": [],
+      "distractorChunkIds": ["runbook-storage-upload-corruption-001"]
+    },
+    {
+      "id": "q-truenegative-004",
+      "group": "true_negative",
+      "query": "onboarding a new engineer to the auth service team",
+      "expectedChunkIds": [],
+      "distractorChunkIds": ["runbook-auth-failures-001"]
+    },
+    {
+      "id": "q-truenegative-005",
+      "group": "true_negative",
+      "query": "where is the search service pricing documentation",
+      "expectedChunkIds": [],
+      "distractorChunkIds": ["runbook-search-index-staleness-001"]
+    },
+    {
+      "id": "q-truenegative-006",
+      "group": "true_negative",
+      "query": "training video for the deployment dashboard",
+      "expectedChunkIds": [],
+      "distractorChunkIds": ["runbook-deployment-rollback-001"]
+    },
+    {
+      "id": "q-truenegative-007",
+      "group": "true_negative",
+      "query": "sla credit request after downtime",
+      "expectedChunkIds": [],
+      "distractorChunkIds": ["runbook-cache-invalidation-001"]
+    },
+    {
+      "id": "q-truenegative-008",
+      "group": "true_negative",
+      "query": "add dark mode to the mobile app",
+      "expectedChunkIds": [],
+      "distractorChunkIds": ["runbook-billing-invoice-formatting-001"]
+    }
+  ]
+}
