@@ -78,7 +78,7 @@
     {
       "id": "q-paraphrase-001",
       "group": "paraphrase",
-      "query": "emails are stuck and not going out",
+      "query": "emails are delayed because the notification service is degraded",
       "expectedChunkIds": ["runbook-notification-degradation-001"],
       "distractorChunkIds": []
     },
@@ -177,7 +177,7 @@
     {
       "id": "q-nearmiss-005",
       "group": "near_miss",
-      "query": "notification delivery delays reported by customers",
+      "query": "notification service status is degraded with a rising queue depth on the worker",
       "expectedChunkIds": ["runbook-notification-degradation-001"],
       "distractorChunkIds": ["runbook-notification-queue-backlog-002"]
     },
@@ -248,7 +248,7 @@
     {
       "id": "q-truenegative-003",
       "group": "true_negative",
-      "query": "gdpr data export request for a customer",
+      "query": "customer wants to permanently delete old files from object storage",
       "expectedChunkIds": [],
       "distractorChunkIds": ["runbook-storage-upload-corruption-001"]
     },
@@ -276,14 +276,14 @@
     {
       "id": "q-truenegative-007",
       "group": "true_negative",
-      "query": "sla credit request after downtime",
+      "query": "marketing wants a new landing page content update",
       "expectedChunkIds": [],
       "distractorChunkIds": ["runbook-cache-invalidation-001"]
     },
     {
       "id": "q-truenegative-008",
       "group": "true_negative",
-      "query": "add dark mode to the mobile app",
+      "query": "customer asking for a copy of a past billing invoice",
       "expectedChunkIds": [],
       "distractorChunkIds": ["runbook-billing-invoice-formatting-001"]
     }

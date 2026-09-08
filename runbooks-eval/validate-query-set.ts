@@ -41,6 +41,16 @@
  *            the retriever's raw pre-threshold scoring — a plausible-but-wrong
  *            match, not a query the zero-score exclusion already filters for
  *            free.
+ *   6. Positive-group correctness against the SHIPPED retriever's own real
+ *      output (post-review addition, 2026-09-07 Codex round): every `exact`
+ *      query's actual top-1 result must be one of its expectedChunkIds; every
+ *      `paraphrase` query's expectedChunkIds must have at least one member
+ *      inside the retriever's real top-3. Without this, a query record can
+ *      claim to be "exact"/"paraphrase" while the shipped retriever actually
+ *      returns something else first — exactly what happened to q-paraphrase-001
+ *      before this check existed (a genuinely competitive unrelated chunk won
+ *      top-1 on stopword overlap, undetected because only near_miss/
+ *      true_negative groups were ever checked against real retriever output).
  */
 
 import { readFileSync } from "node:fs";
@@ -317,6 +327,37 @@ export async function validateQuerySet(
       `At least ${MIN_NEAR_MISS_RETRIEVER_FAILURES} near_miss queries must have a distractor ranked ` +
         `above the correct answer under the shipped retriever; found ${nearMissRetrieverFailures.length}.`,
     );
+  }
+
+  // --- Check 6: positive-group correctness against the real retriever -------
+  // exact/paraphrase queries are only useful test fixtures if the shipped
+  // retriever actually returns the claimed answer today — a mislabeled or
+  // ambiguous query would silently poison #75's recall/MRR numbers otherwise.
+  for (const record of querySet.queries) {
+    if (record.group !== "exact" && record.group !== "paraphrase") continue;
+
+    const topK = await retriever.retrieve({ query: record.query, topK: EVALUATION_TOP_K });
+    const expectedSet = new Set(record.expectedChunkIds);
+
+    if (record.group === "exact") {
+      const top1 = topK[0];
+      if (top1 === undefined || !expectedSet.has(top1.chunkId)) {
+        errors.push(
+          `${record.id}: an "exact" record's top-1 result under the shipped retriever must be one ` +
+            `of its expectedChunkIds (actual top-1: ${top1 ? `${top1.chunkId}(${top1.score})` : "none"}, ` +
+            `full top-${EVALUATION_TOP_K}: ${topK.map((entry) => `${entry.chunkId}(${entry.score})`).join(", ") || "nothing"}).`,
+        );
+      }
+    } else {
+      const hasExpectedInTopK = topK.some((entry) => expectedSet.has(entry.chunkId));
+      if (!hasExpectedInTopK) {
+        errors.push(
+          `${record.id}: a "paraphrase" record must have at least one expectedChunkIds entry in the ` +
+            `shipped retriever's real top-${EVALUATION_TOP_K} (actual top-${EVALUATION_TOP_K}: ` +
+            `${topK.map((entry) => `${entry.chunkId}(${entry.score})`).join(", ") || "nothing"}).`,
+        );
+      }
+    }
   }
 
   return { errors, nearMissRetrieverFailures };
