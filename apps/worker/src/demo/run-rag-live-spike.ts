@@ -19,6 +19,7 @@ import {
   runRoleConfusionScenario,
   runSelectedScenarios,
   runToolOutputOverrideScenario,
+  selectionNeedsVoyage,
   type SpikeScenarioResult,
 } from "./run-rag-live-spike-scenarios";
 
@@ -138,16 +139,24 @@ function printSummary(results: readonly SpikeScenarioResult[]): void {
 
 async function main(): Promise<void> {
   // Fail closed: every required value — including which scenario(s) to run
-  // — is validated before any client is constructed.
+  // — is validated before any client is constructed. Scenario selection is
+  // resolved FIRST, before requiring VOYAGE_API_KEY: tool-output-override
+  // is purely tool-driven (see runToolOutputOverrideScenario) and performs
+  // no RAG retrieval, so a standalone tool-output-override-only run must
+  // not be forced to configure an unrelated Voyage credential (Codex-review
+  // MINOR fix — an earlier version required it unconditionally, breaking
+  // scenario isolation for a realistic manual invocation).
+  const scenarioSelection = resolveScenarioSelection(process.env.RAG_SPIKE_SCENARIO);
+  const needsVoyage = selectionNeedsVoyage(scenarioSelection);
+
   const anthropicApiKey = requireEnv("ANTHROPIC_API_KEY");
   // Validated through the same supported-model policy the configuration-
   // selected path uses, BEFORE any client or provider is constructed — there
   // is no unchecked `model: process.env.ANTHROPIC_MODEL` route into the adapter.
   const anthropicModel = requireSupportedClaudeModel(process.env.ANTHROPIC_MODEL);
-  const voyageApiKey = requireEnv("VOYAGE_API_KEY");
+  const voyageApiKey = needsVoyage ? requireEnv("VOYAGE_API_KEY") : undefined;
   const embeddingModel = resolveEmbeddingModel();
   const embeddingDimensions = resolveEmbeddingDimensions();
-  const scenarioSelection = resolveScenarioSelection(process.env.RAG_SPIKE_SCENARIO);
 
   // logLevel "off" / logging.silent:true so all output comes from this
   // script's own sanitized telemetry, never the SDKs' own debug/warn logging
@@ -165,9 +174,12 @@ async function main(): Promise<void> {
     logger: logSpikeEvent,
   });
 
-  const voyageClient = new VoyageAIClient({ apiKey: voyageApiKey, logging: { silent: true } });
+  // Only constructed when a selected scenario actually needs it — a
+  // tool-output-override-only selection never touches voyageApiKey (which
+  // is undefined in that case) or these clients at all.
   const usage = { totalTokens: 0 };
-  const loggedVoyageClient = loggingVoyageClient(voyageClient, usage);
+  const voyageClient = needsVoyage ? new VoyageAIClient({ apiKey: voyageApiKey, logging: { silent: true } }) : undefined;
+  const loggedVoyageClient = voyageClient ? loggingVoyageClient(voyageClient, usage) : undefined;
 
   // Only the selected scenario(s)' callback(s) are ever invoked — selecting
   // any one of baseline/injection/tool-output-override/exfiltration/
@@ -175,28 +187,37 @@ async function main(): Promise<void> {
   // scenario's Claude/retrieval work. buildScenarioCallbacks additionally
   // ensures the normal Markdown runbook corpus is only ever loaded lazily,
   // inside runBaseline's own closure — so a malformed/missing runbooks/
-  // directory cannot affect a non-baseline-only run.
+  // directory cannot affect a non-baseline-only run. The four
+  // Voyage-backed callbacks below are only ever actually invoked when
+  // needsVoyage is true (guaranteed by resolveScenarioSelection returning
+  // only ["tool-output-override"] whenever needsVoyage is false), so the
+  // non-null assertions on loggedVoyageClient are safe by construction —
+  // not re-validated per call, since runSelectedScenarios never calls an
+  // unselected scenario's callback.
   const callbacks = buildScenarioCallbacks({
     loadCorpus: loadDefaultRunbookCorpus,
     runBaseline: (corpus) =>
-      runBaselineRagScenario(claudeProvider, loggedVoyageClient, embeddingModel, embeddingDimensions, corpus),
+      runBaselineRagScenario(claudeProvider, loggedVoyageClient!, embeddingModel, embeddingDimensions, corpus),
     runInjection: () =>
-      runInjectionProbeScenario(claudeProvider, loggedVoyageClient, embeddingModel, embeddingDimensions),
+      runInjectionProbeScenario(claudeProvider, loggedVoyageClient!, embeddingModel, embeddingDimensions),
     runToolOutputOverride: () => runToolOutputOverrideScenario(claudeProvider),
     runExfiltration: () =>
-      runExfiltrationScenario(claudeProvider, loggedVoyageClient, embeddingModel, embeddingDimensions),
+      runExfiltrationScenario(claudeProvider, loggedVoyageClient!, embeddingModel, embeddingDimensions),
     runRoleConfusion: () =>
-      runRoleConfusionScenario(claudeProvider, loggedVoyageClient, embeddingModel, embeddingDimensions),
+      runRoleConfusionScenario(claudeProvider, loggedVoyageClient!, embeddingModel, embeddingDimensions),
   });
   const results = await runSelectedScenarios(scenarioSelection, callbacks);
 
   printSummary(results);
-  printEstimatedVoyageCost(embeddingModel, usage.totalTokens);
+  if (needsVoyage) {
+    printEstimatedVoyageCost(embeddingModel, usage.totalTokens);
+  }
 
   if (hasFailingScenario(results)) {
     process.exitCode = 1;
   }
 }
+
 
 const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
 if (isMainModule) {

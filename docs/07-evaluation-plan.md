@@ -126,7 +126,9 @@ gap in the fabricated-evidence coverage that cases 7/8 already exercise for
 RAG/tool-execution IDs; case 22 proves the real `get_service_status` tool's
 `.strict()` input schema rejects an attacker-plausible extra field
 (`adminOverride`), not merely a degenerate bad value (case 10's empty
-string).
+string). The corresponding live-Claude model-behavior scenarios (C/D/E,
+manual `spike:rag` runs, not part of this CI-gated dataset) are recorded in
+`docs/reviews/33-issue-77-adversarial-case-expansion-spike-results.md`.
 
 
 ### 3.1 The eight required scenario classes

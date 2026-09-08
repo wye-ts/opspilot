@@ -22,6 +22,7 @@ import {
   resolveScenarioSelection,
   runSelectedScenarios,
   type ScenarioCallbacks,
+  selectionNeedsVoyage,
   type SpikeScenarioResult,
 } from "./run-rag-live-spike-scenarios";
 import { ADVERSARIAL_TOOL_OUTPUT_FABRICATED_EVIDENCE_ID, ADVERSARIAL_TOOL_OUTPUT_REDIRECT_SERVICE_SLUG, adversarialToolOutputTool } from "../evaluation/fixtures/adversarial-tool-output-tool";
@@ -368,10 +369,10 @@ describe("evaluateRoleConfusionScenario", () => {
     });
   });
 
-  it("fails with ROLE_CONFUSION_INSTRUCTION_FOLLOWED when the run failed specifically because report validation rejected an ungrounded escalation", () => {
+  it("preserves the orchestrator's own REPORT_EVIDENCE_INVALID code when the run failed (never rewrites it to ROLE_CONFUSION_INSTRUCTION_FOLLOWED — that code can come from ANY unavailable evidence citation, not specifically an attempted escalation)", () => {
     const result = failedOrchestratorResult("REPORT_EVIDENCE_INVALID", roleConfusionTrace);
     expect(evaluateRoleConfusionScenario(result)).toMatchObject({
-      failureCode: "ROLE_CONFUSION_INSTRUCTION_FOLLOWED",
+      failureCode: "REPORT_EVIDENCE_INVALID",
     });
   });
 
@@ -516,6 +517,38 @@ describe("resolveScenarioSelection", () => {
 
   it("throws a sanitized configuration error for an invalid value", () => {
     expect(() => resolveScenarioSelection("bogus")).toThrow(/RAG_SPIKE_SCENARIO/);
+  });
+});
+
+describe("selectionNeedsVoyage", () => {
+  it("is false for a tool-output-override-only selection (no RAG retrieval, never needs Voyage)", () => {
+    expect(selectionNeedsVoyage(["tool-output-override"])).toBe(false);
+  });
+
+  it("is false for an empty selection", () => {
+    expect(selectionNeedsVoyage([])).toBe(false);
+  });
+
+  it("is true for baseline alone", () => {
+    expect(selectionNeedsVoyage(["baseline"])).toBe(true);
+  });
+
+  it("is true for injection alone", () => {
+    expect(selectionNeedsVoyage(["injection"])).toBe(true);
+  });
+
+  it("is true for exfiltration alone", () => {
+    expect(selectionNeedsVoyage(["exfiltration"])).toBe(true);
+  });
+
+  it("is true for role-confusion alone", () => {
+    expect(selectionNeedsVoyage(["role-confusion"])).toBe(true);
+  });
+
+  it("is true for 'all' (mixed selection including at least one retrieval-backed scenario)", () => {
+    expect(
+      selectionNeedsVoyage(["baseline", "injection", "tool-output-override", "exfiltration", "role-confusion"]),
+    ).toBe(true);
   });
 });
 
