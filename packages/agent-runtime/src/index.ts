@@ -51,11 +51,18 @@ import {
   BM25RunbookRetriever as _BM25RunbookRetriever,
   DEFAULT_BM25_RETRIEVER_MIN_SCORE as _DEFAULT_BM25_RETRIEVER_MIN_SCORE,
 } from "./rag/bm25-runbook-retriever";
-import { computeCorpusContentHash as _computeCorpusContentHash } from "./rag/corpus-content-hash";
+import { FixtureBackedRunbookRetriever as _FixtureBackedRunbookRetriever, DEFAULT_FIXTURE_RETRIEVER_MIN_SCORE as _DEFAULT_FIXTURE_RETRIEVER_MIN_SCORE } from "./rag/fixture-backed-runbook-retriever";
+import { computeCorpusContentHash as _computeCorpusContentHash, sha256 as _sha256 } from "./rag/corpus-content-hash";
 import {
   computeRetrieverFingerprint as _computeRetrieverFingerprint,
   CURRENT_RETRIEVER_FINGERPRINTS as _CURRENT_RETRIEVER_FINGERPRINTS,
+  computeFrozenEmbeddingFingerprint as _computeFrozenEmbeddingFingerprint,
+  computeEmbeddingFixturePayloadHash as _computeEmbeddingFixturePayloadHash,
 } from "./rag/retriever-fingerprints";
+import {
+  cosineSimilarity as _cosineSimilarity,
+  l2Norm as _l2Norm,
+} from "./rag/cosine-similarity";
 import {
   STOPWORDS as _STOPWORDS,
   tokenize as _tokenize,
@@ -98,12 +105,19 @@ export const BM25RunbookRetriever = _BM25RunbookRetriever;
 export const DEFAULT_BM25_RETRIEVER_MIN_SCORE = _DEFAULT_BM25_RETRIEVER_MIN_SCORE;
 export const BM25_K1 = _BM25_K1;
 export const BM25_B = _BM25_B;
+export const FixtureBackedRunbookRetriever = _FixtureBackedRunbookRetriever;
+export const DEFAULT_FIXTURE_RETRIEVER_MIN_SCORE = _DEFAULT_FIXTURE_RETRIEVER_MIN_SCORE;
 export const tokenize = _tokenize;
 export const tokenizeQuery = _tokenizeQuery;
 export const STOPWORDS = _STOPWORDS;
 export const computeCorpusContentHash = _computeCorpusContentHash;
+export const sha256 = _sha256;
 export const computeRetrieverFingerprint = _computeRetrieverFingerprint;
 export const CURRENT_RETRIEVER_FINGERPRINTS = _CURRENT_RETRIEVER_FINGERPRINTS;
+export const computeFrozenEmbeddingFingerprint = _computeFrozenEmbeddingFingerprint;
+export const computeEmbeddingFixturePayloadHash = _computeEmbeddingFixturePayloadHash;
+export const cosineSimilarity = _cosineSimilarity;
+export const l2Norm = _l2Norm;
 export const MarkdownRunbookCorpusLoader = _MarkdownRunbookCorpusLoader;
 export const RunbookLoadError = _RunbookLoadError;
 export const loadDefaultRunbookCorpus = _loadDefaultRunbookCorpus;

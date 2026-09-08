@@ -49,3 +49,76 @@ export const CURRENT_RETRIEVER_FINGERPRINTS: Readonly<Record<"keyword" | "bm25",
     b: BM25_B,
   }),
 };
+
+// Issue #76 §2.5 — the frozen-embedding candidate's fingerprint is
+// deliberately NOT a third entry in CURRENT_RETRIEVER_FINGERPRINTS above,
+// because (unlike keyword/BM25's pure in-code constants) its configuration
+// depends on the CONTENTS of an external fixture file
+// (runbooks-eval/embedding-fixture.json) that this module — re-exported
+// through packages/agent-runtime's public index.ts, which apps/api's
+// production code already imports from — must stay safe to import without
+// ever performing file I/O at module-evaluation time (plan §0 fix 1's
+// Dockerfile-boundary analysis: the production image never ships
+// runbooks-eval/, so a top-level read of that file here would crash
+// container startup). Instead, this is a PURE function: callers that have
+// already loaded and validated the fixture (runbooks-eval/score-query-set.ts,
+// apps/worker's retrieval-quality-config.ts, both of which already read
+// files) pass its metadata in.
+//
+// `minScore` is a required parameter, not folded into `fixture` (round-2
+// Codex-review MAJOR fix — verified: the first draft's signature took only
+// fixture-derived fields, so freezing a new DEFAULT_FIXTURE_RETRIEVER_MIN_SCORE
+// value after query-set-scores.json was generated left this fingerprint —
+// and therefore the runtime freshness check — unchanged, silently accepting
+// stale falsePositiveRate/recall numbers computed under the old threshold).
+// Mirrors exactly how computeRetrieverFingerprint() already folds minScore
+// into keyword's/BM25's own fingerprints above — the same rule applied to
+// the third retriever, not a new one.
+export interface EmbeddingFixtureFingerprintInput {
+  readonly embeddingModel: string;
+  readonly dimensions: number;
+  readonly corpusContentHash: string;
+  readonly queryContentHash: string;
+  readonly vectorPayloadHash: string;
+}
+
+export function computeFrozenEmbeddingFingerprint(
+  fixture: EmbeddingFixtureFingerprintInput,
+  minScore: number,
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        className: "FixtureBackedRunbookRetriever",
+        minScore,
+        embeddingModel: fixture.embeddingModel,
+        dimensions: fixture.dimensions,
+        corpusContentHash: fixture.corpusContentHash,
+        queryContentHash: fixture.queryContentHash,
+        vectorPayloadHash: fixture.vectorPayloadHash,
+      }),
+      "utf8",
+    )
+    .digest("hex");
+}
+
+// Issue #76 §2.5 / §0 fix 3 — a canonical hash of the fixture's own vector
+// PAYLOAD (as opposed to its metadata, which corpusContentHash/queryContentHash/
+// embeddingModel/dimensions already cover). A single vector-coordinate edit
+// with every metadata field held constant is otherwise undetectable: this
+// is the missing piece that makes such an edit change the fingerprint.
+// Sorted by id (chunk, then query) so the hash never depends on array order.
+export function computeEmbeddingFixturePayloadHash(
+  chunks: readonly { readonly chunkId: string; readonly vector: readonly number[] }[],
+  queries: readonly { readonly id: string; readonly vector: readonly number[] }[],
+): string {
+  const canonicalChunks = [...chunks]
+    .sort((a, b) => a.chunkId.localeCompare(b.chunkId))
+    .map((entry) => ({ chunkId: entry.chunkId, vector: entry.vector }));
+  const canonicalQueries = [...queries]
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map((entry) => ({ id: entry.id, vector: entry.vector }));
+  return createHash("sha256")
+    .update(JSON.stringify({ chunks: canonicalChunks, queries: canonicalQueries }), "utf8")
+    .digest("hex");
+}

@@ -10,27 +10,13 @@ import type {
 } from "@opspilot/agent-runtime";
 import type { VoyageEmbeddingClient } from "./voyage-embedding-client";
 
-const { RetrieverError, validateRetrievalInput } = opspilotAgentRuntime;
+const { RetrieverError, validateRetrievalInput, cosineSimilarity, l2Norm } = opspilotAgentRuntime;
 
 export interface VoyageRunbookRetrieverOptions {
   readonly client: VoyageEmbeddingClient;
   readonly model: string;
   readonly dimensions: number;
   readonly corpus: readonly StoredRunbookChunk[];
-}
-
-function l2Norm(vector: readonly number[]): number {
-  let sumSquares = 0;
-  for (const value of vector) sumSquares += value * value;
-  return Math.sqrt(sumSquares);
-}
-
-// score is application-computed from provider-returned vectors, never a raw
-// provider value.
-function cosineSimilarity(a: readonly number[], b: readonly number[]): number {
-  let dot = 0;
-  for (let i = 0; i < a.length; i++) dot += a[i]! * b[i]!;
-  return dot / (l2Norm(a) * l2Norm(b));
 }
 
 interface ExtractedEmbeddings {
@@ -46,7 +32,11 @@ interface ExtractedEmbeddings {
 // dimension, non-finite values, a zero-norm vector, or an invalid/
 // incomplete/duplicate index set. Every EmbedResponse/EmbedResponseDataItem
 // field is optional in the real SDK type, so nothing here is assumed present.
-function extractValidatedEmbeddings(
+//
+// Exported (issue #76 §2.1): generate-embedding-fixture.ts reuses this
+// validator directly rather than duplicating it — same-app import, no
+// relocation needed (plan §0 fix 1's simplification).
+export function extractValidatedEmbeddings(
   response: EmbedResponse,
   expectedCount: number,
   expectedDimension: number,

@@ -40,7 +40,6 @@
  *     undefined for a query with no correct answer.
  */
 
-import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
@@ -48,17 +47,27 @@ import {
   BM25RunbookRetriever,
   DEFAULT_BM25_RETRIEVER_MIN_SCORE,
 } from "../packages/agent-runtime/src/rag/bm25-runbook-retriever";
-import { computeCorpusContentHash } from "../packages/agent-runtime/src/rag/corpus-content-hash";
+import { computeCorpusContentHash, sha256 } from "../packages/agent-runtime/src/rag/corpus-content-hash";
+import {
+  DEFAULT_FIXTURE_RETRIEVER_MIN_SCORE,
+  FixtureBackedRunbookRetriever,
+} from "../packages/agent-runtime/src/rag/fixture-backed-runbook-retriever";
 import {
   DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE,
   InMemoryKeywordRunbookRetriever,
 } from "../packages/agent-runtime/src/rag/in-memory-runbook-retriever";
 import { loadDefaultRunbookCorpus } from "../packages/agent-runtime/src/rag/load-default-runbook-corpus";
-import { CURRENT_RETRIEVER_FINGERPRINTS } from "../packages/agent-runtime/src/rag/retriever-fingerprints";
+import {
+  computeEmbeddingFixturePayloadHash,
+  computeFrozenEmbeddingFingerprint,
+  CURRENT_RETRIEVER_FINGERPRINTS,
+} from "../packages/agent-runtime/src/rag/retriever-fingerprints";
 import type { RunbookRetriever, StoredRunbookChunk } from "../packages/agent-runtime/src/rag/runbook-retriever";
+import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL } from "./embedding-fixture-config";
 import { parseQuerySet, QUERY_SET_PATH, type QueryRecord } from "./validate-query-set";
 
 export const SCORES_PATH = path.resolve(__dirname, "query-set-scores.json");
+const EMBEDDING_FIXTURE_PATH = path.resolve(__dirname, "embedding-fixture.json");
 
 // Mirrors apps/worker/src/evaluation/types.ts's EVALUATION_TOP_K, following
 // validate-query-set.ts's existing local-mirror convention.
@@ -92,15 +101,12 @@ export interface QuerySetScores {
   readonly retrievers: Readonly<Record<string, RetrieverScores>>;
 }
 
-function sha256(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
-}
-
-// computeCorpusContentHash lives in packages/agent-runtime (imported above)
-// rather than here, because apps/worker's eval CLI must re-derive the SAME
-// hash from its own freshly-loaded corpus at run time — a second copy would
-// defeat the freshness check the first time either was edited. See that
-// module's comment. computeRetrieverFingerprint/CURRENT_RETRIEVER_FINGERPRINTS
+// computeCorpusContentHash/sha256 live in packages/agent-runtime (imported at
+// the top of this file) rather than being defined here, because apps/worker's
+// eval CLI must re-derive the SAME hash from its own freshly-loaded corpus at
+// run time — a second copy would defeat the freshness check the first time
+// either was edited. See that module's comment.
+// computeRetrieverFingerprint/CURRENT_RETRIEVER_FINGERPRINTS
 // (retriever-fingerprints.ts, also in the shared package) follow the same
 // rule for retriever CONFIGURATION freshness (Codex-review MAJOR fix,
 // verified against source: without a shared fingerprint source, this
@@ -116,23 +122,79 @@ export interface RetrieverCandidate {
   build(corpus: readonly StoredRunbookChunk[]): RunbookRetriever;
 }
 
-// The candidate set this issue compares. #76 adds a third (frozen-embedding)
-// entry here without any schema change — the artifact is keyed by name.
-// Each candidate's fingerprint is read from CURRENT_RETRIEVER_FINGERPRINTS —
-// the same shared map retrieval-quality-config.ts validates against — never
-// computed locally.
-export const RETRIEVER_CANDIDATES: readonly RetrieverCandidate[] = [
-  {
-    name: "keyword",
-    fingerprint: CURRENT_RETRIEVER_FINGERPRINTS.keyword,
-    build: (corpus) => new InMemoryKeywordRunbookRetriever(corpus, DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE),
-  },
-  {
-    name: "bm25",
-    fingerprint: CURRENT_RETRIEVER_FINGERPRINTS.bm25,
-    build: (corpus) => new BM25RunbookRetriever(corpus, DEFAULT_BM25_RETRIEVER_MIN_SCORE),
-  },
-];
+// The candidate set this comparison scores. Each candidate's fingerprint is
+// either read from CURRENT_RETRIEVER_FINGERPRINTS (keyword/BM25 — pure,
+// in-code constants) or computed by a pure function fed already-loaded
+// fixture data (frozen-embedding — plan §2.5: its configuration depends on
+// an external file's contents, so it can never be a static map entry safe
+// to import at production module-load time). Built by a function, not a
+// static array, because the frozen-embedding candidate needs the parsed
+// query set AND the loaded/validated fixture before it can be constructed —
+// both already read once by computeQuerySetScores() below, never a second
+// independent read.
+export function buildRetrieverCandidates(
+  querySet: readonly QueryRecord[],
+  rawQuerySetText: string,
+  rawFixture: unknown,
+): readonly RetrieverCandidate[] {
+  return [
+    {
+      name: "keyword",
+      fingerprint: CURRENT_RETRIEVER_FINGERPRINTS.keyword,
+      build: (corpus) => new InMemoryKeywordRunbookRetriever(corpus, DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE),
+    },
+    {
+      name: "bm25",
+      fingerprint: CURRENT_RETRIEVER_FINGERPRINTS.bm25,
+      build: (corpus) => new BM25RunbookRetriever(corpus, DEFAULT_BM25_RETRIEVER_MIN_SCORE),
+    },
+    {
+      name: "frozen-embedding",
+      fingerprint: computeFrozenEmbeddingFingerprint(
+        buildFrozenEmbeddingFingerprintInput(rawFixture),
+        DEFAULT_FIXTURE_RETRIEVER_MIN_SCORE,
+      ),
+      build: (corpus) =>
+        new FixtureBackedRunbookRetriever(
+          corpus,
+          querySet.map((record) => ({ id: record.id, query: record.query })),
+          rawQuerySetText,
+          rawFixture,
+          EMBEDDING_MODEL,
+          EMBEDDING_DIMENSIONS,
+          DEFAULT_FIXTURE_RETRIEVER_MIN_SCORE,
+        ),
+    },
+  ];
+}
+
+// Extracts the four identity fields computeFrozenEmbeddingFingerprint needs
+// from the raw (already JSON.parse()'d) fixture, plus the vector-payload
+// hash (plan §0 fix 3) computed fresh from the fixture's own chunks/queries
+// arrays — never trusted as a field the fixture itself might claim.
+function buildFrozenEmbeddingFingerprintInput(rawFixture: unknown): {
+  readonly embeddingModel: string;
+  readonly dimensions: number;
+  readonly corpusContentHash: string;
+  readonly queryContentHash: string;
+  readonly vectorPayloadHash: string;
+} {
+  const fixture = rawFixture as {
+    embeddingModel: string;
+    dimensions: number;
+    corpusContentHash: string;
+    queryContentHash: string;
+    chunks: readonly { chunkId: string; vector: readonly number[] }[];
+    queries: readonly { id: string; vector: readonly number[] }[];
+  };
+  return {
+    embeddingModel: fixture.embeddingModel,
+    dimensions: fixture.dimensions,
+    corpusContentHash: fixture.corpusContentHash,
+    queryContentHash: fixture.queryContentHash,
+    vectorPayloadHash: computeEmbeddingFixturePayloadHash(fixture.chunks, fixture.queries),
+  };
+}
 
 const SCORED_GROUPS = ["exact", "paraphrase", "near_miss"] as const;
 type ScoredGroup = (typeof SCORED_GROUPS)[number];
@@ -211,10 +273,13 @@ export async function computeQuerySetScores(): Promise<QuerySetScores> {
   if (querySet === null) {
     throw new Error(`retrieval-query-set.json is malformed: ${errors.join("; ")}`);
   }
+  const rawFixture: unknown = JSON.parse(readFileSync(EMBEDDING_FIXTURE_PATH, "utf8"));
+
+  const retrieverCandidates = buildRetrieverCandidates(querySet.queries, rawQuerySet, rawFixture);
 
   const retrievers: Record<string, RetrieverScores> = {};
   const retrieverFingerprints: Record<string, string> = {};
-  for (const candidate of RETRIEVER_CANDIDATES) {
+  for (const candidate of retrieverCandidates) {
     retrievers[candidate.name] = await scoreRetriever(candidate, corpusLoad.chunks, querySet.queries);
     retrieverFingerprints[candidate.name] = candidate.fingerprint;
   }

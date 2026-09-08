@@ -35,3 +35,15 @@ export function computeCorpusContentHash(corpus: readonly StoredRunbookChunk[]):
     .join("\n");
   return createHash("sha256").update(canonical, "utf8").digest("hex");
 }
+
+// Issue #76 §2.2 / §0 fix 2 — a general-purpose raw-bytes SHA-256 helper,
+// added here (alongside computeCorpusContentHash) rather than as a new
+// module, so every place that needs to hash arbitrary text (today:
+// retrieval-query-set.json's own bytes, previously computed via a LOCAL,
+// inline sha256() inside runbooks-eval/score-query-set.ts) uses the exact
+// same implementation. Two independently-written sha256(text) functions
+// that happen to agree today are exactly the kind of drift this shared
+// package's other hash/fingerprint helpers already exist to prevent.
+export function sha256(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
