@@ -9,6 +9,14 @@ import { spawnSync } from "node:child_process";
 
 import type { ChangeEntry, ChangeStatus } from "./types";
 
+// A large tracked file (a big fixture, a generated lockfile-adjacent JSON,
+// etc.) can produce a diff well past Node's spawnSync default maxBuffer
+// (1 MiB), aborting an otherwise-successful `git diff` with ENOBUFS instead
+// of returning the real diff. Same bound and same rationale as
+// lib/codex-invocation.ts's MAX_BUFFER_BYTES — a generous explicit cap, not
+// a redesign to streaming.
+const MAX_BUFFER_BYTES = 32 * 1024 * 1024;
+
 export interface GitRunResult {
   stdout: string;
   stderr: string;
@@ -57,7 +65,7 @@ export class GitExecutionError extends Error {
  * that for free by virtue of never observing an invented exit code.
  */
 export function runGit(cwd: string, args: string[]): GitRunResult {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  const result = spawnSync("git", args, { cwd, encoding: "utf8", maxBuffer: MAX_BUFFER_BYTES });
   if (result.error) {
     throw new GitExecutionError(`git ${args.join(" ")} failed to execute: ${result.error.message}`);
   }
@@ -374,6 +382,7 @@ export function diffUntrackedPath(cwd: string, path: string): string {
   const result = spawnSync("git", [...REVIEW_PATCH_FLAGS, "--no-index", "--", "/dev/null", path], {
     cwd,
     encoding: "utf8",
+    maxBuffer: MAX_BUFFER_BYTES,
   });
   return result.stdout ?? "";
 }
