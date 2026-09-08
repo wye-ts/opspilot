@@ -115,6 +115,21 @@ const read = (json: string) => () => json;
 const readQuerySet = () => RAW_QUERY_SET_TEXT;
 const readEmbeddingFixture = () => RAW_EMBEDDING_FIXTURE;
 
+// Builds an otherwise well-formed embedding fixture with chunks/queries
+// overridden — used by the malformed-entry table-driven test below (Codex-
+// review MINOR fix's missingTest spec).
+function fixtureWith(overrides: { chunks?: unknown; queries?: unknown }): string {
+  return JSON.stringify({
+    embeddingModel: EMBEDDING_MODEL,
+    dimensions: EMBEDDING_DIMENSIONS,
+    corpusContentHash: CORPUS_HASH,
+    queryContentHash: QUERY_SET_HASH,
+    chunks: overrides.chunks ?? [{ chunkId: "c-1", vector: oneHot(0) }, { chunkId: "c-2", vector: oneHot(1) }],
+    queries: overrides.queries ?? [{ id: "q-1", vector: oneHot(0) }],
+  });
+}
+
+
 describe("resolveRetrievalQualityMetrics", () => {
   it("returns undefined when the feature flag is absent (the default for every existing invocation)", () => {
     expect(
@@ -374,6 +389,44 @@ describe("resolveRetrievalQualityMetrics", () => {
         () => staleFixture,
       ),
     ).toThrow(/stale.*dimensions/);
+  });
+
+  // Codex-review MINOR fix (missingTest spec): a table-driven regression
+  // over null/non-object entries, invalid identifiers, and malformed vectors
+  // — each must be rejected with RetrievalQualityConfigError (an actionable
+  // configuration error, matching every other structural check in this
+  // resolver), never a raw TypeError escaping from
+  // computeEmbeddingFixturePayloadHash().
+  it("fails closed with RetrievalQualityConfigError (never a raw TypeError) on a malformed fixture chunk/query entry", () => {
+    const cases: readonly [string, () => string][] = [
+      ["null chunk entry", () => fixtureWith({ chunks: [null] })],
+      ["non-object chunk entry", () => fixtureWith({ chunks: ["not-an-object"] })],
+      ["chunk entry missing chunkId", () => fixtureWith({ chunks: [{ vector: oneHot(0) }] })],
+      ["chunk entry with empty chunkId", () => fixtureWith({ chunks: [{ chunkId: "", vector: oneHot(0) }] })],
+      ["chunk entry with non-array vector", () => fixtureWith({ chunks: [{ chunkId: "c-1", vector: "nope" }] })],
+      [
+        "chunk entry with a non-numeric vector component",
+        () => fixtureWith({ chunks: [{ chunkId: "c-1", vector: [0, "x"] }] }),
+      ],
+      ["null query entry", () => fixtureWith({ queries: [null] })],
+      ["query entry missing id", () => fixtureWith({ queries: [{ vector: oneHot(0) }] })],
+      [
+        "query entry with a non-finite vector component",
+        () => fixtureWith({ queries: [{ id: "q-1", vector: [0, Number.NaN] }] }),
+      ],
+    ];
+
+    for (const [, buildFixture] of cases) {
+      expect(() =>
+        resolveRetrievalQualityMetrics(
+          { [INCLUDE_RETRIEVAL_QUALITY_ENV]: "1", [RETRIEVAL_QUALITY_RETRIEVER_ENV]: "frozen-embedding" },
+          CORPUS,
+          read(artifact()),
+          readQuerySet,
+          buildFixture,
+        ),
+      ).toThrow(RetrievalQualityConfigError);
+    }
   });
 
   it("fails closed when retrieverFingerprints is missing or malformed", () => {

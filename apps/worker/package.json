@@ -16,7 +16,7 @@
     "test:claude:live": "pnpm run build:deps && node --env-file-if-exists=.env --import tsx src/smoke/claude-live-smoke.ts",
     "spike:claude": "pnpm run build:deps && tsx src/demo/run-claude-agent-spike.ts",
     "spike:rag": "pnpm run build:deps && tsx src/demo/run-rag-live-spike.ts",
-    "generate:embedding-fixture": "pnpm run build:deps && tsx src/demo/generate-embedding-fixture.ts"
+    "generate:embedding-fixture": "pnpm run build:deps && node --env-file-if-exists=.env --import tsx src/demo/generate-embedding-fixture.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.0",

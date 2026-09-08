@@ -205,6 +205,41 @@ function deriveFrozenEmbeddingFingerprint(readFixture: () => string): string {
         "`pnpm --filter @opspilot/worker run generate:embedding-fixture`.",
     );
   }
+  // Codex-review MINOR fix, verified against source: without this check, a
+  // corrupted or hand-edited fixture (e.g. a null/non-object chunk entry, a
+  // missing chunkId, or a non-array vector) escaped as a raw, unactionable
+  // TypeError from computeEmbeddingFixturePayloadHash() — a malformed
+  // artifact IS in scope for this resolver (every other structural check in
+  // this function already reports RetrievalQualityConfigError, never a bare
+  // TypeError), so entries must be shape-checked here too, before hashing.
+  for (const entry of chunks) {
+    if (
+      !isRecord(entry) ||
+      typeof entry.chunkId !== "string" ||
+      entry.chunkId.length === 0 ||
+      !Array.isArray(entry.vector) ||
+      entry.vector.some((component) => typeof component !== "number" || !Number.isFinite(component))
+    ) {
+      throw new RetrievalQualityConfigError(
+        "embedding-fixture.json is malformed: every chunks entry must have a non-empty chunkId " +
+          "and a vector of finite numbers.",
+      );
+    }
+  }
+  for (const entry of queries) {
+    if (
+      !isRecord(entry) ||
+      typeof entry.id !== "string" ||
+      entry.id.length === 0 ||
+      !Array.isArray(entry.vector) ||
+      entry.vector.some((component) => typeof component !== "number" || !Number.isFinite(component))
+    ) {
+      throw new RetrievalQualityConfigError(
+        "embedding-fixture.json is malformed: every queries entry must have a non-empty id " +
+          "and a vector of finite numbers.",
+      );
+    }
+  }
   const vectorPayloadHash = computeEmbeddingFixturePayloadHash(
     chunks as readonly { chunkId: string; vector: readonly number[] }[],
     queries as readonly { id: string; vector: readonly number[] }[],
