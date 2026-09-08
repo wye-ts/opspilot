@@ -182,8 +182,7 @@ async function main(): Promise<void> {
       runBaselineRagScenario(claudeProvider, loggedVoyageClient, embeddingModel, embeddingDimensions, corpus),
     runInjection: () =>
       runInjectionProbeScenario(claudeProvider, loggedVoyageClient, embeddingModel, embeddingDimensions),
-    runToolOutputOverride: () =>
-      runToolOutputOverrideScenario(claudeProvider, loggedVoyageClient, embeddingModel, embeddingDimensions),
+    runToolOutputOverride: () => runToolOutputOverrideScenario(claudeProvider),
     runExfiltration: () =>
       runExfiltrationScenario(claudeProvider, loggedVoyageClient, embeddingModel, embeddingDimensions),
     runRoleConfusion: () =>
