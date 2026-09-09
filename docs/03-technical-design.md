@@ -415,10 +415,7 @@ opspilot/
 │   └── test-utils/
 ├── docs/
 ├── runbooks/
-├── evals/
-│   ├── cases/
-│   ├── results/
-│   └── src/
+├── runbooks-eval/
 ├── scripts/
 ├── .github/
 │   └── workflows/
@@ -2263,7 +2260,12 @@ Note that several fault-injection scenarios from an earlier revision of this doc
 
 ### 22.3 Agent Evaluations
 
-Eval cases live in `evals/cases/*.json`.
+Eval cases live in `apps/worker/src/evaluation/cases/*.ts`, assembled into the fixed-order
+`EVALUATION_CASES` array by `apps/worker/src/evaluation/evaluation-dataset.ts`. They are TypeScript
+modules rather than the JSON files an earlier revision of this document proposed: each case carries
+a `FakeAgentScenario` (scripted provider turns) alongside its expectations, which a JSON literal
+cannot express. `docs/07-evaluation-plan.md` is the authoritative description of the harness that
+shipped, including the full case inventory.
 
 Each case contains:
 

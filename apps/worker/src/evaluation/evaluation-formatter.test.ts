@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { ADVERSARIAL_CASE_IDS } from "./adversarial-gate";
 import { CHECK_REASON_MESSAGES, type CheckReasonCode } from "./check-reason-codes";
 import { formatEvaluationReport } from "./evaluation-formatter";
 import { aggregateMetrics } from "./evaluation-metrics";
@@ -72,6 +73,60 @@ describe("formatEvaluationReport", () => {
     expect(output).toContain("Pass rate: 0.0%");
     expect(output).toContain("Retrieval top-1: 0/0");
     expect(output).not.toContain("NaN");
+  });
+
+  // Issue #78 §2.2 — the structural-adversarial readout.
+  describe("structural adversarial readout", () => {
+    it("renders passed/declared with no annotation when every declared case is present and passing", () => {
+      const results = ADVERSARIAL_CASE_IDS.map((caseId) => makeResult(caseId, [passingCheck("status")]));
+
+      const output = formatEvaluationReport(results, aggregateMetrics(results));
+
+      expect(output).toContain("Adversarial (structural): 3/3");
+      expect(output).not.toContain("missing");
+    });
+
+    it("keeps the declared denominator when an adversarial case fails", () => {
+      const [first, ...rest] = ADVERSARIAL_CASE_IDS;
+      const results = [
+        makeResult(first, [failingCheck("status", "STATUS_MISMATCH")]),
+        ...rest.map((caseId) => makeResult(caseId, [passingCheck("status")])),
+      ];
+
+      const output = formatEvaluationReport(results, aggregateMetrics(results));
+
+      expect(output).toContain("Adversarial (structural): 2/3");
+    });
+
+    // The denominator must stay at 3 — a subset run must not be able to render
+    // a misleading "2/2" by shrinking it.
+    it("annotates absent cases instead of shrinking the denominator", () => {
+      const results = ADVERSARIAL_CASE_IDS.filter(
+        (caseId) => caseId !== "adversarial-tool-input-shape",
+      ).map((caseId) => makeResult(caseId, [passingCheck("status")]));
+
+      const output = formatEvaluationReport(results, aggregateMetrics(results));
+
+      expect(output).toContain("Adversarial (structural): 2/3 (1 missing)");
+    });
+
+    it("renders 0/3 with all three annotated missing for an empty run, never a vacuous 0/0", () => {
+      const output = formatEvaluationReport([], aggregateMetrics([]));
+
+      expect(output).toContain("Adversarial (structural): 0/3 (3 missing)");
+    });
+
+    // Semantic-honesty guard (plan §0.4 / acceptance criterion 8): the readout
+    // must never claim model-behavioral robustness, which these
+    // FakeLlmProvider-driven cases cannot demonstrate.
+    it("never claims robustness or a security gate", () => {
+      const results = ADVERSARIAL_CASE_IDS.map((caseId) => makeResult(caseId, [passingCheck("status")]));
+
+      const output = formatEvaluationReport(results, aggregateMetrics(results));
+
+      expect(output).not.toMatch(/robust/i);
+      expect(output).not.toMatch(/security gate/i);
+    });
   });
 
   describe("sanitization", () => {

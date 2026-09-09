@@ -540,7 +540,7 @@ jobs:
       # No service is running yet at this point in the job — proves the
       # explicit EVALUATION_SCORER=local oracle really works independently of
       # the Python service, not merely "the service happens to be reachable".
-      - name: Default-cutover proof — explicit local oracle works without the service
+      - name: Evaluation harness (22 cases incl. 3 structural adversarial) — explicit local oracle, no service
         env:
           EVALUATION_SCORER: local
         run: pnpm --filter @opspilot/worker run eval
@@ -577,7 +577,7 @@ jobs:
       # No EVALUATION_SCORER override at all — proves the CLI's actual default
       # (unset env var) resolves to the service scorer and succeeds end to end
       # against the real, already-healthy Python service started above.
-      - name: Default-cutover proof — no EVALUATION_SCORER override succeeds against the real service
+      - name: Evaluation harness (22 cases incl. 3 structural adversarial) — default scorer against the real service
         env:
           EVALUATION_SERVICE_URL: http://127.0.0.1:8001
         run: pnpm --filter @opspilot/worker run eval
@@ -588,7 +588,7 @@ jobs:
       # unreachable, exactly like the unit-level proof in
       # service-unavailable.test.ts. A step that "succeeds" here (exit 0)
       # would mean the cutover silently fell back to local — fail the job.
-      - name: Default-cutover proof — no EVALUATION_SCORER override fails closed when the service is unreachable
+      - name: Evaluation harness — default scorer fails closed when the service is unreachable
         env:
           EVALUATION_SERVICE_URL: http://127.0.0.1:8099
         run: |
