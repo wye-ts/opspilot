@@ -18,7 +18,7 @@ import type { ObservedFacts } from "./observed-facts";
 export const EVALUATION_TOP_K = 3;
 
 export type CorpusProfile = "default" | "injection-probe";
-export type ToolProfile = "default" | "with-always-fails-tool";
+export type ToolProfile = "default" | "with-always-fails-tool" | "with-adversarial-tool-output";
 
 export interface EvaluationCase {
   readonly id: string;

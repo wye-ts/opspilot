@@ -6,8 +6,9 @@ import { INJECTION_PROBE_CHUNK, loadDefaultRunbookCorpus } from "../rag";
 import { FABRICATED_TOOL_EVIDENCE_CASE } from "./cases/evidence-grounding-cases";
 import { PROTOCOL_AND_FAILURE_CASES } from "./cases/protocol-and-failure-cases";
 import { EVALUATION_CASES } from "./evaluation-dataset";
-import { runEvaluationSuite } from "./evaluation-runner";
+import { resolveTools, runEvaluationSuite } from "./evaluation-runner";
 import { LocalEvaluationScorer } from "./evaluation-scorer";
+import { adversarialToolOutputTool } from "./fixtures/adversarial-tool-output-tool";
 import { buildEvaluationSuiteInputV2, EVALUATION_DATASET_ID, type EvaluationCaseInputV2 } from "./v2-types";
 
 let defaultCorpus: readonly StoredRunbookChunk[];
@@ -100,5 +101,22 @@ describe("runEvaluationSuite — isolation", () => {
     });
     expect(results).toHaveLength(1);
     expect(scoreAll(results).cases[0]?.passed).toBe(true);
+  });
+});
+
+// Issue #77 §2.1 (Codex-review round-2 MAJOR fix): FakeAgentScenario never
+// reads actual tool output to decide anything, so a wiring mistake — e.g.
+// resolveTools() accidentally returning the REAL getServiceStatusTool
+// instead of adversarialToolOutputTool, both sharing the tool name
+// "get_service_status" — would be invisible to any case's own pass/fail
+// outcome (TOOL_REQUESTED/TOOL_COMPLETED trace events look identical either
+// way). This identity test is the only thing that actually proves the
+// wiring resolves to the adversarial fixture, independent of and prior to
+// running any scripted case through it.
+describe("resolveTools — with-adversarial-tool-output identity", () => {
+  it("resolves to the adversarialToolOutputTool instance BY IDENTITY, not merely a same-named tool", () => {
+    const tools = resolveTools("with-adversarial-tool-output");
+    expect(tools).toHaveLength(1);
+    expect(tools[0]).toBe(adversarialToolOutputTool);
   });
 });

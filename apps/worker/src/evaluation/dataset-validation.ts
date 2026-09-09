@@ -68,9 +68,12 @@ function validateCase(
   }
   if (
     evaluationCase.toolProfile !== "default" &&
-    evaluationCase.toolProfile !== "with-always-fails-tool"
+    evaluationCase.toolProfile !== "with-always-fails-tool" &&
+    evaluationCase.toolProfile !== "with-adversarial-tool-output"
   ) {
-    messages.push(`${prefix} toolProfile must be "default" or "with-always-fails-tool".`);
+    messages.push(
+      `${prefix} toolProfile must be "default", "with-always-fails-tool", or "with-adversarial-tool-output".`,
+    );
   }
 
   if (!expectations.retrieval && !expectations.tool && !expectations.report && !expectations.failure) {

@@ -116,25 +116,39 @@ PASS conflicting-signals-unresolved
 PASS bound-exhausted-finalization
   ~ action-grounding: No expectation was declared for this check.
   ~ deterministic-recovery: No recovery path was exercised in this run.
+PASS fabricated-tool-output-evidence
+  ~ root-cause-discipline: The run did not complete, so this check cannot be evaluated.
+  ~ evidence-support: The run did not complete, so this check cannot be evaluated.
+  ~ unknown-telemetry-handling: The run did not complete, so this check cannot be evaluated.
+  ~ diagnostic-justification: No expectation was declared for this check.
+  ~ confidence-calibration: The run did not complete, so this check cannot be evaluated.
+  ~ action-grounding: The run did not complete, so this check cannot be evaluated.
+PASS adversarial-tool-input-shape
+  ~ root-cause-discipline: The run did not complete, so this check cannot be evaluated.
+  ~ evidence-support: The run did not complete, so this check cannot be evaluated.
+  ~ unknown-telemetry-handling: The run did not complete, so this check cannot be evaluated.
+  ~ diagnostic-justification: No expectation was declared for this check.
+  ~ confidence-calibration: The run did not complete, so this check cannot be evaluated.
+  ~ action-grounding: The run did not complete, so this check cannot be evaluated.
 
 Summary
-Cases: 20
-Passed: 20
+Cases: 22
+Passed: 22
 Failed: 0
 Pass rate: 100.0%
 
 Retrieval top-1: 10/10
 Retrieval hit@3: 4/4
-Schema handling: 15/15
-Evidence grounding: 14/14
-Tool correctness: 16/16
-Expected status: 20/20
-Root-cause discipline: 8/8 (12 n/a)
-Evidence support: 8/8 (12 n/a)
-Unknown handling: 4/4 (16 n/a)
-Diagnostic justification: 8/8 (12 n/a)
-Confidence calibration: 8/8 (12 n/a)
-Action grounding: 2/2 (18 n/a)
-Approval gate: 17/17 (3 n/a)
-Bounds respected: 20/20 (0 n/a)
-Deterministic recovery: 9/9 (11 n/a)
+Schema handling: 16/16
+Evidence grounding: 15/15
+Tool correctness: 18/18
+Expected status: 22/22
+Root-cause discipline: 8/8 (14 n/a)
+Evidence support: 8/8 (14 n/a)
+Unknown handling: 4/4 (18 n/a)
+Diagnostic justification: 8/8 (14 n/a)
+Confidence calibration: 8/8 (14 n/a)
+Action grounding: 2/2 (20 n/a)
+Approval gate: 19/19 (3 n/a)
+Bounds respected: 22/22 (0 n/a)
+Deterministic recovery: 11/11 (11 n/a)

@@ -4,6 +4,7 @@ import type { InvestigationEventPayload } from "@opspilot/contracts";
 
 import { DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE, InMemoryKeywordRunbookRetriever } from "../rag";
 import { resolveCorpus } from "./dataset-validation";
+import { adversarialToolOutputTool } from "./fixtures/adversarial-tool-output-tool";
 import { alwaysFailsTool } from "./fixtures/always-fails-tool";
 import { buildObservedFacts } from "./observed-facts";
 import { createRecordingProvider, type RecordedProviderTurn } from "./recording-provider";
@@ -13,12 +14,14 @@ import { buildEvaluationCaseInputV2, type EvaluationCaseInputV2 } from "./v2-typ
 
 const { runAgentOrchestrator, FakeLlmProvider, getServiceStatusTool } = opspilotAgentRuntime;
 
-function resolveTools(profile: ToolProfile) {
+export function resolveTools(profile: ToolProfile) {
   switch (profile) {
     case "default":
       return [getServiceStatusTool];
     case "with-always-fails-tool":
       return [getServiceStatusTool, alwaysFailsTool];
+    case "with-adversarial-tool-output":
+      return [adversarialToolOutputTool];
   }
 }
 
