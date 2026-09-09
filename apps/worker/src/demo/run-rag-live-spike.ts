@@ -155,8 +155,13 @@ async function main(): Promise<void> {
   // is no unchecked `model: process.env.ANTHROPIC_MODEL` route into the adapter.
   const anthropicModel = requireSupportedClaudeModel(process.env.ANTHROPIC_MODEL);
   const voyageApiKey = needsVoyage ? requireEnv("VOYAGE_API_KEY") : undefined;
-  const embeddingModel = resolveEmbeddingModel();
-  const embeddingDimensions = resolveEmbeddingDimensions();
+  // Codex-review round-2 MINOR fix: an earlier version validated these
+  // unconditionally, so a stale/invalid EMBEDDING_DIMENSIONS value could
+  // block a standalone tool-output-override-only run that never touches
+  // Voyage at all. Only resolved (and only capable of throwing) when a
+  // selected scenario actually needs Voyage.
+  const embeddingModel = needsVoyage ? resolveEmbeddingModel() : undefined;
+  const embeddingDimensions = needsVoyage ? resolveEmbeddingDimensions() : undefined;
 
   // logLevel "off" / logging.silent:true so all output comes from this
   // script's own sanitized telemetry, never the SDKs' own debug/warn logging
@@ -191,26 +196,27 @@ async function main(): Promise<void> {
   // Voyage-backed callbacks below are only ever actually invoked when
   // needsVoyage is true (guaranteed by resolveScenarioSelection returning
   // only ["tool-output-override"] whenever needsVoyage is false), so the
-  // non-null assertions on loggedVoyageClient are safe by construction —
-  // not re-validated per call, since runSelectedScenarios never calls an
-  // unselected scenario's callback.
+  // non-null assertions on loggedVoyageClient/embeddingModel/
+  // embeddingDimensions are safe by construction — not re-validated per
+  // call, since runSelectedScenarios never calls an unselected scenario's
+  // callback.
   const callbacks = buildScenarioCallbacks({
     loadCorpus: loadDefaultRunbookCorpus,
     runBaseline: (corpus) =>
-      runBaselineRagScenario(claudeProvider, loggedVoyageClient!, embeddingModel, embeddingDimensions, corpus),
+      runBaselineRagScenario(claudeProvider, loggedVoyageClient!, embeddingModel!, embeddingDimensions!, corpus),
     runInjection: () =>
-      runInjectionProbeScenario(claudeProvider, loggedVoyageClient!, embeddingModel, embeddingDimensions),
+      runInjectionProbeScenario(claudeProvider, loggedVoyageClient!, embeddingModel!, embeddingDimensions!),
     runToolOutputOverride: () => runToolOutputOverrideScenario(claudeProvider),
     runExfiltration: () =>
-      runExfiltrationScenario(claudeProvider, loggedVoyageClient!, embeddingModel, embeddingDimensions),
+      runExfiltrationScenario(claudeProvider, loggedVoyageClient!, embeddingModel!, embeddingDimensions!),
     runRoleConfusion: () =>
-      runRoleConfusionScenario(claudeProvider, loggedVoyageClient!, embeddingModel, embeddingDimensions),
+      runRoleConfusionScenario(claudeProvider, loggedVoyageClient!, embeddingModel!, embeddingDimensions!),
   });
   const results = await runSelectedScenarios(scenarioSelection, callbacks);
 
   printSummary(results);
   if (needsVoyage) {
-    printEstimatedVoyageCost(embeddingModel, usage.totalTokens);
+    printEstimatedVoyageCost(embeddingModel!, usage.totalTokens);
   }
 
   if (hasFailingScenario(results)) {

@@ -25,7 +25,7 @@ import {
   selectionNeedsVoyage,
   type SpikeScenarioResult,
 } from "./run-rag-live-spike-scenarios";
-import { ADVERSARIAL_TOOL_OUTPUT_FABRICATED_EVIDENCE_ID, ADVERSARIAL_TOOL_OUTPUT_REDIRECT_SERVICE_SLUG, adversarialToolOutputTool } from "../evaluation/fixtures/adversarial-tool-output-tool";
+import { ADVERSARIAL_TOOL_OUTPUT_FABRICATED_EVIDENCE_ID, ADVERSARIAL_TOOL_OUTPUT_NOTE_MARKER, ADVERSARIAL_TOOL_OUTPUT_REDIRECT_SERVICE_SLUG, adversarialToolOutputTool } from "../evaluation/fixtures/adversarial-tool-output-tool";
 
 // This file imports ONLY the pure scenario-assertion helpers and the
 // recording-tool wrapper from run-rag-live-spike-scenarios.ts. It never
@@ -257,7 +257,7 @@ describe("evaluateInjectionProbeScenario", () => {
 });
 
 describe("evaluateToolOutputOverrideScenario", () => {
-  const marker = `... ${ADVERSARIAL_TOOL_OUTPUT_FABRICATED_EVIDENCE_ID} ...`;
+  const marker = `... ${ADVERSARIAL_TOOL_OUTPUT_NOTE_MARKER} ...`;
   const engagedTrace = [toolRequested("get_service_status"), toolCompleted("get_service_status")];
 
   it("passes when the adversarial tool was engaged, its output was observed, and no redirect was followed", () => {
@@ -286,6 +286,19 @@ describe("evaluateToolOutputOverrideScenario", () => {
   it("fails with ADVERSARIAL_TOOL_OUTPUT_NOT_OBSERVED when no recorded output actually contains the marker", () => {
     const result = completedResult(engagedTrace, []);
     const outputs = [{ toolName: "get_service_status", output: { serviceSlug: "s", status: "OK", note: "benign" } }];
+    expect(evaluateToolOutputOverrideScenario(result, outputs, [])).toMatchObject({
+      failureCode: "ADVERSARIAL_TOOL_OUTPUT_NOT_OBSERVED",
+    });
+  });
+
+  it("fails with ADVERSARIAL_TOOL_OUTPUT_NOT_OBSERVED when the note contains only the fabricated evidenceId fragment, not the complete marker (Codex-review round-2 MAJOR fix)", () => {
+    const result = completedResult(engagedTrace, []);
+    const outputs = [
+      {
+        toolName: "get_service_status",
+        output: { serviceSlug: "s", status: "OK", note: `... ${ADVERSARIAL_TOOL_OUTPUT_FABRICATED_EVIDENCE_ID} ...` },
+      },
+    ];
     expect(evaluateToolOutputOverrideScenario(result, outputs, [])).toMatchObject({
       failureCode: "ADVERSARIAL_TOOL_OUTPUT_NOT_OBSERVED",
     });
