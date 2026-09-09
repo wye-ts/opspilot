@@ -36,9 +36,31 @@ this issue should deliver:
 | Missing today | What closes it |
 | --- | --- |
 | **Legibility.** "22/22 passed" does not say the adversarial suite ran, or how many cases it has. A reader of CI output or the CLI report cannot tell the security cases from the topical ones. | A named `Adversarial (structural): 3/3` readout in the CLI report, plus a named CI step. |
-| **Fail-closed on ABSENCE.** Every existing guard proves cases that *ran* passed. A run over a case subset (`runEvaluation({ cases })`'s injectable override, used by tests and available to any future caller) reports `Failed: 0` and exits `0` with zero adversarial cases present — vacuously "green". `100% of 0` is not a security guarantee. | The readout fails closed when a declared adversarial case id is **absent** from the run's results, not only when one fails. |
+| **Anti-erosion.** Nothing states *why* those 3 ids must stay in the dataset. `evaluation-dataset.test.ts` fails on removal, but only as "the 22-id list changed" — it cannot distinguish deleting a security case from renaming a topical one, and a future editor updating the list to match their edit silently satisfies it. | A declared `ADVERSARIAL_CASE_IDS` constant + a membership test that fails with a security-specific message. |
 
-The presence half is the only genuinely new guarantee in this issue. The plan states it that way.
+### 0.1a Correction — the "fail closed on ABSENCE" guarantee this plan originally claimed does not exist to be closed
+
+The committed first revision of this plan (`836cb79`) asserted that a subset run could report
+`Failed: 0`, exit `0`, and be vacuously green with zero adversarial cases present, and made an
+absence guard in `getExitCode` the issue's one genuinely new guarantee. **Verified against source
+during implementation: that hole is not reachable, and the claim was wrong.**
+
+- `run-eval.ts:119-123` — the CLI always runs `deps.cases`, defaulting to the full
+  `EVALUATION_CASES`. `main()` never overrides it.
+- `evaluation-service-client.ts:325-333` — the service scorer already asserts **exact ordered
+  equality** between submitted and returned case ids ("no missing case, no extra case, no reorder").
+- `evaluation-scorer.ts:47` — `LocalEvaluationScorer` maps 1:1 over `input.cases`.
+
+The only way to reach a result set missing an adversarial case is an in-process caller passing its
+own `cases` array — which is exactly what six existing tests legitimately do with 1-case synthetic
+datasets (`run-eval.test.ts:104-137`, `service-unavailable.test.ts`). An absence guard in
+`getExitCode` would fail all of them, and "fixing" them by injecting the 3 real adversarial cases
+into every unrelated scorer/error-path unit test would corrupt those tests to satisfy a guard
+against an unreachable state.
+
+**Decision: no `getExitCode` change.** The honest scope of this issue is legibility (§2.2) plus
+anti-erosion (§2.1) — two real but modest gains. It is not a new enforcement guarantee, and this
+plan no longer claims one. Recording the retraction rather than quietly shipping the smaller thing.
 
 ### 0.2 "Remove the empty `evals/cases/` directory" — that directory is not in the repository
 
@@ -119,9 +141,9 @@ which is where a mismatch should surface loudly rather than being silently self-
 Adversarial (structural): 3/3
 ```
 
-`passed/declared`, never `passed/present` — a missing case must not be able to hide behind a
-shrunken denominator. When cases are missing, the same line renders the absence explicitly rather
-than a bare ratio:
+`passed/declared`, never `passed/present` — a case missing from a caller-supplied subset must not
+be able to hide behind a shrunken denominator. When cases are missing, the same line renders the
+absence explicitly rather than a bare ratio:
 
 ```
 Adversarial (structural): 2/3 (1 missing)
@@ -129,26 +151,27 @@ Adversarial (structural): 2/3 (1 missing)
 
 Wording is deliberately `(structural)`, not "adversarial robustness"/"security gate" (§0.4).
 
-### 2.3 Enforcement — fail closed on ABSENCE, which is the new part
+This is a *readout*, not a gate: `getExitCode` is unchanged (§0.1a). On the real CLI path the
+denominator is always 3 and the `(N missing)` form is unreachable; it exists so an in-process
+subset run renders honestly instead of printing a misleading `0/0`.
 
-`getExitCode` gains one condition: non-zero if `summary.passed !== summary.declared`. This covers
-both a failed adversarial case (already covered by `failedCases > 0` — redundant on purpose, so the
-guarantee is stated where it is read) and, newly, an adversarial case **absent** from the results.
+### 2.3 Enforcement — deliberately none added
 
-The plan does not add a second gate mechanism, a new CI job, or a threshold constant: 100% is the
-only defensible bar for a security-shaped suite, and hard-coding equality expresses that better
-than a configurable rate.
+Per §0.1a, no `getExitCode` change. A failing adversarial case already exits non-zero via
+`failedCases > 0`; an absent one is unreachable on the CLI path and is legitimate in unit tests.
+Adding a threshold constant or a second gate mechanism here would be enforcement theatre.
 
 ### 2.4 Tests (test-first, per repo convention)
 
 | Test | Proves |
 | --- | --- |
-| `adversarial-gate.test.ts` — every id in `ADVERSARIAL_CASE_IDS` exists in `EVALUATION_CASES` | The declared constant cannot drift away from the real dataset |
-| same — the 3 ids are exactly the cases whose corpus/tool profile or narrative marks them adversarial | Guards a future 4th adversarial case being added and silently left out of the gate |
-| same — `summarizeAdversarialCases` over: all-present-all-pass / one-failed / one-absent / empty results | Each branch, including the vacuous-empty case that motivated §0.1 |
-| `run-eval.test.ts` — `getExitCode` returns 1 for an outcome with `failedCases: 0` but an adversarial case absent | The genuinely new guarantee, stated as its own test |
-| `evaluation-formatter.test.ts` — the line renders `3/3` and the `(N missing)` form | Readout shape |
+| `adversarial-gate.test.ts` — every id in `ADVERSARIAL_CASE_IDS` exists in `EVALUATION_CASES` | The declared constant cannot drift away from the real dataset; a deleted security case now fails with a security-specific message, not just "the 22-id list changed" |
+| same — `ADVERSARIAL_CASE_IDS` excludes cases 7/8 by their declared rationale | Guards someone "correcting" the count to 5 without reading §1 |
+| same — `summarizeAdversarialCases` over: all-present-all-pass / one-failed / one-absent / empty results | Each branch, including the empty case that motivates the `(N missing)` rendering |
+| `evaluation-formatter.test.ts` — the line renders `3/3`, the `(N missing)` form, and the all-absent form | Readout shape |
 | `cli-report-golden.test.ts` + regenerated `cli-report-golden.txt` | Whole-report byte-identity, with the one new line |
+
+No `run-eval.test.ts` change: `getExitCode` is unchanged (§0.1a/§2.3).
 
 ### 2.5 CI step naming (issue scope bullet 4)
 
@@ -160,7 +183,7 @@ flattened to a generic "Run eval":
 - `Evaluation harness (22 cases incl. 3 structural adversarial) — default scorer against the real service`
 - `Evaluation harness — default scorer fails closed when the service is unreachable`
 
-No workflow logic changes. The gate rides the existing exit code.
+No workflow logic changes, and no new gate — the existing exit code is unchanged (§2.3).
 
 ---
 
@@ -168,7 +191,7 @@ No workflow logic changes. The gate rides the existing exit code.
 
 - **No contract change.** `EvaluationMetrics`, `EvaluationSuiteInputV2`, the Python service's
   request/response models, and the `evaluation_metrics` table are all untouched. The adversarial
-  ratio is derived at render/exit time from `EvaluationCaseResultV2.caseId`/`passed`, which both
+  ratio is derived at render time from `EvaluationCaseResultV2.caseId`/`passed`, which both
   scorers already return. This deliberately avoids the third-metric-generation read-compatibility
   work (`_read_metrics`'s shape allowlist) that a persisted 16th metric would require — a real cost
   with no corresponding benefit, since nothing needs to query historical adversarial rates.
@@ -184,8 +207,8 @@ No workflow logic changes. The gate rides the existing exit code.
 | Case | Expected |
 | --- | --- |
 | `EVALUATION_SCORER=local pnpm --filter @opspilot/worker run eval` | exit 0; `Adversarial (structural): 3/3` present |
-| Same, with one adversarial case's expectations locally broken | exit 1 |
-| `runEvaluation({ cases: <subset omitting an adversarial case> })` | exit 1, `(1 missing)` rendered — the new guarantee |
+| Same, with one adversarial case's expectations locally broken | exit 1 (via the pre-existing `failedCases > 0`), line reads `2/3` |
+| `summarizeAdversarialCases` over a subset omitting an adversarial case | `(1 missing)` rendered — a readout branch, not an exit-code branch (§0.1a) |
 | `pnpm test` (Verify job equivalent) | green, incl. regenerated golden |
 | `pnpm agent:verify --final` | green |
 
@@ -195,6 +218,9 @@ payload — they prove the orchestrator's validators reject fabricated evidence 
 input, which is a code guarantee, not a behavioral one. The behavioral question is the live-spike's,
 and it is currently **blocked on Issue #85** for the RAG-channel scenarios. That gap is not closed
 by this issue and must not be described as if it were.
+
+**And what this issue does not add:** any new enforcement. Per §0.1a the absence hole this plan
+originally claimed is unreachable; the delivered value is legibility and anti-erosion only.
 
 ---
 
@@ -214,27 +240,28 @@ by this issue and must not be described as if it were.
 
 1. `adversarial-gate.ts` + its tests (RED first: the dataset-membership test and the absent-case
    summary branch).
-2. Wire `getExitCode`; add its new test.
-3. Formatter line + formatter test.
-4. Regenerate `cli-report-golden.txt` from a real `EVALUATION_SCORER=local` run; confirm the diff is
+2. Formatter line + formatter test.
+3. Regenerate `cli-report-golden.txt` from a real `EVALUATION_SCORER=local` run; confirm the diff is
    exactly one added line.
-5. Docs: README 15→22 (two occurrences); `docs/03-technical-design.md` §22.3 + repo-layout tree
+4. Docs: README 15→22 (two occurrences); `docs/03-technical-design.md` §22.3 + repo-layout tree
    corrected to the shipped `apps/worker/src/evaluation/**` harness; `docs/07-evaluation-plan.md`
    gains the adversarial readout to its CLI-report description.
-6. CI step renames.
-7. `pnpm agent:verify --final` → `agent:review-bundle` → `agent:codex-review` → adjudicate → fix →
+5. CI step renames.
+6. `pnpm agent:verify --final` → `agent:review-bundle` → `agent:codex-review` → adjudicate → fix →
    final verify → owner-controlled commit/push/PR.
+
+(No `getExitCode` step — retracted in §0.1a.)
 
 ---
 
 ## 7. Acceptance criteria
 
 1. `ADVERSARIAL_CASE_IDS` exists as one exported constant; a test proves every id is a real member
-   of `EVALUATION_CASES`.
+   of `EVALUATION_CASES`, failing with a security-specific message if one is deleted.
 2. The CLI report carries a named structural-adversarial readout showing `passed/declared`, and
    renders missing cases explicitly.
-3. `getExitCode` returns non-zero when a declared adversarial case is **absent** from the results,
-   even with `failedCases === 0` — proven by its own test.
+3. `getExitCode` is **unchanged**, and no test or document claims this issue added an enforcement
+   guarantee (§0.1a).
 4. `cli-report-golden.txt` regenerated; the golden test passes byte-identically.
 5. README's two "15-case" occurrences read 22; `docs/03-technical-design.md` no longer describes
    `evals/cases/*.json` as the harness's location.
