@@ -136,6 +136,7 @@ Cases: 22
 Passed: 22
 Failed: 0
 Pass rate: 100.0%
+Adversarial (structural): 3/3
 
 Retrieval top-1: 10/10
 Retrieval hit@3: 4/4

@@ -294,10 +294,10 @@ pnpm --filter @opspilot/worker run demo:rag
 pnpm --filter @opspilot/worker run eval
 ```
 
-These commands use deterministic providers. The RAG demo and the 15-case evaluation exercise the
+These commands use deterministic providers. The RAG demo and the 22-case evaluation exercise the
 repository/offline retrieval path, not the public browser path.
 
-`run eval` scores the 15-case suite against the Python/FastAPI evaluation service by default
+`run eval` scores the 22-case suite against the Python/FastAPI evaluation service by default
 (`EVALUATION_SERVICE_URL`, e.g. from `services/evaluation`: `make migrate; make run`) — there is no
 automatic fallback if it's unreachable. Set `EVALUATION_SCORER=local` to run the frozen,
 network-free TypeScript v1 oracle instead. See

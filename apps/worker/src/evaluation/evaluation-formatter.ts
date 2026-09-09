@@ -1,3 +1,4 @@
+import { summarizeAdversarialCases, type AdversarialSummary } from "./adversarial-gate";
 import { resolveCheckReasonMessage } from "./check-reason-codes";
 import { resolveNotApplicableMessage } from "./not-applicable-codes";
 import type { EvaluationMetrics } from "./types";
@@ -32,6 +33,28 @@ function formatMetricRatio(
     result.checks.some((check) => check.name === checkName && check.status === "NOT_APPLICABLE"),
   ).length;
   return `${formatRatio(ratio)} (${naCount} n/a)`;
+}
+
+// Issue #78 §2.2 — the structural-adversarial readout.
+//
+// Rendered as passed/DECLARED, never passed/present: a case absent from a
+// caller-supplied subset must not shrink the denominator into a misleading
+// "2/2". A non-empty missingIds is annotated explicitly rather than silently
+// folded into the ratio.
+//
+// This is a READOUT, not a gate — getExitCode is deliberately unchanged (see
+// docs/reviews/34-issue-78-ci-adversarial-gate-plan.md §0.1a). A failing
+// adversarial case already exits non-zero through the ordinary
+// metrics.failedCases path; an absent one is unreachable on the real CLI path.
+//
+// "(structural)" is load-bearing wording: these cases prove the orchestrator's
+// validators reject fabricated evidence and malformed tool input, never that a
+// real model resists injection (see adversarial-gate.ts). Do not reword this
+// line to "adversarial robustness" or "security gate".
+function formatAdversarialSummary(summary: AdversarialSummary): string {
+  const ratio = `${summary.passed}/${summary.declared}`;
+  const suffix = summary.missingIds.length > 0 ? ` (${summary.missingIds.length} missing)` : "";
+  return `Adversarial (structural): ${ratio}${suffix}`;
 }
 
 // Prints only the case id, PASS/FAIL, the fixed check name, and the fixed
@@ -70,6 +93,7 @@ export function formatEvaluationReport(
     `Passed: ${metrics.passedCases}`,
     `Failed: ${metrics.failedCases}`,
     `Pass rate: ${formatPercent(metrics.passRate)}`,
+    formatAdversarialSummary(summarizeAdversarialCases(results)),
     "",
     `Retrieval top-1: ${formatRatio(metrics.retrievalTop1)}`,
     `Retrieval hit@3: ${formatRatio(metrics.retrievalHitAt3)}`,

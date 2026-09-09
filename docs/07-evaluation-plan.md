@@ -75,6 +75,7 @@ Modules, under `apps/worker/src/evaluation/`:
 | `evaluation-runner.ts` | `runEvaluationSuite(...)` — for each case, constructs every collaborator fresh and calls `runAgentOrchestrator`, in supplied order. |
 | `evaluation-metrics.ts` | `aggregateMetrics(...)` — aggregates the evaluator's named checks; never re-derives looser logic. |
 | `evaluation-formatter.ts` | `formatEvaluationReport(...)` — sanitized terminal report; never reads `EvaluationCheckResult.expected`/`.observed`. |
+| `adversarial-gate.ts` | `ADVERSARIAL_CASE_IDS` (the three declared structural adversarial cases) + `summarizeAdversarialCases(...)` — the §7 readout and its anti-erosion membership test. Declaration only; no gate. |
 | `evaluation-service-client.ts` | POSTs `EvaluationSuiteInputV2` to the Python service, re-runs `aggregateMetrics` locally, and enforces the exactly-nine-per-case completeness invariant (`MALFORMED_RESPONSE` otherwise). |
 | `legacy-v1/` | The frozen v1 offline oracle: `v1-types.ts`, `evaluator-v1.ts`, `metrics-v1.ts`, `local-scorer-v1.ts`, `parity-v1.test.ts`. Unwired from the active runtime. |
 | `run-eval.ts` | CLI composition root: `runEvaluation` (load corpus, validate, run), `resolveEvaluationRun` (the sole catch boundary), `renderEvaluationOutput`, `main()`. See §7. |
@@ -353,6 +354,39 @@ check's fixed reason indented beneath a `FAIL` line), one `~` line per
 `NOT_APPLICABLE` metric outcome (so all nine metric outcomes are visible for
 every case), then a summary and the metrics table above; exit code is `0`
 only when every case passes, `1` otherwise.
+
+**Structural-adversarial readout (Issue #78).** The summary block carries one
+additional line after `Pass rate`:
+
+```
+Adversarial (structural): 3/3
+```
+
+It reports how many of the three declared structural adversarial cases
+(`ADVERSARIAL_CASE_IDS` in `adversarial-gate.ts` — cases 15, 21, 22) passed,
+always over the **declared** count of 3, never over how many happened to be
+present; a case absent from a caller-supplied case subset is annotated
+(`2/3 (1 missing)`) rather than allowed to shrink the denominator. On the CLI
+path every declared case is always present, so the annotation is unreachable
+there.
+
+This line is a **readout, not a gate**: the exit code is unchanged, because a
+failing adversarial case already exits non-zero through the ordinary
+`failedCases > 0` path. Its purpose is legibility (the security suite is
+visible in CI output and in this report) and anti-erosion (a companion
+membership test fails with a security-specific message if one of the three is
+deleted or renamed, which the 22-id dataset pin alone cannot distinguish from
+an ordinary rename).
+
+The wording `(structural)` is deliberate and load-bearing. These three cases
+run against `FakeLlmProvider`, whose turns are pre-authored and never read the
+adversarial payload; they prove the orchestrator's evidence-grounding and
+`.strict()` tool-input validators reject fabricated or smuggled input — a code
+guarantee. They demonstrate nothing about whether a real model resists an
+injected instruction. That question belongs to the manual live-spike scenarios
+(`docs/reviews/33-issue-77-adversarial-case-expansion-spike-results.md`) and is
+currently blocked on Issue #85 for the RAG-channel cases. Neither this line nor
+the CI step names may be reworded to claim model-behavioral robustness.
 
 Three distinct, never-conflated fatal-output categories exist, each with its
 own fixed label and exit code `1`:
