@@ -380,6 +380,75 @@ describe("buildSystemPrompt", () => {
     }
   });
 
+  // Issue #85: every real live-Claude run observed (Scenario A/B, and Issue
+  // #77's D/E) claimed continuationReason NO_EVIDENCE_YET on its first
+  // diagnostic tool request even though RAG retrieval had already returned
+  // >=1 chunk earlier in the SAME conversation — tripping the orchestrator's
+  // A3 run-state consistency guard (agent-orchestrator.ts) and failing every
+  // one of those runs with PROVIDER_PROTOCOL_INVALID before a `completed`
+  // status was ever reached. A live debug capture (DEBUG_ISSUE_85, removed
+  // before this diff was finalized) confirmed the guard itself computed
+  // hasRunEvidence=true correctly from the real retrieved chunk ids, while
+  // the model's own assessment still read
+  // {"evidenceState":"INSUFFICIENT","continuationReason":"NO_EVIDENCE_YET","supportedBy":[]}
+  // — a genuine prompt-clarity gap, not a guard-logic bug: nothing told the
+  // model that runbook evidence already delivered earlier in the
+  // conversation counts as evidence that already EXISTS, even on the
+  // model's very first diagnostic tool call. investigationGuidance is
+  // INVESTIGATION-phase-only (never appended on FINALIZATION, which forces a
+  // report submission with no diagnostic decision to make), so this is only
+  // checked on INVESTIGATION.
+  it("states that already-retrieved RAG evidence rules out NO_EVIDENCE_YET, even on the first diagnostic call (Issue #85)", () => {
+    const prompt = buildSystemPrompt("INVESTIGATION", 3);
+
+    expect(prompt).toContain(
+      "It still counts as evidence that already\n  EXISTS the moment it appears in this conversation",
+    );
+    expect(prompt).toContain(
+      "not merely that you have not yet\n  taken a diagnostic action yourself this turn",
+    );
+    expect(prompt).toContain(
+      "If a \"Retrieved runbook\n  evidence\" message (containing one or more RAG_CHUNK entries) already",
+    );
+  });
+
+  // Round-1 codex-review MAJOR fix on Issue #85: an earlier version of the
+  // prompt told the model to look for a "rag_context message" — but that is
+  // this package's own INTERNAL AgentConversationMessage role name.
+  // buildClaudeMessages never surfaces it to Claude; the real message the
+  // model actually sees begins "Retrieved runbook evidence" (see the
+  // "maps rag_context to a user text message" test above). Composes
+  // buildSystemPrompt with a REAL buildClaudeMessages RAG output (not just
+  // isolated system-prompt substrings) to prove the prompt's own guidance
+  // names a marker that genuinely appears in what Claude receives.
+  it("names a RAG-evidence marker that actually appears in a real buildClaudeMessages RAG message (Issue #85 round-1 fix)", () => {
+    const prompt = buildSystemPrompt("INVESTIGATION", 3);
+    const ragMessages = buildClaudeMessages([
+      {
+        role: "rag_context",
+        entries: [
+          {
+            evidenceId: "runbook-notification-degradation-001",
+            sourceType: "RAG_CHUNK",
+            runbookId: "notification-service-runbook",
+            title: "Notification Service Degradation",
+            content: "The notification-service reports DEGRADED when...",
+          },
+        ],
+      },
+    ]);
+
+    const ragBlock = (ragMessages[0]?.content as Anthropic.TextBlockParam[])[0];
+    const ragText = ragBlock?.text ?? "";
+
+    // The prompt's guidance must cite a marker that is genuinely a substring
+    // of what buildClaudeMessages actually produces for a rag_context entry
+    // — not the internal "rag_context" role name, which never reaches Claude.
+    expect(ragText).toContain("Retrieved runbook evidence");
+    expect(prompt).toContain('"Retrieved runbook\n  evidence" message');
+    expect(prompt).not.toContain("rag_context message");
+  });
+
   // The prompt half of the defense in depth behind the LIVE incident: the tool
   // schema already marked suggestedActions required and Claude still omitted
   // it, so the prose must state the requirement AND tie the empty value to the
