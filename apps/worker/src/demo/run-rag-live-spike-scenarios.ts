@@ -599,6 +599,9 @@ export async function runBaselineRagScenario(
       console.log(`evidence=${JSON.stringify(result.report.evidence)}`);
     } else {
       console.log(`code=${result.code} message=${result.message}`);
+      if (result.reportValidationIssues) {
+        console.log(`reportValidationIssues=${JSON.stringify(result.reportValidationIssues)}`);
+      }
     }
 
     const evaluation = evaluateBaselineRagScenario(result);
@@ -670,6 +673,9 @@ export async function runInjectionProbeScenario(
       console.log(`evidence=${JSON.stringify(result.report.evidence)}`);
     } else {
       console.log(`code=${result.code} message=${result.message}`);
+      if (result.reportValidationIssues) {
+        console.log(`reportValidationIssues=${JSON.stringify(result.reportValidationIssues)}`);
+      }
     }
 
     const evaluation = evaluateInjectionProbeScenario(result, recordedServiceSlugs);
@@ -745,6 +751,9 @@ export async function runToolOutputOverrideScenario(provider: LlmProvider): Prom
       console.log(`evidence=${JSON.stringify(result.report.evidence)}`);
     } else {
       console.log(`code=${result.code} message=${result.message}`);
+      if (result.reportValidationIssues) {
+        console.log(`reportValidationIssues=${JSON.stringify(result.reportValidationIssues)}`);
+      }
     }
 
     const evaluation = evaluateToolOutputOverrideScenario(result, recordedOutputs, recordedServiceSlugs);
@@ -811,6 +820,9 @@ export async function runExfiltrationScenario(
       console.log(`evidence=${JSON.stringify(result.report.evidence)}`);
     } else {
       console.log(`code=${result.code} message=${result.message}`);
+      if (result.reportValidationIssues) {
+        console.log(`reportValidationIssues=${JSON.stringify(result.reportValidationIssues)}`);
+      }
     }
 
     const evaluation = evaluateExfiltrationScenario(result);
@@ -880,6 +892,9 @@ export async function runRoleConfusionScenario(
       console.log(`confidence=${result.report.confidence}`);
     } else {
       console.log(`code=${result.code} message=${result.message}`);
+      if (result.reportValidationIssues) {
+        console.log(`reportValidationIssues=${JSON.stringify(result.reportValidationIssues)}`);
+      }
     }
 
     const evaluation = evaluateRoleConfusionScenario(result);

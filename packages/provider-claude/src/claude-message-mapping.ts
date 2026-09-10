@@ -309,6 +309,11 @@ conversation.`;
 // REPORT_FIELD_BOUNDS (explicit "an inconclusive/UNKNOWN tool result must
 // still be listed in evidence before it can ground a suggested action")
 // advances the logical prompt version again to opspilot-agent-v4 (§20.4; the
+// AGENT_PROMPT_VERSION default is updated to match). Issue #85's fix to this
+// function's own RAG_CHUNK/NO_EVIDENCE_YET guidance (a rag_context message
+// already delivered earlier in the conversation counts as evidence that
+// already EXISTS, even on the model's very first diagnostic tool call)
+// advances the logical prompt version again to opspilot-agent-v5 (§20.4; the
 // AGENT_PROMPT_VERSION default is updated to match).
 // Deliberately appended on the INVESTIGATION phase only: the
 // FINALIZATION turn is a forced report submission with no diagnostic decision
@@ -331,7 +336,10 @@ What counts as evidence:
   of health and does not establish a root cause.
 - RAG_CHUNK: contextual/documentary evidence (retrieved runbook content). It
   may motivate what to inspect or support interpretation, but it is NOT
-  current telemetry by itself.
+  current telemetry by itself. It still counts as evidence that already
+  EXISTS the moment it appears in this conversation — including on your
+  very first diagnostic tool call, before you have taken any action of
+  your own.
 - hypothesis: a model-level provisional claim. NOT evidence. Never cite a
   hypothesis as an EvidenceLocator.
 
@@ -350,7 +358,15 @@ diagnosticCallsRemaining is ${diagnosticCallsRemaining} this turn. It is hard
   because budget remains.
 
 continuationReason must be exactly one of:
-- NO_EVIDENCE_YET: no tool or runbook evidence exists yet.
+- NO_EVIDENCE_YET: no tool result and no retrieved runbook chunk exists
+  ANYWHERE earlier in this conversation — not merely that you have not yet
+  taken a diagnostic action yourself this turn. If a "Retrieved runbook
+  evidence" message (containing one or more RAG_CHUNK entries) already
+  appears earlier in this conversation, even before your very first
+  diagnostic tool call, that runbook evidence already EXISTS —
+  NO_EVIDENCE_YET no longer applies; cite the relevant chunk's evidenceId
+  in supportedBy and use STATUS_UNRESOLVED (or another applicable reason)
+  instead.
 - STATUS_UNRESOLVED: evidence exists but does not yet answer the question.
 - SCOPE_NOT_COVERED: the evidence gathered covers other ground, not what must
   be known.

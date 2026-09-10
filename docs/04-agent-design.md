@@ -1020,8 +1020,24 @@ Defines:
 `AgentRun.promptVersion` stores a logical version such as:
 
 ```text
-opspilot-agent-v4
+opspilot-agent-v5
 ```
+
+`opspilot-agent-v5` supersedes `opspilot-agent-v4`: Issue #85 fixed a prompt-clarity gap in
+`investigationGuidance` (INVESTIGATION-phase-only) — every real live-Claude run observed (Scenario
+A/B, and Issue #77's Scenario D/E) claimed `continuationReason: "NO_EVIDENCE_YET"` on its first
+diagnostic tool request even though RAG retrieval had already returned ≥1 chunk earlier in the
+same conversation, tripping the orchestrator's A3 run-state consistency guard
+(`agent-orchestrator.ts`) and failing every one of those runs with `PROVIDER_PROTOCOL_INVALID`
+before a `completed` status was ever reached. A live debug capture (env-var-gated, removed before
+this diff was finalized) confirmed the guard correctly computed `hasRunEvidence: true` from the
+real retrieved chunk ids, while the model's own assessment still read
+`{"evidenceState":"INSUFFICIENT","continuationReason":"NO_EVIDENCE_YET","supportedBy":[]}` — a
+genuine prompt-clarity gap, not a guard-logic bug: nothing told the model that a `rag_context`
+message already delivered earlier in the conversation counts as evidence that already EXISTS,
+even on the model's very first diagnostic tool call. The fix states this explicitly in both the
+RAG_CHUNK evidence-type description and the `NO_EVIDENCE_YET` definition. The
+guard/schema/validation behavior itself is unchanged; only the model-facing prose was tightened.
 
 `opspilot-agent-v4` supersedes `opspilot-agent-v3`: Issue #80 fixed a
 prompt-clarity gap in `REPORT_FIELD_BOUNDS` — nothing told the model that an
@@ -1054,6 +1070,26 @@ A behavior-changing prompt update requires:
 - a new logical prompt version;
 - agent eval regression;
 - recorded comparison before changing the production-demo default.
+
+#### Issue #85 v5 agent-eval regression (before/after)
+
+Per the §20.4 policy, the v5 bump required an agent-eval regression recorded before changing the
+production-demo default.
+
+- **BEFORE ref:** `c02140d1fce424dd5309c96cdd19b80a1a0ff388` (merged pre-#85 baseline, `main`),
+  run in an isolated `git worktree`.
+- **AFTER identity:** working tree on `feat/85-no-evidence-yet-consistency-guard` with this
+  issue's prompt-text-only change applied.
+- **Command:** `EVALUATION_SCORER=local pnpm --filter @opspilot/worker run eval` (run in the
+  detached worktree for BEFORE; in the real repo checkout for AFTER).
+- **Result summary:** all 22 existing evaluation cases pass identically (22/22, 100.0%, identical
+  per-dimension breakdown) on both BEFORE and AFTER.
+- **Limitation:** same as the v3 regression above — the deterministic eval drives the fake
+  provider from typed fixtures, so the prompt text itself cannot influence these results. This
+  regression proves no break in the existing evaluation contract; it does **not** prove the real
+  live-Claude behavior actually changed. That is established separately by a real live-spike
+  re-run (`docs/evidence/`), per the verification-plan limitation this policy already requires
+  a bounded, named observation for.
 
 #### Issue #60 v3 agent-eval regression (before/after)
 
