@@ -39,7 +39,7 @@ statistical benchmarking, and a large corpus. See §9.
 ## 2. Architecture
 
 ```
-runbooks/*.md (7 chunks, 5 files)
+runbooks/*.md (24 chunks, 16 files)
   → loadDefaultRunbookCorpus()                 [existing, called once]
   → InMemoryKeywordRunbookRetriever(corpus)     [existing, fresh per case]
   → FakeLlmProvider(scenario)                   [existing, fresh per case]

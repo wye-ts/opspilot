@@ -557,7 +557,7 @@ function printRetrievalSummary(result: AgentOrchestratorResult): void {
   }
 }
 
-// Scenario A: the normal seven-chunk corpus only. Validates retrieval
+// Scenario A: the normal runbook corpus only. Validates retrieval
 // quality, Claude reporting, tool evidence, and RAG evidence together — the
 // vertical slice's core "does this actually work end to end" proof.
 // Pass/fail is decided entirely by evaluateBaselineRagScenario, above, not
@@ -569,7 +569,9 @@ export async function runBaselineRagScenario(
   dimensions: number,
   corpus: readonly StoredRunbookChunk[],
 ): Promise<SpikeScenarioResult> {
-  console.log("\n=== Scenario A: baseline-rag (real seven-chunk corpus only) ===");
+  console.log(
+    `\n=== Scenario A: baseline-rag (real runbook corpus only, ${corpus.length} chunks) ===`,
+  );
 
   const retriever = new VoyageRunbookRetriever({
     client: voyageClient,

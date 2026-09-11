@@ -337,7 +337,7 @@ directly (`run-rag-live-spike-scenarios.test.ts`) without ever importing
 the live composition root, so failure-code coverage doesn't require
 credentials or a network call.
 
-**Scenario A — baseline RAG** runs the real seven-chunk corpus only.
+**Scenario A — baseline RAG** runs the real runbook corpus only.
 `evaluateBaselineRagScenario` requires, beyond a bare `status ===
 "completed"` check: a `RETRIEVAL_COMPLETED` trace event exists; the
 expected notification-degradation chunk ranked first; both
@@ -383,8 +383,10 @@ the final adoption decision, are recorded in
 
 ### Current (this vertical slice)
 
-- **Markdown-file-backed corpus, loaded once per run.** The seven-chunk
-  corpus is authored as five human-readable Markdown files under the
+- **Markdown-file-backed corpus, loaded once per run.** The corpus (24
+  chunks across 16 files as of Milestone 13 Issue A / #74, which expanded it
+  from the original seven-chunk, five-file slice) is authored as
+  human-readable Markdown files under the
   repository-level `runbooks/` directory (a strict, dependency-free
   metadata block plus fence-aware, heading-delimited chunks — see
   `apps/worker/src/rag/markdown-runbook-loader.ts`). A deterministic
@@ -399,9 +401,9 @@ the final adoption decision, are recorded in
   `INJECTION_PROBE_CHUNK` fixture, so a malformed `runbooks/` directory
   cannot affect an injection-only run.
 - **Live embedding of the small corpus, on every retrieval call.** The
-  `VoyageRunbookRetriever` re-embeds all seven (or, for the injection
-  probe, one) chunks fresh every time `retrieve()` is called. There is no
-  embedding cache and no persistence.
+  `VoyageRunbookRetriever` re-embeds the whole corpus (or, for the injection
+  probe, its single isolated fixture chunk) fresh every time `retrieve()` is
+  called. There is no embedding cache and no persistence.
 - **In-process cosine similarity**, computed by application code from
   validated provider vectors — never a similarity score returned by the
   provider itself.
@@ -447,8 +449,7 @@ the final adoption decision, are recorded in
   `validateStoredRunbookChunks`.
 - `apps/worker/src/rag/load-default-runbook-corpus.ts` —
   `loadDefaultRunbookCorpus`, `resolveDefaultRunbooksDir`.
-- `runbooks/*.md` — the five Markdown source files backing the
-  seven-chunk corpus.
+- `runbooks/*.md` — the Markdown source files backing the runbook corpus.
 - `apps/worker/src/rag/injection-probe-fixture.ts` —
   `INJECTION_PROBE_CHUNK`.
 - `apps/worker/src/rag/in-memory-runbook-retriever.ts` —
