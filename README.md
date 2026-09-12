@@ -356,6 +356,6 @@ See [CI/CD and Deployment](docs/08-cicd-deployment.md).
 - **Adversarial case expansion** (#77): added prompt-injection scenarios across two distinct channels — retrieved RAG content and diagnostic *tool output* — plus credential-exfiltration and role/authority-confusion probes, each in an isolated fixture corpus. Structural cases run offline against the fake provider; model-behavior claims require a real live run and are recorded as single manual observations, never as general guarantees.
 - **Structural-adversarial CI readout** (#78): the three structural adversarial cases are named explicitly and reported as their own CI readout, so silent erosion of the set (dropping a case, or "correcting" the count) is visible rather than invisible. Deliberately **not** new enforcement — a failing case already failed the eval run before this. What these cases protect is orchestrator *validation* behavior against the fake provider; live-model injection resistance is not CI-gated and remains a manual, single-run observation.
 
-A calibration threshold in one adversarial scenario rests on a premise the scenario's own wiring contradicts — tracked as [#89](https://github.com/wye-ts/opspilot/issues/89), the only currently open issue.
+A calibration threshold in one adversarial scenario rested on a premise the scenario's own wiring contradicted; [#89](https://github.com/wye-ts/opspilot/issues/89) replaced it with a check keyed on attacker-supplied vocabulary, which a correct run cannot produce.
 
-No milestone is currently open. Tabs/workspace navigation and a historical run list remain deferred with no active issue.
+No milestone is currently open and there are no open issues. Tabs/workspace navigation and a historical run list remain deferred with no active issue.
