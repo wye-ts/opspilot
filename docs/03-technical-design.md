@@ -2835,11 +2835,13 @@ These are Portfolio Ready deliverables (§30). Before adding the project to a re
 - Clear local setup instructions.
 - A short section describing tradeoffs and future improvements — including that a Redis/BullMQ transactional-outbox design was evaluated (`docs/10-engineering-challenges.md`) and deliberately not selected for the MVP, in favor of the simpler PostgreSQL-only `AgentJob` design. This is itself a good interview talking point about scoping engineering effort to actual requirements.
 
-Resume claims must use measured results from the final project. Do not invent latency, accuracy, cost, or eval numbers before collecting them.
+Resume claims must use measured results from the final project. Do not invent latency, accuracy, cost, or eval numbers before collecting them. `docs/01-prd.md` §18 carries the annotated draft bullets and records which are earned by shipped code; check there before using any of them.
 
 A future resume bullet may follow this pattern:
 
-> Built and deployed a TypeScript AI incident-resolution agent using Claude tool calling, NestJS, React, PostgreSQL, and pgvector; orchestrated bounded diagnostic workflows with citation-grounded runbook retrieval, durable traces, and human approval for state-changing actions, using an ownership-fenced PostgreSQL job design in place of a heavier message-queue architecture.
+> Built and deployed a TypeScript AI incident-resolution agent using Claude tool calling, NestJS, React, and PostgreSQL; orchestrated bounded diagnostic workflows with citation-grounded runbook retrieval, durable traces, and at most one persisted, auditable human APPROVE/REJECT decision per approval-eligible completed run, using an ownership-fenced PostgreSQL job design in place of a heavier message-queue architecture.
+
+Three things this pattern deliberately does **not** claim, because none shipped: `pgvector`/vector-indexed retrieval, BM25 as the deployed scoring method (the deployed retriever is `InMemoryKeywordRunbookRetriever` — in-process keyword/token-overlap scoring; BM25 and frozen-embedding retrievers were evaluated offline and lost the recorded comparison, `docs/reviews/31-issue-76-comparison-decision.md`), and human approval *gating state-changing actions* (no action-execution path exists; the workflow records a decision only — `docs/13-approval-workflow.md` §1). "Approval-eligible" is load-bearing: a completed run whose report carries zero suggested actions is `NOT_ELIGIBLE` and never receives a decision row at all (§4). An earlier revision of this bullet claimed the first and the third.
 
 A second bullet should include real eval and performance results after they exist.
 
