@@ -1020,8 +1020,31 @@ Defines:
 `AgentRun.promptVersion` stores a logical version such as:
 
 ```text
-opspilot-agent-v5
+opspilot-agent-v6
 ```
+
+> **Implementation state (Issue #93).** This is a design target, not shipped
+> behavior. `AGENT_PROMPT_VERSION` appears only in documentation and source
+> comments — `grep -rn "AGENT_PROMPT_VERSION" --include=*.ts` returns comment
+> lines and no code read. `AgentRun` has no `promptVersion` column
+> (`packages/database/prisma/schema.prisma`), and `AgentTurnInput` does not
+> carry one (`llm-provider.ts` lists `promptVersion` among the §9 contract
+> fields deliberately *not* pulled forward). The version below is therefore a
+> documentation-and-source-comment contract that a reader can audit, not a
+> per-run stored fact. Wiring it through to persistence is separate work with
+> its own migration.
+
+`opspilot-agent-v6` supersedes `opspilot-agent-v5`: Issue #93 added a second
+diagnostic tool, `get_recent_deployments`, to `DIAGNOSTIC_TOOL_CATALOG`. **No
+prose in `claude-message-mapping.ts` changed.** The bump is triggered by the
+offered-tool set, not by prompt text: `ClaudeLlmProvider` offers the catalog by
+default (`create-llm-provider.ts`), so from this version every INVESTIGATION
+turn presents two tools plus the finalizer instead of one, and the new entry's
+model-facing `description` is itself text the model reads. Had the version
+moved only on prose edits, a one-tool run and a two-tool run would record the
+same identifier — defeating the purpose of storing one. Schema, guard, and
+validation behavior are unchanged; `MAX_PROVIDER_TURNS` and
+`MAX_DIAGNOSTIC_TOOL_CALLS` are unchanged.
 
 `opspilot-agent-v5` supersedes `opspilot-agent-v4`: Issue #85 fixed a prompt-clarity gap in
 `investigationGuidance` (INVESTIGATION-phase-only) — every real live-Claude run observed (Scenario

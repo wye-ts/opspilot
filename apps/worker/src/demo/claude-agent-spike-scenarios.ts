@@ -42,6 +42,13 @@ export async function runToolThenReportScenario(provider: LlmProvider): Promise<
     ticketId: TICKET_ID,
     summary: TICKET_SUMMARY,
   };
+  // Issue #93 — deliberately PINNED. This is a historical LIVE spike whose
+  // caller (run-claude-agent-spike.ts) pins the model's OFFERED list to the
+  // same single entry, so offered and executable already agree here. Widening
+  // one side alone is exactly the divergence #93 removed from apps/api;
+  // widening both would change what a recorded historical observation was
+  // observing. Milestone 14's new two-tool LIVE observation is Issue #95's
+  // business, in run-rag-live-spike.ts, not a retrofit of this one.
   const toolRegistry = new InMemoryToolRegistry([getServiceStatusTool]);
 
   try {

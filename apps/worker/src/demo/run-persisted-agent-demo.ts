@@ -132,6 +132,12 @@ async function main(): Promise<void> {
     // PostgreSQL under startRun's own lock, so the agent can never
     // investigate a different ticket than the one this job was created for.
     const provider = new FakeLlmProvider(buildDemoScenario());
+    // Issue #93 — deliberately PINNED, not catalog-derived. This demo drives
+    // FakeLlmProvider with a scenario scripted in this same file, so the registry
+    // only ever needs the tool that scenario requests; widening it to the whole
+    // catalog would add tools nothing can request. The offered-vs-executable
+    // divergence #93 fixes cannot arise here, because a fake provider's tool
+    // choice comes from the script, not from an offered list.
     const toolRegistry = new InMemoryToolRegistry([getServiceStatusTool]);
 
     let result: Awaited<ReturnType<typeof service.executeAndPersist>>;

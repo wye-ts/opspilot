@@ -649,6 +649,17 @@ export async function runBaselineRagScenario(
     dimensions,
     corpus,
   });
+  // Issue #93 — every registry in this file is deliberately PINNED. Scenarios
+  // A-E are recorded LIVE observations whose results are written up in
+  // docs/reviews/33-issue-77-adversarial-case-expansion-spike-results.md, and
+  // each one's provider is constructed in run-rag-live-spike.ts with a matching
+  // single-entry offered list, so offered and executable already agree. Adding
+  // a tool to an already-recorded scenario would change what the recorded
+  // observation observed, and the adversarial probes deliberately expose
+  // exactly one instrumented tool so an injected instruction has a single
+  // redirect target to fail against. Milestone 14's new two-tool observation is
+  // Issue #95's business: a NEW scenario, wired with both catalog entries on
+  // both sides.
   const toolRegistry = new InMemoryToolRegistry([getServiceStatusTool]);
   const ticketContext: AgentConversationMessage = {
     role: "ticket_context",

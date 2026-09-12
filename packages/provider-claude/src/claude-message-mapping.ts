@@ -314,6 +314,13 @@ conversation.`;
 // already delivered earlier in the conversation counts as evidence that
 // already EXISTS, even on the model's very first diagnostic tool call)
 // advances the logical prompt version again to opspilot-agent-v5 (§20.4; the
+// AGENT_PROMPT_VERSION default is updated to match). Issue #93 advances it
+// again to opspilot-agent-v6 WITHOUT changing any prose in this file: the
+// logical version identifies the model-facing behavioral contract, and adding
+// get_recent_deployments to DIAGNOSTIC_TOOL_CATALOG changes the offered-tool
+// set (plus its model-facing description) that ClaudeLlmProvider presents on
+// every INVESTIGATION turn. A version that only moved on prose edits would let
+// one-tool and two-tool LIVE runs record the same identifier (§20.4; the
 // AGENT_PROMPT_VERSION default is updated to match).
 // Deliberately appended on the INVESTIGATION phase only: the
 // FINALIZATION turn is a forced report submission with no diagnostic decision
