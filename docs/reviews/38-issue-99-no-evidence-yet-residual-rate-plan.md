@@ -108,6 +108,24 @@ When A3 trips on an investigation turn, instead of failing the run:
 4. The corrective invocation **consumes a `MAX_PROVIDER_TURNS` slot**, like every other provider
    invocation. The run therefore has one fewer investigation turn after a retry, and the forced
    finalization turn is still preserved.
+5. **Retry eligibility: only when another INVESTIGATION slot would remain.** If the first A3 trip
+   happens on the last investigation turn (`turnIndex === MAX_PROVIDER_TURNS - 2`), the run fails as
+   today — no retry.
+
+**Why (5) exists.** Phase is derived purely from position: `turnIndex === MAX_PROVIDER_TURNS - 1`
+⇒ `FINALIZATION`, everything earlier ⇒ `INVESTIGATION` (`agent-orchestrator.ts:349-350`). On a
+`FINALIZATION` turn the Claude adapter forces `tool_choice: { type: "tool", name:
+submit_resolution_report }` (`claude-llm-provider.ts:395-397`), so that slot structurally cannot
+carry a corrected diagnostic request. An A3 trip on turn 2 of 4 therefore has nowhere to retry *to*:
+the only remaining slot is the forced finalization turn. An earlier draft promised "one corrective
+turn whenever A3 trips during investigation" while also preserving the finalization slot — raised as
+a MAJOR by independent review, and confirmed: those two guarantees are incompatible at
+`turnIndex = 2`, and an implementation following that draft would have silently picked one.
+
+Stated as the rule an implementer can follow without inferring: the retry is available on
+investigation turns `0 .. MAX_PROVIDER_TURNS - 3` (turns 0 and 1 at current constants). A late A3
+trip is a genuinely unrecoverable run, and failing it is honest — the run had already spent its
+investigation budget.
 
 **The retry is not free, and an earlier draft of this plan was wrong to say it was.** That draft
 proposed not charging the retry a turn slot, reasoning that a rejected turn "produced nothing."
@@ -160,18 +178,40 @@ a new logical prompt version, the lineage comment, the §20.4 entry, and
 - `MAX_PROVIDER_TURNS` / `MAX_DIAGNOSTIC_TOOL_CALLS` are unchanged — and the retry stays inside
   `MAX_PROVIDER_TURNS` rather than beside it (§2.1).
 
-### 2.4 Ledger visibility — needs a contract decision
+### 2.4 Ledger visibility — decided: no new event type
 
-A retry that leaves no trace would make the ledger claim a clean turn-0 where a rejected assessment
-actually occurred, which is the kind of quiet approximation this repo's semantic-honesty bar
-rejects. But adding a new event type touches `docs/16-investigation-event-contract.md`'s canonical
-13-type vocabulary and every reducer/UI consumer keyed on it.
+An earlier draft left this as a recommendation to emit a new canonical event, flagged "unresolved."
+Independent review raised that as a MAJOR: the plan recommended a contract change without naming the
+event, its payload, its permitted transition, its reducer behavior, or its consumers — and an
+implementer following it would produce either a rejected write or an unreadable stream. Leaving a
+contract decision open is not the same as scoping it out. Verified against source and now decided.
 
-Recommendation: emit a new canonical event for the rejected-and-retried assessment, rather than
-hiding it. It is a real thing that happened, it is exactly the signal needed to measure whether the
-residual rate is improving, and a reader of a trace that shows one should be able to see it. This
-needs verification against the event contract's read-compatibility rules before the plan is
-implemented — **unresolved, flagged deliberately, not assumed.**
+**Decision: do not add an event type. Emit nothing for the rejected assessment in this issue.**
+
+The cost of the alternative is concrete, not speculative. The write contract is a strict discriminated
+union of 12 payload branches (`investigation-event.ts`), and
+`investigation-stage-progress-reducer.ts` dispatches on each type explicitly across ~470 lines, with
+`investigation-lifecycle-compatibility.ts` and the web timeline's label vocabulary keyed on the same
+set. A 13th type means: a new schema branch, a reducer case with a defined stage transition, a
+compatibility-layer decision, a label in `trace-product-labels.ts`, and read-compatibility for every
+already-persisted stream. That is a larger change than the retry itself, and it would bury a narrow
+recoverability fix inside an event-contract migration.
+
+**What makes the omission honest rather than a silent approximation.** Nothing is misrepresented:
+the rejected request was never accepted, `TOOL_REQUESTED` is correctly absent, and the ledger's
+claim — "no diagnostic request was accepted on this turn" — is true. The run's
+`providerCallsObserved` still counts the extra invocation, so the spend is visible and reconcilable
+even though the reason is not. This is the same standing limitation as the other 11 A3-adjacent
+protocol failures, which also leave no per-guard record (finding #5).
+
+**What this costs, stated rather than hidden:** there is no way to measure from the ledger how often
+the retry fires, so the residual rate this issue exists to reduce stays unmeasurable from persisted
+data. Retry frequency will only be observable in the server log, via the extra `provider_turn` line.
+That is a real gap and it belongs to the same observability issue as finding #5 — the right place to
+add a per-guard record is that issue, once, for all 12 trigger sites, rather than here for one.
+
+If a future session concludes the retry needs ledger visibility, it should be a deliberate
+event-contract change with its own plan, not an addendum to this one.
 
 ### 2.5 Deliberately out of scope
 
@@ -200,17 +240,25 @@ implemented — **unresolved, flagged deliberately, not assumed.**
    the second request's messages and that no provider-controlled identifier or value is included.
    Criteria 1–3 can all pass against a corrective variant that `buildClaudeMessages` silently drops
    (§2.2), so without this one the deterministic suite proves nothing about the real path.
-6. `pnpm agent:verify --final` passes, with any pre-existing failures independently re-derived
+6. **A late-trip test.** First A3 violation on `turnIndex === MAX_PROVIDER_TURNS - 2` (the last
+   investigation turn) fails the run with `PROVIDER_PROTOCOL_INVALID`, no retry attempted, forced
+   finalization slot not consumed by a diagnostic request (§2.1 rule 5).
+7. **A ledger test** that a retried run's persisted event stream contains no event for the rejected
+   assessment and still validates against the existing write contract — i.e. §2.4's decision holds in
+   practice and no unknown event type reaches persistence.
+8. `pnpm agent:verify --final` passes, with any pre-existing failures independently re-derived
    against unmodified `main` in a worktree rather than relayed. Note that the harness's own
    `scripts/agent/*.test.ts` e2e suites are load-flaky locally (a *different* test times out per
    run) — CI's `Verify` job is the authority.
-7. **At least one real LIVE run** observed reaching past the guard, run id recorded.
-8. The report of (7) states the sample size and what it does **not** establish. One passing LIVE run
-   does not prove the residual rate is gone — the baseline behavior is non-deterministic, and
-   reporting a single clean run as resolution is precisely how #85 reached an accepted-residual state
-   that later surfaced in public. If the retry is exercised in that run, say so; if the model simply
-   got it right the first time, say that instead — **a run that never trips A3 does not test the
-   retry at all**, and must not be reported as evidence that it works.
+9. **At least one real LIVE run** observed reaching past the guard, run id recorded.
+10. The report of (9) states the sample size and what it does **not** establish. One passing LIVE run
+    does not prove the residual rate is gone — the baseline behavior is non-deterministic, and
+    reporting a single clean run as resolution is precisely how #85 reached an accepted-residual state
+    that later surfaced in public. If the retry is exercised in that run, say so; if the model simply
+    got it right the first time, say that instead — **a run that never trips A3 does not test the
+    retry at all**, and must not be reported as evidence that it works. Per §2.4 the ledger carries no
+    retry marker, so establishing whether the retry fired requires the server log's `provider_turn`
+    lines, not the persisted trace.
 
 ---
 
@@ -224,3 +272,5 @@ implemented — **unresolved, flagged deliberately, not assumed.**
 | Relax the schema's `NO_EVIDENCE_YET` invariant | `docs/reviews/35` §8 rejected it; re-verified against `evidence-assessment.ts` — the invariant is not what is broken |
 | Unbounded retry until the model complies | Unbounded provider spend on a model that may never comply; (3)'s once-per-run bound is the whole safety property |
 | A corrective retry that does not consume a provider-turn slot | Raised as a BLOCKER by independent review on this plan's first draft, and confirmed against source: `providerTurnsUsed` counts invocation *attempts* (`recording-provider.ts`), so 5 paid calls would run under a documented bound of 4, failing `bounds-respected` with `TURN_BOUND_EXCEEDED` and exceeding every spend figure derived from `MAX_PROVIDER_TURNS` (§2.1) |
+| Retry on any investigation turn, including the last one | Incompatible with preserving the forced-finalization slot: phase is positional, and a `FINALIZATION` turn forces `tool_choice` to `submit_resolution_report`, so it cannot carry a corrected diagnostic request. Raised as a MAJOR on draft 2; retry is now bounded to turns `0 .. MAX_PROVIDER_TURNS - 3` (§2.1 rule 5) |
+| A new canonical event for the rejected-and-retried assessment | Recommended by draft 2 and reversed in draft 3. A 13th write type requires a schema branch, a reducer case with a defined stage transition, a compatibility-layer decision, a UI label, and read-compatibility for every persisted stream — a larger change than the fix, and it would bury a narrow recoverability fix in an event-contract migration. The omission is honest (nothing is misrepresented) but does cost retry-frequency measurability; that belongs to the observability issue covering all 12 trigger sites (§2.4) |
