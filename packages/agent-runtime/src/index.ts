@@ -30,9 +30,15 @@ import {
   normalizeDiagnosticToolRequests as _normalizeDiagnosticToolRequests,
 } from "./providers/llm-provider";
 import { FakeLlmProvider as _FakeLlmProvider, FakeScenarioTurnNotFoundError as _FakeScenarioTurnNotFoundError } from "./providers/fake-llm-provider";
-import { InMemoryToolRegistry as _InMemoryToolRegistry, getServiceStatusTool as _getServiceStatusTool } from "./tools";
+import {
+  InMemoryToolRegistry as _InMemoryToolRegistry,
+  getRecentDeploymentsTool as _getRecentDeploymentsTool,
+  getServiceStatusTool as _getServiceStatusTool,
+} from "./tools";
 import {
   DIAGNOSTIC_TOOL_CATALOG as _DIAGNOSTIC_TOOL_CATALOG,
+  DIAGNOSTIC_TOOLS as _DIAGNOSTIC_TOOLS,
+  GET_RECENT_DEPLOYMENTS_CATALOG_ENTRY as _GET_RECENT_DEPLOYMENTS_CATALOG_ENTRY,
   GET_SERVICE_STATUS_CATALOG_ENTRY as _GET_SERVICE_STATUS_CATALOG_ENTRY,
 } from "./tools/diagnostic-tool-catalog";
 import { estimateCostUsd as _estimateCostUsd } from "./providers/cost-estimation";
@@ -90,8 +96,11 @@ export const FakeLlmProvider = _FakeLlmProvider;
 export const FakeScenarioTurnNotFoundError = _FakeScenarioTurnNotFoundError;
 export const InMemoryToolRegistry = _InMemoryToolRegistry;
 export const getServiceStatusTool = _getServiceStatusTool;
+export const getRecentDeploymentsTool = _getRecentDeploymentsTool;
 export const DIAGNOSTIC_TOOL_CATALOG = _DIAGNOSTIC_TOOL_CATALOG;
+export const DIAGNOSTIC_TOOLS = _DIAGNOSTIC_TOOLS;
 export const GET_SERVICE_STATUS_CATALOG_ENTRY = _GET_SERVICE_STATUS_CATALOG_ENTRY;
+export const GET_RECENT_DEPLOYMENTS_CATALOG_ENTRY = _GET_RECENT_DEPLOYMENTS_CATALOG_ENTRY;
 export const estimateCostUsd = _estimateCostUsd;
 export const resolveAbortProvenance = _resolveAbortProvenance;
 export const RetrieverError = _RetrieverError;

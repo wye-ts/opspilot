@@ -165,6 +165,10 @@ export async function runSmokeScenario(
 ): Promise<AgentOrchestratorResult> {
   return runAgentOrchestrator({
     provider: dependencies.createProvider(),
+    // Issue #93 — deliberately PINNED. A smoke test proves the live transport
+    // works end to end with one known tool; it is not a capability survey, and
+    // broadening it would spend real tokens offering tools the smoke path has
+    // no assertion about.
     toolRegistry: new InMemoryToolRegistry([GET_SERVICE_STATUS_CATALOG_ENTRY.tool]),
     initialConversation: [
       {

@@ -5,3 +5,4 @@ export type {
 } from "./diagnostic-tool";
 
 export { getServiceStatusTool } from "./get-service-status";
+export { getRecentDeploymentsTool } from "./get-recent-deployments";

@@ -99,6 +99,12 @@ export async function runDemoScenario(): Promise<AgentOrchestratorResult> {
   };
 
   const provider = new FakeLlmProvider(buildDemoScenario());
+  // Issue #93 — deliberately PINNED, not catalog-derived. This demo drives
+  // FakeLlmProvider with a scenario scripted in this same file, so the registry
+  // only ever needs the tool that scenario requests; widening it to the whole
+  // catalog would add tools nothing can request. The offered-vs-executable
+  // divergence #93 fixes cannot arise here, because a fake provider's tool
+  // choice comes from the script, not from an offered list.
   const toolRegistry = new InMemoryToolRegistry([getServiceStatusTool]);
 
   return runAgentOrchestrator({

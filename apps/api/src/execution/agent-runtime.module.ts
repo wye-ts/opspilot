@@ -3,7 +3,7 @@ import {
   createAgentRunService,
   createPrismaAgentRunRepository,
   DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE,
-  getServiceStatusTool,
+  DIAGNOSTIC_TOOLS,
   InMemoryKeywordRunbookRetriever,
   InMemoryToolRegistry,
   loadDefaultRunbookCorpus,
@@ -16,8 +16,17 @@ import { AGENT_RUN_SERVICE, RUNBOOK_RETRIEVER, TOOL_REGISTRY } from "./execution
 
 // The AgentRunService is built from the one outer-owned PrismaClientHandle —
 // never constructed a second time inside a controller (see
-// docs/12-agent-run-api.md). The tool registry carries only the
-// deterministic get_service_status tool.
+// docs/12-agent-run-api.md).
+//
+// Issue #93: the tool registry is derived from DIAGNOSTIC_TOOLS — the same
+// array ClaudeLlmProvider offers the model by default — rather than from a
+// hand-listed literal. The two were previously wired from different sources,
+// so appending to the catalog would have made a LIVE turn offer a tool this
+// registry could not resolve, failing the run with TOOL_NOT_FOUND
+// (agent-orchestrator.ts). No FAKE-mode test could have caught it: the fake
+// provider scripts which tool is requested. agent-runtime.module.test.ts
+// asserts this registry resolves every catalog entry, so the two cannot drift
+// apart again silently.
 //
 // Issue #72 §2.2: RUNBOOK_RETRIEVER is the one RunbookRetriever this process
 // uses — built ONCE here, from the default on-disk runbook corpus, never
@@ -46,7 +55,7 @@ import { AGENT_RUN_SERVICE, RUNBOOK_RETRIEVER, TOOL_REGISTRY } from "./execution
     },
     {
       provide: TOOL_REGISTRY,
-      useValue: new InMemoryToolRegistry([getServiceStatusTool]),
+      useValue: new InMemoryToolRegistry(DIAGNOSTIC_TOOLS),
     },
     {
       provide: RUNBOOK_RETRIEVER,
