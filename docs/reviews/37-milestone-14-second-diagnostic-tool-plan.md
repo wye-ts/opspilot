@@ -373,27 +373,46 @@ Tool input/output enrichment (`docs/reviews/25` §5) stays **out of scope** — 
 | 9 | Budget interaction: a scripted 3-call chain across two tools stays within `MAX_DIAGNOSTIC_TOOL_CALLS` | PASS |
 | 10 | `agent:verify --final` | **`status: PASS`, with all four ordered steps executed** — `typecheck`, `test`, `build`, `@opspilot/web check:bundle` |
 
-### 4.1 The `--final` gate must actually pass — the four `apps/web` failures are now blocking
+### 4.1 The `--final` gate must actually pass — and it now does, on the repo's own Node version
 
 An earlier draft of this plan accepted "green except the four known pre-existing `apps/web`
-localStorage failures." **That is wrong and is withdrawn** (round-1 independent review, MAJOR —
-accepted after verifying `scripts/agent/verify.ts`).
+localStorage failures." **That is withdrawn** (round-1 independent review, MAJOR — accepted after
+verifying `scripts/agent/verify.ts`).
 
 `runFinal` (`verify.ts:170-178`) iterates `FINAL_MODE_STEPS` and **breaks on the first FAIL**
 ("fail-fast, matching CI's own step ordering"). The order is `typecheck → test → build →
 check:bundle`. A failing `pnpm test` therefore means `build` and `check:bundle` **never run at
 all**. Accepting a FAIL at step 2 would let this milestone merge without ever executing the build
-or the web bundle guard — and this milestone touches `apps/web` (§3.5). A bundle or build
-regression introduced here would be invisible.
+or the web bundle guard — and this milestone touches `apps/web` (§3.5).
 
-The four failures were correctly characterized in PR #92 as pre-existing and environment-related,
-and that was acceptable for a docs-only diff which could not affect a build. It is **not**
-acceptable for a milestone shipping production code and a UI change.
+**Root cause, established before filing: the four failures are a local Node-version mismatch, not
+a repository defect.** `.nvmrc` pins `22.21.0` and CI reads it via `node-version-file`, which is
+why CI has been green throughout. The local shell's default `node` is `v26.7.0`, whose warning
+reads: `localStorage is not available because --localstorage-file was not provided`. Under Node 26
+a bare `window.localStorage` access does not behave as the four containment assertions
+(`expect(window.localStorage.length).toBe(0)`) require — these are the LIVE-token containment
+tests, which assert a secret never reaches storage.
 
-**Consequence for sequencing:** the `apps/web` localStorage test environment must be fixed, or the
-gate run in an environment where it passes, **before Issue A can be accepted** — not after. If the
-fix turns out to be non-trivial, it is its own filed issue and a prerequisite of this milestone,
-not a tolerated exception inside it. Determining which is the first implementation step.
+Verified directly:
+
+```
+node --version                                  # v26.7.0 -> 4 failed | 650 passed
+export PATH="$HOME/.nvm/versions/node/v22.21.0/bin:$PATH"
+node --version                                  # v22.21.0 -> 654 passed (49 files)
+pnpm agent:verify --final                       # verify --final: PASS  (all four steps executed)
+```
+
+**Consequences:**
+
+1. **No prerequisite issue is needed.** An earlier draft of this section proposed filing one; that
+   is withdrawn. The milestone starts at Issue A.
+2. **Every `agent:verify` run in this milestone must use the `.nvmrc` version.** Running the gate
+   on the shell default silently fail-fasts at step 2 and never reaches `build`/`check:bundle` —
+   the exact hole this section exists to close. Confirm `node --version` reports `22.21.0` before
+   trusting any verify result.
+3. **PR #92's characterization was incomplete, not wrong.** "Pre-existing and reproducible on
+   unmodified `main`" was true; both runs were simply on the wrong Node. Recorded here so a future
+   session does not re-derive this from scratch or re-accept the failures as tolerable.
 
 ### What deterministic verification cannot prove
 
@@ -481,10 +500,10 @@ classified + the catalog-coverage regression test + the `v6` bump (§3.4: trigge
 entry, not by prose). Deterministic tests only. This is the milestone's load-bearing issue and
 should not be merged alongside anything else.
 
-**Prerequisite (§4.1): the four `apps/web` localStorage test failures must be resolved first**, or
-Issue A cannot satisfy acceptance criterion 7 — `agent:verify --final` fail-fasts at `test` and
-never reaches `build`/`check:bundle`. Whether this is a trivial environment fix or its own filed
-issue is the first thing implementation determines.
+**No prerequisite issue.** §4.1 established before filing that the four `apps/web` failures are a
+local Node-version mismatch (shell default `v26.7.0` vs `.nvmrc`'s `22.21.0`), not a repository
+defect: on the pinned version `agent:verify --final` returns PASS with all four steps executed.
+Every verify run in this milestone must use the `.nvmrc` version.
 
 **Issue B — evaluation coverage.** Two-tool chain cases, the `knownService: false` case,
 `resolveTools`/`toolProfile` handling, dataset-validation update if a literal is added.
@@ -496,8 +515,9 @@ bump). **Includes the `run-rag-live-spike.ts` composition-root change and its tr
 test** (§4's procedure) — without it the spike cannot offer the second tool at all. The LIVE spike
 is run and recorded here, after A and B are on `main`.
 
-Ordering is strict: the `apps/web` prerequisite before A, A before B (B's cases need the tool),
-B before C (the §20.4 before/after regression needs the eval suite in its post-change shape).
+Ordering is strict: A before B (B's cases need the tool), B before C (the §20.4 before/after
+regression needs the eval suite in its post-change shape, and the LIVE spike needs both on
+`main`).
 
 ---
 
@@ -523,7 +543,8 @@ B before C (the §20.4 before/after regression needs the eval suite in its post-
    resolves both in its registry, proven by a transport-level test — not assumed from the catalog.
 7. `agent:verify --final` returns `status: PASS` with all four ordered steps (`typecheck`, `test`,
    `build`, `@opspilot/web check:bundle`) executed — not a FAIL at step 2 that silently skips the
-   last two (§4.1).
+   last two (§4.1). The run must be on `.nvmrc`'s Node `22.21.0`; a result produced on another
+   version does not count.
 8. If the catalog gained an entry (i.e. always, for this milestone): `AGENT_PROMPT_VERSION`'s
    **active/default declaration** is `opspilot-agent-v6`, §20.4 carries a `v6 supersedes v5`
    paragraph, and §20.4 carries a before/after eval regression entry **including its
