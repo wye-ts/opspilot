@@ -133,10 +133,14 @@ export const getRecentDeploymentsTool: DiagnosticToolDefinition = {
     return {
       serviceSlug,
       knownService: seeded !== undefined,
-      // Copied, never the fixture's own array: the orchestrator hands tool
-      // output onward as evidence, and a caller mutating what it received must
-      // not be able to change what the next call returns.
-      deployments: seeded === undefined ? [] : [...seeded],
+      // Deep-copied, never the fixture's own array OR its record objects: the
+      // orchestrator hands tool output onward as evidence, and a caller
+      // mutating what it received must not be able to change what the next call
+      // returns. A shallow [...seeded] was not enough — it copies the array
+      // while sharing every record, so mutating one field corrupted the fixture
+      // for the rest of the process and could make a later call's output fail
+      // its own outputSchema (TOOL_OUTPUT_INVALID, which fails the whole run).
+      deployments: seeded === undefined ? [] : seeded.map((entry) => ({ ...entry })),
     };
   },
 };

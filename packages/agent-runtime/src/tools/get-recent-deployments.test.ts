@@ -183,6 +183,29 @@ describe("get_recent_deployments", () => {
       expect(JSON.stringify(second)).toBe(JSON.stringify(first));
     });
 
+    it("does not expose the seeded fixture's own deployment RECORDS for mutation", async () => {
+      // Distinct from the array-level case below: copying only the array still
+      // shares every record object, so one mutated field would corrupt the
+      // fixture for the rest of the process — and a later call could then fail
+      // its own outputSchema, taking a whole investigation down with
+      // TOOL_OUTPUT_INVALID.
+      const first = (await getRecentDeploymentsTool.execute({
+        serviceSlug: "notification-service",
+      })) as { deployments: Array<{ outcome: string; deployedAt: string }> };
+
+      const originalOutcome = first.deployments[0]!.outcome;
+      first.deployments[0]!.outcome = "TAMPERED";
+      first.deployments[0]!.deployedAt = "yesterday";
+
+      const second = (await getRecentDeploymentsTool.execute({
+        serviceSlug: "notification-service",
+      })) as { deployments: Array<{ outcome: string }> };
+
+      expect(second.deployments[0]!.outcome).toBe(originalOutcome);
+      expect(second.deployments[0]).not.toBe(first.deployments[0]);
+      expect(getRecentDeploymentsTool.outputSchema.safeParse(second).success).toBe(true);
+    });
+
     it("does not expose the seeded fixture's own arrays for mutation", async () => {
       const result = (await getRecentDeploymentsTool.execute({
         serviceSlug: "notification-service",
