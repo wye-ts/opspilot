@@ -129,6 +129,28 @@ describe("get_recent_deployments", () => {
       });
     });
 
+    it("treats an inherited Object key as an unknown service, not a seeded one", async () => {
+      // A model can emit any schema-valid string. `constructor`, `toString`,
+      // and friends are inherited from Object.prototype, so a plain
+      // `table[slug]` lookup returns a function instead of undefined — which
+      // then fails as a deployment list and takes the whole investigation down
+      // with TOOL_EXECUTION_FAILED. These names are ordinary unknown services
+      // and must answer like one.
+      for (const serviceSlug of [
+        "constructor",
+        "__proto__",
+        "toString",
+        "hasOwnProperty",
+        "valueOf",
+      ]) {
+        await expect(getRecentDeploymentsTool.execute({ serviceSlug })).resolves.toEqual({
+          serviceSlug,
+          knownService: false,
+          deployments: [],
+        });
+      }
+    });
+
     it("returns a service's deployments most-recent-first", async () => {
       const result = (await getRecentDeploymentsTool.execute({
         serviceSlug: "notification-service",

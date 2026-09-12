@@ -66,9 +66,17 @@ type DeploymentRecord = z.infer<typeof DeploymentRecordSchema>;
 // ones. Each carries a deliberately different evidential shape — see the
 // per-entry notes, and get-recent-deployments.test.ts's "evidential shapes"
 // block, which locks them because Issue #94's evaluation cases depend on them.
-const SEEDED_DEPLOYMENTS_BY_SERVICE_SLUG: Readonly<
-  Record<string, readonly DeploymentRecord[]>
-> = {
+//
+// A Map, not an object literal: an object's inherited keys (`constructor`,
+// `toString`, `__proto__`, ...) are schema-valid strings a model can emit, and
+// a plain `table[slug]` lookup would return an inherited FUNCTION rather than
+// undefined for them — turning an ordinary unknown service into a crash that
+// fails the whole investigation with TOOL_EXECUTION_FAILED. A Map has no
+// prototype-chain lookup, so unknown is unknown for every string.
+const SEEDED_DEPLOYMENTS_BY_SERVICE_SLUG: ReadonlyMap<
+  string,
+  readonly DeploymentRecord[]
+> = new Map(Object.entries({
   // DEGRADED in get_service_status, and its most recent deployment was rolled
   // back. This is an unresolved LEAD, never a root cause: runbook chunk
   // runbook-deployment-rollback-001 requires an error-budget burn rate
@@ -112,7 +120,7 @@ const SEEDED_DEPLOYMENTS_BY_SERVICE_SLUG: Readonly<
       deployedAt: "2026-09-09T11:40:00.000Z",
     },
   ],
-};
+} satisfies Record<string, readonly DeploymentRecord[]>));
 
 export const getRecentDeploymentsTool: DiagnosticToolDefinition = {
   name: "get_recent_deployments",
@@ -120,7 +128,7 @@ export const getRecentDeploymentsTool: DiagnosticToolDefinition = {
   outputSchema: OutputSchema,
   async execute(rawInput) {
     const { serviceSlug } = InputSchema.parse(rawInput);
-    const seeded = SEEDED_DEPLOYMENTS_BY_SERVICE_SLUG[serviceSlug];
+    const seeded = SEEDED_DEPLOYMENTS_BY_SERVICE_SLUG.get(serviceSlug);
 
     return {
       serviceSlug,
