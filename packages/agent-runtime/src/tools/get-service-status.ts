@@ -20,13 +20,25 @@ const OutputSchema = z
 // determinism requirement for tests. A serviceSlug outside this table is
 // genuinely unknown to the agent, not OPERATIONAL: defaulting to
 // OPERATIONAL would assert an unsupported operational-status claim.
-const SEEDED_STATUS_BY_SERVICE_SLUG: Readonly<
-  Record<string, "OPERATIONAL" | "DEGRADED" | "OUTAGE">
-> = {
-  "notification-service": "DEGRADED",
-  "billing-service": "OUTAGE",
-  "auth-service": "OPERATIONAL",
-};
+//
+// A Map, not an object literal (issue #96): an object's inherited keys
+// ("constructor", "toString", "__proto__", ...) are schema-valid strings a
+// model can emit, and a plain `table[slug]` lookup returns an inherited
+// FUNCTION rather than undefined for them — so `?? "UNKNOWN"` never fires, the
+// returned `status` is not a status, and outputSchema rejects it, failing the
+// WHOLE run with TOOL_OUTPUT_INVALID instead of answering UNKNOWN. A Map has no
+// prototype-chain lookup, so unknown is unknown for every string. Same idiom as
+// get-recent-deployments.ts, for the same reason.
+const SEEDED_STATUS_BY_SERVICE_SLUG: ReadonlyMap<
+  string,
+  "OPERATIONAL" | "DEGRADED" | "OUTAGE"
+> = new Map(
+  Object.entries({
+    "notification-service": "DEGRADED",
+    "billing-service": "OUTAGE",
+    "auth-service": "OPERATIONAL",
+  } satisfies Record<string, "OPERATIONAL" | "DEGRADED" | "OUTAGE">),
+);
 
 export const getServiceStatusTool: DiagnosticToolDefinition = {
   name: "get_service_status",
@@ -34,7 +46,7 @@ export const getServiceStatusTool: DiagnosticToolDefinition = {
   outputSchema: OutputSchema,
   async execute(rawInput) {
     const { serviceSlug } = InputSchema.parse(rawInput);
-    const seededStatus = SEEDED_STATUS_BY_SERVICE_SLUG[serviceSlug];
+    const seededStatus = SEEDED_STATUS_BY_SERVICE_SLUG.get(serviceSlug);
 
     return {
       serviceSlug,
