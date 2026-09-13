@@ -226,8 +226,10 @@ event-contract change with its own plan, not an addendum to this one.
 ## 3. Acceptance criteria
 
 1. A deterministic test reproducing the exact state: RAG evidence present, zero tool executions,
-   first diagnostic request, assessment claims `NO_EVIDENCE_YET`. It must **fail before** the change
-   (proving it exercises the real path, not a tautology — see `references/plan-integrity.md`).
+   first diagnostic request, assessment claims `NO_EVIDENCE_YET`. It must **fail before** the change,
+   proving it exercises the real path rather than passing against unmodified code — a new guard test
+   that already passes has not validated anything, it has revealed the check is unreachable (the
+   defect Issue #89 hit).
 2. A deterministic test that a **second** A3 trip in the same run fails the run, with the same
    `PROVIDER_PROTOCOL_INVALID` code as today.
 3. A deterministic test that a run whose retried turn returns a valid assessment proceeds to
