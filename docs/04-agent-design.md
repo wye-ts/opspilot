@@ -1312,7 +1312,9 @@ An estimate that cannot be produced correctly is `null` with a reason, never a g
 | `UNKNOWN_MODEL` | No rate entry for the returned model |
 | `INSUFFICIENT_USAGE_DETAIL` | Cache-creation tokens were reported without the TTL breakdown needed to price them |
 
-`claude-sonnet-5`'s current entry is the introductory rate, valid through **2026-08-31**. When that passes, every estimate becomes `STALE` with a null cost until the table is deliberately updated — the estimate stops claiming to be current rather than silently applying a wrong rate.
+`claude-sonnet-5`'s current entry is the standard rate ($3 / $15 per MTok), in effect from **2026-09-01**, with `validThrough` set one year out as a deliberate re-verification deadline rather than an announced end date. When that passes, every estimate becomes `STALE` with a null cost until the table is deliberately updated — the estimate stops claiming to be current rather than silently applying a wrong rate.
+
+That staleness is **load-bearing, not cosmetic**: a run whose cost cannot be established increments `live_run_budget.pricing_unknown_runs`, and the LIVE reservation gate requires that counter to be zero. An expired table therefore closes the LIVE budget gate for the remainder of the UTC day after a single run, service-wide. The launch introductory rate expired 2026-08-31 and was not replaced until 2026-09-14; for that window the deployed service could admit exactly one LIVE run per day. Treat `validThrough` as an operational deadline.
 
 ### 22.6 Recorded Metadata
 

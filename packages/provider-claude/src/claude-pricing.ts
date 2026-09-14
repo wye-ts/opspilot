@@ -17,36 +17,56 @@ import { SUPPORTED_CLAUDE_MODEL } from "./claude-model";
  * packages/agent-runtime/src/providers/cost-estimation.ts. Conversion:
  * $X per MTok → X * 1000 nanoUSD per token.
  *
- * claude-sonnet-5, introductory pricing, in effect through 2026-08-31:
+ * claude-sonnet-5, STANDARD pricing, in effect from 2026-09-01 (re-transcribed
+ * from the same page on 2026-09-14):
  *
- *   base input          $2.00 / MTok  → 2000
- *   5m cache write      $2.50 / MTok  → 2500   (1.25x base input)
- *   1h cache write      $4.00 / MTok  → 4000   (2x base input)
- *   cache hit / refresh $0.20 / MTok  →  200   (0.1x base input)
- *   output             $10.00 / MTok  → 10000
+ *   base input          $3.00 / MTok  → 3000
+ *   5m cache write      $3.75 / MTok  → 3750   (1.25x base input)
+ *   1h cache write      $6.00 / MTok  → 6000   (2x base input)
+ *   cache hit / refresh $0.30 / MTok  →  300   (0.1x base input)
+ *   output             $15.00 / MTok  → 15000
  *
- * From 2026-09-01 the standard rate ($3 / $3.75 / $6 / $0.30 / $15 per MTok)
- * replaces it. That rollover is NOT encoded here as a second entry, because
- * only one entry can be correct at a time and a wrong-but-plausible number is
- * worse than none: once `validThrough` passes, every estimate becomes
- * `pricingStatus: "STALE"` with a null cost until the table is deliberately
- * updated. No test asserts against the wall clock, so nothing starts failing
- * on 2026-09-01 — the estimate simply stops claiming to be current.
+ * This replaces the launch introductory rate ($2 / $2.50 / $4 / $0.20 / $10),
+ * which expired 2026-08-31. Only one entry per model can be correct at a time,
+ * so the superseded rate is NOT kept as a second entry — a wrong-but-plausible
+ * number is worse than none.
  *
- * `effectiveFrom` is a conservative lower bound. Anthropic documents the
- * introductory rate's end date but not its start date, so this is set to a
- * date known to be inside the window rather than invented precision.
+ * WHY THIS ENTRY IS LOAD-BEARING, not merely informational: a run whose cost
+ * cannot be established increments `live_run_budget.pricing_unknown_runs`, and
+ * the reservation gate in agent-run-repository.ts requires that counter to be
+ * zero. A stale table therefore does not just lose a cost figure — it closes
+ * the LIVE budget gate for the remainder of the UTC day after the first run,
+ * globally. Between 2026-09-01 and this update the deployed service could
+ * admit exactly one LIVE run per day for that reason. Treat `validThrough`
+ * below as an operational deadline, not a bookkeeping nicety.
+ *
+ * SOURCE CONFLICT, recorded rather than silently resolved: the official
+ * pricing page read on 2026-09-14 still lists the $3/$15 standard rate from
+ * 2026-09-01, and that is what is transcribed here. Several third-party
+ * write-ups claim Anthropic cancelled the increase on 2026-08-10 and made
+ * $2/$10 permanent. They were not treated as authoritative over Anthropic's
+ * own page. The disagreement is also SAFE in this direction: these rates drive
+ * a spend gate, so overestimating closes the gate early (conservative), while
+ * underestimating would let real spending run past the ceiling. If the lower
+ * rate is later confirmed on the official page, correct it there and here —
+ * the only cost of being wrong this way is a gate that trips sooner than
+ * necessary.
+ *
+ * `validThrough` is a deliberate RE-VERIFICATION DEADLINE, not an announced end
+ * date: Anthropic publishes no end for the standard rate. It is set one year
+ * out so the table fails loud (STALE, null cost) rather than silently drifting
+ * for years. Moving it forward requires re-reading the published rates first.
  */
 export const CLAUDE_PRICING_TABLE: ModelPricingTable = {
   [SUPPORTED_CLAUDE_MODEL]: {
     pricingBasis: "ACTIVE_RATE",
-    effectiveFrom: "2026-06-30",
-    validThrough: "2026-08-31",
-    inputNanoUsdPerToken: 2000,
-    outputNanoUsdPerToken: 10_000,
-    cacheReadNanoUsdPerToken: 200,
-    cacheCreation5mNanoUsdPerToken: 2500,
-    cacheCreation1hNanoUsdPerToken: 4000,
+    effectiveFrom: "2026-09-01",
+    validThrough: "2027-08-31",
+    inputNanoUsdPerToken: 3000,
+    outputNanoUsdPerToken: 15_000,
+    cacheReadNanoUsdPerToken: 300,
+    cacheCreation5mNanoUsdPerToken: 3750,
+    cacheCreation1hNanoUsdPerToken: 6000,
   },
 };
 
