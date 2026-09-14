@@ -3881,6 +3881,27 @@ describe("runAgentOrchestrator — A3 corrective retry (issue #99)", () => {
     // had without the A3 trip.
     expect(runAgentTurnSpy).toHaveBeenCalledTimes(4);
     expect(runAgentTurnSpy).toHaveBeenCalledTimes(MAX_PROVIDER_TURNS);
+
+    // Independent review MAJOR (codex-review round 1 on the implementation):
+    // the retry consumes a turn WITHOUT accepting a diagnostic request, so
+    // `MAX_DIAGNOSTIC_TOOL_CALLS - toolCallCount` alone stops tracking the
+    // turns that could actually carry one. Unfixed, this sequence advertises
+    // 3, 3, 2, 1 — telling the corrected turn it has three calls available
+    // when only two investigation turns remain, and handing the forced
+    // FINALIZATION turn a nonzero budget in direct contradiction of
+    // AgentTurnInput.diagnosticCallsRemaining's own documented contract
+    // ("0 on the FINALIZATION turn").
+    //
+    // Asserted as the whole ordered sequence rather than only the
+    // finalization value: a fix that special-cased FINALIZATION to 0 would
+    // still over-promise on the corrective turn itself, which is where the
+    // model actually plans its remaining work.
+    expect(runAgentTurnSpy.mock.calls.map(([input]) => input.diagnosticCallsRemaining)).toEqual([
+      3, // turn 0, the trip: 3 unused calls, 3 investigation turns left
+      2, // turn 1, the corrective retry: still 3 unused calls, but only 2 turns can carry one
+      1, // turn 2, the last investigation turn
+      0, // turn 3, forced finalization — the contract's own promise
+    ]);
   });
 
   it("criterion 6 (late-trip): an A3 trip on the last investigation turn fails the run with no retry and never consumes the forced-finalization slot", async () => {

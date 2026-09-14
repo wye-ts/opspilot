@@ -416,12 +416,37 @@ export async function runAgentOrchestrator(
         maxOutputTokens: outputBudget.finalizationMaxOutputTokens,
         conversation,
         // Issue #58 Checkpoint B (§10): the remaining diagnostic budget for
-        // THIS turn — MAX_DIAGNOSTIC_TOOL_CALLS minus the number of accepted
-        // diagnostic requests so far (0 on the forced FINALIZATION turn).
-        // Constraint visibility only: it tells the provider how much headroom
-        // the model has, while the #57 bounded-loop harness remains
-        // authoritative for actually enforcing the bound.
-        diagnosticCallsRemaining: MAX_DIAGNOSTIC_TOOL_CALLS - toolCallCount,
+        // THIS turn. Constraint visibility only: it tells the provider how
+        // much headroom the model has, while the #57 bounded-loop harness
+        // remains authoritative for actually enforcing the bound.
+        //
+        // Two independent ceilings, whichever is smaller:
+        //
+        //   1. the unused diagnostic-call budget (MAX_DIAGNOSTIC_TOOL_CALLS
+        //      minus accepted requests so far), and
+        //   2. the number of turns that could still CARRY a diagnostic
+        //      request — every turn before the forced FINALIZATION one.
+        //
+        // Before issue #99 the second ceiling was implicit and never binding:
+        // each investigation turn accepted exactly one diagnostic request, so
+        // budget and turns fell together and (1) alone yielded 0 on the
+        // finalization turn, exactly as this contract promises (see also
+        // AgentTurnInput.diagnosticCallsRemaining in llm-provider.ts).
+        //
+        // The A3 corrective retry breaks that coupling: it consumes a turn
+        // WITHOUT accepting a diagnostic request, so toolCallCount no longer
+        // tracks turns consumed. With (1) alone, a retried run would tell the
+        // corrected turn it has 3 calls available when only 2 investigation
+        // turns remain, and would hand the forced finalization turn a nonzero
+        // budget — violating the documented contract and inviting the model to
+        // defer work to a turn that does not exist, then be forced to submit an
+        // incomplete report. Independent review raised this as a MAJOR against
+        // the first implementation; confirmed against source and fixed here by
+        // making the turn-based ceiling explicit rather than incidental.
+        diagnosticCallsRemaining: Math.min(
+          MAX_DIAGNOSTIC_TOOL_CALLS - toolCallCount,
+          MAX_PROVIDER_TURNS - 1 - turnIndex,
+        ),
         // Conditional spread: exactOptionalPropertyTypes is on, so an optional
         // property must be absent or a real value, never an explicit undefined.
         ...(params.signal !== undefined ? { signal: params.signal } : {}),
