@@ -1020,7 +1020,7 @@ Defines:
 `AgentRun.promptVersion` stores a logical version such as:
 
 ```text
-opspilot-agent-v6
+opspilot-agent-v7
 ```
 
 > **Implementation state (Issue #93).** This is a design target, not shipped
@@ -1033,6 +1033,19 @@ opspilot-agent-v6
 > documentation-and-source-comment contract that a reader can audit, not a
 > per-run stored fact. Wiring it through to persistence is separate work with
 > its own migration.
+
+`opspilot-agent-v7` supersedes `opspilot-agent-v6`: Issue #99 gives the orchestrator's A3
+run-state-consistency guard one bounded corrective re-prompt instead of failing the run outright
+(`agent-orchestrator.ts`; docs/reviews/38-issue-99-no-evidence-yet-residual-rate-plan.md). The
+corrective text (`A3_CORRECTIVE_GUIDANCE_TEXT`) is new model-facing content delivered through a new
+`AgentConversationMessage` variant (`CorrectiveGuidanceEntry`, `llm-provider.ts`), mapped to a plain
+user-role text message by `buildClaudeMessages` (`claude-message-mapping.ts`). **No prose in
+`investigationGuidance` or `BASE_SYSTEM_PROMPT` changed** — like the v6 bump, this moves the version
+because the surface Claude can see grew (a corrective re-prompt path now exists), not because
+existing guidance text was edited. Schema, guard semantics, and validation are unchanged: A3 still
+rejects the same misclaims; only the run's reaction to a first rejection (on an early investigation
+turn) changed. `MAX_PROVIDER_TURNS` and `MAX_DIAGNOSTIC_TOOL_CALLS` are unchanged, though the retry
+consumes one of the bounded provider-turn slots.
 
 `opspilot-agent-v6` supersedes `opspilot-agent-v5`: Issue #93 added a second
 diagnostic tool, `get_recent_deployments`, to `DIAGNOSTIC_TOOL_CATALOG`. **No
@@ -1093,6 +1106,27 @@ A behavior-changing prompt update requires:
 - a new logical prompt version;
 - agent eval regression;
 - recorded comparison before changing the production-demo default.
+
+#### Issue #99 v7 agent-eval regression (before/after)
+
+Per the §20.4 policy, the v7 bump required an agent-eval regression recorded before changing the
+production-demo default.
+
+- **BEFORE ref:** `19af7fd1dfd25171ec68cfbc990a3c03e5e95d6a` (merged pre-#99 baseline, `main`), run
+  in an isolated `git worktree`.
+- **AFTER identity:** working tree on `fix/99-no-evidence-yet-residual-rate` with this issue's A3
+  corrective-retry change applied.
+- **Command:** `EVALUATION_SCORER=local pnpm --filter @opspilot/worker run eval` (run in the
+  detached worktree for BEFORE; in the real repo checkout for AFTER).
+- **Result summary:** all 22 existing evaluation cases pass identically (22/22, 100.0%, identical
+  per-dimension breakdown) on both BEFORE and AFTER.
+- **Limitation:** same as the v5/v6 regressions above — the deterministic eval drives the fake
+  provider from typed fixtures, so no fixture in this suite ever exercises the A3 corrective-retry
+  path itself (`FakeLlmProvider` never emits an assessment that trips A3, so `a3RetryUsed` stays
+  `false` in every one of these 22 cases). This regression proves the retry mechanism did not break
+  any existing evaluated behavior; it does **not** exercise the retry, and does not by itself prove
+  real live-Claude behavior recovers past the guard. That is established separately by a real
+  live-spike re-run (criteria 11/12 below).
 
 #### Issue #85 v5 agent-eval regression (before/after)
 

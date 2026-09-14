@@ -25,6 +25,7 @@ import {
 } from "../tools";
 import {
   InvestigationEventPayloadSchema,
+  MAX_PROVIDER_TURNS,
   type InvestigationEventPayload,
 } from "@opspilot/contracts";
 
@@ -3510,7 +3511,15 @@ describe("runAgentOrchestrator — diagnostic assessment protocol negatives (iss
     });
   });
 
-  it("A3 rejects NO_EVIDENCE_YET once tool evidence exists in the run", async () => {
+  it("A3 rejects NO_EVIDENCE_YET once tool evidence exists in the run (late trip, no retry available)", async () => {
+    // Issue #99: a tripped A3 guard on an EARLY investigation turn (0 or 1)
+    // now gets one corrective retry instead of failing immediately (see the
+    // dedicated "A3 corrective retry" describe block below, which covers
+    // that path). This fixture keeps pinning the ORIGINAL "A3 rejects
+    // NO_EVIDENCE_YET once evidence exists" behavior by tripping on the LAST
+    // investigation turn (turnIndex === MAX_PROVIDER_TURNS - 2), where no
+    // retry slot remains — so the immediate-fail behavior this test was
+    // written to pin is still exactly what happens here.
     const turns: FakeProviderTurn[] = [
       {
         kind: "diagnostic_tool_requests",
@@ -3532,8 +3541,26 @@ describe("runAgentOrchestrator — diagnostic assessment protocol negatives (iss
             toolCallId: "call-2",
             toolName: "get_service_status",
             input: { serviceSlug: "notification-service" },
-            // Schema-valid (empty supportedBy), but call-1 already completed:
-            // the A3 iff rule forbids claiming NO_EVIDENCE_YET now.
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "STATUS_UNRESOLVED",
+              supportedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+            },
+          },
+        ],
+      },
+      {
+        // turnIndex 2 === MAX_PROVIDER_TURNS - 2: the last INVESTIGATION
+        // turn, so no retry slot remains — this fails exactly as before #99.
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "call-3",
+            toolName: "get_service_status",
+            input: { serviceSlug: "notification-service" },
+            // Schema-valid (empty supportedBy), but call-1/call-2 already
+            // completed: the A3 iff rule forbids claiming NO_EVIDENCE_YET now.
             rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
           },
         ],
@@ -3542,9 +3569,15 @@ describe("runAgentOrchestrator — diagnostic assessment protocol negatives (iss
     await runAndExpectAssessmentRejected({
       name: "neg-11-no-evidence-after-evidence",
       turns,
-      expectedEmittedTypes: ["AGENT_STARTED", "TOOL_REQUESTED", "TOOL_COMPLETED"],
+      expectedEmittedTypes: [
+        "AGENT_STARTED",
+        "TOOL_REQUESTED",
+        "TOOL_COMPLETED",
+        "TOOL_REQUESTED",
+        "TOOL_COMPLETED",
+      ],
       expectedFailedStage: "DIAGNOSTIC_EXECUTION",
-      expectedExecuteCount: 1,
+      expectedExecuteCount: 2,
     });
   });
 
@@ -3622,6 +3655,360 @@ describe("runAgentOrchestrator — diagnostic assessment protocol negatives (iss
       expectedFailedStage: "DIAGNOSTIC_EXECUTION",
       expectedExecuteCount: 1,
     });
+  });
+});
+
+// Issue #99 (docs/reviews/38-issue-99-...-plan.md): a tripped A3 guard gets
+// one bounded corrective re-prompt instead of failing the run outright, on
+// investigation turns 0..MAX_PROVIDER_TURNS-3. These tests exercise the real
+// retry path end to end — a version of this suite run against the guard's
+// PRE-#99 behavior (return failed(...) unconditionally) would fail every one
+// of them, since that code always fails the run on the first trip. That is
+// what proves this exercises the real path rather than a tautology (§3
+// criterion 1) — a new guard test that already passes without the retry
+// mechanism would have revealed the check unreachable instead of validating
+// it (the defect Issue #89 hit).
+describe("runAgentOrchestrator — A3 corrective retry (issue #99)", () => {
+  function recordingEmitter() {
+    const emitted: InvestigationEventPayload[] = [];
+    return {
+      emitted,
+      emitLifecycleEvent: async (payload: InvestigationEventPayload) => {
+        emitted.push(payload);
+      },
+    };
+  }
+
+  const types = (emitted: readonly InvestigationEventPayload[]) => emitted.map((e) => e.type);
+
+  it("criterion 1/3: a first-turn A3 trip retries once and, given a corrected assessment, proceeds to TOOL_REQUESTED and completes", async () => {
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    const turns: FakeProviderTurn[] = [
+      {
+        // Turn 0: RAG evidence is already allowed in this run (see
+        // allowedRagChunkIds below), so NO_EVIDENCE_YET is an A3 violation —
+        // schema-valid (V0/A2 pass; empty supportedBy is legal for
+        // NO_EVIDENCE_YET), but run-state-inconsistent.
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "trip-1",
+            toolName: "get_service_status",
+            input: { serviceSlug: "notification-service" },
+            rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
+          },
+        ],
+      },
+      {
+        // Turn 1: the corrected retry. A fresh toolCallId — the rejected
+        // turn-0 request already consumed "trip-1" in requestedToolCallIds
+        // (that guard runs before V0/A2/A3), so a real corrected retry from
+        // the model necessarily mints a new tool_use id, exactly like Claude
+        // would on a fresh turn.
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "call-1",
+            toolName: "get_service_status",
+            input: { serviceSlug: "notification-service" },
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "STATUS_UNRESOLVED",
+              supportedBy: [{ evidenceId: "rag-chunk-1", sourceType: "RAG_CHUNK" }],
+            },
+          },
+        ],
+      },
+      { kind: "report_submission", usage, rawInput: validReportWithRagEvidence },
+    ];
+    const provider = new FakeLlmProvider({ id: "a3-retry-then-complete", turns });
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+    const registry = new InMemoryToolRegistry([getServiceStatusTool]);
+    const executeSpy = vi.spyOn(getServiceStatusTool, "execute");
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: registry,
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("completed");
+    // 3 provider turns: the rejected turn 0, the corrected turn 1, the report
+    // on turn 2. The rejected turn produced no TOOL_REQUESTED and the tool
+    // never executed for it.
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(3);
+    expect(executeSpy).toHaveBeenCalledTimes(1);
+    expect(executeSpy).toHaveBeenCalledWith({ serviceSlug: "notification-service" });
+
+    const toolRequestedEvents = emitted.filter((e) => e.type === "TOOL_REQUESTED");
+    expect(toolRequestedEvents).toHaveLength(1);
+    expect(toolRequestedEvents[0]).toMatchObject({ toolCallId: "call-1" });
+
+    // The corrective message actually reached the conversation the retried
+    // turn saw — proving the retry is a real re-prompt, not merely "try
+    // again with the same input".
+    const retriedCallInput = runAgentTurnSpy.mock.calls[1]?.[0];
+    expect(retriedCallInput?.conversation).toContainEqual({
+      role: "corrective_guidance",
+      text: expect.stringContaining("NO_EVIDENCE_YET"),
+    });
+  });
+
+  it("criterion 2: a second A3 trip in the same run fails the run, same PROVIDER_PROTOCOL_INVALID code as an unretried trip", async () => {
+    const turns: FakeProviderTurn[] = [
+      {
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "trip-1",
+            toolName: "get_service_status",
+            input: { serviceSlug: "notification-service" },
+            rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
+          },
+        ],
+      },
+      {
+        // A second trip: still claims NO_EVIDENCE_YET despite the allowed
+        // RAG evidence. The once-per-run limit means this one fails closed
+        // instead of retrying again.
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "trip-2",
+            toolName: "get_service_status",
+            input: { serviceSlug: "notification-service" },
+            rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
+          },
+        ],
+      },
+    ];
+    const provider = new FakeLlmProvider({ id: "a3-second-trip-fails", turns });
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+    const registry = new InMemoryToolRegistry([getServiceStatusTool]);
+    const executeSpy = vi.spyOn(getServiceStatusTool, "execute");
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: registry,
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+    });
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.code).toBe("PROVIDER_PROTOCOL_INVALID");
+    expect(result.failedStage).toBe("AGENT_ANALYSIS");
+    // Exactly the two rejected turns were attempted; the second never gets a
+    // third retry.
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(2);
+    expect(executeSpy).not.toHaveBeenCalled();
+    expect(result.trace).toEqual([]);
+  });
+
+  it("criterion 4 (turn-bound): retry, then drive the full remaining diagnostic path plus forced finalization, and stay within MAX_PROVIDER_TURNS attempts", async () => {
+    const turns: FakeProviderTurn[] = [
+      {
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "trip-1",
+            toolName: "get_service_status",
+            input: { serviceSlug: "notification-service" },
+            rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
+          },
+        ],
+      },
+      {
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "call-1",
+            toolName: "get_service_status",
+            input: { serviceSlug: "notification-service" },
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "STATUS_UNRESOLVED",
+              supportedBy: [{ evidenceId: "rag-chunk-1", sourceType: "RAG_CHUNK" }],
+            },
+          },
+        ],
+      },
+      {
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "call-2",
+            toolName: "get_service_status",
+            input: { serviceSlug: "billing-service" },
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "STATUS_UNRESOLVED",
+              supportedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+            },
+          },
+        ],
+      },
+      { kind: "report_submission", usage, rawInput: validReportWithRagEvidence },
+    ];
+    const provider = new FakeLlmProvider({ id: "a3-retry-then-full-budget", turns });
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+    const registry = new InMemoryToolRegistry([getServiceStatusTool]);
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: registry,
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+    });
+
+    expect(result.status).toBe("completed");
+    // The rejected trip (turn 0) + 2 accepted diagnostics (turns 1, 2) + the
+    // forced finalization report (turn 3) = exactly MAX_PROVIDER_TURNS (4)
+    // provider invocation attempts. Had the retry NOT consumed a turn slot,
+    // the same amount of real investigation work would fit in fewer
+    // attempts and this assertion would not distinguish a free retry from a
+    // charged one — the point is that it costs a real investigation turn:
+    // this run got only 2 diagnostic calls instead of the 3 it would have
+    // had without the A3 trip.
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(4);
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(MAX_PROVIDER_TURNS);
+  });
+
+  it("criterion 6 (late-trip): an A3 trip on the last investigation turn fails the run with no retry and never consumes the forced-finalization slot", async () => {
+    const turns: FakeProviderTurn[] = [
+      {
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "call-1",
+            toolName: "get_service_status",
+            input: { serviceSlug: "notification-service" },
+            rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
+          },
+        ],
+      },
+      {
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "call-2",
+            toolName: "get_service_status",
+            input: { serviceSlug: "billing-service" },
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "STATUS_UNRESOLVED",
+              supportedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+            },
+          },
+        ],
+      },
+      {
+        // turnIndex 2 === MAX_PROVIDER_TURNS - 2: the last INVESTIGATION
+        // turn. Evidence already exists (call-1, call-2), so claiming
+        // NO_EVIDENCE_YET trips A3 — but there is no investigation slot left
+        // to retry to (turn 3 is the forced FINALIZATION turn), so this must
+        // fail exactly as pre-#99, with no retry attempted.
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "call-3",
+            toolName: "get_service_status",
+            input: { serviceSlug: "billing-service" },
+            rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
+          },
+        ],
+      },
+    ];
+    const provider = new FakeLlmProvider({ id: "a3-late-trip-no-retry", turns });
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+    const registry = new InMemoryToolRegistry([getServiceStatusTool]);
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: registry,
+      initialConversation: [ticketContext],
+    });
+
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.code).toBe("PROVIDER_PROTOCOL_INVALID");
+    // Evidence already exists (two completed tool calls), so the truthful
+    // active stage is DIAGNOSTIC_EXECUTION, not REPORT_GENERATION — this
+    // never reached the forced finalization turn at all.
+    expect(result.failedStage).toBe("DIAGNOSTIC_EXECUTION");
+    // Exactly 3 attempts: turns 0, 1, 2. Turn 3 (forced finalization) was
+    // never invoked — the rejected request did not consume it.
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it("criterion 7 (ledger): a retried run's persisted event stream carries no event for the rejected assessment, and every emitted event still validates against the write contract", async () => {
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    const turns: FakeProviderTurn[] = [
+      {
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "trip-1",
+            toolName: "get_service_status",
+            input: { serviceSlug: "notification-service" },
+            rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
+          },
+        ],
+      },
+      {
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "call-1",
+            toolName: "get_service_status",
+            input: { serviceSlug: "notification-service" },
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "STATUS_UNRESOLVED",
+              supportedBy: [{ evidenceId: "rag-chunk-1", sourceType: "RAG_CHUNK" }],
+            },
+          },
+        ],
+      },
+      { kind: "report_submission", usage, rawInput: validReportWithRagEvidence },
+    ];
+    const provider = new FakeLlmProvider({ id: "a3-retry-ledger", turns });
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("completed");
+    // No event of any kind was emitted for the rejected turn-0 request: the
+    // stream contains exactly one TOOL_REQUESTED (for call-1, the accepted
+    // retry), never one for "trip-1". §2.4's decision (no new event type for
+    // a rejected-and-retried assessment) holds in practice.
+    expect(types(emitted).filter((t) => t === "TOOL_REQUESTED")).toHaveLength(1);
+    expect(emitted.some((e) => "toolCallId" in e && e.toolCallId === "trip-1")).toBe(false);
+    // Every emitted event is a known, schema-valid write-contract member —
+    // no unknown event type reached "persistence".
+    for (const event of emitted) {
+      const parsed = InvestigationEventPayloadSchema.safeParse(event);
+      expect(parsed.success).toBe(true);
+    }
   });
 });
 
