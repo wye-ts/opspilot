@@ -236,6 +236,24 @@ function validateOrchestratorParams(params: AgentOrchestratorParams): string | n
   return null;
 }
 
+// Issue #99 (docs/reviews/38-issue-99-...-plan.md §2.1/§2.2): the closed,
+// application-authored text appended to the conversation when a tripped A3
+// guard is given one corrective retry instead of failing the run outright.
+// Deliberately generic and never derived from the rejected assessment: no
+// provider-controlled identifier, no echoed value, nothing the model wrote.
+// Naming the violated invariant in the harness's own vocabulary is what lets
+// the model self-correct without exposing anything it could exploit.
+export const A3_CORRECTIVE_GUIDANCE_TEXT =
+  "Your diagnostic tool request was rejected: it declared continuationReason " +
+  '"NO_EVIDENCE_YET", but this run already has retrieved runbook evidence and/or ' +
+  "a completed diagnostic tool result. NO_EVIDENCE_YET is only valid when no " +
+  "evidence of any kind — no tool result, no retrieved runbook chunk — exists " +
+  "anywhere yet in this conversation. That request was not executed; no tool ran " +
+  "and nothing was recorded. Reassess the evidence already present in this " +
+  "conversation and submit a corrected diagnostic tool call with an " +
+  "evidenceAssessment consistent with what has actually been gathered so far " +
+  "(or submit_resolution_report, if that evidence is now sufficient).";
+
 export async function runAgentOrchestrator(
   params: AgentOrchestratorParams,
 ): Promise<AgentOrchestratorResult> {
@@ -344,6 +362,12 @@ export async function runAgentOrchestrator(
   // check below; the canonical ledger reconstructs the same count from the
   // persisted stream.
   let toolCallCount = 0;
+  // Issue #99 §2.1: whether this run has already spent its one allowed A3
+  // corrective retry. A second A3 trip in the same run fails closed exactly
+  // as before this issue — the once-per-run limit, not the turn budget, is
+  // what bounds the retry loop (an unbounded retry would let a
+  // never-complying model spend providerTurns indefinitely).
+  let a3RetryUsed = false;
 
   for (let turnIndex = 0; turnIndex < MAX_PROVIDER_TURNS; turnIndex++) {
     const phase: AgentTurnPhase =
@@ -392,12 +416,37 @@ export async function runAgentOrchestrator(
         maxOutputTokens: outputBudget.finalizationMaxOutputTokens,
         conversation,
         // Issue #58 Checkpoint B (§10): the remaining diagnostic budget for
-        // THIS turn — MAX_DIAGNOSTIC_TOOL_CALLS minus the number of accepted
-        // diagnostic requests so far (0 on the forced FINALIZATION turn).
-        // Constraint visibility only: it tells the provider how much headroom
-        // the model has, while the #57 bounded-loop harness remains
-        // authoritative for actually enforcing the bound.
-        diagnosticCallsRemaining: MAX_DIAGNOSTIC_TOOL_CALLS - toolCallCount,
+        // THIS turn. Constraint visibility only: it tells the provider how
+        // much headroom the model has, while the #57 bounded-loop harness
+        // remains authoritative for actually enforcing the bound.
+        //
+        // Two independent ceilings, whichever is smaller:
+        //
+        //   1. the unused diagnostic-call budget (MAX_DIAGNOSTIC_TOOL_CALLS
+        //      minus accepted requests so far), and
+        //   2. the number of turns that could still CARRY a diagnostic
+        //      request — every turn before the forced FINALIZATION one.
+        //
+        // Before issue #99 the second ceiling was implicit and never binding:
+        // each investigation turn accepted exactly one diagnostic request, so
+        // budget and turns fell together and (1) alone yielded 0 on the
+        // finalization turn, exactly as this contract promises (see also
+        // AgentTurnInput.diagnosticCallsRemaining in llm-provider.ts).
+        //
+        // The A3 corrective retry breaks that coupling: it consumes a turn
+        // WITHOUT accepting a diagnostic request, so toolCallCount no longer
+        // tracks turns consumed. With (1) alone, a retried run would tell the
+        // corrected turn it has 3 calls available when only 2 investigation
+        // turns remain, and would hand the forced finalization turn a nonzero
+        // budget — violating the documented contract and inviting the model to
+        // defer work to a turn that does not exist, then be forced to submit an
+        // incomplete report. Independent review raised this as a MAJOR against
+        // the first implementation; confirmed against source and fixed here by
+        // making the turn-based ceiling explicit rather than incidental.
+        diagnosticCallsRemaining: Math.min(
+          MAX_DIAGNOSTIC_TOOL_CALLS - toolCallCount,
+          MAX_PROVIDER_TURNS - 1 - turnIndex,
+        ),
         // Conditional spread: exactOptionalPropertyTypes is on, so an optional
         // property must be absent or a real value, never an explicit undefined.
         ...(params.signal !== undefined ? { signal: params.signal } : {}),
@@ -584,6 +633,43 @@ export async function runAgentOrchestrator(
     const claimsNoEvidenceYet =
       parsedAssessment.data.continuationReason === "NO_EVIDENCE_YET";
     if (claimsNoEvidenceYet === hasRunEvidence) {
+      // Issue #99 (docs/reviews/38-issue-99-...-plan.md §2.1): one bounded
+      // corrective re-prompt instead of failing the run outright, when this
+      // is BOTH the first A3 trip this run AND another investigation slot
+      // would remain after it. The request is still rejected exactly as
+      // before — no TOOL_REQUESTED is emitted and nothing executes — only
+      // the run's fate on a tripped guard changes.
+      //
+      // Retry eligibility is positional, not merely "not yet used": phase is
+      // derived purely from turnIndex (FINALIZATION iff
+      // turnIndex === MAX_PROVIDER_TURNS - 1, above), and a FINALIZATION turn
+      // forces tool_choice to submit_resolution_report, so it structurally
+      // cannot carry a corrected diagnostic request. A trip on the LAST
+      // investigation turn (turnIndex === MAX_PROVIDER_TURNS - 2) therefore
+      // has nowhere to retry to — the only turn left is the forced
+      // finalization turn — and must fail exactly as today. The retry is
+      // available only on investigation turns 0 .. MAX_PROVIDER_TURNS - 3
+      // (turns 0 and 1 at current constants).
+      const canRetry = !a3RetryUsed && turnIndex <= MAX_PROVIDER_TURNS - 3;
+      if (canRetry) {
+        // The retry is NOT free: it consumes this loop iteration's
+        // MAX_PROVIDER_TURNS slot exactly like any other provider
+        // invocation (the next provider.runAgentTurn call happens at
+        // turnIndex + 1, via the for-loop's own increment on `continue`
+        // below). providerTurnsUsed counts invocation ATTEMPTS
+        // (recording-provider.ts), so a free retry would let 5 real
+        // invocations run under a documented bound of 4 — failing the
+        // evaluator's bounds-respected metric and exceeding every spend
+        // figure derived from MAX_PROVIDER_TURNS. Charging the slot keeps
+        // the bound honest; the once-per-run limit above is what prevents an
+        // unbounded loop, not the turn budget.
+        a3RetryUsed = true;
+        conversation = [
+          ...conversation,
+          { role: "corrective_guidance", text: A3_CORRECTIVE_GUIDANCE_TEXT },
+        ];
+        continue;
+      }
       return failed(
         "PROVIDER_PROTOCOL_INVALID",
         "The diagnostic tool request declared evidence status inconsistently with the run's evidence state.",

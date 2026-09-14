@@ -1,6 +1,22 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type { AgentConversationMessage, AgentTurnPhase } from "@opspilot/agent-runtime";
 
+// Issue #99 (docs/reviews/38-issue-99-...-plan.md §2.2): compile-time
+// exhaustiveness guard on buildClaudeMessages' switch below. Independent
+// review of this issue's plan caught that a new AgentConversationMessage
+// variant added without its own `case` would be silently DROPPED — never
+// reach Claude — while FakeLlmProvider (which never maps through this
+// function) would still exercise the new variant fine, so every
+// deterministic test could pass against a mechanism that does nothing on
+// the real path. If a member is ever added to AgentConversationMessage and
+// this switch is not updated, `entry` stops being `never` in the default
+// case below and the build fails here instead.
+function assertNeverConversationEntry(entry: never): never {
+  throw new Error(
+    `buildClaudeMessages: unhandled AgentConversationMessage variant ${JSON.stringify(entry)}`,
+  );
+}
+
 // Claude's API is stateless, so every call rebuilds the full messages array
 // from AgentConversationMessage[]. This is minimal, protocol-faithful
 // replay, not exact replay: AgentConversationMessage doesn't preserve every
@@ -90,6 +106,19 @@ export function buildClaudeMessages(
           ],
         });
         break;
+      case "corrective_guidance":
+        // Issue #99 §2.2: a plain user-role text message carrying only the
+        // closed, application-authored corrective text — never a
+        // provider-controlled identifier, never any part of the rejected
+        // assessment. See CorrectiveGuidanceEntry (llm-provider.ts) and
+        // A3_CORRECTIVE_GUIDANCE_TEXT (agent-orchestrator.ts).
+        messages.push({
+          role: "user",
+          content: [{ type: "text", text: entry.text }],
+        });
+        break;
+      default:
+        assertNeverConversationEntry(entry);
     }
   }
 
@@ -321,7 +350,14 @@ conversation.`;
 // set (plus its model-facing description) that ClaudeLlmProvider presents on
 // every INVESTIGATION turn. A version that only moved on prose edits would let
 // one-tool and two-tool LIVE runs record the same identifier (§20.4; the
-// AGENT_PROMPT_VERSION default is updated to match).
+// AGENT_PROMPT_VERSION default is updated to match). Issue #99's corrective
+// re-prompt on a tripped A3 guard (agent-orchestrator.ts) advances the
+// logical prompt version again to opspilot-agent-v7: the corrective message
+// is itself new model-facing text (CorrectiveGuidanceEntry, mapped by
+// buildClaudeMessages above), even though nothing in this function's own
+// prose changed — the same "offered surface changed" reasoning as the v6
+// bump, not a §58/§85-style prose edit (§20.4; the AGENT_PROMPT_VERSION
+// default is updated to match).
 // Deliberately appended on the INVESTIGATION phase only: the
 // FINALIZATION turn is a forced report submission with no diagnostic decision
 // to guide. It teaches structure and decision rules — never hidden reasoning

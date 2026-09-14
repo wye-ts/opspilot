@@ -24,6 +24,7 @@ import {
 import {
   runAgentOrchestrator as _runAgentOrchestrator,
   findInvalidEvidence as _findInvalidEvidence,
+  A3_CORRECTIVE_GUIDANCE_TEXT as _A3_CORRECTIVE_GUIDANCE_TEXT,
 } from "./agent/agent-orchestrator";
 import {
   LlmProviderError as _LlmProviderError,
@@ -90,6 +91,7 @@ export const AgentRunServiceError = _AgentRunServiceError;
 export const AgentRunConfigurationError = _AgentRunConfigurationError;
 export const runAgentOrchestrator = _runAgentOrchestrator;
 export const findInvalidEvidence = _findInvalidEvidence;
+export const A3_CORRECTIVE_GUIDANCE_TEXT = _A3_CORRECTIVE_GUIDANCE_TEXT;
 export const LlmProviderError = _LlmProviderError;
 export const normalizeDiagnosticToolRequests = _normalizeDiagnosticToolRequests;
 export const FakeLlmProvider = _FakeLlmProvider;
@@ -172,6 +174,7 @@ export type {
   AgentConversationMessage,
   AgentTurnInput,
   AgentTurnPhase,
+  CorrectiveGuidanceEntry,
   DiagnosticToolRequestEntry,
   DiagnosticToolResultEntry,
   TicketContextEntry,

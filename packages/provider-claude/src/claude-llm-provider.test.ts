@@ -8,7 +8,7 @@ import {
   InternalServerError,
   RateLimitError,
 } from "@anthropic-ai/sdk";
-import { LlmProviderError, getServiceStatusTool } from "@opspilot/agent-runtime";
+import { LlmProviderError, getServiceStatusTool, A3_CORRECTIVE_GUIDANCE_TEXT } from "@opspilot/agent-runtime";
 import { ResolutionReportSchema } from "@opspilot/contracts";
 import type { AgentTurnInput, RawProviderTurnContext } from "@opspilot/agent-runtime";
 import { describe, expect, it, vi } from "vitest";
@@ -244,6 +244,45 @@ describe("buildClaudeMessages", () => {
         },
       ]),
     );
+  });
+
+  // Issue #99 §2.2/§3 criterion 5: a corrective_guidance entry (appended by
+  // the orchestrator's A3 retry, agent-orchestrator.ts) must actually reach
+  // Claude through the REAL buildClaudeMessages mapper, not merely satisfy
+  // the type checker. Criteria 1-3 in agent-orchestrator.test.ts can all pass
+  // against a corrective variant that this mapper silently drops (its switch
+  // has no case for it) — FakeLlmProvider never routes through this
+  // function, so only a test exercising buildClaudeMessages directly proves
+  // the real path. Independent review of this issue's plan raised this
+  // exact risk as a MAJOR.
+  it("maps corrective_guidance to a plain user text message carrying only the closed guidance text (Issue #99)", () => {
+    const correctiveText =
+      'Your diagnostic tool request was rejected: it declared continuationReason "NO_EVIDENCE_YET"...';
+    const messages = buildClaudeMessages([
+      { role: "corrective_guidance", text: correctiveText },
+    ]);
+
+    expect(messages).toEqual([
+      { role: "user", content: [{ type: "text", text: correctiveText }] },
+    ]);
+  });
+
+  // The real production text (agent-orchestrator.ts's
+  // A3_CORRECTIVE_GUIDANCE_TEXT), routed through the real mapper, must carry
+  // no provider-controlled identifier or value — the same closed-message
+  // discipline every other rejection message in the orchestrator already
+  // follows (§2.3). This cannot be proven from the constant string alone;
+  // it must be proven against what buildClaudeMessages actually emits.
+  it("the real A3 corrective guidance text, once mapped, names the violated invariant but echoes no tool-call id or evidence id (Issue #99)", () => {
+    const sentinelToolCallId = "toolu_01AbCdEfGhIjKlMnOpQrStUv";
+    const messages = buildClaudeMessages([
+      { role: "corrective_guidance", text: A3_CORRECTIVE_GUIDANCE_TEXT },
+    ]);
+
+    const block = (messages[0]?.content as Anthropic.TextBlockParam[])[0];
+    expect(block?.text).toBe(A3_CORRECTIVE_GUIDANCE_TEXT);
+    expect(block?.text).toContain("NO_EVIDENCE_YET");
+    expect(block?.text).not.toContain(sentinelToolCallId);
   });
 });
 

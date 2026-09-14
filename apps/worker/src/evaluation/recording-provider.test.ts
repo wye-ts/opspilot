@@ -3,10 +3,12 @@ import {
   LlmProviderError,
   getServiceStatusTool,
   runAgentOrchestrator,
+  FakeLlmProvider,
   type AgentTurnInput,
   type AgentConversationMessage,
   type LlmProvider,
 } from "@opspilot/agent-runtime";
+import type { InvestigationEventPayload } from "@opspilot/contracts";
 import { describe, expect, it } from "vitest";
 
 import { buildObservedFacts } from "./observed-facts";
@@ -139,5 +141,157 @@ describe("createRecordingProvider", () => {
     expect(facts.investigation.usage.providerCalls).toBe(1);
     expect(facts.investigation.usage.inputTokens).toBe(0);
     expect(facts.investigation.usage.outputTokens).toBe(0);
+  });
+
+  // Issue #99 §3 criterion 9 (retry-detectability): a completed retried run
+  // must be distinguishable from an ordinary multi-tool run using only the
+  // run's own persisted facts — providerCallsObserved (recorder.length here,
+  // the same "count every invocation attempt" semantics
+  // run-provider-usage-collector.ts persists) versus what its accepted
+  // TOOL_REQUESTED events plus the finalization/report turn account for.
+  //
+  // An earlier draft of the #99 plan instead pointed at the server log's
+  // provider_turn lines to establish this. Independent review correctly
+  // rejected that: those lines carry no runId and no turnIndex, and an
+  // A3-rejected response logs the IDENTICAL normalizedResultType as an
+  // accepted one, so they cannot attribute a retry under concurrent runs.
+  // This test proves the arithmetic instead, deterministically, from data
+  // the run itself persists.
+  describe("Issue #99 criterion 9 — retry-detectability arithmetic", () => {
+    const usage = { inputTokens: 10, outputTokens: 5 };
+    const ticketContext: AgentConversationMessage = {
+      role: "ticket_context",
+      ticketId: "T-1",
+      summary: "simulated",
+    };
+    const validReport = {
+      category: "SERVICE_DEGRADATION",
+      summary: "s",
+      rootCause: "r",
+      customerImpact: "c",
+      recommendedResolution: "rr",
+      confidence: 0.7,
+      evidence: [{ evidenceId: "rag-chunk-1", sourceType: "RAG_CHUNK", finding: "f", supports: ["ROOT_CAUSE"] }],
+      suggestedActions: [],
+      evidenceState: "SUFFICIENT",
+      recommendationDisposition: "ADVISORY",
+    };
+
+    // expectedFromLedger: for an ORDINARY run, providerCallsObserved equals
+    // the accepted TOOL_REQUESTED count plus exactly one (the terminal
+    // report-submission call, whether voluntary or forced finalization) —
+    // every investigation turn produces either an accepted TOOL_REQUESTED or
+    // is that terminal call. A retried run has one extra invocation (the
+    // rejected turn) that produced neither, so the observed count exceeds
+    // this expectation by exactly one.
+    function retryDelta(providerCallsObserved: number, toolRequestedCount: number): number {
+      return providerCallsObserved - (toolRequestedCount + 1);
+    }
+
+    it("is 0 for an ordinary (non-retried) completed run", async () => {
+      const provider = new FakeLlmProvider({
+        id: "ordinary-no-retry",
+        turns: [
+          {
+            kind: "diagnostic_tool_requests",
+            usage,
+            requests: [
+              {
+                toolCallId: "call-1",
+                toolName: "get_service_status",
+                input: { serviceSlug: "notification-service" },
+                rawAssessment: {
+                  evidenceState: "INSUFFICIENT",
+                  continuationReason: "STATUS_UNRESOLVED",
+                  supportedBy: [{ evidenceId: "rag-chunk-1", sourceType: "RAG_CHUNK" }],
+                },
+              },
+            ],
+          },
+          { kind: "report_submission", usage, rawInput: validReport },
+        ],
+      });
+      const recorder: RecordedProviderTurn[] = [];
+      const wrapped = createRecordingProvider(provider, recorder);
+      const emitted: InvestigationEventPayload[] = [];
+
+      const result = await runAgentOrchestrator({
+        provider: wrapped,
+        toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+        initialConversation: [ticketContext],
+        allowedRagChunkIds: new Set(["rag-chunk-1"]),
+        emitLifecycleEvent: async (payload) => {
+          emitted.push(payload);
+        },
+      });
+
+      expect(result.status).toBe("completed");
+      const toolRequestedCount = emitted.filter((e) => e.type === "TOOL_REQUESTED").length;
+      expect(retryDelta(recorder.length, toolRequestedCount)).toBe(0);
+    });
+
+    it("is exactly 1 for a run whose A3 guard retried once and then completed", async () => {
+      const provider = new FakeLlmProvider({
+        id: "retried-once",
+        turns: [
+          {
+            // Rejected: RAG evidence already allowed, so NO_EVIDENCE_YET trips A3.
+            kind: "diagnostic_tool_requests",
+            usage,
+            requests: [
+              {
+                toolCallId: "trip-1",
+                toolName: "get_service_status",
+                input: { serviceSlug: "notification-service" },
+                rawAssessment: {
+                  evidenceState: "INSUFFICIENT",
+                  continuationReason: "NO_EVIDENCE_YET",
+                  supportedBy: [],
+                },
+              },
+            ],
+          },
+          {
+            // Corrected retry, accepted.
+            kind: "diagnostic_tool_requests",
+            usage,
+            requests: [
+              {
+                toolCallId: "call-1",
+                toolName: "get_service_status",
+                input: { serviceSlug: "notification-service" },
+                rawAssessment: {
+                  evidenceState: "INSUFFICIENT",
+                  continuationReason: "STATUS_UNRESOLVED",
+                  supportedBy: [{ evidenceId: "rag-chunk-1", sourceType: "RAG_CHUNK" }],
+                },
+              },
+            ],
+          },
+          { kind: "report_submission", usage, rawInput: validReport },
+        ],
+      });
+      const recorder: RecordedProviderTurn[] = [];
+      const wrapped = createRecordingProvider(provider, recorder);
+      const emitted: InvestigationEventPayload[] = [];
+
+      const result = await runAgentOrchestrator({
+        provider: wrapped,
+        toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+        initialConversation: [ticketContext],
+        allowedRagChunkIds: new Set(["rag-chunk-1"]),
+        emitLifecycleEvent: async (payload) => {
+          emitted.push(payload);
+        },
+      });
+
+      expect(result.status).toBe("completed");
+      const toolRequestedCount = emitted.filter((e) => e.type === "TOOL_REQUESTED").length;
+      // 3 attempts observed (rejected + retry + report), but only 1 accepted
+      // TOOL_REQUESTED — the retry is exactly the +1 discrepancy.
+      expect(recorder.length).toBe(3);
+      expect(toolRequestedCount).toBe(1);
+      expect(retryDelta(recorder.length, toolRequestedCount)).toBe(1);
+    });
   });
 });

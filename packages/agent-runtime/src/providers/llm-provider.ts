@@ -59,11 +59,26 @@ export interface RagContextMessage {
   readonly entries: readonly RagContextEntry[];
 }
 
+// Issue #99 (docs/reviews/38-issue-99-...-plan.md §2.2): appended, at most
+// once per run, when the orchestrator's A3 run-state-consistency guard trips
+// on an INVESTIGATION turn and a corrective re-prompt is attempted instead of
+// failing the run outright. `text` is always closed, application-authored
+// guidance (see agent-orchestrator.ts's A3_CORRECTIVE_GUIDANCE_TEXT) — never
+// a provider-controlled identifier, never any part of the rejected
+// assessment, never echoed model output. Provider-neutral by construction,
+// like every other AgentConversationMessage variant; ./claude-message-mapping
+// maps it to a plain user-role text message.
+export interface CorrectiveGuidanceEntry {
+  readonly role: "corrective_guidance";
+  readonly text: string;
+}
+
 export type AgentConversationMessage =
   | TicketContextEntry
   | DiagnosticToolRequestEntry
   | DiagnosticToolResultEntry
-  | RagContextMessage;
+  | RagContextMessage
+  | CorrectiveGuidanceEntry;
 
 // docs/04-agent-design.md §9 defines a richer per-turn contract (availableTools,
 // toolChoice, deadlineAtMs, promptVersion, ...). phase and maxOutputTokens are
