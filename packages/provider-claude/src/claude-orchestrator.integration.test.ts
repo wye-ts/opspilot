@@ -162,7 +162,7 @@ function buildProvider(
       },
     ],
     configuredMaxRetries: 1,
-    now: () => new Date("2026-07-28T00:00:00.000Z"),
+    now: () => new Date("2026-09-14T00:00:00.000Z"),
     ...(logger !== undefined ? { logger: logger as never } : {}),
   });
 }
