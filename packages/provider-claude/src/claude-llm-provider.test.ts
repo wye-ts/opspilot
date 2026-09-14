@@ -1163,7 +1163,7 @@ function buildProvider(
     model: "claude-sonnet-5",
     diagnosticTools: [],
     configuredMaxRetries: 1,
-    now: () => new Date("2026-07-28T00:00:00.000Z"),
+    now: () => new Date("2026-09-14T00:00:00.000Z"),
     ...overrides,
   });
 }
@@ -1451,11 +1451,11 @@ describe("ClaudeLlmProvider — usage, retries, and cost metadata", () => {
         cacheCreation5mInputTokens: 400,
         cacheCreation1hInputTokens: 100,
         pricingStatus: "CURRENT",
-        // 1000*2000 + 50*10000 + 200*200 + 400*2500 + 100*4000
-        // = 2000000 + 500000 + 40000 + 1000000 + 400000 = 3940000 nanoUSD.
+        // 1000*3000 + 50*15000 + 200*300 + 400*3750 + 100*6000
+        // = 3000000 + 750000 + 60000 + 1500000 + 600000 = 5910000 nanoUSD.
         // Asserted as the exact integer the accounting path carries, not as
-        // the lossy $0.00394 projection it used to be compared against.
-        estimatedCostNanoUsd: "3940000",
+        // the lossy $0.00591 projection it used to be compared against.
+        estimatedCostNanoUsd: "5910000",
       }),
     );
   });
