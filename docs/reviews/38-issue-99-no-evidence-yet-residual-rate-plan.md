@@ -255,6 +255,55 @@ event-contract change with its own plan, not an addendum to this one.
 
 ## 3. Acceptance criteria
 
+**Implementation status (2026-09-14):** criteria 1-10 are implemented and verified (deterministic
+test suite green, `pnpm agent:verify --focused` PASS, `pnpm run lint`/`typecheck`/`build` clean;
+`pnpm run test`'s 4 pre-existing `apps/web` failures are reproduced identically on unmodified `main`
+in an isolated worktree — a local jsdom/environment mismatch, not caused by this change).
+
+Criteria 11-12 are **retired as unobservable within a proportionate budget**, not satisfied and not
+still pending. The reasoning is recorded here because it reverses this plan's own earlier position
+and a future session will otherwise re-propose the retired version.
+
+**What was actually run.** With the API quota restored, four real LIVE runs were fired against a
+local build carrying this change, using the exact ticket wording from the deployed run `855ceaf4-…`
+that #99 was filed against:
+
+| run | providerCalls | accepted `TOOL_REQUESTED` | outcome |
+| --- | --- | --- | --- |
+| `ddd6ced6-ea68-46ad-b215-3fefce6a20d1` | 3 | 2 | `REPORT_SCHEMA_INVALID` |
+| `adf6ed24-fb75-4737-8147-16408e752b18` | 3 | 2 | `REPORT_SCHEMA_INVALID` |
+| `402efbfb-0b02-4449-b865-fa1520af9333` | 3 | 2 | `REPORT_SCHEMA_INVALID` |
+| `b5fb71ae-cd52-4c3c-a9d1-1072d040fb61` | 4 | 2 | `REPORT_SCHEMA_INVALID` |
+
+**A3 did not trip in any of them.** Every run cleared the guard on turn 0, executed two diagnostic
+tools, and then failed at report validation — a different defect, now filed as #101. By criterion
+9's own arithmetic each of these is an ordinary run (`providerCallsObserved` equals accepted
+`TOOL_REQUESTED` plus the finalization turn), so none of them exercised the retry, and none is
+reported here as evidence that it works.
+
+**Why the criteria are retired rather than deferred again.** Criterion 11 asked for an observation
+whose base rate appears to have fallen since the criterion was written. The A3 misclaim was
+measured at 1-in-4 post-#85 (§8 of `docs/reviews/35`) under the single-tool catalog; `9461123` then
+added a second diagnostic tool, changing the decision the model faces on turn 0. Four consecutive
+clean passes is not proof the rate is now zero — the sample is far too small for that claim, and
+stating otherwise would repeat exactly the error criterion 12 exists to prevent — but it is enough
+to establish that observing a trip is no longer a matter of a handful of runs. Continuing to spend
+billed runs against an unknown and apparently low rate, to observe a mechanism whose correctness is
+already established deterministically by criteria 1-10, is not proportionate (`CONTEXT.md`,
+Engineering posture).
+
+**What this issue therefore honestly delivers:** a mechanism, verified by deterministic tests, that
+gives a tripped A3 guard one bounded corrective re-prompt on an early investigation turn instead of
+failing the run. It is **not** accompanied by a real-model observation of that mechanism firing, and
+no readout, comment, or doc line in this change may claim one. Whether the retry recovers a real
+model in practice remains unproven.
+
+**What would settle it, if a future session wants to.** The mechanism generalizes to report
+validation under #101, where the failure reproduces 4-of-4 rather than 0-of-4 — so the corrective
+path will be exercised by real models there at a rate that makes observation cheap. If that
+observation lands, it is evidence about the shared mechanism, and this issue's gap closes as a side
+effect rather than by spending runs here.
+
 1. A deterministic test reproducing the exact state: RAG evidence present, zero tool executions,
    first diagnostic request, assessment claims `NO_EVIDENCE_YET`. It must **fail before** the change,
    proving it exercises the real path rather than passing against unmodified code — a new guard test
@@ -298,14 +347,21 @@ event-contract change with its own plan, not an addendum to this one.
     than they prove: the eval drives `FakeLlmProvider` from typed fixtures, so prompt text cannot
     influence those results at all — identical BEFORE/AFTER counts prove no break in the existing
     evaluation contract, not that real model behavior changed.
-11. **At least one real LIVE run** observed reaching past the guard, run id recorded.
-12. The report of (11) states the sample size and what it does **not** establish. One passing LIVE run
-    does not prove the residual rate is gone — the baseline behavior is non-deterministic, and
-    reporting a single clean run as resolution is precisely how #85 reached an accepted-residual state
-    that later surfaced in public. Use criterion 9's arithmetic to say which of two things the run
-    shows: the retry fired and recovered, or the model simply got it right the first time. **A run
-    that never trips A3 does not test the retry at all** and must not be reported as evidence that it
-    works.
+11. **RETIRED — superseded by the status note above.** This criterion originally required at least
+    one real LIVE run observed reaching past the guard, with the run id recorded. Four real LIVE runs
+    were fired and A3 tripped in none of them, so the retry was never exercised; see the status note
+    for why further billed sampling against an apparently low base rate is not proportionate. The
+    honest delivered claim is the deterministic one (criteria 1-10). **This issue must not be closed
+    with any statement that a real model was observed recovering from a tripped A3 guard.**
+12. **Still binding, as a constraint on reporting rather than a task.** Any future real-model
+    observation of this mechanism — including one obtained via #101, which shares it — must state its
+    sample size and what it does **not** establish. One passing LIVE run does not prove the residual
+    rate is gone; the baseline is non-deterministic, and reporting a single clean run as resolution
+    is precisely how #85 reached an accepted-residual state that later surfaced in public. Use
+    criterion 9's arithmetic to say which of two things a run shows: the retry fired and recovered,
+    or the model simply got it right the first time. **A run that never trips A3 does not test the
+    retry at all** and must not be reported as evidence that it works — the rule that governed the
+    four runs recorded above.
 
 ---
 
