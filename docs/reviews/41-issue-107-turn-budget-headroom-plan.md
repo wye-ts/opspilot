@@ -181,15 +181,32 @@ The lesson generalizes beyond this issue and is why §2.3 exists: **`REPORT_GENE
 not merely a log line — emitting it transitions the reducer's active stage**, so anything derived
 from "which stage is running" must move with it.
 
-### 2.2 Stop offering diagnostic tools when the budget is spent
+### 2.2 On a zero-budget turn, offer only the report tool AND force it
 
-`claude-llm-provider.ts` selects tools on `phase` alone. Extend the condition to also require
-`input.diagnosticCallsRemaining > 0`. `AgentTurnInput` already carries the field (§1), so no
-contract change is needed.
+`claude-llm-provider.ts:388-397` derives **both** the offered tool list and `tool_choice` from
+`phase` alone. Extend **both** to the budget condition:
 
-This keeps §0.6's newly-reachable guard unreachable in practice, and keeps the guard itself as
-defense-in-depth. It also removes the misleading offer — a model told it has 0 calls remaining
-should not simultaneously be handed the tools.
+```
+const canRequestDiagnostics = phase === "INVESTIGATION" && input.diagnosticCallsRemaining > 0;
+```
+
+- `canRequestDiagnostics` → catalog + `submit_resolution_report`, `tool_choice: auto`;
+- otherwise → `submit_resolution_report` only, `tool_choice: { type: "tool", name: … }`.
+
+`AgentTurnInput` already carries `diagnosticCallsRemaining` (§1), so no contract change is needed.
+
+**Why forcing the tool matters, not just narrowing the list** (round 3 finding, confirmed against
+source). Removing the diagnostic tools while leaving `tool_choice: auto` lets Anthropic legally
+return a text-only `end_turn` response. That yields zero `tool_use` blocks, which
+`normalizeDiagnosticToolRequests` (`llm-provider.ts:170-187`) turns into
+`PROVIDER_PROTOCOL_INVALID` — terminating the run **before any report is submitted**, so the
+correction this issue exists to enable never fires. That is ordinary provider behavior under `auto`,
+not an adversarial edge case, and it would have converted the new headroom turn into a fresh failure
+mode. The forced tool choice is what makes the zero-budget turn behave like the finalization turn it
+effectively is.
+
+This also keeps §0.6's otherwise newly-reachable tool-bound guard unreachable in practice, while
+leaving it in place as defense-in-depth.
 
 **Prompt-version consequence.** Per `references/prompt-version-and-tool-contract.md`, the offered
 tool set changing on a turn is a model-facing contract change and requires a logical prompt-version
@@ -197,6 +214,11 @@ bump. The current version is `opspilot-agent-v8` (`docs/04-agent-design.md` §20
 line 1023; `docs/03-technical-design.md:1237`), so this becomes `opspilot-agent-v9` — narrowing
 *when* the catalog is offered is an offered-set change of the same kind as the v6 bump, even though
 no prose in `claude-message-mapping.ts` moves. Four sites move together; see §6.
+
+**Prompt selection is deliberately left alone.** A zero-budget INVESTIGATION turn still receives
+`investigationGuidance` with `diagnosticCallsRemaining: 0`, which already tells the model it has no
+calls left. Switching it to `FINALIZATION_SUFFIX` would mean making `phase` non-positional, which
+§5 scopes out.
 
 ### 2.3 A test that runs the emitted stream through the REAL reducer
 
@@ -283,7 +305,7 @@ turn-based ceiling #99 added.
 | 3 | All diagnostics spent, provider failure on the first announced turn, `RUN_FAILED` → real reducer | ACCEPTED with `failedStage: "REPORT_GENERATION"` (§2.1a(b)) |
 | 4 | Cases 1 and 3 at **5/3 with the old positional rule** | REJECTED — `MISSING_LIFECYCLE_FACT` and `FAILED_STAGE_NOT_TRUTHFUL` respectively. This is what proves the tests discriminate (§2.3) |
 | 5 | Case 2 at **5/3 with the old positional rule** | ACCEPTED — a regression guard against duplicate emission, deliberately **not** a red-first test (§2.3) |
-| 6 | Turn with `diagnosticCallsRemaining === 0` | Provider offers `submit_resolution_report` only |
+| 6 | Turn with `diagnosticCallsRemaining === 0` | Provider offers `submit_resolution_report` **only**, and `tool_choice` **forces** it — never `auto` (§2.2) |
 | 7 | Correction fires after all 3 diagnostic calls are spent | `correctiveTurns > 0` — #108's third characterization test flips, as it predicted |
 | 8 | Full run within the new ceiling | `providerTurnsUsed <= MAX_PROVIDER_TURNS` |
 | 9 | `agent-run-bounds.test.ts` | Updated to `5`/slack; the `<=` invariant assertion unchanged |
@@ -305,8 +327,9 @@ state mechanism and model-compliance as two separate verdicts.
 - **#109's empty-evidence failure.** Independent; the dominant cause of current LIVE failures.
 - **Changing `MAX_DIAGNOSTIC_TOOL_CALLS`.** Stays 3.
 - **Relaxing the reducer** (rejected, §2.1).
-- **Making `phase` non-positional** (§2.1) — `phase` still governs `tool_choice` and prompt
-  selection; only the report-stage transition is decoupled from it.
+- **Making `phase` non-positional** (§2.1) — `phase` still governs prompt selection, and
+  `tool_choice` is now additionally narrowed by the diagnostic budget (§2.2) without `phase` itself
+  changing. Only the report-stage transition is fully decoupled from position.
 - **Recording corrected-away attempts in the ledger.** Still owed its own issue (#101 §5).
 - **Any LIVE run.** Nothing here requires one; the raise's behavioral payoff is measured with #109.
 
@@ -321,7 +344,8 @@ state mechanism and model-compliance as two separate verdicts.
    first because none of these shapes exists at 4/3 (§2.3a).
 2. **Green step.** Implement §2.1's shared report-stage condition — **both** the once-per-run
    emission and the `activeStage` derivation (§2.1a). Cases 1 and 3 go green; case 2 stays green.
-3. Implement §2.2's tool-offering condition + its unit test; let #108's characterization test flip.
+3. Implement §2.2's zero-budget tool list **and** forcing `tool_choice`, with its request test; let
+   #108's characterization test flip.
 4. Confirm the §3 compatibility claim: re-run the existing orchestrator and contracts suites and
    account for every test whose expectations changed, distinguishing "the bound moved" from "the
    emission semantics moved".
@@ -365,7 +389,10 @@ state mechanism and model-compliance as two separate verdicts.
 4. `activeStage` resolves to `REPORT_GENERATION` on every turn satisfying that same condition, so a
    provider failure on an announced non-final turn persists `failedStage: "REPORT_GENERATION"` and
    is accepted by the reducer (§2.1a(b)).
-5. The provider offers no diagnostic tool on a turn with `diagnosticCallsRemaining === 0`.
+5. On a turn with `diagnosticCallsRemaining === 0`, the provider request carries
+   `submit_resolution_report` as its only tool **and** a forcing `tool_choice` naming it — asserted
+   by a `claude-llm-provider` request test. A text-only `end_turn` response is therefore not a legal
+   outcome of that turn (§2.2).
 6. `MAX_PROVIDER_TURNS === 5`, `MAX_DIAGNOSTIC_TOOL_CALLS === 3`, and the `<=` invariant assertion
    still passes while the equality assertion is replaced by a slack assertion.
 7. #108's "correction CANNOT fire" characterization test is updated to reflect that it now can, with
