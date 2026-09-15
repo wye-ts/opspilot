@@ -4005,8 +4005,16 @@ describe("runAgentOrchestrator — A3 corrective retry (issue #99)", () => {
     // it is expressed as `turnIndex <= MAX_PROVIDER_TURNS - 3`. The behaviour
     // this test pins — a trip with no retry slot left fails immediately and
     // never touches the reserved finalization turn — is unchanged; only which
-    // turn is "too late" moved, so the fixture gains one accepted diagnostic
-    // and trips on turn 3 instead of turn 2.
+    // turn is "too late" moved.
+    //
+    // The fixture must therefore reach turn 3 with the A3 guard still
+    // REACHABLE. An earlier revision of this test simply added a third
+    // accepted diagnostic, which spent the tool budget and made the
+    // diagnostic-bound guard (agent-orchestrator.ts:807) reject the request
+    // BEFORE the A3 guard (:867) ever ran — leaving the test green even if the
+    // A3 retry rule regressed. Instead, turn 2 is consumed by a schema-invalid
+    // report, which uses the #101 correction path: it spends a provider turn
+    // while spending neither diagnostic budget nor the A3 retry.
     const turns: FakeProviderTurn[] = [
       {
         kind: "diagnostic_tool_requests",
@@ -4037,20 +4045,12 @@ describe("runAgentOrchestrator — A3 corrective retry (issue #99)", () => {
         ],
       },
       {
-        kind: "diagnostic_tool_requests",
+        // turnIndex 2: consumed by a schema-invalid report. This spends the
+        // turn without spending diagnostic budget (2 of 3 used) or the A3
+        // retry, which is what keeps the A3 guard reachable on turn 3.
+        kind: "report_submission",
         usage,
-        requests: [
-          {
-            toolCallId: "call-3",
-            toolName: "get_service_status",
-            input: { serviceSlug: "search-service" },
-            rawAssessment: {
-              evidenceState: "INSUFFICIENT",
-              continuationReason: "STATUS_UNRESOLVED",
-              supportedBy: [{ evidenceId: "call-2", sourceType: "TOOL_EXECUTION" }],
-            },
-          },
-        ],
+        rawInput: { bogus: "schema-invalid" },
       },
       {
         // turnIndex 3 === MAX_PROVIDER_TURNS - 2: past the retry window
@@ -4083,10 +4083,13 @@ describe("runAgentOrchestrator — A3 corrective retry (issue #99)", () => {
     expect(result.status).toBe("failed");
     if (result.status !== "failed") throw new Error("unreachable");
     expect(result.code).toBe("PROVIDER_PROTOCOL_INVALID");
-    // The diagnostic budget is spent by the time this turn runs, so the report
-    // stage has already begun (#107) and REPORT_GENERATION is the truthful
-    // active stage — the reducer would reject DIAGNOSTIC_EXECUTION here.
-    expect(result.failedStage).toBe("REPORT_GENERATION");
+    // Pin WHICH guard rejected this. Without this assertion the test passes
+    // when the diagnostic-bound guard fires first, which is exactly how the
+    // earlier revision stopped covering the A3 rule (see the fixture comment).
+    expect(result.message).toContain("declared evidence status inconsistently");
+    // The diagnostic budget is NOT spent here (2 of 3 used), so the report
+    // stage has not begun and DIAGNOSTIC_EXECUTION is the truthful stage.
+    expect(result.failedStage).toBe("DIAGNOSTIC_EXECUTION");
     // Exactly 4 attempts: turns 0-3. Turn 4 (forced finalization) was never
     // invoked — the rejected request did not consume it.
     expect(runAgentTurnSpy).toHaveBeenCalledTimes(4);
