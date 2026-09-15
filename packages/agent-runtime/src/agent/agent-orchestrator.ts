@@ -254,6 +254,98 @@ export const A3_CORRECTIVE_GUIDANCE_TEXT =
   "evidenceAssessment consistent with what has actually been gathered so far " +
   "(or submit_resolution_report, if that evidence is now sufficient).";
 
+// Issue #101 (docs/reviews/39-issue-101-...-plan.md §2.2): the closed,
+// application-authored remedies offered when a submitted resolution report
+// fails schema validation and is given one corrective retry.
+//
+// Keyed on the invariant's own `custom` message literal from
+// resolution-report.ts. That coupling is deliberate and safe in one direction
+// only: an unrecognized key falls through to the generic remedy below, so a
+// future schema-message edit degrades this to a less specific (but still
+// true) corrective message rather than to a wrong one. It can never invent a
+// remedy for an invariant it does not know.
+//
+// Why a closed set rather than forwarding the schema's own messages: NOT
+// safety — resolution-report-validation.ts records that every `custom` issue
+// on this schema is a fixed hand-written literal with no interpolated report
+// data, so forwarding would leak nothing. The reason is PROMPT GOVERNANCE.
+// Those literals are validation-engine output; routing them to the provider
+// would make every future schema-message edit a silent change to model-facing
+// text with no §20.4 version bump and no eval comparison. Authoring the
+// model-facing half here keeps prompt text where §20.4 can see it.
+const REPORT_INVARIANT_REMEDIES: ReadonlyMap<string, string> = new Map([
+  [
+    "suggestedActions[].groundedBy entries must each appear in report.evidence.",
+    "Every groundedBy locator on a suggested action must also appear as its own " +
+      "entry in this report's evidence array, matched on both evidenceId and " +
+      "sourceType. If you grounded an action in a tool result or runbook chunk " +
+      "that you did not list under evidence, add that entry to evidence (with " +
+      'supports: [] if it does not support the root cause) rather than removing ' +
+      "the grounding.",
+  ],
+  [
+    "ACTIONABLE requires at least one suggested action.",
+    "A report whose recommendationDisposition is ACTIONABLE must contain at " +
+      "least one entry in suggestedActions. Either supply the action you are " +
+      "recommending, or set recommendationDisposition to ADVISORY (which " +
+      "requires exactly zero suggested actions) if no concrete action is " +
+      "warranted by the evidence.",
+  ],
+  [
+    "ADVISORY requires exactly zero suggested actions.",
+    "A report whose recommendationDisposition is ADVISORY must leave " +
+      "suggestedActions empty. Either remove the suggested actions, or set " +
+      "recommendationDisposition to ACTIONABLE if you intend to recommend them.",
+  ],
+  [
+    "groundedBy must not repeat the same (sourceType, evidenceId) locator.",
+    "Each suggested action's groundedBy array must not list the same " +
+      "(sourceType, evidenceId) pair twice. Cite each distinct piece of " +
+      "evidence once.",
+  ],
+]);
+
+// Used when a report is rejected by an invariant with no authored remedy
+// above. The retry still happens — the run is no less recoverable — but the
+// message claims nothing specific rather than guessing at the cause.
+const GENERIC_REPORT_CORRECTIVE_REMEDY =
+  "The report did not satisfy the resolution-report contract.";
+
+/**
+ * Builds the corrective guidance for a rejected report.
+ *
+ * Reads ONLY the sanitized issue summaries (path/code/message), never the
+ * submitted report, so nothing the model wrote — no invented evidenceId, no
+ * payload field, no rootCause text — can reach the next prompt. Remedies are
+ * de-duplicated and ordered deterministically by first appearance, because a
+ * single malformed report routinely trips the same invariant on several
+ * actions at once (two of the four real LIVE runs produced two identical F5
+ * issues), and repeating the same paragraph twice teaches nothing.
+ */
+export function buildReportCorrectiveGuidanceText(
+  issues: readonly ReportValidationIssue[],
+): string {
+  const remedies: string[] = [];
+  for (const issue of issues) {
+    const remedy =
+      (issue.message !== undefined ? REPORT_INVARIANT_REMEDIES.get(issue.message) : undefined) ??
+      GENERIC_REPORT_CORRECTIVE_REMEDY;
+    if (!remedies.includes(remedy)) {
+      remedies.push(remedy);
+    }
+  }
+
+  return (
+    "Your submitted resolution report was rejected: it did not satisfy the " +
+    "report contract, so it was NOT recorded and this investigation has no " +
+    "report yet. " +
+    remedies.join(" ") +
+    " Submit a corrected resolution report. Do not restate the rejected " +
+    "report unchanged, and do not invent evidence to satisfy the contract — " +
+    "report only what this conversation actually established."
+  );
+}
+
 export async function runAgentOrchestrator(
   params: AgentOrchestratorParams,
 ): Promise<AgentOrchestratorResult> {
@@ -368,6 +460,14 @@ export async function runAgentOrchestrator(
   // what bounds the retry loop (an unbounded retry would let a
   // never-complying model spend providerTurns indefinitely).
   let a3RetryUsed = false;
+  // Issue #101 §2.1: whether this run has already spent its one allowed
+  // corrective retry on a schema-rejected report. Tracked separately from
+  // a3RetryUsed on purpose — the two guards reject different things at
+  // different points in the turn, and a shared flag would let an early A3
+  // trip silently consume the report path's only correction (or vice versa),
+  // making a run's recoverability depend on which mistake the model happened
+  // to make first.
+  let reportRetryUsed = false;
 
   for (let turnIndex = 0; turnIndex < MAX_PROVIDER_TURNS; turnIndex++) {
     const phase: AgentTurnPhase =
@@ -495,13 +595,53 @@ export async function runAgentOrchestrator(
       });
 
       if (!parsedReport.success) {
+        const issues = summarizeReportValidationIssues(parsedReport.error);
         await emit({ type: "REPORT_VALIDATION_FAILED", failureCode: "REPORT_SCHEMA_INVALID" });
+
+        // Issue #101 (docs/reviews/39-issue-101-...-plan.md §2.1): one bounded
+        // corrective re-prompt instead of discarding the whole run, when this
+        // is BOTH the first rejected report this run AND a later turn remains
+        // to submit a corrected one into. The report is still rejected exactly
+        // as before — REPORT_VALIDATION_FAILED is emitted above, nothing is
+        // recorded as a report, and ResolutionReportSchema is untouched. Only
+        // the run's fate on a first rejection changes.
+        //
+        // Eligibility is `turnIndex < MAX_PROVIDER_TURNS - 1` — WIDER than the
+        // A3 retry's window above, and deliberately so. A3's retry needs a slot
+        // that can carry a corrected DIAGNOSTIC request, which the forced
+        // FINALIZATION turn structurally cannot (it pins tool_choice to
+        // submit_resolution_report). A corrected REPORT needs exactly that
+        // slot, so the finalization turn is a valid retry target here rather
+        // than an excluded one. Only a rejection ON the final turn is
+        // unrecoverable — which is where real run b5fb71ae died, and failing
+        // it is honest.
+        const canRetryReport = !reportRetryUsed && turnIndex < MAX_PROVIDER_TURNS - 1;
+        if (canRetryReport) {
+          // Charged a turn slot like every other provider invocation, for the
+          // same reason as the A3 retry: providerTurnsUsed counts ATTEMPTS
+          // (recording-provider.ts), so a free retry would run more paid
+          // invocations than MAX_PROVIDER_TURNS documents. The once-per-run
+          // flag, not the turn budget, is what bounds the loop.
+          reportRetryUsed = true;
+          conversation = [
+            ...conversation,
+            {
+              role: "corrective_guidance",
+              // Derived from the SANITIZED issue summaries only — never from
+              // result.rawInput — so nothing the model wrote can ride back
+              // into the next prompt.
+              text: buildReportCorrectiveGuidanceText(issues),
+            },
+          ];
+          continue;
+        }
+
         return failed(
           "REPORT_SCHEMA_INVALID",
           "The submitted resolution report failed schema validation.",
           trace,
           "REPORT_GENERATION",
-          summarizeReportValidationIssues(parsedReport.error),
+          issues,
         );
       }
 

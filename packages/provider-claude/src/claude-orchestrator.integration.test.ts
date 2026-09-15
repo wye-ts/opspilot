@@ -300,9 +300,16 @@ describe("orchestrator through the Claude adapter (mocked transport)", () => {
   });
 
   it("rejects a report that fails schema validation", async () => {
+    // Issue #101: the first schema-rejected report is now given one corrective
+    // retry, so reaching the failure takes two bad submissions. Worth keeping
+    // in THIS file rather than only in the orchestrator's own tests: this path
+    // runs through the real Claude adapter, so it also proves the corrective
+    // conversation entry survives a real buildClaudeMessages round-trip
+    // without the adapter rejecting or dropping it.
     const create = vi
       .fn()
       .mockResolvedValueOnce(investigationTurn())
+      .mockResolvedValueOnce(finalizationTurn({ category: "SERVICE_DEGRADATION" }))
       .mockResolvedValueOnce(finalizationTurn({ category: "SERVICE_DEGRADATION" }));
 
     const result = await runOrchestrator(buildProvider(create));
@@ -310,6 +317,15 @@ describe("orchestrator through the Claude adapter (mocked transport)", () => {
     expect(result.status).toBe("failed");
     if (result.status !== "failed") throw new Error("unreachable");
     expect(result.code).toBe("REPORT_SCHEMA_INVALID");
+
+    // The retry really happened against the adapter: three provider calls, and
+    // the third request carries the corrective guidance as a user-role text
+    // message the real mapper produced.
+    expect(create).toHaveBeenCalledTimes(3);
+    const retryMessages = create.mock.calls[2]?.[0]?.messages ?? [];
+    const retryText = JSON.stringify(retryMessages);
+    expect(retryText).toContain("was rejected");
+    expect(retryText).toContain("NOT recorded");
   });
 
   it("turns a malformed provider response into protocol_error, not a thrown error", async () => {

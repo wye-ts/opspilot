@@ -8,7 +8,7 @@ import {
   InternalServerError,
   RateLimitError,
 } from "@anthropic-ai/sdk";
-import { LlmProviderError, getServiceStatusTool, A3_CORRECTIVE_GUIDANCE_TEXT } from "@opspilot/agent-runtime";
+import { LlmProviderError, getServiceStatusTool, A3_CORRECTIVE_GUIDANCE_TEXT, buildReportCorrectiveGuidanceText } from "@opspilot/agent-runtime";
 import { ResolutionReportSchema } from "@opspilot/contracts";
 import type { AgentTurnInput, RawProviderTurnContext } from "@opspilot/agent-runtime";
 import { describe, expect, it, vi } from "vitest";
@@ -283,6 +283,53 @@ describe("buildClaudeMessages", () => {
     expect(block?.text).toBe(A3_CORRECTIVE_GUIDANCE_TEXT);
     expect(block?.text).toContain("NO_EVIDENCE_YET");
     expect(block?.text).not.toContain(sentinelToolCallId);
+  });
+
+  // Issue #101 §3 criterion 6: the SAME proof for the report-rejection
+  // corrective path. It reuses #99's CorrectiveGuidanceEntry variant and
+  // therefore the mapper case above, but the TEXT is built at runtime from
+  // validation issues rather than being a fixed constant — so the risk this
+  // guards is different and real: a builder that interpolated part of the
+  // rejected report would leak model output into the next prompt, and no
+  // orchestrator-level test would notice, because FakeLlmProvider never routes
+  // through this mapper.
+  it("maps the report corrective guidance through the real mapper, naming the invariant but echoing nothing the model wrote (Issue #101)", () => {
+    // The exact sanitized issue shape the orchestrator passes in, matching the
+    // real LIVE failures of 2026-09-14 (runs ddd6ced6 / 402efbfb): the F5
+    // subset rule, tripped twice by one report.
+    const text = buildReportCorrectiveGuidanceText([
+      {
+        path: ["suggestedActions", 0, "groundedBy", 0],
+        code: "custom",
+        message: "suggestedActions[].groundedBy entries must each appear in report.evidence.",
+      },
+      {
+        path: ["suggestedActions", 0, "groundedBy", 1],
+        code: "custom",
+        message: "suggestedActions[].groundedBy entries must each appear in report.evidence.",
+      },
+    ]);
+
+    const messages = buildClaudeMessages([{ role: "corrective_guidance", text }]);
+    const block = (messages[0]?.content as Anthropic.TextBlockParam[])[0];
+
+    // Survives the mapper byte-identical, as a plain user-role text block.
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.role).toBe("user");
+    expect(block?.text).toBe(text);
+
+    // Names the invariant and the remedy the model must apply.
+    expect(block?.text).toContain("groundedBy");
+    expect(block?.text).toContain("evidence array");
+    expect(block?.text).toContain("NOT recorded");
+
+    // Carries no provider-controlled identifier. The issue summaries fed in
+    // above contain only paths/codes/authored messages, and the builder reads
+    // nothing else — these sentinels are the values a leak would carry.
+    expect(block?.text).not.toContain("toolu_01AbCdEfGhIjKlMnOpQrStUv");
+    expect(block?.text).not.toContain("rag-chunk-");
+    // The de-duplicated remedy appears once even though two issues were fed in.
+    expect((block?.text ?? "").split("Every groundedBy locator").length - 1).toBe(1);
   });
 });
 
