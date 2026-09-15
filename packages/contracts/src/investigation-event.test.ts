@@ -193,16 +193,22 @@ describe("strict union behavior", () => {
   });
 
   it("accepts both legal report-validation failure codes", () => {
-    for (const failureCode of ["REPORT_SCHEMA_INVALID", "REPORT_EVIDENCE_INVALID"]) {
+    // Issue #105 made attribution required AND paired to the failure code, so
+    // each code carries its own legal attribution. The subject of this test is
+    // unchanged — which failure CODES are legal.
+    const attributionByCode = {
+      REPORT_SCHEMA_INVALID: ["GROUNDED_BY_NOT_IN_EVIDENCE"],
+      REPORT_EVIDENCE_INVALID: ["EVIDENCE_NOT_AVAILABLE_IN_RUN"],
+    } as const;
+
+    for (const [failureCode, violatedInvariants] of Object.entries(attributionByCode)) {
       expect(
         InvestigationEventPayloadSchema.safeParse({
           type: "REPORT_VALIDATION_FAILED",
           failureCode,
-          // Issue #105 made attribution required on write. The subject of this
-          // test is unchanged — which failure CODES are legal — so the field is
-          // supplied rather than the assertion weakened.
-          violatedInvariants: ["GROUNDED_BY_NOT_IN_EVIDENCE"],
+          violatedInvariants,
         }).success,
+        `expected ${failureCode} to validate with its own attribution`,
       ).toBe(true);
     }
   });
@@ -255,6 +261,76 @@ describe("REPORT_VALIDATION_FAILED attribution (Issue #105)", () => {
       InvestigationEventPayloadSchema.safeParse({
         ...WITH_ATTRIBUTION,
         violatedInvariants: ["the model wrote something odd"],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects attribution that contradicts its own failure code", () => {
+    // Independent review caught this as a MAJOR: with a single shared enum and
+    // no pairing rule, both cross-combinations parsed clean. That matters more
+    // than a typical validation gap here, because this field's entire purpose
+    // is to be aggregated into a failure distribution — attribution that
+    // contradicts its own failure code would corrupt the measurement silently,
+    // and nothing downstream would flag it.
+    expect(
+      InvestigationEventPayloadSchema.safeParse({
+        type: "REPORT_VALIDATION_FAILED",
+        failureCode: "REPORT_EVIDENCE_INVALID",
+        violatedInvariants: ["GROUNDED_BY_NOT_IN_EVIDENCE"],
+      }).success,
+    ).toBe(false);
+
+    // EVIDENCE_NOT_AVAILABLE_IN_RUN comes from the orchestrator's run-scoped
+    // availability check; no Zod schema rule can produce it.
+    expect(
+      InvestigationEventPayloadSchema.safeParse({
+        type: "REPORT_VALIDATION_FAILED",
+        failureCode: "REPORT_SCHEMA_INVALID",
+        violatedInvariants: ["EVIDENCE_NOT_AVAILABLE_IN_RUN"],
+      }).success,
+    ).toBe(false);
+
+    // Nor may it ride along with genuine schema invariants.
+    expect(
+      InvestigationEventPayloadSchema.safeParse({
+        type: "REPORT_VALIDATION_FAILED",
+        failureCode: "REPORT_SCHEMA_INVALID",
+        violatedInvariants: ["GROUNDED_BY_NOT_IN_EVIDENCE", "EVIDENCE_NOT_AVAILABLE_IN_RUN"],
+      }).success,
+    ).toBe(false);
+
+    // REPORT_EVIDENCE_INVALID has exactly one cause, so a second identifier
+    // alongside it is equally contradictory.
+    expect(
+      InvestigationEventPayloadSchema.safeParse({
+        type: "REPORT_VALIDATION_FAILED",
+        failureCode: "REPORT_EVIDENCE_INVALID",
+        violatedInvariants: ["EVIDENCE_NOT_AVAILABLE_IN_RUN", "ACTIONABLE_REQUIRES_ACTION"],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts each legal failure-code/attribution pairing", () => {
+    expect(InvestigationEventPayloadSchema.safeParse(WITH_ATTRIBUTION).success).toBe(true);
+    expect(
+      InvestigationEventPayloadSchema.safeParse({
+        type: "REPORT_VALIDATION_FAILED",
+        failureCode: "REPORT_EVIDENCE_INVALID",
+        violatedInvariants: ["EVIDENCE_NOT_AVAILABLE_IN_RUN"],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("applies the pairing rule on READ too, without breaking historical rows", () => {
+    // A historical row carries no attribution and stays readable; a persisted
+    // row that DOES carry attribution is still held to the pairing rule, so
+    // reads cannot launder a contradiction the write path rejects.
+    expect(InvestigationEventRecordPayloadSchema.safeParse(PRE_105_PERSISTED).success).toBe(true);
+    expect(
+      InvestigationEventRecordPayloadSchema.safeParse({
+        type: "REPORT_VALIDATION_FAILED",
+        failureCode: "REPORT_EVIDENCE_INVALID",
+        violatedInvariants: ["GROUNDED_BY_NOT_IN_EVIDENCE"],
       }).success,
     ).toBe(false);
   });

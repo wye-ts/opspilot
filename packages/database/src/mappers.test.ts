@@ -287,7 +287,14 @@ describe("toInvestigationEventCreateInput", () => {
       { type: "REPORT_GENERATION_STARTED" },
       { type: "REPORT_SUBMITTED" },
       { type: "REPORT_VALIDATED" },
-      { type: "REPORT_VALIDATION_FAILED", failureCode: "REPORT_SCHEMA_INVALID" },
+      {
+        type: "REPORT_VALIDATION_FAILED",
+        failureCode: "REPORT_SCHEMA_INVALID",
+        // Issue #105 made attribution required on fresh writes. This test's
+        // subject is unchanged — that the mapper accepts every write-eligible
+        // type — so the field is supplied rather than the assertion relaxed.
+        violatedInvariants: ["GROUNDED_BY_NOT_IN_EVIDENCE"],
+      },
       { type: "RUN_COMPLETED" },
       { type: "RUN_FAILED", failureCode: "TOOL_NOT_FOUND", failedStage: "DIAGNOSTIC_EXECUTION" },
     ];
