@@ -579,11 +579,15 @@ export async function runAgentOrchestrator(
     }
 
     if (result.type === "report_submission") {
-      // The provider has genuinely returned a report payload — recorded
-      // before validation runs, so the ledger distinguishes "submitted then
-      // rejected" from "never submitted".
-      await emit({ type: "REPORT_SUBMITTED" });
-
+      // Issue #101 §2.3: REPORT_SUBMITTED is NOT emitted here, before
+      // validation, as it was before this issue. A corrected-away attempt must
+      // leave no ledger trace at all — the canonical lifecycle treats report
+      // events as singletons and rejects a stream carrying two of them — so the
+      // event is emitted at each DECISION point below instead: once on a
+      // terminal rejection, once on acceptance. For every run whose outcome is
+      // decided by the first submission (the only shape possible before this
+      // issue) the resulting stream is byte-identical to the old behaviour.
+      //
       // reportInput: true is required for summarizeReportValidationIssues to
       // derive a real receivedType (zod v4 omits `.input` from issues by
       // default). The raw value was already fully in memory as
@@ -596,15 +600,13 @@ export async function runAgentOrchestrator(
 
       if (!parsedReport.success) {
         const issues = summarizeReportValidationIssues(parsedReport.error);
-        await emit({ type: "REPORT_VALIDATION_FAILED", failureCode: "REPORT_SCHEMA_INVALID" });
 
         // Issue #101 (docs/reviews/39-issue-101-...-plan.md §2.1): one bounded
         // corrective re-prompt instead of discarding the whole run, when this
         // is BOTH the first rejected report this run AND a later turn remains
-        // to submit a corrected one into. The report is still rejected exactly
-        // as before — REPORT_VALIDATION_FAILED is emitted above, nothing is
-        // recorded as a report, and ResolutionReportSchema is untouched. Only
-        // the run's fate on a first rejection changes.
+        // to submit a corrected one into. ResolutionReportSchema is untouched
+        // and the report is still rejected; only the run's fate on a first
+        // rejection changes.
         //
         // Eligibility is `turnIndex < MAX_PROVIDER_TURNS - 1` — WIDER than the
         // A3 retry's window above, and deliberately so. A3's retry needs a slot
@@ -617,11 +619,38 @@ export async function runAgentOrchestrator(
         // it is honest.
         const canRetryReport = !reportRetryUsed && turnIndex < MAX_PROVIDER_TURNS - 1;
         if (canRetryReport) {
+          // NOTHING is emitted for a corrected-away attempt — no
+          // REPORT_SUBMITTED above, no REPORT_VALIDATION_FAILED here (§2.3,
+          // retracted-and-corrected). This is NOT a convenience: the canonical
+          // lifecycle treats report events as singletons, so a stream carrying
+          // two REPORT_SUBMITTED events (or a report outcome followed by
+          // another submission) is REJECTED by
+          // investigation-stage-progress-reducer.ts, and the run would end up
+          // stuck RUNNING with a persistence error instead of completing. An
+          // earlier implementation of this issue emitted both and passed every
+          // deterministic test here, because these tests use a collecting
+          // emitter that never runs the reducer; independent review caught it
+          // as a BLOCKER.
+          //
+          // It is also the CONSISTENT choice, not a workaround: #99 emits
+          // nothing for a rejected diagnostic request either — TOOL_REQUESTED
+          // records only accepted ones. The ledger records a run's accepted
+          // trajectory, not every attempt within it.
+          //
+          // What this narrows: REPORT_SUBMITTED is emitted before validation
+          // precisely so the ledger can distinguish "submitted then rejected"
+          // from "never submitted". That still holds whenever a rejection
+          // decides the run's outcome. It does NOT hold for an attempt that was
+          // corrected away — such an attempt leaves no ledger trace at all, and
+          // only providerCallsObserved reveals that an extra invocation
+          // happened. Whether the ledger should record attempts rather than
+          // outcomes is deliberately out of scope here and owed its own issue
+          // (§5).
+          //
           // Charged a turn slot like every other provider invocation, for the
           // same reason as the A3 retry: providerTurnsUsed counts ATTEMPTS
-          // (recording-provider.ts), so a free retry would run more paid
-          // invocations than MAX_PROVIDER_TURNS documents. The once-per-run
-          // flag, not the turn budget, is what bounds the loop.
+          // (recording-provider.ts). The once-per-run flag, not the turn
+          // budget, is what bounds the loop.
           reportRetryUsed = true;
           conversation = [
             ...conversation,
@@ -636,6 +665,9 @@ export async function runAgentOrchestrator(
           continue;
         }
 
+        // Terminal rejection: this attempt decides the run, so it IS recorded.
+        await emit({ type: "REPORT_SUBMITTED" });
+        await emit({ type: "REPORT_VALIDATION_FAILED", failureCode: "REPORT_SCHEMA_INVALID" });
         return failed(
           "REPORT_SCHEMA_INVALID",
           "The submitted resolution report failed schema validation.",
@@ -644,6 +676,9 @@ export async function runAgentOrchestrator(
           issues,
         );
       }
+
+      // Accepted: this attempt decides the run, so it is recorded.
+      await emit({ type: "REPORT_SUBMITTED" });
 
       if (
         findInvalidEvidence(

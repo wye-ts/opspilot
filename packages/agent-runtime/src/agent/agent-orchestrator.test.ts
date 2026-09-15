@@ -26,6 +26,7 @@ import {
 import {
   InvestigationEventPayloadSchema,
   MAX_PROVIDER_TURNS,
+  deriveExecutionStageProgress,
   type InvestigationEventPayload,
 } from "@opspilot/contracts";
 
@@ -1767,19 +1768,13 @@ describe("runAgentOrchestrator — canonical lifecycle emission", () => {
     [
       "REPORT_SCHEMA_INVALID",
       invalidReport,
-      // Issue #101: a schema-rejected report gets one corrective retry, so the
-      // failure path needs two rejections. The emitted sequence therefore
-      // carries the first REPORT_SUBMITTED/REPORT_VALIDATION_FAILED pair from
-      // the rejected attempt as well — asserted explicitly below rather than
-      // loosened, since those events are exactly how a retried run stays
-      // reconstructable from its ledger (§2.3).
-      [
-        "AGENT_STARTED",
-        "REPORT_SUBMITTED",
-        "REPORT_VALIDATION_FAILED",
-        "REPORT_SUBMITTED",
-        "REPORT_VALIDATION_FAILED",
-      ],
+      // Issue #101 §2.3 (retracted-and-corrected): the corrected-away attempt
+      // emits NOTHING, so even a retried run persists exactly one
+      // REPORT_SUBMITTED / REPORT_VALIDATION_FAILED pair — the one that
+      // decided the run. An earlier version of this entry expected two pairs;
+      // that stream is rejected outright by the canonical reducer, which is
+      // what independent review caught as a BLOCKER.
+      ["AGENT_STARTED", "REPORT_SUBMITTED", "REPORT_VALIDATION_FAILED"],
       2,
     ],
     [
@@ -4193,13 +4188,106 @@ describe("runAgentOrchestrator — report corrective retry (issue #101)", () => 
     });
 
     expect(result.status).toBe("completed");
-    // Criterion 8 / §2.3: the retry is directly visible in the ledger rather
-    // than inferable from an arithmetic identity as in #99 — REPORT_SUBMITTED
-    // is emitted before validation, so a retried run persists two of them,
-    // with the rejection recorded between.
-    expect(types(emitted).filter((t) => t === "REPORT_SUBMITTED")).toHaveLength(2);
-    expect(types(emitted)).toContain("REPORT_VALIDATION_FAILED");
+    // Criterion 8, REVISED by §2.3's retraction. The earlier version of this
+    // test asserted TWO REPORT_SUBMITTED events. That stream cannot be
+    // persisted: the canonical lifecycle treats report events as singletons and
+    // rejects it, which independent review caught as a BLOCKER — a retried run
+    // would have ended stuck RUNNING rather than completing. Exactly one report
+    // attempt reaches the ledger: the one that decided the run.
+    expect(types(emitted).filter((t) => t === "REPORT_SUBMITTED")).toHaveLength(1);
+    expect(types(emitted)).not.toContain("REPORT_VALIDATION_FAILED");
     expect(types(emitted)).toContain("REPORT_VALIDATED");
+  });
+
+  it("the retried run's event stream is ACCEPTED by the real canonical reducer (the BLOCKER regression)", async () => {
+    // The test that would have caught the original BLOCKER. Every other test
+    // in this block uses a collecting emitter that never validates, so all of
+    // them passed against an implementation whose stream the real persistence
+    // path rejects outright. This one runs the actual reducer.
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    const turns: FakeProviderTurn[] = [
+      { kind: "report_submission", usage, rawInput: reportViolatingF5 },
+      { kind: "report_submission", usage, rawInput: validReportWithRagEvidence },
+    ];
+
+    const result = await runAgentOrchestrator({
+      provider: new FakeLlmProvider({ id: "report-retry-reducer", turns }),
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("completed");
+
+    const payloads: InvestigationEventPayload[] = [
+      { type: "RUN_CREATED" },
+      ...emitted,
+      { type: "RUN_COMPLETED" },
+    ];
+    const events = payloads.map((payload, index) => ({
+      runId: "8f14e45f-1234-4abc-8def-000000000001",
+      sequence: index + 1,
+      recordedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+      payload,
+    }));
+
+    // Before the fix this threw InvestigationEventContractError:
+    //   Event at sequence 5 ("REPORT_SUBMITTED") follows a stage failure;
+    //   only RUN_FAILED may follow a failure fact.
+    const progress = deriveExecutionStageProgress({
+      events,
+      runStatus: "COMPLETED",
+      now: events[events.length - 1]!.recordedAt,
+    });
+    for (const stage of progress) {
+      expect(["completed", "failed", "omitted"]).toContain(stage.status);
+    }
+  });
+
+  it("a terminal rejection still records the attempt that decided the run", async () => {
+    // The narrowing in §2.3 must not swallow the rejection that actually ends
+    // a run: "submitted then rejected" stays distinguishable from "never
+    // submitted" whenever the rejection is terminal. Also validated against the
+    // real reducer, since this is the other stream shape this issue produces.
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    const turns: FakeProviderTurn[] = [
+      { kind: "report_submission", usage, rawInput: reportViolatingF5 },
+      { kind: "report_submission", usage, rawInput: reportViolatingF5 },
+    ];
+
+    const result = await runAgentOrchestrator({
+      provider: new FakeLlmProvider({ id: "report-retry-terminal", turns }),
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+      emitLifecycleEvent,
+    });
+
+    expect(result).toMatchObject({ status: "failed", code: "REPORT_SCHEMA_INVALID" });
+    expect(types(emitted).filter((t) => t === "REPORT_SUBMITTED")).toHaveLength(1);
+    expect(types(emitted)).toContain("REPORT_VALIDATION_FAILED");
+
+    const payloads: InvestigationEventPayload[] = [
+      { type: "RUN_CREATED" },
+      ...emitted,
+      { type: "RUN_FAILED", failureCode: "REPORT_SCHEMA_INVALID", failedStage: "REPORT_GENERATION" },
+    ];
+    const events = payloads.map((payload, index) => ({
+      runId: "8f14e45f-1234-4abc-8def-000000000001",
+      sequence: index + 1,
+      recordedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+      payload,
+    }));
+
+    const progress = deriveExecutionStageProgress({
+      events,
+      runStatus: "FAILED",
+      now: events[events.length - 1]!.recordedAt,
+    });
+    for (const stage of progress) {
+      expect(["completed", "failed", "omitted"]).toContain(stage.status);
+    }
   });
 
   it("criterion 1 (F1/F2): the same correction path covers the disposition/cardinality invariant, not just F5", async () => {
