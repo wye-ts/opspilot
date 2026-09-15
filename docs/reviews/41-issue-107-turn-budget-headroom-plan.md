@@ -211,17 +211,50 @@ emitted and feeds them to `deriveExecutionStageProgress`, for three shapes:
    the orchestrator's own result, asserting the reducer accepts it with
    `failedStage: "REPORT_GENERATION"`.
 
-**Baseline expectations against the pre-fix positional rule** (measured, §2.1a and §0.5 — not
-assumed): case 1 is **rejected** with `MISSING_LIFECYCLE_FACT`, which is what proves the test
-discriminates. Cases 2 and 3 are **accepted** under the pre-fix rule at today's constants, so they
-are green regression guards rather than red-first tests; requiring them to fail first would be
-unsatisfiable. Record these three expectations explicitly in the test file so a later reader does
-not "fix" a passing baseline.
+**Baseline expectations — and the bound configuration they are measured at.** This is the one
+subtlety in the whole test plan, and an earlier draft of this section got it wrong (see §2.3a).
 
-### 2.4 Only then, raise the constant
+All three cases are shapes that **only exist at the 5/3 bounds**. At today's 4/3 bounds, "the first
+turn after the diagnostic budget is exhausted" *is* turn 3, which is already `FINALIZATION` — so the
+pre-fix positional rule announces it correctly and there is no defect to observe, nor any fifth turn
+for case 2's correction to land on. The red-first demonstration therefore requires the raised bound
+to be in place.
+
+Sequencing consequence (§6): the constant raise and the reducer tests land in the **same red step**,
+run against the *old* positional logic. Measured expectations in that configuration:
+
+| case | pre-fix (5/3, positional rule) | post-fix |
+| --- | --- | --- |
+| 1 — valid report on the first announced turn | **REJECTED** `MISSING_LIFECYCLE_FACT` (§0.1) | ACCEPTED |
+| 2 — rejected → corrected on the finalization turn | ACCEPTED (§0.5) | ACCEPTED, exactly one `REPORT_GENERATION_STARTED` |
+| 3 — provider failure on the first announced turn | **REJECTED** `FAILED_STAGE_NOT_TRUTHFUL` (§2.1a(b)) | ACCEPTED, `failedStage: "REPORT_GENERATION"` |
+
+Cases 1 and 3 are the red-first tests. Case 2 passes both before and after, and is a regression
+guard against the duplicate-emission BLOCKER (§2.1a(a)) — it must not be written as a red-first
+test. Record all three expectations in the test file so a later reader does not "fix" a passing
+baseline.
+
+### 2.3a Withdrawn: the earlier claim that these baselines hold at today's constants
+
+Round 1 of independent review corrected an unsatisfiable criterion (both shapes required to fail
+first). The correction introduced a new error, which round 2 caught: it stated cases 2 and 3 were
+measured "at today's constants" while case 1's rejection claim only holds at 5/3. Both cannot
+describe the same configuration.
+
+**Withdrawn.** The baselines are measured at **5/3 with the old positional logic**, per the table
+above, and the sequencing in §6 is reordered so that configuration actually exists when the tests
+first run. Recorded rather than silently replaced, so a future reader does not inherit the
+impression that the red-first demonstration works at the unmodified bounds.
+
+### 2.4 Raise the constant — in the same red step as the tests, before the fix
 
 `MAX_PROVIDER_TURNS = 5`, `MAX_DIAGNOSTIC_TOOL_CALLS` unchanged at 3. The documented bound
 `MAX_DIAGNOSTIC_TOOL_CALLS <= MAX_PROVIDER_TURNS - 1` becomes genuinely slack (`3 <= 4`).
+
+Ordering note (corrected in round 2): an earlier draft titled this "only then, raise the constant"
+and sequenced it *after* the fix. That is unworkable — §2.3's red-first cases do not exist at 4/3,
+so the raise must precede the fix in order for the defect to be observable at all. The raise is
+still the *last* semantic decision, but it lands with the tests, in the red step.
 
 Retry windows need no edit — both are expressed relative to `MAX_PROVIDER_TURNS` and widen
 correctly. The `diagnosticCallsRemaining` expression likewise already carries the explicit
@@ -231,9 +264,10 @@ turn-based ceiling #99 added.
 
 ## 3. Compatibility
 
-- **Emitted streams for existing runs are unchanged.** Under the equality that holds before §2.4
-  lands, §2.1's condition first holds exactly on the forced finalization turn — the same single turn
-  the positional rule selected — so both the emission and the `activeStage` value are identical.
+- **Emitted streams for existing runs are unchanged.** At the 4/3 bounds in effect for every run
+  already persisted, §2.1's condition first holds exactly on the forced finalization turn — the same
+  single turn the positional rule selected — so both the emission and the `activeStage` value are
+  identical. The behavioral difference appears only once the bound is raised.
 - **No persisted data migrates.** No event type, payload field, or failure code is added or altered.
 - **No reducer change**, so every already-persisted stream keeps reading identically.
 - **Cost envelope moves** and every derived figure must move with it — see §6 step 6.
@@ -244,11 +278,11 @@ turn-based ceiling #99 added.
 
 | # | Case | Expected |
 | --- | --- | --- |
-| 1 | All diagnostics spent, valid report on the first available turn, stream → real reducer | ACCEPTED |
+| 1 | All diagnostics spent, valid report on the first announced turn, stream → real reducer | ACCEPTED |
 | 2 | Same, but report rejected then corrected on the finalization turn | ACCEPTED, and the stream carries **exactly one** `REPORT_GENERATION_STARTED` |
 | 3 | All diagnostics spent, provider failure on the first announced turn, `RUN_FAILED` → real reducer | ACCEPTED with `failedStage: "REPORT_GENERATION"` (§2.1a(b)) |
-| 4 | Case 1 against the pre-fix positional rule | REJECTED with `MISSING_LIFECYCLE_FACT` — proves the test discriminates |
-| 5 | Cases 2 and 3 against the pre-fix positional rule at today's constants | ACCEPTED — recorded as measured baselines, **not** required to fail first (§2.3) |
+| 4 | Cases 1 and 3 at **5/3 with the old positional rule** | REJECTED — `MISSING_LIFECYCLE_FACT` and `FAILED_STAGE_NOT_TRUTHFUL` respectively. This is what proves the tests discriminate (§2.3) |
+| 5 | Case 2 at **5/3 with the old positional rule** | ACCEPTED — a regression guard against duplicate emission, deliberately **not** a red-first test (§2.3) |
 | 6 | Turn with `diagnosticCallsRemaining === 0` | Provider offers `submit_resolution_report` only |
 | 7 | Correction fires after all 3 diagnostic calls are spent | `correctiveTurns > 0` — #108's third characterization test flips, as it predicted |
 | 8 | Full run within the new ceiling | `providerTurnsUsed <= MAX_PROVIDER_TURNS` |
@@ -280,25 +314,40 @@ state mechanism and model-compliance as two separate verdicts.
 
 ## 6. Sequencing (test-first)
 
-1. Add the real-reducer tests (§2.3); confirm case 1 fails against unmodified code with
-   `MISSING_LIFECYCLE_FACT`, and record cases 2 and 3 as already-accepted baselines.
-2. Implement §2.1's shared report-stage condition — **both** the once-per-run emission and the
-   `activeStage` derivation (§2.1a). Tests go green; confirm the byte-identity claim in §3 by running
-   the existing orchestrator suite unchanged.
-3. Implement §2.2's tool-offering condition + its unit test.
-4. Bump the logical prompt version to `opspilot-agent-v9` across all four sites
+1. **Red step — raise the bound and add the tests together.** Set `MAX_PROVIDER_TURNS = 5` (§2.4)
+   and update `agent-run-bounds.test.ts`, leaving the orchestrator's positional logic untouched. Add
+   the three real-reducer tests (§2.3) and record the measured baselines: cases 1 and 3 **fail**
+   (`MISSING_LIFECYCLE_FACT`, `FAILED_STAGE_NOT_TRUTHFUL`), case 2 **passes**. The raise must come
+   first because none of these shapes exists at 4/3 (§2.3a).
+2. **Green step.** Implement §2.1's shared report-stage condition — **both** the once-per-run
+   emission and the `activeStage` derivation (§2.1a). Cases 1 and 3 go green; case 2 stays green.
+3. Implement §2.2's tool-offering condition + its unit test; let #108's characterization test flip.
+4. Confirm the §3 compatibility claim: re-run the existing orchestrator and contracts suites and
+   account for every test whose expectations changed, distinguishing "the bound moved" from "the
+   emission semantics moved".
+5. Bump the logical prompt version to `opspilot-agent-v9` across all four sites
    (`claude-message-mapping.ts` lineage comment, `docs/04-agent-design.md` §20.4 literal +
    supersedes paragraph, `docs/03-technical-design.md` `AGENT_PROMPT_VERSION` default), stating the
    bump is offered-set-driven with no prose change.
-5. Raise the constant (§2.4); update `agent-run-bounds.test.ts` and let #108's characterization test
-   flip.
-6. Sweep every `4`-derived figure by grep, not memory: `docs/04-agent-design.md` §7 bound table and
-   its "equality holds today" note, `docs/06-tool-design.md:53`,
-   `docs/16-investigation-event-contract.md`, `README.md:156-158` and
-   `docs/08-cicd-deployment.md:876` (both encode the daily output envelope
-   `3072 × 4 × 1 × 10 = 122,880`, which becomes `3072 × 5 × 1 × 10 = 153,600`),
-   `apps/worker/src/smoke/claude-live-smoke.ts` paid-call disclosure, and
-   `apps/worker/src/evaluation/dataset-validation.ts` rule 14.
+6. Sweep every `4`-derived figure and every finalization-only description by grep, not memory. Two
+   categories, both mandatory:
+
+   **Cost / turn geometry.** `docs/04-agent-design.md` §7 bound table and its "equality holds today"
+   note; `docs/06-tool-design.md:53`; `docs/16-investigation-event-contract.md`; `README.md:156-158`
+   and `docs/08-cicd-deployment.md:876` (both encode `3072 × 4 × 1 × 10 = 122,880`, which becomes
+   `3072 × 5 × 1 × 10 = 153,600`); **`.env.example:118-140`** (states "MAX_PROVIDER_TURNS - 1 = 3
+   turns" and the same 122,880 envelope); **`docs/07-evaluation-plan.md:698`** ("4 of 4 provider
+   turns"); `apps/worker/src/smoke/claude-live-smoke.ts` paid-call disclosure and
+   `apps/worker/src/evaluation/dataset-validation.ts` rule 14 (both derive from the constant — verify
+   rather than edit).
+
+   **Report-start semantics** — source comments that will become false once the event can fire on an
+   investigation turn: **`packages/agent-runtime/src/agent/agent-orchestrator.ts:36-42`**,
+   **`packages/contracts/src/investigation-event.ts:74-81`** ("pushed immediately before the
+   orchestrator's finalization-phase provider call"), and
+   **`packages/contracts/src/investigation-stage-progress-reducer.ts:751-759` and `796-813`**. The
+   reducer's *behavior* is unchanged (§5); only its explanatory comments need to stop asserting that
+   the event implies a FINALIZATION turn.
 7. `pnpm agent:verify --final`, then the review bundle and an independent `agent:codex-review` round.
 
 ---
@@ -307,9 +356,10 @@ state mechanism and model-compliance as two separate verdicts.
 
 1. A test feeds the orchestrator's **emitted stream** to the real reducer for all three §2.3 shapes,
    and all three are accepted after the fix.
-2. Case 1 of that test is proven to fail against the pre-fix positional rule, with
-   `MISSING_LIFECYCLE_FACT`. Cases 2 and 3 are recorded as measured pre-fix baselines that already
-   pass (§2.3) — no criterion requires them to fail first.
+2. At 5/3 with the old positional logic, cases 1 and 3 are observed **failing** with
+   `MISSING_LIFECYCLE_FACT` and `FAILED_STAGE_NOT_TRUTHFUL`, and case 2 is observed **passing**.
+   These three baselines are recorded in the test file. No criterion requires case 2 to fail first
+   (§2.3a).
 3. `REPORT_GENERATION_STARTED` is emitted on the **first** turn where the diagnostic budget is
    exhausted or the turn is the forced finalization turn, and **never more than once per run**.
 4. `activeStage` resolves to `REPORT_GENERATION` on every turn satisfying that same condition, so a
@@ -321,8 +371,10 @@ state mechanism and model-compliance as two separate verdicts.
 7. #108's "correction CANNOT fire" characterization test is updated to reflect that it now can, with
    `correctiveTurns > 0`.
 8. The logical prompt version is bumped at all four sites with an offered-set-driven rationale.
-9. Every `MAX_PROVIDER_TURNS`-derived figure found by the §6 step 6 grep is updated, including both
-   daily-output-envelope statements.
+9. Both §6 step 6 categories are swept: no current (non-historical) file states a 4-turn geometry or
+   the 122,880 envelope, and no source comment still claims `REPORT_GENERATION_STARTED` implies a
+   FINALIZATION turn. Historical records — prior plans in `docs/reviews/`, §20.4's version lineage,
+   recorded evidence files — are deliberately left intact.
 10. `pnpm agent:verify --final` passes.
 11. The PR body and an issue comment state mechanism and model-compliance as **separate verdicts**,
     and explicitly do **not** claim this issue raises the LIVE completion rate. Closing #107 with
