@@ -540,7 +540,16 @@ describe("executeAndPersist", () => {
       // A structurally complete report (the drift class behind the real LIVE
       // incident): confidence given as a percentage, which the stripped
       // Claude-facing tool schema never told the model was out of bounds.
-      turns: [{ kind: "report_submission", usage, rawInput: { ...VALID_REPORT, confidence: 70 } }],
+      // Issue #101: the first schema-rejected report now gets one corrective
+      // retry, so the failure path this test is about needs two rejections.
+      // The subject — that onReportSchemaInvalid receives a sanitized
+      // diagnostic exactly once and the run still persists normally — is
+      // unchanged, and "exactly once" is now the stronger assertion: the hook
+      // fires for the FINAL rejection, not for the corrected-and-retried one.
+      turns: [
+        { kind: "report_submission", usage, rawInput: { ...VALID_REPORT, confidence: 70 } },
+        { kind: "report_submission", usage, rawInput: { ...VALID_REPORT, confidence: 70 } },
+      ],
     };
 
     const result = await service.executeAndPersist({
@@ -1191,7 +1200,12 @@ describe("executeAndPersist — service-owned usage collector", () => {
     const reportUsage = { inputTokens: 1, outputTokens: 1 };
     const invalidConfidenceScenario: FakeAgentScenario = {
       id: "invalid-confidence-throwing-hook",
+      // Issue #101: two rejections to reach the failure (see the sibling test
+      // above). This one also asserts "no second provider call happens" after
+      // the hook throws — still true, and now more meaningful: the retry is
+      // spent before the hook ever fires.
       turns: [
+        { kind: "report_submission", usage: reportUsage, rawInput: { ...VALID_REPORT, confidence: 70 } },
         { kind: "report_submission", usage: reportUsage, rawInput: { ...VALID_REPORT, confidence: 70 } },
       ],
     };
@@ -1207,7 +1221,13 @@ describe("executeAndPersist — service-owned usage collector", () => {
     });
 
     expect(onReportSchemaInvalid).toHaveBeenCalledTimes(1);
-    expect(runAgentTurnSpy).toHaveBeenCalledTimes(1);
+    // Two provider calls, both scripted: the rejected report and its one
+    // corrective retry (Issue #101). The property this assertion exists to
+    // protect is unchanged — NO provider call happens after the hook throws.
+    // The hook fires only on the FINAL rejection, and the count stops there
+    // rather than growing, which is what proves the throw did not restart or
+    // re-drive the run.
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(2);
     expect(calls.finalizeFailed).toBe(1);
     expect(finalizeFailedCodes).toEqual(["REPORT_SCHEMA_INVALID"]);
     // The result is the ordinary persisted shape — nothing about the thrown
@@ -2312,7 +2332,15 @@ describe("executeAndPersist — canonical lifecycle stream validity", () => {
     const service = createAgentRunService(repository);
     const schemaInvalidScenario: FakeAgentScenario = {
       id: "schema-invalid",
+      // Issue #101: two rejections, since the first is corrected-and-retried.
+      // The subject — that the orchestrator's failedStage reaches
+      // finalizeFailed unmodified — is unchanged.
       turns: [
+        {
+          kind: "report_submission",
+          usage: { inputTokens: 10, outputTokens: 5 },
+          rawInput: { category: "SERVICE_DEGRADATION" }, // missing required fields
+        },
         {
           kind: "report_submission",
           usage: { inputTokens: 10, outputTokens: 5 },

@@ -72,7 +72,9 @@ tool executions.
 
 When `ResolutionReportSchema.safeParse` fails, instead of failing the run:
 
-1. Emit `REPORT_VALIDATION_FAILED` exactly as today (unchanged — the report was genuinely rejected).
+1. Emit **nothing** for this attempt — no `REPORT_SUBMITTED`, no `REPORT_VALIDATION_FAILED` (§2.3,
+   retracted-and-corrected). An earlier version of this step said to emit `REPORT_VALIDATION_FAILED`
+   "exactly as today"; that produces a stream the canonical reducer rejects outright.
 2. Append a `CorrectiveGuidanceEntry` naming the violated invariant(s) in closed, application-authored
    terms, and issue another provider turn.
 3. Allow this **at most once per run**, tracked by its own flag. A second rejection fails the run
@@ -123,24 +125,72 @@ Because this is model-facing text, `docs/04-agent-design.md` §20.4 applies in f
 prompt version, the lineage comment, the §20.4 entry, and `docs/03-technical-design.md`'s
 `AGENT_PROMPT_VERSION` default move together.
 
-### 2.3 No new conversation variant, no new event type
+### 2.3 No new conversation variant, and the rejected attempt is NOT written to the ledger
 
 `CorrectiveGuidanceEntry` (finding #8) is already provider-neutral and carries only closed text.
 Reusing it needs no schema change, no new mapper case, and the exhaustiveness guard #99 added keeps
 protecting the switch. **Adding a second, report-specific variant would be the wrong instinct** —
 the variant's meaning is "application-authored corrective guidance", which is exactly what this is.
 
-On ledger visibility, this issue is in a **better** position than #99 §2.4 and needs no new event
-type: `REPORT_SUBMITTED` and `REPORT_VALIDATION_FAILED` are already emitted per attempt (findings
-#2, #1). A retried run therefore persists two `REPORT_SUBMITTED` events, which makes the retry
-directly visible in the ledger rather than only inferable from an arithmetic identity. This is a
-real advantage over #99's case and should be used as the acceptance signal (§4, criterion 8).
+**RETRACTED — this section previously claimed the opposite, and the claim was false.** An earlier
+draft asserted that this issue was in a *better* position than #99 §2.4 because `REPORT_SUBMITTED`
+and `REPORT_VALIDATION_FAILED` are emitted per attempt, so a retried run would persist two of each
+and make the retry directly visible. Independent review raised this as a BLOCKER against the
+implementation built on it, and source confirms the claim was wrong in the most consequential
+direction: the canonical lifecycle treats report events as **singletons**, and a retried stream is
+rejected outright. Independently reproduced against the real reducer:
+
+```
+input:  REPORT_SUBMITTED → REPORT_VALIDATION_FAILED → REPORT_SUBMITTED → REPORT_VALIDATED
+result: InvestigationEventContractError: Event at sequence 5 ("REPORT_SUBMITTED") follows a
+        stage failure; only RUN_FAILED may follow a failure fact.
+```
+
+Three separate rules reject it (`investigation-stage-progress-reducer.ts`): a second
+`REPORT_SUBMITTED` is a `DUPLICATE_LIFECYCLE_FACT`, a second report outcome is a
+`DUPLICATE_LIFECYCLE_FACT`, and `REPORT_GENERATION_STARTED` after a submission is rejected —
+so an investigation→finalization retry fails too. `investigation-event-ledger.ts` independently
+treats the 9 lifecycle/report types as `(runId, eventType)` singletons for replay identity.
+
+The consequence was worse than the bug being fixed: instead of failing, a retried run returned
+persistence-unavailable and left the run `RUNNING`. The deterministic orchestrator tests did not
+catch it because they use a collecting emitter that never runs the reducer — the exact failure
+shape #99's own review warned about, recurring here.
+
+**Decision: the corrected-away attempt is not written to the ledger. Only the report attempt that
+determines the run's outcome is recorded.**
+
+This is the *consistent* choice, not a concession — which is the second thing the earlier draft got
+backwards. #99 emits nothing for a rejected diagnostic request: `TOOL_REQUESTED` records only
+accepted requests. The ledger's existing semantics are "the accepted trajectory of a run", not
+"everything that happened during it". Adding attempt tracking for reports while diagnostic requests
+have none would invent an asymmetry, not repair one.
+
+**What this narrows, stated rather than buried.** `REPORT_SUBMITTED` is currently emitted *before*
+validation, deliberately, so the ledger can distinguish "submitted then rejected" from "never
+submitted". That distinction still holds for every run whose outcome is decided by a rejection. It
+no longer holds for an attempt that was corrected away: such an attempt leaves no ledger trace at
+all. That is a real reduction in what the stream records and must be stated in the code comment and
+in `docs/04-agent-design.md`, so a later reader does not assume the ledger enumerates every attempt.
+
+**What remains recoverable.** `providerCallsObserved` still counts every invocation attempt, so a
+retried run is distinguishable from an ordinary one by #99 criterion 9's arithmetic — the same
+signal that issue already relies on, and the one the real-model observation in §4 uses. Retry
+frequency across runs stays unmeasurable from the trace alone.
+
+**The right fix is a separate issue.** Whether the ledger should record attempts rather than only
+outcomes is now a question this project has hit twice (#99 §2.4, here). It deserves its own issue
+with its own evidence, covering diagnostic requests and reports together — not a contract migration
+smuggled into a public-path bug fix under time pressure.
 
 ### 2.4 Which invariants this must not weaken
 
 - `ResolutionReportSchema` is unchanged. F1/F2/F5 are unchanged.
 - A rejected report is still rejected; nothing ungrounded enters the ledger.
-- `REPORT_SUBMITTED` / `REPORT_VALIDATION_FAILED` still bracket every attempt, including the first.
+- `REPORT_SUBMITTED` / `REPORT_VALIDATION_FAILED` bracket the attempt that DECIDES the run —
+  terminal rejection or acceptance. An earlier version of this line said "every attempt, including
+  the first"; per §2.3's retraction a corrected-away attempt emits neither, because a stream with
+  two of them cannot be persisted.
 - The corrective message echoes nothing the model produced.
 - `MAX_PROVIDER_TURNS` is unchanged, and the retry stays inside it.
 - `REPORT_EVIDENCE_INVALID` (`agent-orchestrator.ts:483-497`) is **out of scope** — a separate
@@ -151,9 +201,18 @@ real advantage over #99's case and should be used as the acceptance signal (§4,
 
 ## 3. Compatibility
 
-No persisted shape changes. A pre-change run's event stream (one `REPORT_SUBMITTED`, optionally one
-`REPORT_VALIDATION_FAILED`) remains valid and readable — the retried shape is two of each, which the
-existing contract already permits since neither event is declared once-per-run. No migration.
+No persisted shape changes, and — per §2.3's retraction — no persisted shape *variation* either:
+every run, retried or not, emits exactly one `REPORT_SUBMITTED` and at most one report outcome. A
+pre-change stream is therefore byte-identical to what this issue now produces for the same run, and
+no migration or read-compatibility work is needed.
+
+An earlier version of this section claimed "the retried shape is two of each, which the existing
+contract already permits since neither event is declared once-per-run." **That was false in both
+halves.** Both events ARE declared once-per-run: `investigation-stage-progress-reducer.ts` fails a
+second `REPORT_SUBMITTED` and a second report outcome as `DUPLICATE_LIFECYCLE_FACT`, and
+`investigation-event-ledger.ts` treats the 9 lifecycle/report types as `(runId, eventType)`
+singletons for replay identity. The claim was the root of the BLOCKER independent review raised
+against the first implementation.
 
 ---
 
@@ -161,7 +220,7 @@ existing contract already permits since neither event is declared once-per-run. 
 
 | # | Case | Expected |
 | --- | --- | --- |
-| 1 | Report rejected on an investigation turn, corrected on retry | run reaches `completed`; two `REPORT_SUBMITTED` events |
+| 1 | Report rejected on an investigation turn, corrected on retry | run reaches `completed`; exactly ONE `REPORT_SUBMITTED` persisted (§2.3) |
 | 2 | Report rejected twice | `REPORT_SCHEMA_INVALID`, same code as today |
 | 3 | Report rejected on the forced FINALIZATION turn | fails as today, no retry attempted |
 | 4 | Retry + full remaining path | `providerTurnsUsed <= MAX_PROVIDER_TURNS` |
@@ -178,11 +237,14 @@ that a real model produces one when told. #85 established the shape of that limi
 nudge measurably reduces but does not eliminate a non-deterministic model error.
 
 **Bounded real-model observation (not a new routine paid category).** After merge, run the #99
-ticket wording repeatedly against the deployed path until either (a) a run is observed persisting
-two `REPORT_SUBMITTED` events and reaching `completed` — the retry fired and recovered — or (b) 15
-runs accumulate without one. Cost at the corrected rate (~$0.13/run, §pricing fix this session) is
-≈$2 at the 15-run ceiling. Report the observed rate with its sample size; do not report a single
-clean run as resolution.
+ticket wording repeatedly against the deployed path until either (a) a run is observed reaching
+`completed` whose `providerCallsObserved` exceeds what its accepted events plus the finalization
+turn account for, by exactly one — #99 criterion 9's arithmetic, the retry fired and recovered — or
+(b) 15 runs accumulate without one. (An earlier draft said to look for two persisted
+`REPORT_SUBMITTED` events; per §2.3's retraction that stream cannot be written, so the arithmetic
+is the signal.) Cost at the corrected rate (~$0.13/run, §pricing fix this session) is ≈$2 at the
+15-run ceiling. Report the observed rate with its sample size; do not report a single clean run as
+resolution.
 
 ---
 
@@ -193,6 +255,10 @@ clean run as resolution.
 - A further prompt revision of `investigationGuidance` (finding #7 — the rule is already stated
   imperatively with its remedy).
 - The `PROVIDER_PROTOCOL_INVALID` observability gap (#99 §2.4).
+- **Whether the canonical ledger should record report/diagnostic ATTEMPTS rather than only accepted
+  outcomes** (§2.3). Hit twice now — #99 §2.4 and this issue's retracted claim — and deserves its
+  own issue covering both event families together, with the schema/reducer/compatibility/UI work
+  that implies. Deliberately not smuggled into a public-path bug fix.
 - Model selection / cost (`claude-model.ts` pins one model by construction).
 
 ---
@@ -227,15 +293,23 @@ Then, test-first per repo convention:
 1. A deterministic test reproducing a schema-rejected report on an investigation turn that **fails
    before** the change.
 2. A second rejection in the same run fails the run with `REPORT_SCHEMA_INVALID`.
-3. A corrected retry reaches `completed` and persists **two** `REPORT_SUBMITTED` events.
+3. A corrected retry reaches `completed` and persists **exactly one** `REPORT_SUBMITTED` — the
+   accepted attempt — with **no** `REPORT_VALIDATION_FAILED` for the corrected-away one, and the
+   resulting stream is accepted by the real canonical reducer. (An earlier version required **two**
+   `REPORT_SUBMITTED` events; §2.3's retraction records why that stream cannot be persisted.)
 4. A rejection on `turnIndex === MAX_PROVIDER_TURNS - 1` fails as today, with no retry attempted.
 5. A turn-bound test asserting `providerTurnsUsed <= MAX_PROVIDER_TURNS` after a retry, counting
    attempts the way `recording-provider.ts` does.
 6. A real-mapper test asserting the corrective text appears in the second request and contains no
    model-written value and no provider identifier.
 7. An invariant with no authored sentence still triggers a retry, with the generic message.
-8. A retried run is distinguishable from an ordinary run using only its persisted ledger: two
-   `REPORT_SUBMITTED` events (§2.3).
+8. **REVISED (§2.3 retraction).** A retried run is distinguishable from an ordinary one using only
+   its own persisted facts, by #99 criterion 9's arithmetic: `providerCallsObserved` exceeds what
+   its accepted events plus the finalization turn account for, by exactly one. The earlier version
+   of this criterion required **two** persisted `REPORT_SUBMITTED` events; that is now forbidden,
+   not merely unavailable — the canonical lifecycle rejects the stream outright, so a run must
+   persist exactly one report attempt. A test asserting two would be asserting a stream that cannot
+   be written.
 9. §20.4 prompt-version regression complete, with the recorded before/after eval comparison stating
    its own limitation (fixtures cannot be influenced by prompt text).
 10. `pnpm agent:verify --final` passes, with any pre-existing failures independently re-derived

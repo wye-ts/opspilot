@@ -99,7 +99,12 @@ describe("runToolThenReportScenario", () => {
   it("fails with the orchestrator's failure code when the report fails schema validation", async () => {
     const scenario: FakeAgentScenario = {
       id: "fail-schema",
-      turns: [{ kind: "report_submission", usage, rawInput: { category: "SERVICE_DEGRADATION" } }],
+      // Issue #101: the first schema-rejected report is corrected-and-retried,
+      // so the terminal failure this asserts needs two malformed submissions.
+      turns: [
+        { kind: "report_submission", usage, rawInput: { category: "SERVICE_DEGRADATION" } },
+        { kind: "report_submission", usage, rawInput: { category: "SERVICE_DEGRADATION" } },
+      ],
     };
 
     const result = await runToolThenReportScenario(new FakeLlmProvider(scenario));

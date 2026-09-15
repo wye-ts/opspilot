@@ -1020,7 +1020,7 @@ Defines:
 `AgentRun.promptVersion` stores a logical version such as:
 
 ```text
-opspilot-agent-v7
+opspilot-agent-v8
 ```
 
 > **Implementation state (Issue #93).** This is a design target, not shipped
@@ -1033,6 +1033,23 @@ opspilot-agent-v7
 > documentation-and-source-comment contract that a reader can audit, not a
 > per-run stored fact. Wiring it through to persistence is separate work with
 > its own migration.
+
+`opspilot-agent-v8` supersedes `opspilot-agent-v7`: Issue #101 gives a schema-rejected resolution
+report one bounded corrective re-prompt instead of discarding the run
+(`agent-orchestrator.ts`; docs/reviews/39-issue-101-report-schema-invalid-correction-plan.md). The
+corrective text is built at runtime by `buildReportCorrectiveGuidanceText` from a **closed,
+application-authored** remedy map keyed on the violated invariant, and is delivered through the
+existing `CorrectiveGuidanceEntry` variant that #99 introduced — no new conversation variant, no new
+mapper case. **No prose in `investigationGuidance` or `BASE_SYSTEM_PROMPT` changed**, and the
+offered tool surface is unchanged; the version moves because a new class of model-facing text now
+exists, on the same "the surface Claude can see grew" reasoning as the v6 and v7 bumps.
+
+Unlike v7's fixed `A3_CORRECTIVE_GUIDANCE_TEXT`, v8's corrective text is *composed* per rejection.
+That composition reads only the sanitized `ReportValidationIssue` summaries — never the submitted
+report — so no model-authored value can ride back into the next prompt, and an invariant with no
+authored remedy falls through to a generic message rather than to a guessed one.
+`ResolutionReportSchema` and every one of its invariants are unchanged: a rejected report is still
+rejected, and only the run's fate on a *first* rejection changed.
 
 `opspilot-agent-v7` supersedes `opspilot-agent-v6`: Issue #99 gives the orchestrator's A3
 run-state-consistency guard one bounded corrective re-prompt instead of failing the run outright
@@ -1106,6 +1123,28 @@ A behavior-changing prompt update requires:
 - a new logical prompt version;
 - agent eval regression;
 - recorded comparison before changing the production-demo default.
+
+#### Issue #101 v8 agent-eval regression (before/after)
+
+Per the §20.4 policy, the v8 bump required an agent-eval regression recorded before changing the
+production-demo default.
+
+- **BEFORE ref:** `9faebba` (merged `main` after #103), same working tree with this issue's changes
+  stashed.
+- **AFTER identity:** working tree on `fix/101-report-schema-invalid-correction`.
+- **Command:** `EVALUATION_SCORER=local pnpm --filter @opspilot/worker run eval`.
+- **Result: NOT OBTAINED.** The eval harness fails locally with `Evaluation failed unexpectedly`
+  and no further detail — its `main()` catch collapses every non-config error to that fixed string.
+  The failure was **independently reproduced on the unmodified BEFORE ref** (`git stash`, re-run,
+  identical output), so it is a pre-existing local environment problem, not a regression introduced
+  by this change. It is recorded here as a gap rather than presented as a passing comparison.
+- **What this means for the bump:** the v8 prompt-version change ships WITHOUT its §20.4
+  before/after eval comparison. That comparison would in any case have proved less than its name
+  suggests — as the v5/v6/v7 entries record, the eval drives `FakeLlmProvider` from typed fixtures,
+  so prompt text cannot influence those results and no fixture exercises the report-correction path
+  at all. The substantive verification for this issue is the deterministic suite (which *does*
+  exercise the corrective path end to end, including through the real Claude message mapper) plus
+  the bounded real-model observation below. The harness's own opacity is worth its own issue.
 
 #### Issue #99 v7 agent-eval regression (before/after)
 

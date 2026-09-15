@@ -26,6 +26,7 @@ import {
 import {
   InvestigationEventPayloadSchema,
   MAX_PROVIDER_TURNS,
+  deriveExecutionStageProgress,
   type InvestigationEventPayload,
 } from "@opspilot/contracts";
 
@@ -406,7 +407,16 @@ describe("runAgentOrchestrator", () => {
   it("fails with REPORT_SCHEMA_INVALID when the submitted report fails schema validation", async () => {
     const provider = new FakeLlmProvider({
       id: "invalid-report",
-      turns: [{ kind: "report_submission", usage, rawInput: invalidReport }],
+      // Issue #101: a FIRST rejected report is now given one corrective
+      // retry, so proving the failure path needs a second rejection. This
+      // test's subject is unchanged — which failure code and which sanitized
+      // validation issues surface — but the run no longer dies on a single
+      // malformed submission, and scripting only one turn would exercise the
+      // retry instead of the failure.
+      turns: [
+        { kind: "report_submission", usage, rawInput: invalidReport },
+        { kind: "report_submission", usage, rawInput: invalidReport },
+      ],
     });
     const registry = new InMemoryToolRegistry([getServiceStatusTool]);
 
@@ -468,7 +478,14 @@ describe("runAgentOrchestrator", () => {
     // well-typed report can still violate confidence's 0-1 bound.
     const provider = new FakeLlmProvider({
       id: "confidence-percentage",
+      // Issue #101: the first rejection is corrected-and-retried, so reaching
+      // the failure needs two. This case is also the criterion-7 path in
+      // passing: `too_big` is not a `custom` issue and carries no `message`,
+      // so no authored remedy matches it and the corrective guidance falls
+      // back to the generic text — the retry still happens, the message just
+      // claims nothing specific. Asserted directly in the #101 block.
       turns: [
+        { kind: "report_submission", usage, rawInput: { ...validReport, confidence: 70 } },
         { kind: "report_submission", usage, rawInput: { ...validReport, confidence: 70 } },
       ],
     });
@@ -511,6 +528,21 @@ describe("runAgentOrchestrator", () => {
     }
 
     const types = (emitted: readonly InvestigationEventPayload[]) => emitted.map((e) => e.type);
+
+    // Issue #101: a FIRST schema-rejected report now receives one corrective
+    // retry, so a negative case must submit the same bad report TWICE to reach
+    // the failure these tests are about. The subject of each negative is
+    // unchanged — which invariant fails closed, and the sanitized diagnostic it
+    // surfaces — only the number of submissions needed to get there.
+    function rejectedTwice(id: string, rawInput: unknown): FakeLlmProvider {
+      return new FakeLlmProvider({
+        id,
+        turns: [
+          { kind: "report_submission", usage, rawInput },
+          { kind: "report_submission", usage, rawInput },
+        ],
+      });
+    }
 
     it("ACTIONABLE with a grounded suggested action -> REPORT_VALIDATED", async () => {
       const groundedActionableReport = {
@@ -577,15 +609,10 @@ describe("runAgentOrchestrator", () => {
     });
 
     it("ACTIONABLE with no suggested actions -> REPORT_SCHEMA_INVALID (disposition/cardinality fails closed)", async () => {
-      const provider = new FakeLlmProvider({
-        id: "actionable-empty-actions",
-        turns: [
-          {
-            kind: "report_submission",
-            usage,
-            rawInput: { ...validReport, recommendationDisposition: "ACTIONABLE", suggestedActions: [] },
-          },
-        ],
+      const provider = rejectedTwice("actionable-empty-actions", {
+        ...validReport,
+        recommendationDisposition: "ACTIONABLE",
+        suggestedActions: [],
       });
 
       const result = await runAgentOrchestrator({
@@ -609,23 +636,14 @@ describe("runAgentOrchestrator", () => {
     });
 
     it("ACTIONABLE with an ungrounded suggested action -> REPORT_SCHEMA_INVALID (grounding fails closed)", async () => {
-      const provider = new FakeLlmProvider({
-        id: "actionable-ungrounded-action",
-        turns: [
+      const provider = rejectedTwice("actionable-ungrounded-action", {
+        ...validReport,
+        recommendationDisposition: "ACTIONABLE",
+        suggestedActions: [
           {
-            kind: "report_submission",
-            usage,
-            rawInput: {
-              ...validReport,
-              recommendationDisposition: "ACTIONABLE",
-              suggestedActions: [
-                {
-                  type: "DRAFT_CUSTOMER_REPLY",
-                  payload: { subject: "Update", body: "A human will follow up." },
-                  groundedBy: [],
-                },
-              ],
-            },
+            type: "DRAFT_CUSTOMER_REPLY",
+            payload: { subject: "Update", body: "A human will follow up." },
+            groundedBy: [],
           },
         ],
       });
@@ -656,30 +674,21 @@ describe("runAgentOrchestrator", () => {
     // this issue also made — the schema's own fail-closed behavior here was
     // never the bug and must never be loosened to "fix" this class.
     it("ACTIONABLE with evidence: [] but a suggested action grounded on an uncited tool-call id -> REPORT_SCHEMA_INVALID (Issue #80's real production shape)", async () => {
-      const provider = new FakeLlmProvider({
-        id: "issue-80-ungrounded-in-evidence",
-        turns: [
+      const provider = rejectedTwice("issue-80-ungrounded-in-evidence", {
+        ...validReport,
+        rootCause: null,
+        evidenceState: "INSUFFICIENT",
+        evidence: [],
+        recommendationDisposition: "ACTIONABLE",
+        suggestedActions: [
           {
-            kind: "report_submission",
-            usage,
-            rawInput: {
-              ...validReport,
-              rootCause: null,
-              evidenceState: "INSUFFICIENT",
-              evidence: [],
-              recommendationDisposition: "ACTIONABLE",
-              suggestedActions: [
-                {
-                  type: "CREATE_ESCALATION",
-                  payload: {
-                    team: "Messaging Platform",
-                    reason: "Automated status checks returned UNKNOWN; needs manual investigation.",
-                    priority: "MEDIUM",
-                  },
-                  groundedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
-                },
-              ],
+            type: "CREATE_ESCALATION",
+            payload: {
+              team: "Messaging Platform",
+              reason: "Automated status checks returned UNKNOWN; needs manual investigation.",
+              priority: "MEDIUM",
             },
+            groundedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
           },
         ],
       });
@@ -1756,30 +1765,57 @@ describe("runAgentOrchestrator — canonical lifecycle emission", () => {
   });
 
   it.each([
-    ["REPORT_SCHEMA_INVALID", invalidReport],
-    ["REPORT_EVIDENCE_INVALID", validReport],
-  ])("emits REPORT_SUBMITTED then REPORT_VALIDATION_FAILED for %s", async (code, rawInput) => {
-    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    [
+      "REPORT_SCHEMA_INVALID",
+      invalidReport,
+      // Issue #101 §2.3 (retracted-and-corrected): the corrected-away attempt
+      // emits NOTHING, so even a retried run persists exactly one
+      // REPORT_SUBMITTED / REPORT_VALIDATION_FAILED pair — the one that
+      // decided the run. An earlier version of this entry expected two pairs;
+      // that stream is rejected outright by the canonical reducer, which is
+      // what independent review caught as a BLOCKER.
+      ["AGENT_STARTED", "REPORT_SUBMITTED", "REPORT_VALIDATION_FAILED"],
+      2,
+    ],
+    [
+      // REPORT_EVIDENCE_INVALID is a DIFFERENT guard with its own code and is
+      // deliberately out of #101's scope, so it still fails closed on the
+      // first submission. Kept in the same table to make that divergence
+      // visible rather than hiding it in a separate test.
+      "REPORT_EVIDENCE_INVALID",
+      validReport,
+      ["AGENT_STARTED", "REPORT_SUBMITTED", "REPORT_VALIDATION_FAILED"],
+      1,
+    ],
+  ] as const)(
+    "emits REPORT_SUBMITTED then REPORT_VALIDATION_FAILED for %s",
+    async (code, rawInput, expectedTypes, submissions) => {
+      const { emitted, emitLifecycleEvent } = recordingEmitter();
 
-    const result = await runAgentOrchestrator({
-      provider: new FakeLlmProvider({
-        id: `report-${code}`,
-        turns: [{ kind: "report_submission", usage, rawInput }],
-      }),
-      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
-      initialConversation: [ticketContext],
-      emitLifecycleEvent,
-    });
+      const result = await runAgentOrchestrator({
+        provider: new FakeLlmProvider({
+          id: `report-${code}`,
+          turns: Array.from({ length: submissions }, () => ({
+            kind: "report_submission" as const,
+            usage,
+            rawInput,
+          })),
+        }),
+        toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+        initialConversation: [ticketContext],
+        emitLifecycleEvent,
+      });
 
-    expect(result.status).toBe("failed");
-    if (result.status !== "failed") throw new Error("unreachable");
-    expect(result.code).toBe(code);
-    expect(result.failedStage).toBe("REPORT_GENERATION");
-    expect(types(emitted)).toEqual(["AGENT_STARTED", "REPORT_SUBMITTED", "REPORT_VALIDATION_FAILED"]);
-    expect(emitted[2]).toMatchObject({ failureCode: code });
-    // No legacy REPORT_GENERATED for a rejected report — unchanged from before.
-    expect(result.trace).toEqual([]);
-  });
+      expect(result.status).toBe("failed");
+      if (result.status !== "failed") throw new Error("unreachable");
+      expect(result.code).toBe(code);
+      expect(result.failedStage).toBe("REPORT_GENERATION");
+      expect(types(emitted)).toEqual(expectedTypes);
+      expect(emitted[emitted.length - 1]).toMatchObject({ failureCode: code });
+      // No legacy REPORT_GENERATED for a rejected report — unchanged from before.
+      expect(result.trace).toEqual([]);
+    },
+  );
 
   it("attributes a provider failure on the INVESTIGATION turn to AGENT_ANALYSIS", async () => {
     const { emitted, emitLifecycleEvent } = recordingEmitter();
@@ -4075,5 +4111,434 @@ describe("runAgentOrchestrator — assessment rides the persistence channel (§9
         supportedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
       },
     });
+  });
+});
+
+describe("runAgentOrchestrator — report corrective retry (issue #101)", () => {
+  function recordingEmitter() {
+    const emitted: InvestigationEventPayload[] = [];
+    return {
+      emitted,
+      emitLifecycleEvent: async (payload: InvestigationEventPayload) => {
+        emitted.push(payload);
+      },
+    };
+  }
+
+  const types = (emitted: readonly InvestigationEventPayload[]) => emitted.map((e) => e.type);
+
+  // The two invariants observed failing on every real LIVE run on 2026-09-14
+  // (runs ddd6ced6, adf6ed24, 402efbfb, b5fb71ae). Neither is a schema defect:
+  // an action grounded in evidence the report does not list is exactly the
+  // unreconstructable claim P2-3 forbids, and an ACTIONABLE disposition with
+  // zero actions is self-contradictory. Both are fixtures of the MODEL's
+  // formatting error, reproduced here deterministically.
+
+  // F5: groundedBy cites a locator that appears nowhere in report.evidence.
+  // The action itself is otherwise fully valid — correct discriminant, correct
+  // nested `payload` shape for CREATE_ESCALATION (team/reason/priority), 1..10
+  // locators — so the ONLY thing this fixture violates is the F5 subset rule.
+  // That precision is load-bearing: an action with a malformed payload would
+  // fail on `invalid_type`/unrecognized-key instead, and the test would pass
+  // while proving nothing about the invariant the real runs actually hit.
+  const reportViolatingF5 = {
+    ...validReportWithRagEvidence,
+    suggestedActions: [
+      {
+        type: "CREATE_ESCALATION",
+        payload: {
+          team: "Identity",
+          reason: "The identity provider certificate rotation needs owner review.",
+          priority: "MEDIUM",
+        },
+        // "call-1" is a plausible tool-call id, but this report's evidence
+        // array lists only "rag-chunk-1" — exactly the mistake observed in
+        // runs ddd6ced6 and 402efbfb.
+        groundedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+      },
+    ],
+    recommendationDisposition: "ACTIONABLE",
+  };
+
+  // F1/F2: ACTIONABLE disposition with an empty suggestedActions array.
+  const reportViolatingF1 = {
+    ...validReportWithRagEvidence,
+    suggestedActions: [],
+    recommendationDisposition: "ACTIONABLE",
+  };
+
+  it("criterion 1: a report rejected on an investigation turn is corrected on retry and the run completes", async () => {
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    const turns: FakeProviderTurn[] = [
+      // Turn 0: a voluntary report submission on an INVESTIGATION turn —
+      // submit_resolution_report is offered on every turn, which is how 3 of
+      // the 4 real runs reached this state with a slot still free. Rejected
+      // by F5.
+      { kind: "report_submission", usage, rawInput: reportViolatingF5 },
+      // Turn 1: the corrective retry returns a schema-valid report.
+      { kind: "report_submission", usage, rawInput: validReportWithRagEvidence },
+    ];
+
+    const result = await runAgentOrchestrator({
+      provider: new FakeLlmProvider({ id: "report-retry-f5", turns }),
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("completed");
+    // Criterion 8, REVISED by §2.3's retraction. The earlier version of this
+    // test asserted TWO REPORT_SUBMITTED events. That stream cannot be
+    // persisted: the canonical lifecycle treats report events as singletons and
+    // rejects it, which independent review caught as a BLOCKER — a retried run
+    // would have ended stuck RUNNING rather than completing. Exactly one report
+    // attempt reaches the ledger: the one that decided the run.
+    expect(types(emitted).filter((t) => t === "REPORT_SUBMITTED")).toHaveLength(1);
+    expect(types(emitted)).not.toContain("REPORT_VALIDATION_FAILED");
+    expect(types(emitted)).toContain("REPORT_VALIDATED");
+  });
+
+  it("the retried run's event stream is ACCEPTED by the real canonical reducer (the BLOCKER regression)", async () => {
+    // The test that would have caught the original BLOCKER. Every other test
+    // in this block uses a collecting emitter that never validates, so all of
+    // them passed against an implementation whose stream the real persistence
+    // path rejects outright. This one runs the actual reducer.
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    const turns: FakeProviderTurn[] = [
+      { kind: "report_submission", usage, rawInput: reportViolatingF5 },
+      { kind: "report_submission", usage, rawInput: validReportWithRagEvidence },
+    ];
+
+    const result = await runAgentOrchestrator({
+      provider: new FakeLlmProvider({ id: "report-retry-reducer", turns }),
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+      emitLifecycleEvent,
+    });
+
+    expect(result.status).toBe("completed");
+
+    const payloads: InvestigationEventPayload[] = [
+      { type: "RUN_CREATED" },
+      ...emitted,
+      { type: "RUN_COMPLETED" },
+    ];
+    const events = payloads.map((payload, index) => ({
+      runId: "8f14e45f-1234-4abc-8def-000000000001",
+      sequence: index + 1,
+      recordedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+      payload,
+    }));
+
+    // Before the fix this threw InvestigationEventContractError:
+    //   Event at sequence 5 ("REPORT_SUBMITTED") follows a stage failure;
+    //   only RUN_FAILED may follow a failure fact.
+    const progress = deriveExecutionStageProgress({
+      events,
+      runStatus: "COMPLETED",
+      now: events[events.length - 1]!.recordedAt,
+    });
+    for (const stage of progress) {
+      expect(["completed", "failed", "omitted"]).toContain(stage.status);
+    }
+  });
+
+  it("a terminal rejection still records the attempt that decided the run", async () => {
+    // The narrowing in §2.3 must not swallow the rejection that actually ends
+    // a run: "submitted then rejected" stays distinguishable from "never
+    // submitted" whenever the rejection is terminal. Also validated against the
+    // real reducer, since this is the other stream shape this issue produces.
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    const turns: FakeProviderTurn[] = [
+      { kind: "report_submission", usage, rawInput: reportViolatingF5 },
+      { kind: "report_submission", usage, rawInput: reportViolatingF5 },
+    ];
+
+    const result = await runAgentOrchestrator({
+      provider: new FakeLlmProvider({ id: "report-retry-terminal", turns }),
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+      emitLifecycleEvent,
+    });
+
+    expect(result).toMatchObject({ status: "failed", code: "REPORT_SCHEMA_INVALID" });
+    expect(types(emitted).filter((t) => t === "REPORT_SUBMITTED")).toHaveLength(1);
+    expect(types(emitted)).toContain("REPORT_VALIDATION_FAILED");
+
+    const payloads: InvestigationEventPayload[] = [
+      { type: "RUN_CREATED" },
+      ...emitted,
+      { type: "RUN_FAILED", failureCode: "REPORT_SCHEMA_INVALID", failedStage: "REPORT_GENERATION" },
+    ];
+    const events = payloads.map((payload, index) => ({
+      runId: "8f14e45f-1234-4abc-8def-000000000001",
+      sequence: index + 1,
+      recordedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+      payload,
+    }));
+
+    const progress = deriveExecutionStageProgress({
+      events,
+      runStatus: "FAILED",
+      now: events[events.length - 1]!.recordedAt,
+    });
+    for (const stage of progress) {
+      expect(["completed", "failed", "omitted"]).toContain(stage.status);
+    }
+  });
+
+  it("criterion 1 (F1/F2): the same correction path covers the disposition/cardinality invariant, not just F5", async () => {
+    // Two of the four real runs failed F1/F2 rather than F5. A fix keyed on
+    // one invariant would leave half the observed failures untouched, so this
+    // asserts the mechanism is keyed on REJECTION, not on a specific rule.
+    const turns: FakeProviderTurn[] = [
+      { kind: "report_submission", usage, rawInput: reportViolatingF1 },
+      { kind: "report_submission", usage, rawInput: validReportWithRagEvidence },
+    ];
+
+    const result = await runAgentOrchestrator({
+      provider: new FakeLlmProvider({ id: "report-retry-f1", turns }),
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+    });
+
+    expect(result.status).toBe("completed");
+  });
+
+  it("criterion 2: a second rejected report fails the run with REPORT_SCHEMA_INVALID, exactly as before this issue", async () => {
+    const turns: FakeProviderTurn[] = [
+      { kind: "report_submission", usage, rawInput: reportViolatingF5 },
+      { kind: "report_submission", usage, rawInput: reportViolatingF5 },
+    ];
+
+    const result = await runAgentOrchestrator({
+      provider: new FakeLlmProvider({ id: "report-retry-twice", turns }),
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+    });
+
+    expect(result).toMatchObject({ status: "failed", code: "REPORT_SCHEMA_INVALID" });
+  });
+
+  it("criterion 4: a report rejected on the forced FINALIZATION turn fails with no retry attempted", async () => {
+    // §2.1 rule 5: the retry needs a LATER turn to submit a corrected report
+    // into. On the last turn there is none. One of the four real runs
+    // (b5fb71ae, providerCalls=4) was in exactly this state and is genuinely
+    // unrecoverable — failing it is honest.
+    const turns: FakeProviderTurn[] = [
+      ...Array.from({ length: MAX_PROVIDER_TURNS - 1 }, (_, index) => ({
+        kind: "diagnostic_tool_requests" as const,
+        usage,
+        requests: [
+          {
+            toolCallId: `call-${index + 1}`,
+            toolName: "get_service_status",
+            input: { serviceSlug: "notification-service" },
+            rawAssessment:
+              index === 0
+                ? {
+                    evidenceState: "INSUFFICIENT",
+                    continuationReason: "STATUS_UNRESOLVED",
+                    supportedBy: [{ evidenceId: "rag-chunk-1", sourceType: "RAG_CHUNK" }],
+                  }
+                : {
+                    evidenceState: "INSUFFICIENT",
+                    continuationReason: "STATUS_UNRESOLVED",
+                    supportedBy: [
+                      { evidenceId: `call-${index}`, sourceType: "TOOL_EXECUTION" },
+                    ],
+                  },
+          },
+        ],
+      })),
+      // The forced finalization turn submits a rejected report.
+      { kind: "report_submission", usage, rawInput: reportViolatingF5 },
+    ];
+
+    const provider = new FakeLlmProvider({ id: "report-retry-late", turns });
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+    });
+
+    expect(result).toMatchObject({ status: "failed", code: "REPORT_SCHEMA_INVALID" });
+    // No extra invocation beyond the bound: the rejection consumed the last
+    // available turn, so nothing was retried.
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(MAX_PROVIDER_TURNS);
+  });
+
+  it("criterion 5: the retry consumes a turn slot and the run stays within MAX_PROVIDER_TURNS", async () => {
+    const turns: FakeProviderTurn[] = [
+      {
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "call-1",
+            toolName: "get_service_status",
+            input: { serviceSlug: "notification-service" },
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "STATUS_UNRESOLVED",
+              supportedBy: [{ evidenceId: "rag-chunk-1", sourceType: "RAG_CHUNK" }],
+            },
+          },
+        ],
+      },
+      // Turn 1: voluntary report, rejected.
+      { kind: "report_submission", usage, rawInput: reportViolatingF5 },
+      // Turn 2: corrected on the retry.
+      { kind: "report_submission", usage, rawInput: validReportWithRagEvidence },
+    ];
+
+    const provider = new FakeLlmProvider({ id: "report-retry-bound", turns });
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+    });
+
+    expect(result.status).toBe("completed");
+    // 1 diagnostic + 1 rejected report + 1 corrected report = 3 attempts,
+    // within the bound of 4. providerTurnsUsed counts ATTEMPTS
+    // (recording-provider.ts), so the rejected turn is charged like any other.
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(3);
+    expect(runAgentTurnSpy.mock.calls.length).toBeLessThanOrEqual(MAX_PROVIDER_TURNS);
+  });
+
+  it("criterion 6: the corrective message names the violated invariant and echoes nothing the model wrote", async () => {
+    const provider = new FakeLlmProvider({
+      id: "report-retry-message",
+      turns: [
+        { kind: "report_submission", usage, rawInput: reportViolatingF5 },
+        { kind: "report_submission", usage, rawInput: validReportWithRagEvidence },
+      ],
+    });
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+
+    await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+    });
+
+    const retryConversation = runAgentTurnSpy.mock.calls[1]?.[0].conversation ?? [];
+    const corrective = retryConversation.filter((e) => e.role === "corrective_guidance");
+    expect(corrective).toHaveLength(1);
+    const text = corrective[0]?.role === "corrective_guidance" ? corrective[0].text : "";
+
+    // Names the invariant that actually failed, in the harness's own words.
+    expect(text).toContain("groundedBy");
+    expect(text).toContain("evidence array");
+    // Tells the model the report was NOT recorded — the state it must reason
+    // from. A corrective message that omits this invites it to assume the
+    // report landed and to "continue" instead of resubmitting.
+    expect(text).toContain("NOT recorded");
+
+    // Echoes nothing the model produced. "call-1" is the invented evidenceId
+    // from the rejected report and is the single most likely value to leak,
+    // since it is what the failing locator pointed at; the payload strings are
+    // free-text the model authored.
+    expect(text).not.toContain("call-1");
+    expect(text).not.toContain("Identity");
+    expect(text).not.toContain("certificate rotation");
+    expect(text).not.toContain("notification-service is degraded");
+  });
+
+  it("criterion 7: an invariant with no authored remedy still retries, with a generic message", async () => {
+    // `confidence: 70` fails the 0-1 bound as a `too_big` issue, which carries
+    // no `message` field at all (only `custom` issues do), so no authored
+    // remedy can match. The run must still be given its correction attempt —
+    // recoverability must not depend on whether someone wrote a paragraph for
+    // that particular rule.
+    const provider = new FakeLlmProvider({
+      id: "report-retry-generic",
+      turns: [
+        { kind: "report_submission", usage, rawInput: { ...validReportWithRagEvidence, confidence: 70 } },
+        { kind: "report_submission", usage, rawInput: validReportWithRagEvidence },
+      ],
+    });
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+    });
+
+    expect(result.status).toBe("completed");
+
+    const retryConversation = runAgentTurnSpy.mock.calls[1]?.[0].conversation ?? [];
+    const corrective = retryConversation.filter((e) => e.role === "corrective_guidance");
+    expect(corrective).toHaveLength(1);
+    const text = corrective[0]?.role === "corrective_guidance" ? corrective[0].text : "";
+
+    expect(text).toContain("did not satisfy the resolution-report contract");
+    // Never states a rule it cannot actually attribute, and never leaks the
+    // offending value (the same never-log-raw-value constraint the sanitized
+    // issue summaries enforce).
+    expect(text).not.toContain("groundedBy");
+    expect(text).not.toContain("70");
+  });
+
+  it("de-duplicates the remedy when one report trips the same invariant on several actions", async () => {
+    // Two of the four real LIVE runs produced TWO identical F5 issues from a
+    // single report (one per groundedBy entry). Repeating the same paragraph
+    // teaches nothing and dilutes the instruction.
+    const twoF5Violations = {
+      ...validReportWithRagEvidence,
+      suggestedActions: [
+        {
+          type: "CREATE_ESCALATION",
+          payload: {
+            team: "Identity",
+            reason: "The identity provider certificate rotation needs owner review.",
+            priority: "MEDIUM",
+          },
+          groundedBy: [
+            { evidenceId: "call-1", sourceType: "TOOL_EXECUTION" },
+            { evidenceId: "call-2", sourceType: "TOOL_EXECUTION" },
+          ],
+        },
+      ],
+      recommendationDisposition: "ACTIONABLE",
+    };
+
+    const provider = new FakeLlmProvider({
+      id: "report-retry-dedupe",
+      turns: [
+        { kind: "report_submission", usage, rawInput: twoF5Violations },
+        { kind: "report_submission", usage, rawInput: validReportWithRagEvidence },
+      ],
+    });
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+
+    await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+    });
+
+    const retryConversation = runAgentTurnSpy.mock.calls[1]?.[0].conversation ?? [];
+    const entry = retryConversation.find((e) => e.role === "corrective_guidance");
+    const text = entry?.role === "corrective_guidance" ? entry.text : "";
+
+    const occurrences = text.split("Every groundedBy locator").length - 1;
+    expect(occurrences).toBe(1);
   });
 });

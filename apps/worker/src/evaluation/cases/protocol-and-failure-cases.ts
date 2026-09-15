@@ -387,7 +387,16 @@ export const PROTOCOL_AND_FAILURE_CASES: readonly EvaluationCase[] = [
     toolProfile: "default",
     scenario: {
       id: "malformed-report-submission",
-      turns: [{ kind: "report_submission", usage: USAGE, rawInput: MALFORMED_REPORT_RAW_INPUT }],
+      // Issue #101: a schema-rejected report now receives one bounded
+      // corrective retry, so reaching the terminal REPORT_SCHEMA_INVALID this
+      // case asserts requires TWO malformed submissions. The case's subject is
+      // unchanged — a report missing required fields still fails closed before
+      // any evidence check — and scripting only one turn would instead exhaust
+      // the fake provider (FakeScenarioTurnNotFoundError) on the retry.
+      turns: [
+        { kind: "report_submission", usage: USAGE, rawInput: MALFORMED_REPORT_RAW_INPUT },
+        { kind: "report_submission", usage: USAGE, rawInput: MALFORMED_REPORT_RAW_INPUT },
+      ],
     },
     expectations: {
       runStatus: "failed",

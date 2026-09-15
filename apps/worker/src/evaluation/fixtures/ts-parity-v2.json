@@ -2657,7 +2657,7 @@
         },
         "report": null,
         "investigation": {
-          "providerTurnsUsed": 1,
+          "providerTurnsUsed": 2,
           "diagnosticRequestCount": 0,
           "forcedFinalization": false,
           "stopReason": null,
@@ -2668,9 +2668,9 @@
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
-            "inputTokens": 100,
-            "outputTokens": 20,
-            "providerCalls": 1
+            "inputTokens": 200,
+            "outputTokens": 40,
+            "providerCalls": 2
           }
         },
         "failedStage": "REPORT_GENERATION"

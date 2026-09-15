@@ -357,7 +357,13 @@ conversation.`;
 // buildClaudeMessages above), even though nothing in this function's own
 // prose changed — the same "offered surface changed" reasoning as the v6
 // bump, not a §58/§85-style prose edit (§20.4; the AGENT_PROMPT_VERSION
-// default is updated to match).
+// default is updated to match). Issue #101 advances it again to
+// opspilot-agent-v8: a schema-rejected resolution report now receives a
+// COMPOSED corrective message (buildReportCorrectiveGuidanceText,
+// agent-orchestrator.ts), delivered through the same CorrectiveGuidanceEntry
+// variant and the same mapper case above. Same "offered surface changed"
+// reasoning; nothing in this function's own prose changed for that bump
+// either (§20.4; the AGENT_PROMPT_VERSION default is updated to match).
 // Deliberately appended on the INVESTIGATION phase only: the
 // FINALIZATION turn is a forced report submission with no diagnostic decision
 // to guide. It teaches structure and decision rules — never hidden reasoning
