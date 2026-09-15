@@ -109,16 +109,23 @@ provider turn to reach it.
 
 ## 2. Design
 
-### 2.1 Derive the report-start fact from the reducer's own condition, not from turn position
+### 2.1 Derive the report-stage transition from the reducer's own condition, not from turn position
 
-Replace the positional emission with the disjunction the reducer actually encodes:
+Replace the positional rule with a **once-per-run** report-stage transition, keyed on the condition
+the reducer actually encodes:
 
-> emit `REPORT_GENERATION_STARTED` before a provider call when **the diagnostic budget is exhausted**
+> the report stage has begun when **the diagnostic budget is exhausted**
 > (`toolCallCount >= MAX_DIAGNOSTIC_TOOL_CALLS`) **or** the turn is the forced finalization turn.
 
-Under today's equality the two are the same set of turns, so **the emitted stream for every
-currently-possible run is byte-identical** — the same compatibility property #101 §2.3 established
-for its own emission move. Under the raise, turn 3 correctly announces the report stage.
+Two things derive from that single condition, and both must move together (§2.1a):
+
+1. `REPORT_GENERATION_STARTED` is emitted on the **first** turn that satisfies it, and never again.
+2. `activeStage` resolves to `REPORT_GENERATION` on every turn that satisfies it.
+
+Under today's equality the condition first holds exactly on the forced finalization turn, so **the
+emitted stream for every currently-possible run is byte-identical** — the same compatibility
+property #101 §2.3 established for its own emission move. Under the raise, turn 3 correctly
+announces the report stage, exactly once.
 
 **Rejected alternative — relax the reducer instead.** The reducer's rule is what makes a voluntary
 early report distinguishable from a forced finalization report in persisted data; weakening it to
@@ -128,7 +135,51 @@ side that changes.
 
 **Explicitly NOT in scope:** changing `phase` itself. Phase governs `tool_choice` and prompt
 selection; turn 3 under the raise is genuinely still an investigation turn for prompt purposes. Only
-the report-start fact is decoupled.
+the report-stage transition is decoupled.
+
+### 2.1a Both halves of the transition move together — independently verified
+
+Independent review (round 1) raised two BLOCKERs against an earlier draft of §2.1 that specified
+only the *emission* half and left `activeStage` positional. Both were reproduced against the real
+reducer before acceptance; neither is hypothetical.
+
+**(a) The singleton would be emitted twice.** An earlier draft said "emit when the budget is
+exhausted **or** the turn is the forced finalization turn", evaluated per turn. With bounds 5/3 and
+a report rejected on turn 3, turn 3 satisfies the exhausted-budget clause and turn 4 satisfies both
+— so the event fires on each:
+
+```
+--- report-start emitted on BOTH turn 3 and turn 4 ---
+REDUCER: REJECTED -> DUPLICATE_LIFECYCLE_FACT
+  REPORT_GENERATION_STARTED occurs more than once (sequence 10).
+```
+
+`investigation-stage-progress-reducer.ts:732-738` rejects the second outright. This would have
+broken the *correction* path — the very path the issue exists to enable — and in the same stuck-run
+class §0.3 describes. Hence "first qualifying turn, never again".
+
+**(b) A failure on the announced turn would name the wrong stage.** `activeStage`
+(`agent-orchestrator.ts:486-491`) is `phase === "FINALIZATION" ? "REPORT_GENERATION" : toolCallCount
+> 0 ? "DIAGNOSTIC_EXECUTION" : "AGENT_ANALYSIS"`. With the emission fix alone, turn 3 announces the
+report stage while a provider failure there still reports `DIAGNOSTIC_EXECUTION`:
+
+```
+--- provider failure on the announced turn, failedStage DIAGNOSTIC_EXECUTION ---
+REDUCER: REJECTED -> FAILED_STAGE_NOT_TRUTHFUL
+  RUN_FAILED at sequence 10 names stage "DIAGNOSTIC_EXECUTION", but the currently active
+  stage is "REPORT_GENERATION"; a run fails in the stage it was executing.
+
+--- control: the same stream naming REPORT_GENERATION ---
+REDUCER: ACCEPTED
+```
+
+So an ordinary provider timeout on the new headroom turn would also strand the run. The control run
+confirms the fix direction: `activeStage` must be derived from the same shared condition, not from
+`phase`.
+
+The lesson generalizes beyond this issue and is why §2.3 exists: **`REPORT_GENERATION_STARTED` is
+not merely a log line — emitting it transitions the reducer's active stage**, so anything derived
+from "which stage is running" must move with it.
 
 ### 2.2 Stop offering diagnostic tools when the budget is spent
 
@@ -149,14 +200,23 @@ no prose in `claude-message-mapping.ts` moves. Four sites move together; see §6
 
 ### 2.3 A test that runs the emitted stream through the REAL reducer
 
-The gap that made this defect invisible (§0.4). Add, in `agent-runtime`, a test that takes the
-payloads the orchestrator actually emitted and feeds them to `deriveExecutionStageProgress`, for
-both shapes:
+The gap that made this defect invisible (§0.4), and the only thing that would have caught either
+BLOCKER in §2.1a. Add, in `agent-runtime`, a test that takes the payloads the orchestrator actually
+emitted and feeds them to `deriveExecutionStageProgress`, for three shapes:
 
 1. all diagnostics spent → valid report on the first available turn;
-2. all diagnostics spent → report rejected → corrected → accepted on the finalization turn.
+2. all diagnostics spent → report rejected → corrected → accepted on the finalization turn,
+   asserting the stream carries **exactly one** `REPORT_GENERATION_STARTED`;
+3. all diagnostics spent → provider failure on the first announced turn → `RUN_FAILED` appended from
+   the orchestrator's own result, asserting the reducer accepts it with
+   `failedStage: "REPORT_GENERATION"`.
 
-Each must be proven to fail against the pre-fix emission rule before being trusted green.
+**Baseline expectations against the pre-fix positional rule** (measured, §2.1a and §0.5 — not
+assumed): case 1 is **rejected** with `MISSING_LIFECYCLE_FACT`, which is what proves the test
+discriminates. Cases 2 and 3 are **accepted** under the pre-fix rule at today's constants, so they
+are green regression guards rather than red-first tests; requiring them to fail first would be
+unsatisfiable. Record these three expectations explicitly in the test file so a later reader does
+not "fix" a passing baseline.
 
 ### 2.4 Only then, raise the constant
 
@@ -172,7 +232,8 @@ turn-based ceiling #99 added.
 ## 3. Compatibility
 
 - **Emitted streams for existing runs are unchanged.** Under the equality that holds before §2.4
-  lands, §2.1's disjunction selects exactly the turns the positional rule selected.
+  lands, §2.1's condition first holds exactly on the forced finalization turn — the same single turn
+  the positional rule selected — so both the emission and the `activeStage` value are identical.
 - **No persisted data migrates.** No event type, payload field, or failure code is added or altered.
 - **No reducer change**, so every already-persisted stream keeps reading identically.
 - **Cost envelope moves** and every derived figure must move with it — see §6 step 6.
@@ -184,12 +245,14 @@ turn-based ceiling #99 added.
 | # | Case | Expected |
 | --- | --- | --- |
 | 1 | All diagnostics spent, valid report on the first available turn, stream → real reducer | ACCEPTED |
-| 2 | Same, but report rejected then corrected on the finalization turn | ACCEPTED |
-| 3 | Case 1 against the pre-fix positional emission rule | REJECTED with `MISSING_LIFECYCLE_FACT` (proves the test discriminates) |
-| 4 | Turn with `diagnosticCallsRemaining === 0` | Provider offers `submit_resolution_report` only |
-| 5 | Correction fires after all 3 diagnostic calls are spent | `correctiveTurns > 0` — #108's third characterization test flips, as it predicted |
-| 6 | Full run within the new ceiling | `providerTurnsUsed <= MAX_PROVIDER_TURNS` |
-| 7 | `agent-run-bounds.test.ts` | Updated to `5`/slack; the `<=` invariant assertion unchanged |
+| 2 | Same, but report rejected then corrected on the finalization turn | ACCEPTED, and the stream carries **exactly one** `REPORT_GENERATION_STARTED` |
+| 3 | All diagnostics spent, provider failure on the first announced turn, `RUN_FAILED` → real reducer | ACCEPTED with `failedStage: "REPORT_GENERATION"` (§2.1a(b)) |
+| 4 | Case 1 against the pre-fix positional rule | REJECTED with `MISSING_LIFECYCLE_FACT` — proves the test discriminates |
+| 5 | Cases 2 and 3 against the pre-fix positional rule at today's constants | ACCEPTED — recorded as measured baselines, **not** required to fail first (§2.3) |
+| 6 | Turn with `diagnosticCallsRemaining === 0` | Provider offers `submit_resolution_report` only |
+| 7 | Correction fires after all 3 diagnostic calls are spent | `correctiveTurns > 0` — #108's third characterization test flips, as it predicted |
+| 8 | Full run within the new ceiling | `providerTurnsUsed <= MAX_PROVIDER_TURNS` |
+| 9 | `agent-run-bounds.test.ts` | Updated to `5`/slack; the `<=` invariant assertion unchanged |
 
 **What this cannot prove.** All of the above is mechanism. Whether a real model, given a turn it
 previously did not have, actually produces a *valid* corrected report is a model-behavior question
@@ -208,7 +271,8 @@ state mechanism and model-compliance as two separate verdicts.
 - **#109's empty-evidence failure.** Independent; the dominant cause of current LIVE failures.
 - **Changing `MAX_DIAGNOSTIC_TOOL_CALLS`.** Stays 3.
 - **Relaxing the reducer** (rejected, §2.1).
-- **Making `phase` non-positional** (§2.1).
+- **Making `phase` non-positional** (§2.1) — `phase` still governs `tool_choice` and prompt
+  selection; only the report-stage transition is decoupled from it.
 - **Recording corrected-away attempts in the ledger.** Still owed its own issue (#101 §5).
 - **Any LIVE run.** Nothing here requires one; the raise's behavioral payoff is measured with #109.
 
@@ -217,9 +281,10 @@ state mechanism and model-compliance as two separate verdicts.
 ## 6. Sequencing (test-first)
 
 1. Add the real-reducer tests (§2.3); confirm case 1 fails against unmodified code with
-   `MISSING_LIFECYCLE_FACT`.
-2. Implement §2.1's emission condition; tests go green; confirm the byte-identity claim in §3 by
-   running the existing orchestrator suite unchanged.
+   `MISSING_LIFECYCLE_FACT`, and record cases 2 and 3 as already-accepted baselines.
+2. Implement §2.1's shared report-stage condition — **both** the once-per-run emission and the
+   `activeStage` derivation (§2.1a). Tests go green; confirm the byte-identity claim in §3 by running
+   the existing orchestrator suite unchanged.
 3. Implement §2.2's tool-offering condition + its unit test.
 4. Bump the logical prompt version to `opspilot-agent-v9` across all four sites
    (`claude-message-mapping.ts` lineage comment, `docs/04-agent-design.md` §20.4 literal +
@@ -240,20 +305,25 @@ state mechanism and model-compliance as two separate verdicts.
 
 ## 7. Acceptance criteria
 
-1. A test feeds the orchestrator's **emitted stream** to the real reducer for both §2.3 shapes, and
-   both are accepted.
-2. That test is proven to fail against the pre-fix emission rule, with `MISSING_LIFECYCLE_FACT`.
-3. `REPORT_GENERATION_STARTED` is emitted whenever the diagnostic budget is exhausted or the turn is
-   the forced finalization turn.
-4. The provider offers no diagnostic tool on a turn with `diagnosticCallsRemaining === 0`.
-5. `MAX_PROVIDER_TURNS === 5`, `MAX_DIAGNOSTIC_TOOL_CALLS === 3`, and the `<=` invariant assertion
+1. A test feeds the orchestrator's **emitted stream** to the real reducer for all three §2.3 shapes,
+   and all three are accepted after the fix.
+2. Case 1 of that test is proven to fail against the pre-fix positional rule, with
+   `MISSING_LIFECYCLE_FACT`. Cases 2 and 3 are recorded as measured pre-fix baselines that already
+   pass (§2.3) — no criterion requires them to fail first.
+3. `REPORT_GENERATION_STARTED` is emitted on the **first** turn where the diagnostic budget is
+   exhausted or the turn is the forced finalization turn, and **never more than once per run**.
+4. `activeStage` resolves to `REPORT_GENERATION` on every turn satisfying that same condition, so a
+   provider failure on an announced non-final turn persists `failedStage: "REPORT_GENERATION"` and
+   is accepted by the reducer (§2.1a(b)).
+5. The provider offers no diagnostic tool on a turn with `diagnosticCallsRemaining === 0`.
+6. `MAX_PROVIDER_TURNS === 5`, `MAX_DIAGNOSTIC_TOOL_CALLS === 3`, and the `<=` invariant assertion
    still passes while the equality assertion is replaced by a slack assertion.
-6. #108's "correction CANNOT fire" characterization test is updated to reflect that it now can, with
+7. #108's "correction CANNOT fire" characterization test is updated to reflect that it now can, with
    `correctiveTurns > 0`.
-7. The logical prompt version is bumped at all four sites with an offered-set-driven rationale.
-8. Every `MAX_PROVIDER_TURNS`-derived figure found by the §6 step 6 grep is updated, including both
+8. The logical prompt version is bumped at all four sites with an offered-set-driven rationale.
+9. Every `MAX_PROVIDER_TURNS`-derived figure found by the §6 step 6 grep is updated, including both
    daily-output-envelope statements.
-9. `pnpm agent:verify --final` passes.
-10. The PR body and an issue comment state mechanism and model-compliance as **separate verdicts**,
+10. `pnpm agent:verify --final` passes.
+11. The PR body and an issue comment state mechanism and model-compliance as **separate verdicts**,
     and explicitly do **not** claim this issue raises the LIVE completion rate. Closing #107 with
     the stronger claim is prohibited.
