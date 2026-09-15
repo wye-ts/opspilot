@@ -386,13 +386,29 @@ export class ClaudeLlmProvider implements LlmProvider {
   }
 
   private buildRequestParams(input: AgentTurnInput): Anthropic.MessageCreateParamsNonStreaming {
-    const isInvestigation = input.phase === "INVESTIGATION";
+    // Issue #107: offering diagnostics is gated on the remaining BUDGET, not on
+    // the phase alone. Once MAX_PROVIDER_TURNS gained slack over
+    // MAX_DIAGNOSTIC_TOOL_CALLS, a turn can be INVESTIGATION by position while
+    // having no diagnostic calls left — the orchestrator has already begun the
+    // report stage on such a turn (see its reportStageBegun derivation), so the
+    // only legal act left is submitting the report.
+    //
+    // BOTH the tool list and tool_choice move together, and forcing the choice
+    // is the load-bearing half. Narrowing the list while leaving
+    // `tool_choice: auto` lets Claude legally return a text-only `end_turn`
+    // response; that yields zero tool_use blocks, which normalization turns into
+    // PROVIDER_PROTOCOL_INVALID, ending the run before any report exists — and
+    // therefore before the corrective retry #107 exists to enable can fire. A
+    // zero-budget turn must behave exactly like the finalization turn it
+    // effectively is.
+    const canRequestDiagnostics =
+      input.phase === "INVESTIGATION" && input.diagnosticCallsRemaining > 0;
 
-    const tools: Anthropic.Tool[] = isInvestigation
+    const tools: Anthropic.Tool[] = canRequestDiagnostics
       ? [...this.options.diagnosticTools.map(toClaudeDiagnosticTool), SUBMIT_RESOLUTION_REPORT_TOOL]
       : [SUBMIT_RESOLUTION_REPORT_TOOL];
 
-    const toolChoice: Anthropic.ToolChoice = isInvestigation
+    const toolChoice: Anthropic.ToolChoice = canRequestDiagnostics
       ? { type: "auto", disable_parallel_tool_use: true }
       : { type: "tool", name: SUBMIT_RESOLUTION_REPORT_TOOL_NAME, disable_parallel_tool_use: true };
 

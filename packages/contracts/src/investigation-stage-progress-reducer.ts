@@ -748,10 +748,10 @@ export function deriveExecutionStageProgress(
             `REPORT_GENERATION_STARTED at sequence ${event.sequence} occurs before AGENT_STARTED.`,
           );
         }
-        // The orchestrator emits this only immediately before a FINALIZATION
-        // provider call, and reaching the finalization turn requires that the
-        // investigation turn produced a diagnostic tool call. A no-tool run
-        // therefore cannot produce this event: its single turn returns the
+        // The orchestrator emits this only immediately before the first
+        // provider call of the report stage, and reaching that stage requires
+        // that an investigation turn produced a diagnostic tool call. A no-tool
+        // run therefore cannot produce this event: its single turn returns the
         // report directly, and report generation begins at REPORT_SUBMITTED.
         if (!seen.toolPhaseStarted) {
           fail(
@@ -797,19 +797,26 @@ export function deriveExecutionStageProgress(
         // loop still has an investigation turn available (toolCallCount below
         // MAX_DIAGNOSTIC_TOOL_CALLS): a voluntary early report submitted on a
         // still-available turn needs no announcement. Once the diagnostic
-        // bound is exhausted, the next provider call is necessarily the forced
-        // FINALIZATION turn, and the runtime contract requires the report-start
-        // fact to be recorded BEFORE that call — so a submission at the bound
+        // bound is exhausted, every remaining provider call belongs to the
+        // report stage, and the runtime contract requires the report-start fact
+        // to be recorded BEFORE the first of them — so a submission at the bound
         // without it is a missing lifecycle fact, not a voluntary early report.
         // (A no-tool run has toolCallCount 0, so the direct no-tool submission
         // stays valid.)
+        //
+        // NOTE (#107): "the report stage" is not the same as "the last turn".
+        // With slack in the bounds a run can exhaust its diagnostic budget one
+        // or more turns before the forced FINALIZATION turn, and this rule
+        // applies from the first such turn onward. The orchestrator derives the
+        // matching condition as `reportStageBegun`; deriving it from turn
+        // position instead makes an otherwise-valid run unpersistable here.
         if (
           toolCallCount >= MAX_DIAGNOSTIC_TOOL_CALLS &&
           !seen.reportGenerationStarted
         ) {
           fail(
             "MISSING_LIFECYCLE_FACT",
-            `REPORT_SUBMITTED at sequence ${event.sequence} without a preceding REPORT_GENERATION_STARTED after the ${MAX_DIAGNOSTIC_TOOL_CALLS}-call diagnostic bound; the forced finalization turn that returned the report must be recorded with REPORT_GENERATION_STARTED first.`,
+            `REPORT_SUBMITTED at sequence ${event.sequence} without a preceding REPORT_GENERATION_STARTED after the ${MAX_DIAGNOSTIC_TOOL_CALLS}-call diagnostic bound; the report-stage turn that returned the report must be recorded with REPORT_GENERATION_STARTED first.`,
           );
         }
         seen.reportSubmitted = true;

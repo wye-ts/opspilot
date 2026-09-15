@@ -226,7 +226,14 @@ describe("live smoke bounded multi-step run (MINOR closure fix)", () => {
       async runAgentTurn(input) {
         calls.push({ turnIndex: input.turnIndex, phase: input.phase });
 
-        if (input.phase === "FINALIZATION") {
+        // Issue #107: submit the report once the diagnostic budget is spent,
+        // not only on the positionally-final turn. With the bounds now slack,
+        // turn 3 is INVESTIGATION by phase yet carries
+        // diagnosticCallsRemaining 0 — the real ClaudeLlmProvider offers only
+        // submit_resolution_report there and forces it, so a fake that keeps
+        // requesting diagnostics would model a request the live provider
+        // cannot make (and would trip the tool-bound guard).
+        if (input.phase === "FINALIZATION" || input.diagnosticCallsRemaining === 0) {
           return {
             type: "report_submission",
             providerRequestId: "req-finalization",
@@ -318,14 +325,20 @@ describe("live smoke bounded multi-step run (MINOR closure fix)", () => {
     if (result.status !== "completed") throw new Error("unreachable");
 
     // Provider invoked exactly four times — no retry storm, no early exit.
+    // Issue #107 raised MAX_PROVIDER_TURNS to 5, but this scenario still uses
+    // only four: three diagnostics plus the report on the zero-budget turn.
+    // The fifth (forced FINALIZATION) turn stays unused — it is the headroom a
+    // corrective retry would consume, which this clean run never needs.
     expect(calls).toHaveLength(4);
-    // First three turns are INVESTIGATION; finalization stays the fourth turn.
-    expect(calls.slice(0, 3).map((call) => call.phase)).toEqual([
+    // All four turns are INVESTIGATION by phase now: the report lands on the
+    // zero-budget turn rather than the reserved finalization turn, so phase
+    // alone no longer marks where the report is produced (#107).
+    expect(calls.map((call) => call.phase)).toEqual([
+      "INVESTIGATION",
       "INVESTIGATION",
       "INVESTIGATION",
       "INVESTIGATION",
     ]);
-    expect(calls[3]?.phase).toBe("FINALIZATION");
     // The three accepted diagnostic toolCallIds are distinct, and every one
     // actually executed (successfulToolExecutionIds gates report evidence).
     const completedToolCallIds = result.trace

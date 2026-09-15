@@ -153,9 +153,9 @@ reconciliation. Their honest strengths differ and are documented rather than glo
   startup). **Actual provider billing may be higher**, after an ambiguous network outcome or a
   process termination;
 - the **per-turn output ceiling** is hard and report-safe — the report-safe `finalizationMaxOutputTokens`
-  is applied to every provider turn (`MAX_PROVIDER_TURNS = 4`), because `submit_resolution_report` is
+  is applied to every provider turn (`MAX_PROVIDER_TURNS = 5`), because `submit_resolution_report` is
   available on investigation turns too (issue #61 Codex MAJOR 1), giving a daily output envelope of
-  `finalizationMaxOutputTokens x 4 x (maxRetries + 1) x dailyRunLimit` — `3072 x 4 x 1 x 10 = 122,880`
+  `finalizationMaxOutputTokens x 5 x (maxRetries + 1) x dailyRunLimit` — `3072 x 5 x 1 x 10 = 153,600`
   output tokens/day at shipped defaults, where the `+ 1` factor is `1` only because the protected path
   requires `ANTHROPIC_MAX_RETRIES=0`;
 - the **rate limit** and **concurrency lease** are per process, and reset on restart;

@@ -364,10 +364,24 @@ conversation.`;
 // variant and the same mapper case above. Same "offered surface changed"
 // reasoning; nothing in this function's own prose changed for that bump
 // either (§20.4; the AGENT_PROMPT_VERSION default is updated to match).
+// Issue #107 advances it again to opspilot-agent-v9, also without touching any
+// prose here: ClaudeLlmProvider now offers the diagnostic catalog only while
+// diagnosticCallsRemaining > 0, and presents submit_resolution_report alone
+// with a forcing tool_choice once the budget is spent
+// (claude-llm-provider.ts). Raising MAX_PROVIDER_TURNS from 4 to 5 made a
+// zero-budget INVESTIGATION turn reachable for the first time, so the tool
+// surface a run presents genuinely differs from v8 — the same "offered set
+// changed" reasoning as the v6 bump (§20.4; the AGENT_PROMPT_VERSION default
+// is updated to match).
 // Deliberately appended on the INVESTIGATION phase only: the
 // FINALIZATION turn is a forced report submission with no diagnostic decision
 // to guide. It teaches structure and decision rules — never hidden reasoning
 // requirements, and it never asks the model to reveal chain-of-thought.
+//
+// NOTE (#107): a zero-budget INVESTIGATION turn still receives this block, and
+// truthfully reports `diagnosticCallsRemaining is 0`. Phase — and therefore
+// prompt selection — deliberately stays positional; only the offered tool set
+// and the orchestrator's report-stage transition key off the budget.
 function investigationGuidance(diagnosticCallsRemaining: number): string {
   return `
 

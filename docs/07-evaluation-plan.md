@@ -695,7 +695,7 @@ or `RAG_CHUNK` locator is globally classified as probative.
 `NO_JUSTIFIED_DIAGNOSTIC`. A run that stops at the bound is `BOUND_EXHAUSTED`
 and is scored on sequence/count/stop-reason only. `bound-exhausted-finalization`
 is the dedicated **successful** forced-finalization / `BOUND_EXHAUSTED`
-acceptance case: it reaches the provider/tool limits exactly (4 of 4 provider
+acceptance case: it reaches the provider/tool limits exactly (4 of 5 provider
 turns, 3 of 3 diagnostic tool calls) and still produces the expected terminal
 report. `missing-final-report` reaches the same provider/tool limits at the
 same exact bound but fails report completion — it requests a tool on the

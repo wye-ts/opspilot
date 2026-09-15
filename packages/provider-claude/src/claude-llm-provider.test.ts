@@ -1114,6 +1114,39 @@ describe("ClaudeLlmProvider", () => {
     expect(params.tools?.map((tool) => tool.name)).toEqual([SUBMIT_RESOLUTION_REPORT_TOOL_NAME]);
   });
 
+  it("uses forced tool_choice and only the report tool on a zero-budget INVESTIGATION turn (#107)", async () => {
+    // Issue #107 gave MAX_PROVIDER_TURNS slack over MAX_DIAGNOSTIC_TOOL_CALLS,
+    // so a turn can be INVESTIGATION by position while having no diagnostic
+    // budget left. The orchestrator has already begun the report stage there,
+    // and this turn must behave exactly like FINALIZATION.
+    //
+    // BOTH halves are asserted deliberately. Narrowing the tool list while
+    // leaving `tool_choice: auto` would let Claude return a text-only end_turn
+    // response; that normalizes to PROVIDER_PROTOCOL_INVALID and kills the run
+    // before any report exists — destroying the very corrective-retry slot
+    // #107 was raised to create. Round 3 of independent review caught exactly
+    // that gap in the plan.
+    const create = vi.fn().mockResolvedValue(buildFakeMessage({ stop_reason: "end_turn", content: [] }));
+    const provider = new ClaudeLlmProvider({
+      client: buildFakeClient(create),
+      model: "claude-sonnet-5",
+      configuredMaxRetries: 1,
+      diagnosticTools: [{ tool: getServiceStatusTool, description: "Look up service status." }],
+    });
+
+    await provider.runAgentTurn(
+      buildInput({ phase: "INVESTIGATION", diagnosticCallsRemaining: 0 }),
+    );
+
+    const params = create.mock.calls[0]?.[0] as Anthropic.MessageCreateParamsNonStreaming;
+    expect(params.tool_choice).toEqual({
+      type: "tool",
+      name: SUBMIT_RESOLUTION_REPORT_TOOL_NAME,
+      disable_parallel_tool_use: true,
+    });
+    expect(params.tools?.map((tool) => tool.name)).toEqual([SUBMIT_RESOLUTION_REPORT_TOOL_NAME]);
+  });
+
   it("maps input.maxOutputTokens directly to max_tokens, never a hardcoded value", async () => {
     const create = vi.fn().mockResolvedValue(buildFakeMessage({ stop_reason: "end_turn", content: [] }));
     const provider = new ClaudeLlmProvider({

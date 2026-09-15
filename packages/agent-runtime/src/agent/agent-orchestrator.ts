@@ -34,12 +34,19 @@ import {
 import type { ToolRegistry } from "../tools/diagnostic-tool";
 
 // Issue #57 Checkpoint B: the orchestrator adopts the reviewed, shared source
-// bounds from packages/contracts/src/agent-run-bounds.ts — 4 provider turns /
+// bounds from packages/contracts/src/agent-run-bounds.ts — 5 provider turns /
 // 3 diagnostic tool calls, with MAX_DIAGNOSTIC_TOOL_CALLS <= MAX_PROVIDER_TURNS - 1
-// asserted by a contracts unit test. Turns 0..2 are INVESTIGATION, each
-// accepting at most one diagnostic tool request (so the diagnostic bound
-// coincides with the number of investigation turns); turn 3 is the reserved
-// forced FINALIZATION turn. The aspirational AGENT_MAX_* env budgets in
+// asserted by a contracts unit test. Since issue #107 that bound holds with
+// SLACK rather than at equality: turns 0..2 each accept at most one diagnostic
+// tool request, turn 3 is headroom (an INVESTIGATION turn by position that the
+// diagnostic budget can no longer fund), and turn 4 is the reserved forced
+// FINALIZATION turn.
+//
+// The slack is what makes a corrective retry reachable for a run that spent
+// every diagnostic call — and it also separates two conditions that used to
+// coincide, "budget exhausted" and "last turn". See reportStageBegun below:
+// anything meaning "the report stage has begun" must derive from that
+// condition, never from turn position. The aspirational AGENT_MAX_* env budgets in
 // docs/04-agent-design.md §7 remain unwired (Decision 1); there is no
 // same-tool-name limit (Decision 3).
 
@@ -469,34 +476,69 @@ export async function runAgentOrchestrator(
   // making a run's recoverability depend on which mistake the model happened
   // to make first.
   let reportRetryUsed = false;
+  // Issue #107: whether REPORT_GENERATION_STARTED has already been emitted this
+  // run. The canonical ledger treats it as a singleton, and with slack in the
+  // bounds the report-stage condition can hold on several consecutive turns —
+  // so the flag, not the condition, is what makes the emission once-per-run.
+  let reportGenerationAnnounced = false;
 
   for (let turnIndex = 0; turnIndex < MAX_PROVIDER_TURNS; turnIndex++) {
     const phase: AgentTurnPhase =
       turnIndex === MAX_PROVIDER_TURNS - 1 ? "FINALIZATION" : "INVESTIGATION";
 
-    // The stage a provider/protocol failure on THIS turn belongs to (issue #57
-    // §4.2), derived from run state rather than phase alone. On the
-    // finalization turn REPORT_GENERATION_STARTED has just been emitted, so
-    // REPORT_GENERATION is the active stage. On an investigation turn after at
-    // least one completed diagnostic, the agent is awaiting the provider's next
-    // diagnostic decision — a provider failure there is a DIAGNOSTIC_EXECUTION
-    // failure, which the reducer admits (as diagnosticLoopActive) only while
-    // the loop is genuinely mid-flight and below its bound. Before any tool,
-    // an investigation failure is still AGENT_ANALYSIS.
-    const activeStage: InvestigationExecutionStage =
-      phase === "FINALIZATION"
-        ? "REPORT_GENERATION"
-        : toolCallCount > 0
-          ? "DIAGNOSTIC_EXECUTION"
-          : "AGENT_ANALYSIS";
+    // Issue #107. THE condition that means "this run's report stage has begun",
+    // and the single source for both the REPORT_GENERATION_STARTED emission and
+    // the active-stage derivation below.
+    //
+    // It is deliberately NOT `phase === "FINALIZATION"`. The canonical reducer
+    // requires the report-start fact once `toolCallCount >=
+    // MAX_DIAGNOSTIC_TOOL_CALLS` (investigation-stage-progress-reducer.ts),
+    // reasoning that an exhausted diagnostic budget leaves nothing but the
+    // report to produce. Those two conditions coincided only while
+    // MAX_DIAGNOSTIC_TOOL_CALLS === MAX_PROVIDER_TURNS - 1; #107 introduced
+    // slack and split them apart, so a run that spent every diagnostic call now
+    // reaches a turn that is still INVESTIGATION by position yet has no
+    // diagnostic budget left.
+    //
+    // Deriving this from position instead produced streams the real reducer
+    // REJECTS — MISSING_LIFECYCLE_FACT for a perfectly valid report, and
+    // FAILED_STAGE_NOT_TRUTHFUL for an ordinary provider failure on that turn —
+    // which leaves the run stuck RUNNING rather than failing cleanly. Neither
+    // was visible to the orchestrator's own tests, whose collecting emitter
+    // never runs the reducer; see report-stage-ledger.test.ts, which does.
+    const reportStageBegun =
+      phase === "FINALIZATION" || toolCallCount >= MAX_DIAGNOSTIC_TOOL_CALLS;
 
-    // Announced immediately before the finalization provider call, and only
-    // there. Under the current execution model that turn is reachable only
-    // after a diagnostic tool call completed, which is exactly why the
-    // contract requires a preceding tool phase for this event. Emitted
-    // OUTSIDE the try below so an emission failure is never mistaken for a
-    // provider error.
-    if (phase === "FINALIZATION") {
+    // The stage a provider/protocol failure on THIS turn belongs to (issue #57
+    // §4.2), derived from run state rather than phase alone. Once the report
+    // stage has begun — announced below — REPORT_GENERATION is what the reducer
+    // sees as active, so a failure here must name it or be rejected as
+    // untruthful. On an investigation turn that still has diagnostic budget and
+    // at least one completed diagnostic, the agent is awaiting the provider's
+    // next diagnostic decision — a provider failure there is a
+    // DIAGNOSTIC_EXECUTION failure, which the reducer admits (as
+    // diagnosticLoopActive) only while the loop is genuinely mid-flight and
+    // below its bound. Before any tool, an investigation failure is still
+    // AGENT_ANALYSIS.
+    const activeStage: InvestigationExecutionStage = reportStageBegun
+      ? "REPORT_GENERATION"
+      : toolCallCount > 0
+        ? "DIAGNOSTIC_EXECUTION"
+        : "AGENT_ANALYSIS";
+
+    // Announced immediately before the first provider call of the report stage,
+    // and only once per run. REPORT_GENERATION_STARTED is a canonical SINGLETON:
+    // the reducer rejects a second one with DUPLICATE_LIFECYCLE_FACT, and with
+    // slack in the bounds several consecutive turns can satisfy
+    // `reportStageBegun` (the exhausted-budget turn, then the forced
+    // finalization turn a corrected report lands on). Guarding on the flag
+    // rather than re-testing the condition per turn is what keeps the correction
+    // path — the very path #107 exists to enable — persistable.
+    //
+    // Emitted OUTSIDE the try below so an emission failure is never mistaken for
+    // a provider error.
+    if (reportStageBegun && !reportGenerationAnnounced) {
+      reportGenerationAnnounced = true;
       await emit({ type: "REPORT_GENERATION_STARTED" });
     }
 
