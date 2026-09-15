@@ -296,14 +296,37 @@ source bound:
 
 | Implemented source bound | Value |
 |---|---:|
-| Provider turns per run | `4` (`MAX_PROVIDER_TURNS`) |
+| Provider turns per run | `5` (`MAX_PROVIDER_TURNS`) |
 | Diagnostic tool calls per run | `3` (`MAX_DIAGNOSTIC_TOOL_CALLS`) |
 | Reserved finalization turn | `1` (the final turn is forced FINALIZATION) |
 
-with `MAX_DIAGNOSTIC_TOOL_CALLS <= MAX_PROVIDER_TURNS - 1` (equality holds
-today): turns 0–2 each accept at most one diagnostic request, and turn 3 is
-forced finalization. A voluntary report may be submitted earlier, on any
-investigation turn.
+with `MAX_DIAGNOSTIC_TOOL_CALLS <= MAX_PROVIDER_TURNS - 1` holding with **slack**
+since issue #107 (`3 <= 4`): turns 0–2 each accept at most one diagnostic
+request, turn 3 is a headroom turn, and turn 4 is forced finalization. A
+voluntary report may be submitted earlier, on any investigation turn.
+
+**The slack is load-bearing, and equality was the defect.** While the bound held
+at equality the only non-diagnostic turn WAS the forced finalization turn, so a
+model that spent every diagnostic call landed its report there — and both
+corrective-retry paths (#99's A3 re-prompt, #101's report correction) need a
+later turn to submit into, so neither could run at all. Real data: of 8 LIVE runs
+on 2026-09-14/15, the 2 that used all three diagnostic calls completed 0 times.
+
+Equality also made two conditions coincide that are logically distinct: **"the
+diagnostic budget is exhausted"** and **"this is the last turn"**. The
+orchestrator's report-stage transition and the canonical reducer's
+`REPORT_GENERATION_STARTED` requirement were written against opposite halves of
+that coincidence, so introducing slack split them apart. Anything deriving "the
+report stage has begun" must now use the exhausted-or-final condition
+(`agent-orchestrator.ts`'s `reportStageBegun`), never turn position — deriving it
+positionally produces event streams the reducer rejects, which leaves runs stuck
+`RUNNING` rather than failing cleanly. `report-stage-ledger.test.ts` guards this
+by validating the orchestrator's emitted stream against the real reducer.
+
+A turn whose diagnostic budget is exhausted is offered only
+`submit_resolution_report`, with `tool_choice` forcing it — identical treatment
+to the finalization turn, because a `tool_choice: auto` turn may legally return
+a text-only response, which would end the run with no report at all.
 
 **Per-turn output ceiling is the report-safe `finalizationMaxOutputTokens` on
 EVERY report-capable turn (issue #61 Codex MAJOR 1).** Each `runAgentTurn` call
@@ -1020,7 +1043,7 @@ Defines:
 `AgentRun.promptVersion` stores a logical version such as:
 
 ```text
-opspilot-agent-v8
+opspilot-agent-v9
 ```
 
 > **Implementation state (Issue #93).** This is a design target, not shipped
@@ -1033,6 +1056,21 @@ opspilot-agent-v8
 > documentation-and-source-comment contract that a reader can audit, not a
 > per-run stored fact. Wiring it through to persistence is separate work with
 > its own migration.
+
+`opspilot-agent-v9` supersedes `opspilot-agent-v8`: Issue #107 changes **which turns offer the
+diagnostic catalog**. Before this bump, `ClaudeLlmProvider` offered the full catalog with
+`tool_choice: auto` on every `INVESTIGATION` turn; it now offers it only while
+`diagnosticCallsRemaining > 0`, and presents `submit_resolution_report` alone with a forcing
+`tool_choice` when the budget is spent. **No prose in `claude-message-mapping.ts` changed.** The
+bump is triggered by the offered-tool set, exactly as the v6 bump was: raising
+`MAX_PROVIDER_TURNS` from 4 to 5 made a zero-budget `INVESTIGATION` turn reachable for the first
+time, so a run under v9 can present a materially different tool surface than the same run under
+v8, and a stored version that did not move would fail to distinguish them.
+
+Schema, guard semantics, and report validation are unchanged. The orchestrator's
+`REPORT_GENERATION_STARTED` emission and `activeStage` derivation moved from turn position to the
+exhausted-or-final condition (§7), which changes the canonical event stream's *timing* on runs that
+spend every diagnostic call — but not its vocabulary, and not what any event means.
 
 `opspilot-agent-v8` supersedes `opspilot-agent-v7`: Issue #101 gives a schema-rejected resolution
 report one bounded corrective re-prompt instead of discarding the run

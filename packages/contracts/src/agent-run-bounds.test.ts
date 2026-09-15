@@ -18,18 +18,26 @@ describe("bounded multi-step diagnostic loop invariants", () => {
     expect(MAX_DIAGNOSTIC_TOOL_CALLS).toBeLessThanOrEqual(MAX_PROVIDER_TURNS - 1);
   });
 
-  // Equality is what lets the runtime use every tool turn and STILL reach the
-  // forced finalization turn: with MAX_DIAGNOSTIC_TOOL_CALLS ===
-  // MAX_PROVIDER_TURNS - 1, the loop can consume all three tool turns and
-  // still have turn 3 reserved for finalization. If a future configuration
-  // made the two unequal (MAX_DIAGNOSTIC_TOOL_CALLS < MAX_PROVIDER_TURNS - 1),
-  // the orchestrator would need an explicit "force early finalization when
-  // the tool bound is reached" rule — out of scope for #57. The invariant
-  // assertion above plus this comment guard that future by failing loudly on
-  // any change that lets tools crowd out the reserved finalization turn.
-  it("holds at equality under the reviewed #57 ceiling (3 === 4 - 1)", () => {
-    expect(MAX_PROVIDER_TURNS).toBe(4);
+  // Slack, not equality (issue #107). MAX_DIAGNOSTIC_TOOL_CALLS = 3 with
+  // MAX_PROVIDER_TURNS = 5 leaves TWO non-diagnostic turns: the forced
+  // finalization turn plus one turn of headroom. That headroom is what lets a
+  // corrective retry (#99's A3 re-prompt, #101's report correction) run even
+  // when the model spent every diagnostic call — under the previous equality
+  // the report landed on the forced finalization turn and no corrective slot
+  // existed at all.
+  //
+  // The assertion above is the real invariant and must keep holding. This test
+  // pins the CURRENT reviewed values so that changing either constant is a
+  // deliberate, reviewed act rather than an incidental edit — a raise also
+  // moves the per-run cost ceiling and every figure derived from it.
+  //
+  // Deliberately NOT asserting equality any more: equality is precisely what
+  // #107 removed. Anything deriving "the report stage has begun" from turn
+  // position rather than from the exhausted-or-final condition breaks the
+  // moment these two stop coinciding (see agent-orchestrator.ts).
+  it("holds with slack under the reviewed #107 ceiling (3 <= 5 - 1)", () => {
+    expect(MAX_PROVIDER_TURNS).toBe(5);
     expect(MAX_DIAGNOSTIC_TOOL_CALLS).toBe(3);
-    expect(MAX_DIAGNOSTIC_TOOL_CALLS).toBe(MAX_PROVIDER_TURNS - 1);
+    expect(MAX_DIAGNOSTIC_TOOL_CALLS).toBeLessThan(MAX_PROVIDER_TURNS - 1);
   });
 });

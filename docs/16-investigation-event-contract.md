@@ -164,7 +164,7 @@ It is also the **single place** where full validation happens. `hasCanonicalInve
 | `TOOL_COMPLETED` | closes its tool call as completed; no stage boundary effect |
 | `TOOL_FAILED` | closes its tool call as failed **and immediately fails `DIAGNOSTIC_EXECUTION`** with the exact tool failure code |
 | `REPORT_GENERATION_STARTED` | requires `AGENT_STARTED`, **at least one preceding tool call**, and no open tool call; closes analysis/diagnostics and activates `REPORT_GENERATION`; at most once |
-| `REPORT_SUBMITTED` | requires `AGENT_STARTED` and no open tool call; opens `REPORT_GENERATION` if not already open; unique. **`REPORT_GENERATION_STARTED` is optional only on a *voluntary early report*** (issue #57, targeted fix): with fewer than `MAX_DIAGNOSTIC_TOOL_CALLS` tools closed, the provider may submit the report directly on a still-available investigation turn, so `TOOL_COMPLETED → REPORT_SUBMITTED → REPORT_VALIDATED` is valid without it. Once the diagnostic bound is **exhausted**, the submission can only be the result of the **forced finalization turn**, which must be announced with `REPORT_GENERATION_STARTED` first — a submission at the bound without it is rejected with `MISSING_LIFECYCLE_FACT`. When the event *is* present it must still precede `REPORT_SUBMITTED` |
+| `REPORT_SUBMITTED` | requires `AGENT_STARTED` and no open tool call; opens `REPORT_GENERATION` if not already open; unique. **`REPORT_GENERATION_STARTED` is optional only on a *voluntary early report*** (issue #57, targeted fix): with fewer than `MAX_DIAGNOSTIC_TOOL_CALLS` tools closed, the provider may submit the report directly on a still-available investigation turn, so `TOOL_COMPLETED → REPORT_SUBMITTED → REPORT_VALIDATED` is valid without it. Once the diagnostic bound is **exhausted**, every remaining turn belongs to the **report stage**, which must be announced with `REPORT_GENERATION_STARTED` first — a submission at the bound without it is rejected with `MISSING_LIFECYCLE_FACT`. Since issue #107 gave the bounds slack, that announcement is **not** necessarily on the positionally-final turn: a run that spends its whole diagnostic budget enters the report stage on the earlier headroom turn, and announces it there. When the event *is* present it must still precede `REPORT_SUBMITTED` |
 | `REPORT_VALIDATED` | completes `REPORT_GENERATION`; requires a prior `REPORT_SUBMITTED` |
 | `REPORT_VALIDATION_FAILED` | **immediately fails** `REPORT_GENERATION` with the exact report failure code; requires a prior `REPORT_SUBMITTED` |
 | `RUN_COMPLETED` | validates strict completion (below); mutates nothing |
@@ -214,13 +214,16 @@ finalization turn**, and the runtime contract requires `REPORT_GENERATION_STARTE
 
 Two failure-attribution consequences follow:
 
-- A provider/protocol failure on the **forced finalization turn** names `REPORT_GENERATION`, and it
+- A provider/protocol failure on a **report-stage turn** names `REPORT_GENERATION`, and it
   requires the report-start fact: a `RUN_FAILED` naming `REPORT_GENERATION` for a provider or protocol
   code after tools closed successfully with no `TOOL_FAILED` still requires it
   (`MISSING_LIFECYCLE_FACT`). Without the fact the stream would attribute the failure to
-  `DIAGNOSTIC_EXECUTION`, which had already finished its work. This is a finalization-turn failure,
+  `DIAGNOSTIC_EXECUTION`, which had already finished its work. This is a report-stage failure,
   **not** a mid-loop failure — the mid-loop exception (below) applies only to provider failures
-  *between* diagnostics while the loop is still below its bound.
+  *between* diagnostics while the loop is still below its bound. Since issue #107, "report-stage
+  turn" means the forced finalization turn **or** any earlier turn whose diagnostic budget is
+  already exhausted; the orchestrator's `activeStage` derives from that same condition, so a
+  failure on the headroom turn is attributed truthfully rather than to the finished loop.
 - A provider/protocol failure **between** diagnostics (fewer than `MAX_DIAGNOSTIC_TOOL_CALLS` requests
   issued, no open call) names `DIAGNOSTIC_EXECUTION` and needs no report-start fact — see the
   precisely-scoped mid-loop exception in the failure-policy table below.

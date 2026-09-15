@@ -71,14 +71,17 @@ const ToolFailedEventSchema = z
   .strict()
   .readonly();
 
-// Pushed immediately before the orchestrator's finalization-phase provider
-// call — see packages/agent-runtime/src/agent/agent-orchestrator.ts, where
-// `phase` is already computed as "FINALIZATION" for the last turn before
-// that call is made (turnIndex === MAX_PROVIDER_TURNS - 1), the one
-// deterministic point at which a report submission is guaranteed to be
-// what's being requested. Never fires on the direct/no-tool path, where the
-// very first, unconstrained turn produces the report — that path has no
-// preceding long wait to announce (see docs/16-investigation-event-contract.md §5).
+// Pushed immediately before the first provider call of the report stage — see
+// packages/agent-runtime/src/agent/agent-orchestrator.ts, where
+// `reportStageBegun` is computed as "the diagnostic budget is exhausted OR this
+// is the forced finalization turn", the deterministic point from which a report
+// submission is the only remaining act. Since issue #107 gave the turn bounds
+// slack, that is NOT always the positionally-final turn: a run that spends
+// every diagnostic call announces the report stage on the earlier headroom
+// turn. Emitted once per run — this is a canonical singleton. Never fires on
+// the direct/no-tool path, where the very first, unconstrained turn produces
+// the report — that path has no preceding long wait to announce (see
+// docs/16-investigation-event-contract.md §5).
 const ReportGenerationStartedEventSchema = z
   .object({ type: z.literal("REPORT_GENERATION_STARTED") })
   .strict()

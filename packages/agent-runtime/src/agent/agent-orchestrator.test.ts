@@ -25,6 +25,7 @@ import {
 } from "../tools";
 import {
   InvestigationEventPayloadSchema,
+  MAX_DIAGNOSTIC_TOOL_CALLS,
   MAX_PROVIDER_TURNS,
   deriveExecutionStageProgress,
   type InvestigationEventPayload,
@@ -2095,20 +2096,30 @@ describe("runAgentOrchestrator — bounded multi-step diagnostic loop (issue #57
     ]);
   });
 
-  it("emits REPORT_GENERATION_STARTED before the forced-finalization provider call, and never before an investigation turn", async () => {
+  it("emits REPORT_GENERATION_STARTED before the first provider call of the report stage, and never while diagnostic budget remains", async () => {
+    // Issue #107 changed WHAT this event tracks, not whether it is announced
+    // ahead of the call. It used to be emitted iff the turn was positionally
+    // final; it is now emitted on the first turn where the report stage has
+    // begun — diagnostic budget exhausted OR the forced finalization turn —
+    // because that is the condition the canonical reducer itself enforces.
+    //
+    // With the bounds now slack (3 <= 5 - 1), turn 3 is INVESTIGATION by
+    // position yet has zero diagnostic budget, so it IS the report turn. The
+    // assertion therefore keys on the budget the turn actually carries rather
+    // than on its phase label. Asserting on phase here is exactly the coupling
+    // #107 removed.
     const { emitted, emitLifecycleEvent } = recordingEmitter();
     let turn = 0;
     const provider: LlmProvider = {
       runAgentTurn: async (input) => {
-        // Asserted AT the provider-call boundary: the finalization call must
-        // already see the report-start fact in the emission stream, while no
-        // investigation call may see it.
+        // Asserted AT the provider-call boundary: a call belonging to the
+        // report stage must already see the report-start fact in the emission
+        // stream, while any call that can still request a diagnostic must not.
         const startedSeen = emitted.some((e) => e.type === "REPORT_GENERATION_STARTED");
-        if (input.phase === "FINALIZATION") {
-          expect(startedSeen).toBe(true);
-        } else {
-          expect(startedSeen).toBe(false);
-        }
+        const reportStageTurn =
+          input.phase === "FINALIZATION" || input.diagnosticCallsRemaining === 0;
+        expect(startedSeen).toBe(reportStageTurn);
+
         if (turn++ < 3) {
           return {
             type: "diagnostic_tool_request",
@@ -2134,6 +2145,8 @@ describe("runAgentOrchestrator — bounded multi-step diagnostic loop (issue #57
     });
 
     expect(result.status).toBe("completed");
+    // Singleton: the reducer rejects a second one (DUPLICATE_LIFECYCLE_FACT).
+    expect(emitted.filter((e) => e.type === "REPORT_GENERATION_STARTED")).toHaveLength(1);
   });
 
   it("resolves maxOutputTokens to the report-safe finalization ceiling on EVERY provider turn: investigation turns 0-2 AND the forced finalization turn 3 all get finalizationMaxOutputTokens (issue #61 Codex MAJOR 1)", async () => {
@@ -2836,17 +2849,23 @@ describe("runAgentOrchestrator — evidence-aware continuation (issue #58 Checkp
     expect(types(emitted)).not.toContain("REPORT_SUBMITTED");
   });
 
-  it("F — bound exhaustion: the forced FINALIZATION turn sees diagnosticCallsRemaining 0 and reports honestly (INSUFFICIENT, rootCause null)", async () => {
+  it("F — bound exhaustion: the report turn sees diagnosticCallsRemaining 0 and reports honestly (INSUFFICIENT, rootCause null)", async () => {
     const seenRemainingOnFinalization: number[] = [];
     const scenario: FakeAgentScenario = {
       id: "scenario-f",
       turns: [
         ...buildMultiToolTurns(3),
-        // The FINALIZATION turn is a pure function of the input (§12): it must
+        // The report turn is a pure function of the input (§12): it must
         // observe that the diagnostic budget is exhausted and submit an honest
         // INSUFFICIENT report — the model may not request a fourth diagnostic.
+        //
+        // Issue #107: this turn is INVESTIGATION by position now that the
+        // bounds are slack, and the reserved FINALIZATION turn sits one later.
+        // What this test is about — "budget exhausted, so report honestly" —
+        // is a statement about the BUDGET, so it asserts the budget directly
+        // rather than the phase label that used to imply it.
         (input) => {
-          expect(input.phase).toBe("FINALIZATION");
+          expect(input.diagnosticCallsRemaining).toBe(0);
           seenRemainingOnFinalization.push(input.diagnosticCallsRemaining);
           return {
             kind: "report_submission",
@@ -3145,10 +3164,12 @@ describe("runAgentOrchestrator — genuine current-run conflict (issue #58 Check
           ],
         },
         // The diagnostic-tool-call bound (3) is now spent by call-3, so the
-        // 4th provider turn is forced FINALIZATION — no 4th diagnostic is
-        // permitted regardless of what the model wants next.
+        // 4th provider turn belongs to the report stage — no 4th diagnostic is
+        // permitted regardless of what the model wants next. Issue #107: that
+        // turn is INVESTIGATION by position (the reserved FINALIZATION turn is
+        // one later), so the exhausted budget, not the phase label, is what
+        // forecloses further diagnostics.
         (input) => {
-          expect(input.phase).toBe("FINALIZATION");
           expect(input.diagnosticCallsRemaining).toBe(0);
           return {
             kind: "report_submission",
@@ -3548,14 +3569,19 @@ describe("runAgentOrchestrator — diagnostic assessment protocol negatives (iss
   });
 
   it("A3 rejects NO_EVIDENCE_YET once tool evidence exists in the run (late trip, no retry available)", async () => {
-    // Issue #99: a tripped A3 guard on an EARLY investigation turn (0 or 1)
-    // now gets one corrective retry instead of failing immediately (see the
-    // dedicated "A3 corrective retry" describe block below, which covers
-    // that path). This fixture keeps pinning the ORIGINAL "A3 rejects
-    // NO_EVIDENCE_YET once evidence exists" behavior by tripping on the LAST
-    // investigation turn (turnIndex === MAX_PROVIDER_TURNS - 2), where no
-    // retry slot remains — so the immediate-fail behavior this test was
-    // written to pin is still exactly what happens here.
+    // Issue #99: a tripped A3 guard within the retry window gets one corrective
+    // retry instead of failing immediately (see the dedicated "A3 corrective
+    // retry" describe block below, which covers that path). This fixture keeps
+    // pinning the ORIGINAL "A3 rejects NO_EVIDENCE_YET once evidence exists"
+    // immediate-fail behavior by reaching a trip with no retry left.
+    //
+    // Issue #107 moved the window. The retry is available on turns
+    // 0..MAX_PROVIDER_TURNS - 3, which is now 0..2 rather than 0..1, so a trip
+    // on turn 2 recovers and no longer pins this behavior. The fixture instead
+    // spends the once-per-run retry on turn 1 and trips again on turn 3, where
+    // BOTH exhaustion conditions hold: the retry is already used and turn 3 is
+    // past the positional window. The emitted stream, executed-tool count, and
+    // failed stage are unchanged.
     const turns: FakeProviderTurn[] = [
       {
         kind: "diagnostic_tool_requests",
@@ -3570,6 +3596,22 @@ describe("runAgentOrchestrator — diagnostic assessment protocol negatives (iss
         ],
       },
       {
+        // turnIndex 1: inside the retry window. call-1 already completed, so
+        // this NO_EVIDENCE_YET claim trips A3 and spends the one allowed
+        // corrective retry. Nothing is emitted for the rejected request.
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "call-2a",
+            toolName: "get_service_status",
+            input: { serviceSlug: "notification-service" },
+            rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
+          },
+        ],
+      },
+      {
+        // turnIndex 2: the corrected request, now citing the evidence it has.
         kind: "diagnostic_tool_requests",
         usage,
         requests: [
@@ -3586,8 +3628,8 @@ describe("runAgentOrchestrator — diagnostic assessment protocol negatives (iss
         ],
       },
       {
-        // turnIndex 2 === MAX_PROVIDER_TURNS - 2: the last INVESTIGATION
-        // turn, so no retry slot remains — this fails exactly as before #99.
+        // turnIndex 3: trips A3 again with the retry already spent, so the run
+        // fails exactly as it did before #99 — which is what this test pins.
         kind: "diagnostic_tool_requests",
         usage,
         requests: [
@@ -3893,6 +3935,22 @@ describe("runAgentOrchestrator — A3 corrective retry (issue #99)", () => {
           },
         ],
       },
+      {
+        kind: "diagnostic_tool_requests",
+        usage,
+        requests: [
+          {
+            toolCallId: "call-3",
+            toolName: "get_service_status",
+            input: { serviceSlug: "search-service" },
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "STATUS_UNRESOLVED",
+              supportedBy: [{ evidenceId: "call-2", sourceType: "TOOL_EXECUTION" }],
+            },
+          },
+        ],
+      },
       { kind: "report_submission", usage, rawInput: validReportWithRagEvidence },
     ];
     const provider = new FakeLlmProvider({ id: "a3-retry-then-full-budget", turns });
@@ -3907,40 +3965,56 @@ describe("runAgentOrchestrator — A3 corrective retry (issue #99)", () => {
     });
 
     expect(result.status).toBe("completed");
-    // The rejected trip (turn 0) + 2 accepted diagnostics (turns 1, 2) + the
-    // forced finalization report (turn 3) = exactly MAX_PROVIDER_TURNS (4)
-    // provider invocation attempts. Had the retry NOT consumed a turn slot,
-    // the same amount of real investigation work would fit in fewer
-    // attempts and this assertion would not distinguish a free retry from a
-    // charged one — the point is that it costs a real investigation turn:
-    // this run got only 2 diagnostic calls instead of the 3 it would have
-    // had without the A3 trip.
-    expect(runAgentTurnSpy).toHaveBeenCalledTimes(4);
+    // The rejected trip (turn 0) + 3 accepted diagnostics (turns 1, 2, 3) + the
+    // report (turn 4) = exactly MAX_PROVIDER_TURNS (5) provider invocation
+    // attempts. Had the retry NOT consumed a turn slot, the same amount of real
+    // investigation work would fit in fewer attempts and this assertion would
+    // not distinguish a free retry from a charged one — the point is that it
+    // costs a real turn.
+    //
+    // Issue #107: with the bounds now slack this run recovers its FULL
+    // diagnostic budget after the trip — 3 calls, not the 2 it managed at the
+    // old 4/3 geometry. That is precisely the headroom #107 bought: an A3 trip
+    // no longer permanently costs the run a diagnostic call.
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(5);
     expect(runAgentTurnSpy).toHaveBeenCalledTimes(MAX_PROVIDER_TURNS);
 
     // Independent review MAJOR (codex-review round 1 on the implementation):
     // the retry consumes a turn WITHOUT accepting a diagnostic request, so
     // `MAX_DIAGNOSTIC_TOOL_CALLS - toolCallCount` alone stops tracking the
-    // turns that could actually carry one. Unfixed, this sequence advertises
-    // 3, 3, 2, 1 — telling the corrected turn it has three calls available
-    // when only two investigation turns remain, and handing the forced
-    // FINALIZATION turn a nonzero budget in direct contradiction of
-    // AgentTurnInput.diagnosticCallsRemaining's own documented contract
-    // ("0 on the FINALIZATION turn").
+    // turns that could actually carry one. Unfixed, this sequence over-promises
+    // on the corrective turn and hands the final turn a nonzero budget in
+    // direct contradiction of AgentTurnInput.diagnosticCallsRemaining's own
+    // documented contract ("0 on the FINALIZATION turn").
     //
-    // Asserted as the whole ordered sequence rather than only the
-    // finalization value: a fix that special-cased FINALIZATION to 0 would
-    // still over-promise on the corrective turn itself, which is where the
-    // model actually plans its remaining work.
+    // Asserted as the whole ordered sequence rather than only the final value:
+    // a fix that special-cased the last turn to 0 would still over-promise on
+    // the corrective turn itself, which is where the model actually plans its
+    // remaining work.
     expect(runAgentTurnSpy.mock.calls.map(([input]) => input.diagnosticCallsRemaining)).toEqual([
-      3, // turn 0, the trip: 3 unused calls, 3 investigation turns left
-      2, // turn 1, the corrective retry: still 3 unused calls, but only 2 turns can carry one
-      1, // turn 2, the last investigation turn
-      0, // turn 3, forced finalization — the contract's own promise
+      3, // turn 0, the trip: 3 unused calls, 4 turns could still carry one
+      3, // turn 1, the corrective retry: 3 unused calls and 3 turns left to carry them
+      2, // turn 2
+      1, // turn 3, the last turn that can carry a diagnostic
+      0, // turn 4, forced finalization — the contract's own promise
     ]);
   });
 
-  it("criterion 6 (late-trip): an A3 trip on the last investigation turn fails the run with no retry and never consumes the forced-finalization slot", async () => {
+  it("criterion 6 (late-trip): an A3 trip past the retry window fails the run with no retry and never consumes the forced-finalization slot", async () => {
+    // Issue #107 widened the retry window from turns 0..1 to turns 0..2, since
+    // it is expressed as `turnIndex <= MAX_PROVIDER_TURNS - 3`. The behaviour
+    // this test pins — a trip with no retry slot left fails immediately and
+    // never touches the reserved finalization turn — is unchanged; only which
+    // turn is "too late" moved.
+    //
+    // The fixture must therefore reach turn 3 with the A3 guard still
+    // REACHABLE. An earlier revision of this test simply added a third
+    // accepted diagnostic, which spent the tool budget and made the
+    // diagnostic-bound guard (agent-orchestrator.ts:807) reject the request
+    // BEFORE the A3 guard (:867) ever ran — leaving the test green even if the
+    // A3 retry rule regressed. Instead, turn 2 is consumed by a schema-invalid
+    // report, which uses the #101 correction path: it spends a provider turn
+    // while spending neither diagnostic budget nor the A3 retry.
     const turns: FakeProviderTurn[] = [
       {
         kind: "diagnostic_tool_requests",
@@ -3971,16 +4045,24 @@ describe("runAgentOrchestrator — A3 corrective retry (issue #99)", () => {
         ],
       },
       {
-        // turnIndex 2 === MAX_PROVIDER_TURNS - 2: the last INVESTIGATION
-        // turn. Evidence already exists (call-1, call-2), so claiming
-        // NO_EVIDENCE_YET trips A3 — but there is no investigation slot left
-        // to retry to (turn 3 is the forced FINALIZATION turn), so this must
-        // fail exactly as pre-#99, with no retry attempted.
+        // turnIndex 2: consumed by a schema-invalid report. This spends the
+        // turn without spending diagnostic budget (2 of 3 used) or the A3
+        // retry, which is what keeps the A3 guard reachable on turn 3.
+        kind: "report_submission",
+        usage,
+        rawInput: { bogus: "schema-invalid" },
+      },
+      {
+        // turnIndex 3 === MAX_PROVIDER_TURNS - 2: past the retry window
+        // (0..MAX_PROVIDER_TURNS - 3). Evidence already exists, so claiming
+        // NO_EVIDENCE_YET trips A3 — and there is no slot left to retry into
+        // (turn 4 is the forced FINALIZATION turn), so this must fail exactly
+        // as pre-#99, with no retry attempted.
         kind: "diagnostic_tool_requests",
         usage,
         requests: [
           {
-            toolCallId: "call-3",
+            toolCallId: "call-4",
             toolName: "get_service_status",
             input: { serviceSlug: "billing-service" },
             rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
@@ -4001,13 +4083,16 @@ describe("runAgentOrchestrator — A3 corrective retry (issue #99)", () => {
     expect(result.status).toBe("failed");
     if (result.status !== "failed") throw new Error("unreachable");
     expect(result.code).toBe("PROVIDER_PROTOCOL_INVALID");
-    // Evidence already exists (two completed tool calls), so the truthful
-    // active stage is DIAGNOSTIC_EXECUTION, not REPORT_GENERATION — this
-    // never reached the forced finalization turn at all.
+    // Pin WHICH guard rejected this. Without this assertion the test passes
+    // when the diagnostic-bound guard fires first, which is exactly how the
+    // earlier revision stopped covering the A3 rule (see the fixture comment).
+    expect(result.message).toContain("declared evidence status inconsistently");
+    // The diagnostic budget is NOT spent here (2 of 3 used), so the report
+    // stage has not begun and DIAGNOSTIC_EXECUTION is the truthful stage.
     expect(result.failedStage).toBe("DIAGNOSTIC_EXECUTION");
-    // Exactly 3 attempts: turns 0, 1, 2. Turn 3 (forced finalization) was
-    // never invoked — the rejected request did not consume it.
-    expect(runAgentTurnSpy).toHaveBeenCalledTimes(3);
+    // Exactly 4 attempts: turns 0-3. Turn 4 (forced finalization) was never
+    // invoked — the rejected request did not consume it.
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(4);
   });
 
   it("criterion 7 (ledger): a retried run's persisted event stream carries no event for the rejected assessment, and every emitted event still validates against the write contract", async () => {
@@ -4336,13 +4421,26 @@ describe("runAgentOrchestrator — report corrective retry (issue #101)", () => 
     expect(result).toMatchObject({ status: "failed", code: "REPORT_SCHEMA_INVALID" });
   });
 
-  it("criterion 4: a report rejected on the forced FINALIZATION turn fails with no retry attempted", async () => {
+  it("criterion 4: a report rejected on the forced FINALIZATION turn fails, with no turn left to retry into", async () => {
     // §2.1 rule 5: the retry needs a LATER turn to submit a corrected report
     // into. On the last turn there is none. One of the four real runs
     // (b5fb71ae, providerCalls=4) was in exactly this state and is genuinely
     // unrecoverable — failing it is honest.
+    //
+    // Issue #107 changed how a run REACHES that state, which is worth stating
+    // because the fixture no longer looks like the scenario it models. With the
+    // bounds slack, a run that spends all three diagnostic calls lands on the
+    // zero-budget turn (3) — which still has turn 4 after it, so a first
+    // rejection there is CORRECTED rather than terminal. That is exactly the
+    // headroom #107 bought. The genuinely-terminal state is now a rejection on
+    // turn 4 with the once-per-run retry already spent, so the fixture submits
+    // two rejected reports rather than one.
+    //
+    // Distinct from criterion 2, which reaches its second rejection with no
+    // diagnostics at all: this one proves the exhausted-budget path also
+    // terminates cleanly instead of looping.
     const turns: FakeProviderTurn[] = [
-      ...Array.from({ length: MAX_PROVIDER_TURNS - 1 }, (_, index) => ({
+      ...Array.from({ length: MAX_DIAGNOSTIC_TOOL_CALLS }, (_, index) => ({
         kind: "diagnostic_tool_requests" as const,
         usage,
         requests: [
@@ -4367,7 +4465,11 @@ describe("runAgentOrchestrator — report corrective retry (issue #101)", () => 
           },
         ],
       })),
-      // The forced finalization turn submits a rejected report.
+      // Turn 3 — budget exhausted, so this is the report turn. Rejected, and
+      // corrected into turn 4 because a later turn still exists.
+      { kind: "report_submission", usage, rawInput: reportViolatingF5 },
+      // Turn 4 — the forced finalization turn. Rejected again, with the retry
+      // already spent AND no later turn: terminal.
       { kind: "report_submission", usage, rawInput: reportViolatingF5 },
     ];
 
@@ -4382,8 +4484,8 @@ describe("runAgentOrchestrator — report corrective retry (issue #101)", () => 
     });
 
     expect(result).toMatchObject({ status: "failed", code: "REPORT_SCHEMA_INVALID" });
-    // No extra invocation beyond the bound: the rejection consumed the last
-    // available turn, so nothing was retried.
+    // No extra invocation beyond the bound: the final rejection consumed the
+    // last available turn, so nothing was retried after it.
     expect(runAgentTurnSpy).toHaveBeenCalledTimes(MAX_PROVIDER_TURNS);
   });
 

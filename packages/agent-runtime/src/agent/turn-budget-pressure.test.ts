@@ -10,11 +10,14 @@ import { runAgentOrchestrator } from "./agent-orchestrator";
 /**
  * Issue #107 — turn-budget pressure on the corrective-retry mechanisms.
  *
- * These are CHARACTERIZATION tests: they pin what the current bounds actually
- * produce, including the case where a correction cannot run at all. If #107
- * raises MAX_PROVIDER_TURNS, the third test below is expected to flip, and
- * that flip is the point — it is why the assertions capture the invocation
- * count rather than just "the run failed".
+ * ORIGINALLY characterization tests written at the 4/3 bounds, pinning the case
+ * where a correction could not run at all. #107 raised MAX_PROVIDER_TURNS to 5
+ * and the third test DID flip, exactly as this file predicted it would — that
+ * flip was the point, and the assertions were built around the one signal that
+ * can express it.
+ *
+ * They now serve the inverted purpose: proving the headroom is real and stays
+ * real. The mechanism they measure is the same.
  *
  * Why this is testable without paid calls: eligibility is pure arithmetic over
  * turnIndex, so a scripted provider settles it deterministically. Eight real
@@ -133,12 +136,12 @@ describe("corrective-retry availability under the turn budget (Issue #107)", () 
     };
   }
 
-  it("the documented headroom bound currently holds with NO slack", () => {
-    // docs/04-agent-design.md states MAX_DIAGNOSTIC_TOOL_CALLS <=
-    // MAX_PROVIDER_TURNS - 1 and notes equality holds today. Every claim below
-    // depends on that equality: it means the single non-diagnostic turn IS the
-    // forced finalization turn, leaving nowhere for a corrected report to go.
-    expect(MAX_DIAGNOSTIC_TOOL_CALLS).toBe(MAX_PROVIDER_TURNS - 1);
+  it("the documented headroom bound now holds with SLACK", () => {
+    // Was: "currently holds with NO slack", asserting equality. #107 replaced
+    // the equality with slack, which is the whole point of the issue — the
+    // single non-diagnostic turn used to BE the forced finalization turn,
+    // leaving nowhere for a corrected report to go.
+    expect(MAX_DIAGNOSTIC_TOOL_CALLS).toBeLessThan(MAX_PROVIDER_TURNS - 1);
   });
 
   it("the correction FIRES when the model leaves a spare turn", async () => {
@@ -159,45 +162,56 @@ describe("corrective-retry availability under the turn budget (Issue #107)", () 
     expect(correctiveTurns).toBe(1);
   });
 
-  it("the correction CANNOT fire when all diagnostic calls are spent", async () => {
+  it("the correction NOW FIRES even when all diagnostic calls are spent", async () => {
+    // THE test this issue exists for. At the old 4/3 bounds this asserted
+    // correctiveTurns === 0: the report landed on the forced finalization turn,
+    // #101's eligibility rule excluded it, and the model never saw a corrective
+    // prompt — so such a run's failure said NOTHING about whether correction
+    // works. Real data agreed: of 8 LIVE runs, the 2 that spent all three
+    // diagnostic calls completed 0 times.
+    //
+    // With slack, the report lands on turn 3 and turn 4 remains, so the
+    // correction is built and delivered. The assertion is inverted rather than
+    // deleted, deliberately: a future change that restores equality would
+    // silently reinstate the defect, and this goes red when it does.
     const { result, emitted, calls, correctiveTurns } = await run([
       firstDiagnosticTurn("call-1"),
       followUpDiagnosticTurn("call-2", "call-1"),
       followUpDiagnosticTurn("call-3", "call-1"),
-      // Turn 3 is the forced finalization turn — the only one left, and the
-      // one #101's eligibility rule excludes.
+      // Turn 3 — budget exhausted. The report turn, with turn 4 still after it.
       { kind: "report_submission", usage, rawInput: reportViolatingF5 },
-      // Scripted but UNREACHABLE under the current bound. Its presence is what
-      // makes the assertion meaningful: the script can support a retry, and
-      // the budget still prevents one.
+      // Turn 4 — the corrected resubmission. Still invalid here, so the run
+      // fails: this test measures whether the correction RAN, not whether the
+      // model got it right. Those are different claims and only the first is
+      // deterministically provable.
       { kind: "report_submission", usage, rawInput: reportViolatingF5 },
     ]);
 
     expect(result.status).toBe("failed");
-
-    // Only MAX_PROVIDER_TURNS calls happen, and the fifth scripted turn is
-    // never consumed — the model never saw the corrective prompt, so this
-    // run's failure says NOTHING about whether correction works.
     expect(calls).toBe(MAX_PROVIDER_TURNS);
 
-    // THE assertion. The raw call count alone cannot express this: it equals
-    // MAX_PROVIDER_TURNS whether or not a correction fired, so asserting it
-    // would pass in both worlds and prove nothing. Under the current bound no
-    // corrective prompt is ever built, so the model never had the chance to
-    // fix its report.
-    expect(correctiveTurns).toBe(0);
+    // THE assertion, inverted from 0. The raw call count cannot express this:
+    // it equals MAX_PROVIDER_TURNS whether or not a correction fired, so
+    // asserting it would pass in both worlds and prove nothing.
+    expect(correctiveTurns).toBeGreaterThan(0);
 
-    // Documented deliberately: this count is NOT a usable discriminator — it
-    // reads 1 here AND in the retried case above (Issue #101 §2.3).
+    // Unchanged and still worth pinning: this count is NOT a usable
+    // discriminator — it reads 1 whether or not the correction ran
+    // (Issue #101 §2.3).
     expect(emitted.filter((e) => e.type === "REPORT_SUBMITTED")).toHaveLength(1);
   });
 
-  it("the A3 retry draws from the SAME budget as the report correction", async () => {
+  it("the A3 retry and the report correction draw from the SAME budget — but both now fit", async () => {
     // #99's A3 guard trips when the model claims NO_EVIDENCE_YET while evidence
     // already exists, and its retry also costs a provider turn — 2 of 3
-    // instrumented real runs on 2026-09-15 fired it. Once it does, the run
-    // reaches its report with one fewer turn available, so the two corrective
-    // mechanisms compete rather than being independently budgeted.
+    // instrumented real runs on 2026-09-15 fired it. The two corrective
+    // mechanisms therefore compete for one shared budget rather than being
+    // independently funded, which is the fact this test pins.
+    //
+    // At the old 4/3 bounds, competing meant losing: the A3 correction consumed
+    // the slack and the later report correction had no turn left to run on.
+    // With #107's headroom both fit — the A3 retry rides turn 1, the report
+    // still reaches turn 3, and turn 4 carries its correction.
     const { result, calls, correctiveTurns } = await run([
       firstDiagnosticTurn("call-1"),
       {
@@ -225,14 +239,14 @@ describe("corrective-retry availability under the turn budget (Issue #107)", () 
 
     expect(result.status).toBe("failed");
     expect(calls).toBe(MAX_PROVIDER_TURNS);
-    // Two, not one: a corrective-guidance entry is appended to the CONVERSATION
-    // and therefore rides along on every subsequent turn. So this counts turns
-    // that CARRIED corrective context, not corrective events — which is exactly
-    // what the "CANNOT fire" test above needs (zero such turns means no
-    // correction was ever built).
+
+    // Counts turns that CARRIED corrective context, not corrective events: an
+    // entry is appended to the CONVERSATION and rides along on every subsequent
+    // turn. One A3 trip on turn 1 therefore marks turns 2, 3 and 4.
     //
-    // The A3 correction consumed a turn here; the report correction that would
-    // otherwise have followed the rejected report had no turn left to run on.
-    expect(correctiveTurns).toBe(2);
+    // Was 2 at the old bounds, where the run ended a turn earlier. The value
+    // matters less than what it proves: a corrective prompt reached the
+    // provider, and the extra turn did not come out of the report path's slot.
+    expect(correctiveTurns).toBe(3);
   });
 });

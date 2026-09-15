@@ -192,7 +192,7 @@
           ],
           "toolFailures": [],
           "bounds": {
-            "maxProviderTurns": 4,
+            "maxProviderTurns": 5,
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
@@ -440,7 +440,7 @@
           ],
           "toolFailures": [],
           "bounds": {
-            "maxProviderTurns": 4,
+            "maxProviderTurns": 5,
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
@@ -687,7 +687,7 @@
           ],
           "toolFailures": [],
           "bounds": {
-            "maxProviderTurns": 4,
+            "maxProviderTurns": 5,
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
@@ -924,7 +924,7 @@
           ],
           "toolFailures": [],
           "bounds": {
-            "maxProviderTurns": 4,
+            "maxProviderTurns": 5,
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
@@ -1147,7 +1147,7 @@
           ],
           "toolFailures": [],
           "bounds": {
-            "maxProviderTurns": 4,
+            "maxProviderTurns": 5,
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
@@ -1378,7 +1378,7 @@
           ],
           "toolFailures": [],
           "bounds": {
-            "maxProviderTurns": 4,
+            "maxProviderTurns": 5,
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
@@ -1522,7 +1522,7 @@
           "assessments": [],
           "toolFailures": [],
           "bounds": {
-            "maxProviderTurns": 4,
+            "maxProviderTurns": 5,
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
@@ -1646,7 +1646,7 @@
           "assessments": [],
           "toolFailures": [],
           "bounds": {
-            "maxProviderTurns": 4,
+            "maxProviderTurns": 5,
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
@@ -1795,7 +1795,7 @@
             }
           ],
           "bounds": {
-            "maxProviderTurns": 4,
+            "maxProviderTurns": 5,
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
@@ -1939,7 +1939,7 @@
             }
           ],
           "bounds": {
-            "maxProviderTurns": 4,
+            "maxProviderTurns": 5,
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
@@ -2063,7 +2063,7 @@
           "assessments": [],
           "toolFailures": [],
           "bounds": {
-            "maxProviderTurns": 4,
+            "maxProviderTurns": 5,
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
@@ -2355,7 +2355,7 @@
           ],
           "toolFailures": [],
           "bounds": {
-            "maxProviderTurns": 4,
+            "maxProviderTurns": 5,
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
@@ -2536,7 +2536,7 @@
             }
           ],
           "bounds": {
-            "maxProviderTurns": 4,
+            "maxProviderTurns": 5,
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
@@ -2664,7 +2664,7 @@
           "assessments": [],
           "toolFailures": [],
           "bounds": {
-            "maxProviderTurns": 4,
+            "maxProviderTurns": 5,
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
@@ -2784,7 +2784,7 @@
           "assessments": [],
           "toolFailures": [],
           "bounds": {
-            "maxProviderTurns": 4,
+            "maxProviderTurns": 5,
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
@@ -3027,7 +3027,7 @@
           ],
           "toolFailures": [],
           "bounds": {
-            "maxProviderTurns": 4,
+            "maxProviderTurns": 5,
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
@@ -3382,7 +3382,7 @@
           ],
           "toolFailures": [],
           "bounds": {
-            "maxProviderTurns": 4,
+            "maxProviderTurns": 5,
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
@@ -3616,7 +3616,7 @@
           ],
           "toolFailures": [],
           "bounds": {
-            "maxProviderTurns": 4,
+            "maxProviderTurns": 5,
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
@@ -3929,7 +3929,7 @@
           ],
           "toolFailures": [],
           "bounds": {
-            "maxProviderTurns": 4,
+            "maxProviderTurns": 5,
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
@@ -4311,7 +4311,7 @@
           ],
           "toolFailures": [],
           "bounds": {
-            "maxProviderTurns": 4,
+            "maxProviderTurns": 5,
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
@@ -4514,7 +4514,7 @@
           ],
           "toolFailures": [],
           "bounds": {
-            "maxProviderTurns": 4,
+            "maxProviderTurns": 5,
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
@@ -4678,7 +4678,7 @@
             }
           ],
           "bounds": {
-            "maxProviderTurns": 4,
+            "maxProviderTurns": 5,
             "maxDiagnosticToolCalls": 3
           },
           "usage": {

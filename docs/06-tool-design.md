@@ -50,14 +50,23 @@ ownership split matters if you extend the catalog:
   requested tool by name.
 - **`AgentOrchestrator`** owns the *budget*: it counts accepted diagnostic calls, passes
   `diagnosticCallsRemaining` into each turn, and refuses a request once
-  `MAX_DIAGNOSTIC_TOOL_CALLS = 3` of `MAX_PROVIDER_TURNS = 4` is reached. It never receives or
+  `MAX_DIAGNOSTIC_TOOL_CALLS = 3` of `MAX_PROVIDER_TURNS = 5` is reached. It never receives or
   filters tool definitions.
 - **`ClaudeLlmProvider`** owns the *offered list*: it offers its full configured
-  `diagnosticTools` array plus the finalizer on every `INVESTIGATION` turn, and the finalizer
-  alone on `FINALIZATION` (`claude-llm-provider.ts` `buildRequestParams`). The offered list does
-  **not** shrink as the remaining budget shrinks — `diagnosticCallsRemaining` reaches the model
-  only as prompt text (`investigationGuidance`), so do not rely on the orchestrator to withhold
-  a tool the budget can no longer afford.
+  `diagnosticTools` array plus the finalizer on an `INVESTIGATION` turn **that still has
+  diagnostic budget**, and the finalizer alone — with `tool_choice` forcing it — on a
+  `FINALIZATION` turn **or any turn whose `diagnosticCallsRemaining` is `0`**
+  (`claude-llm-provider.ts` `buildRequestParams`).
+
+  The offered list does **not** shrink gradually as the budget shrinks: it is the full catalog at
+  `diagnosticCallsRemaining >= 1` and the finalizer alone at `0`. In between, the remaining budget
+  reaches the model only as prompt text (`investigationGuidance`), so do not rely on the offered
+  list to signal how much budget is left — only that some remains.
+
+  The zero-budget case became reachable with issue #107's slack (a turn can now be `INVESTIGATION`
+  by position with no budget left) and is handled deliberately: leaving such a turn on
+  `tool_choice: auto` would let the model return a text-only response, which normalizes to
+  `PROVIDER_PROTOCOL_INVALID` and ends the run with no report at all.
 
 Two consequences worth stating plainly rather than leaving for a reader to infer:
 

@@ -203,17 +203,25 @@ describe("orchestrator through the Claude adapter (mocked transport)", () => {
     expect(result.report.evidence[0]?.evidenceId).toBe(TOOL_CALL_ID);
   });
 
-  it("drives exactly four provider turns — three investigation turns, then the reserved finalization turn — with the phase-appropriate tool policy", async () => {
-    // Under the #57 bound (MAX_PROVIDER_TURNS = 4, MAX_DIAGNOSTIC_TOOL_CALLS = 3)
+  it("drives four provider turns — three investigation turns, then the zero-budget report turn — with the budget-appropriate tool policy", async () => {
+    // Under the #107 bounds (MAX_PROVIDER_TURNS = 5, MAX_DIAGNOSTIC_TOOL_CALLS = 3)
     // the provider is called once per turn: turns 0-2 are investigation turns
-    // (tool_choice auto), and turn 3 is the reserved finalization turn, which
-    // forces submit_resolution_report.
+    // with budget remaining (tool_choice auto), and turn 3 is an investigation
+    // turn BY POSITION whose diagnostic budget is exhausted — so the provider
+    // forces submit_resolution_report there exactly as it would on the reserved
+    // finalization turn (turn 4), which this run never needs to reach.
+    //
+    // Before #107 this test asserted turn 3 WAS the finalization turn. The
+    // geometry moved, not the policy: a turn with no diagnostic budget left
+    // offers only the report tool and forces it, whether it is positionally
+    // final or not. The reserved finalization turn still exists at turn 4 and
+    // is what a corrective retry now has room to use.
     //
     // The three investigation turns carry DISTINCT toolCallIds (call-1/2/3),
     // as the contract and the runtime's duplicate-identity guard require, and
-    // the finalization report cites exactly the successful distinct ids the
-    // evidence validator accepts. Each request's assessment is consistent with
-    // the evidence available BEFORE it: call-1 claims NO_EVIDENCE_YET (nothing
+    // the report cites exactly the successful distinct ids the evidence
+    // validator accepts. Each request's assessment is consistent with the
+    // evidence available BEFORE it: call-1 claims NO_EVIDENCE_YET (nothing
     // run yet), call-2 and call-3 cite the already-completed call(s).
     const create = vi
       .fn()
@@ -239,6 +247,8 @@ describe("orchestrator through the Claude adapter (mocked transport)", () => {
 
     await runOrchestrator(buildProvider(create));
 
+    // Four calls, not five: the report lands on the zero-budget turn, so the
+    // reserved finalization slot is never consumed.
     expect(create).toHaveBeenCalledTimes(4);
 
     const investigationCalls = create.mock.calls.slice(0, 3);
@@ -249,29 +259,37 @@ describe("orchestrator through the Claude adapter (mocked transport)", () => {
       });
     }
 
-    const finalizationParams = create.mock.calls[3]?.[0] as Anthropic.MessageCreateParamsNonStreaming;
-    expect(finalizationParams.tool_choice).toEqual({
+    // Issue #107: the zero-budget turn forces the report tool and offers
+    // nothing else, even though its phase is still INVESTIGATION. Leaving it on
+    // `auto` would permit a text-only end_turn response, which normalizes to
+    // PROVIDER_PROTOCOL_INVALID and ends the run with no report at all.
+    const reportTurnParams = create.mock.calls[3]?.[0] as Anthropic.MessageCreateParamsNonStreaming;
+    expect(reportTurnParams.tool_choice).toEqual({
       type: "tool",
       name: "submit_resolution_report",
       disable_parallel_tool_use: true,
     });
+    expect(reportTurnParams.tools?.map((tool) => tool.name)).toEqual(["submit_resolution_report"]);
+
     // The tool results from all three investigation turns are replayed into the
-    // reserved finalization turn's conversation, each carrying its own id.
-    const finalizationConversation = JSON.stringify(finalizationParams.messages);
+    // report turn's conversation, each carrying its own id.
+    const reportTurnConversation = JSON.stringify(reportTurnParams.messages);
     for (const callId of ["call-1", "call-2", "call-3"]) {
-      expect(finalizationConversation).toContain(callId);
+      expect(reportTurnConversation).toContain(callId);
     }
 
     // §10: budget wiring — each investigation turn sees the remaining capacity
-    // shrink (3 → 2 → 1), and the FINALIZATION turn carries 0, all in the
-    // investigation-only guidance block.
+    // shrink (3 → 2 → 1), and the zero-budget turn reports 0. That turn still
+    // receives the investigation guidance block (its phase is unchanged, per
+    // #107's decision to leave prompt selection positional), so unlike the old
+    // finalization turn it DOES state the remaining budget — truthfully, as 0.
     const systems = create.mock.calls.map(
       (call) => (call[0] as Anthropic.MessageCreateParamsNonStreaming).system,
     );
     expect(String(systems[0])).toContain("diagnosticCallsRemaining is 3 this turn.");
     expect(String(systems[1])).toContain("diagnosticCallsRemaining is 2 this turn.");
     expect(String(systems[2])).toContain("diagnosticCallsRemaining is 1 this turn.");
-    expect(String(systems[3])).not.toContain("diagnosticCallsRemaining is");
+    expect(String(systems[3])).toContain("diagnosticCallsRemaining is 0 this turn.");
   });
 
   it("rejects a report citing evidence the run never produced", async () => {
