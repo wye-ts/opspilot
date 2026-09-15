@@ -72,7 +72,9 @@ tool executions.
 
 When `ResolutionReportSchema.safeParse` fails, instead of failing the run:
 
-1. Emit `REPORT_VALIDATION_FAILED` exactly as today (unchanged — the report was genuinely rejected).
+1. Emit **nothing** for this attempt — no `REPORT_SUBMITTED`, no `REPORT_VALIDATION_FAILED` (§2.3,
+   retracted-and-corrected). An earlier version of this step said to emit `REPORT_VALIDATION_FAILED`
+   "exactly as today"; that produces a stream the canonical reducer rejects outright.
 2. Append a `CorrectiveGuidanceEntry` naming the violated invariant(s) in closed, application-authored
    terms, and issue another provider turn.
 3. Allow this **at most once per run**, tracked by its own flag. A second rejection fails the run
@@ -185,7 +187,10 @@ smuggled into a public-path bug fix under time pressure.
 
 - `ResolutionReportSchema` is unchanged. F1/F2/F5 are unchanged.
 - A rejected report is still rejected; nothing ungrounded enters the ledger.
-- `REPORT_SUBMITTED` / `REPORT_VALIDATION_FAILED` still bracket every attempt, including the first.
+- `REPORT_SUBMITTED` / `REPORT_VALIDATION_FAILED` bracket the attempt that DECIDES the run —
+  terminal rejection or acceptance. An earlier version of this line said "every attempt, including
+  the first"; per §2.3's retraction a corrected-away attempt emits neither, because a stream with
+  two of them cannot be persisted.
 - The corrective message echoes nothing the model produced.
 - `MAX_PROVIDER_TURNS` is unchanged, and the retry stays inside it.
 - `REPORT_EVIDENCE_INVALID` (`agent-orchestrator.ts:483-497`) is **out of scope** — a separate
@@ -196,9 +201,18 @@ smuggled into a public-path bug fix under time pressure.
 
 ## 3. Compatibility
 
-No persisted shape changes. A pre-change run's event stream (one `REPORT_SUBMITTED`, optionally one
-`REPORT_VALIDATION_FAILED`) remains valid and readable — the retried shape is two of each, which the
-existing contract already permits since neither event is declared once-per-run. No migration.
+No persisted shape changes, and — per §2.3's retraction — no persisted shape *variation* either:
+every run, retried or not, emits exactly one `REPORT_SUBMITTED` and at most one report outcome. A
+pre-change stream is therefore byte-identical to what this issue now produces for the same run, and
+no migration or read-compatibility work is needed.
+
+An earlier version of this section claimed "the retried shape is two of each, which the existing
+contract already permits since neither event is declared once-per-run." **That was false in both
+halves.** Both events ARE declared once-per-run: `investigation-stage-progress-reducer.ts` fails a
+second `REPORT_SUBMITTED` and a second report outcome as `DUPLICATE_LIFECYCLE_FACT`, and
+`investigation-event-ledger.ts` treats the 9 lifecycle/report types as `(runId, eventType)`
+singletons for replay identity. The claim was the root of the BLOCKER independent review raised
+against the first implementation.
 
 ---
 
@@ -279,7 +293,10 @@ Then, test-first per repo convention:
 1. A deterministic test reproducing a schema-rejected report on an investigation turn that **fails
    before** the change.
 2. A second rejection in the same run fails the run with `REPORT_SCHEMA_INVALID`.
-3. A corrected retry reaches `completed` and persists **two** `REPORT_SUBMITTED` events.
+3. A corrected retry reaches `completed` and persists **exactly one** `REPORT_SUBMITTED` — the
+   accepted attempt — with **no** `REPORT_VALIDATION_FAILED` for the corrected-away one, and the
+   resulting stream is accepted by the real canonical reducer. (An earlier version required **two**
+   `REPORT_SUBMITTED` events; §2.3's retraction records why that stream cannot be persisted.)
 4. A rejection on `turnIndex === MAX_PROVIDER_TURNS - 1` fails as today, with no retry attempted.
 5. A turn-bound test asserting `providerTurnsUsed <= MAX_PROVIDER_TURNS` after a retry, counting
    attempts the way `recording-provider.ts` does.
