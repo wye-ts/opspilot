@@ -207,6 +207,13 @@ export async function appendFailurePrefix(
       await appendInvestigationEvent(prisma, runId, {
         type: "REPORT_VALIDATION_FAILED",
         failureCode: code,
+        // Issue #105: attribution is required on fresh writes, and must agree
+        // with the failure code — the evidence check has exactly one cause,
+        // while a schema rejection cites a schema invariant.
+        violatedInvariants:
+          code === "REPORT_EVIDENCE_INVALID"
+            ? ["EVIDENCE_NOT_AVAILABLE_IN_RUN"]
+            : ["GROUNDED_BY_NOT_IN_EVIDENCE"],
       });
       return "REPORT_GENERATION";
   }

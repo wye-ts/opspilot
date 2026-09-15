@@ -12,6 +12,7 @@ import {
   InvestigationExecutionStageSchema,
   type InvestigationExecutionStage,
 } from "./investigation-execution-stage";
+import { ReportInvariantSchema, REPORT_INVARIANT_VALUES, type ReportInvariant } from "./report-invariant";
 
 // Repository-evidenced subset of AgentOrchestratorErrorCodeSchema that a
 // TOOL_FAILED event may carry — traced against the exact codes
@@ -87,12 +88,112 @@ const ReportSubmittedEventSchema = z.object({ type: z.literal("REPORT_SUBMITTED"
 
 const ReportValidatedEventSchema = z.object({ type: z.literal("REPORT_VALIDATED") }).strict().readonly();
 
+// Issue #105: `violatedInvariants` names WHICH contract rule the rejected
+// report broke. REPORT_SCHEMA_INVALID spans the entire resolution-report
+// contract, so the failureCode alone cannot distinguish a cross-array
+// grounding mismatch from an ACTIONABLE/zero-action contradiction — and those
+// two want different fixes. Eight real LIVE runs on 2026-09-14/15 produced
+// five report failures of which only ONE could be attributed, and only via a
+// temporarily compiled-in debug print; the rest are permanently unexplainable.
+//
+// Closed enum, never a free-form message — the same stance RunFailedEventSchema
+// below states for failureMessage. See report-invariant.ts for why the
+// vocabulary is authored there rather than forwarding the schema's own
+// literals.
+//
+// The pairing between failureCode and attribution is enforced by refinement
+// rather than by separate union branches, because this schema must remain a
+// valid `z.discriminatedUnion` member keyed on `type` — a nested union is not
+// discriminable and breaks the whole taxonomy.
+//
+// The two codes do not draw from the same vocabulary:
+//
+//   REPORT_EVIDENCE_INVALID comes from the orchestrator's own run-scoped
+//   availability check, never from Zod. It has exactly one cause, so its
+//   attribution is exactly [EVIDENCE_NOT_AVAILABLE_IN_RUN].
+//
+//   REPORT_SCHEMA_INVALID comes from Zod and can cite any schema invariant —
+//   but never EVIDENCE_NOT_AVAILABLE_IN_RUN, which no schema rule produces.
+//
+// A shared enum with no pairing rule accepted both cross-combinations.
+// Independent review caught that as a MAJOR, and it matters more here than a
+// typical validation gap: this field exists to be aggregated into a failure
+// distribution, so attribution contradicting its own failure code would
+// silently corrupt the measurement the field was added to support.
+//
+// Non-empty by construction: this event is only ever emitted from a branch
+// that has already rejected a report, and classifyReportInvariants returns at
+// least one member (falling back to OTHER/STRUCTURAL) for any non-empty issue
+// list. `.min(1)` makes "rejected but nothing to attribute" unrepresentable
+// rather than merely unlikely. The max matches the vocabulary size, since the
+// classifier de-duplicates.
+function refineInvariantPairing(
+  value: {
+    failureCode: ReportValidationFailureCode;
+    violatedInvariants?: readonly ReportInvariant[] | undefined;
+  },
+  ctx: z.RefinementCtx<unknown>,
+): void {
+  const invariants = value.violatedInvariants;
+  if (invariants === undefined) return;
+
+  const hasRunAvailability = invariants.includes("EVIDENCE_NOT_AVAILABLE_IN_RUN");
+
+  if (value.failureCode === "REPORT_EVIDENCE_INVALID") {
+    if (invariants.length !== 1 || !hasRunAvailability) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["violatedInvariants"],
+        message:
+          "REPORT_EVIDENCE_INVALID must be attributed to exactly [EVIDENCE_NOT_AVAILABLE_IN_RUN].",
+      });
+    }
+    return;
+  }
+
+  if (hasRunAvailability) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["violatedInvariants"],
+      message:
+        "EVIDENCE_NOT_AVAILABLE_IN_RUN is produced by the run-scoped evidence check, never by schema validation.",
+    });
+  }
+}
+
 const ReportValidationFailedEventSchema = z
   .object({
     type: z.literal("REPORT_VALIDATION_FAILED"),
     failureCode: ReportValidationFailureCodeSchema,
+    violatedInvariants: z
+      .array(ReportInvariantSchema)
+      .min(1)
+      .max(REPORT_INVARIANT_VALUES.length)
+      .readonly(),
   })
   .strict()
+  .superRefine(refineInvariantPairing)
+  .readonly();
+
+// READ variant: `violatedInvariants` is OPTIONAL, because every
+// REPORT_VALIDATION_FAILED row persisted before Issue #105 lacks the field
+// entirely and must stay readable and reducible. Exactly the pattern
+// ToolRequestedRecordEventSchema established for #58's `assessment`. The
+// pairing rule still applies whenever the field IS present, so a historical
+// row stays readable without weakening the rule for attributed rows.
+const ReportValidationFailedRecordEventSchema = z
+  .object({
+    type: z.literal("REPORT_VALIDATION_FAILED"),
+    failureCode: ReportValidationFailureCodeSchema,
+    violatedInvariants: z
+      .array(ReportInvariantSchema)
+      .min(1)
+      .max(REPORT_INVARIANT_VALUES.length)
+      .readonly()
+      .optional(),
+  })
+  .strict()
+  .superRefine(refineInvariantPairing)
   .readonly();
 
 const RunCompletedEventSchema = z.object({ type: z.literal("RUN_COMPLETED") }).strict().readonly();
@@ -215,7 +316,7 @@ const INVESTIGATION_EVENT_RECORD_BRANCHES = [
   ReportGenerationStartedEventSchema,
   ReportSubmittedEventSchema,
   ReportValidatedEventSchema,
-  ReportValidationFailedEventSchema,
+  ReportValidationFailedRecordEventSchema,
   RunCompletedEventSchema,
   RunFailedEventSchema,
   ReportGeneratedTraceEventSchema,

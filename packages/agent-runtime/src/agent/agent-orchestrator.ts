@@ -3,6 +3,7 @@ import {
   MAX_DIAGNOSTIC_TOOL_CALLS,
   MAX_PROVIDER_TURNS,
   ResolutionReportSchema,
+  classifyReportInvariants,
   summarizeReportValidationIssues,
   type AgentOrchestratorErrorCode,
   type AgentTraceEvent,
@@ -667,7 +668,14 @@ export async function runAgentOrchestrator(
 
         // Terminal rejection: this attempt decides the run, so it IS recorded.
         await emit({ type: "REPORT_SUBMITTED" });
-        await emit({ type: "REPORT_VALIDATION_FAILED", failureCode: "REPORT_SCHEMA_INVALID" });
+        await emit({
+          type: "REPORT_VALIDATION_FAILED",
+          failureCode: "REPORT_SCHEMA_INVALID",
+          // Issue #105: classified from the SANITIZED issue summaries only —
+          // the same input the corrective guidance reads, never
+          // result.rawInput — so no model-produced text reaches the ledger.
+          violatedInvariants: classifyReportInvariants(issues),
+        });
         return failed(
           "REPORT_SCHEMA_INVALID",
           "The submitted resolution report failed schema validation.",
@@ -687,7 +695,14 @@ export async function runAgentOrchestrator(
           successfulToolExecutionIds,
         )
       ) {
-        await emit({ type: "REPORT_VALIDATION_FAILED", failureCode: "REPORT_EVIDENCE_INVALID" });
+        await emit({
+          type: "REPORT_VALIDATION_FAILED",
+          failureCode: "REPORT_EVIDENCE_INVALID",
+          // Issue #105: this rejection comes from the orchestrator's own
+          // run-scoped availability check, not from Zod — there are no schema
+          // issues to classify, and the cause is always the same one.
+          violatedInvariants: ["EVIDENCE_NOT_AVAILABLE_IN_RUN"],
+        });
         return failed(
           "REPORT_EVIDENCE_INVALID",
           "The submitted report referenced evidence that was not available in the current agent execution.",

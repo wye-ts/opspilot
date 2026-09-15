@@ -312,12 +312,15 @@ describe("appendInvestigationEvent — exact replay", () => {
       await appendInvestigationEvent(prisma, runId, {
         type: "REPORT_VALIDATION_FAILED",
         failureCode: "REPORT_SCHEMA_INVALID",
+        // Issue #105: required on fresh writes.
+        violatedInvariants: ["GROUNDED_BY_NOT_IN_EVIDENCE"],
       });
 
       await expect(
         appendInvestigationEvent(prisma, runId, {
           type: "REPORT_VALIDATION_FAILED",
           failureCode: "REPORT_EVIDENCE_INVALID",
+          violatedInvariants: ["EVIDENCE_NOT_AVAILABLE_IN_RUN"],
         }),
       ).rejects.toMatchObject({ code: "PERSISTENCE_CONFLICT" });
       expect(await traceEventCount(runId)).toBe(4);

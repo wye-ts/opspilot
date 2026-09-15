@@ -4268,6 +4268,17 @@ describe("runAgentOrchestrator — report corrective retry (issue #101)", () => 
     expect(types(emitted).filter((t) => t === "REPORT_SUBMITTED")).toHaveLength(1);
     expect(types(emitted)).toContain("REPORT_VALIDATION_FAILED");
 
+    // Issue #105: the terminal rejection names WHICH invariant ended the run.
+    // Asserted on the real emitted payload rather than on a constructed one,
+    // and the fixture is the F5 violation observed in every attributable real
+    // LIVE failure — so this pins the orchestrator → classifier → payload path
+    // end to end, not just the classifier in isolation.
+    const validationFailed = emitted.find((e) => e.type === "REPORT_VALIDATION_FAILED");
+    expect(validationFailed).toMatchObject({
+      failureCode: "REPORT_SCHEMA_INVALID",
+      violatedInvariants: ["GROUNDED_BY_NOT_IN_EVIDENCE"],
+    });
+
     const payloads: InvestigationEventPayload[] = [
       { type: "RUN_CREATED" },
       ...emitted,
