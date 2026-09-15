@@ -12,6 +12,7 @@ import {
   InvestigationExecutionStageSchema,
   type InvestigationExecutionStage,
 } from "./investigation-execution-stage";
+import { ReportInvariantSchema, REPORT_INVARIANT_VALUES } from "./report-invariant";
 
 // Repository-evidenced subset of AgentOrchestratorErrorCodeSchema that a
 // TOOL_FAILED event may carry — traced against the exact codes
@@ -87,10 +88,52 @@ const ReportSubmittedEventSchema = z.object({ type: z.literal("REPORT_SUBMITTED"
 
 const ReportValidatedEventSchema = z.object({ type: z.literal("REPORT_VALIDATED") }).strict().readonly();
 
+// Issue #105: `violatedInvariants` names WHICH contract rule the rejected
+// report broke. REPORT_SCHEMA_INVALID spans the entire resolution-report
+// contract, so the failureCode alone cannot distinguish a cross-array
+// grounding mismatch from an ACTIONABLE/zero-action contradiction — and those
+// two want different fixes. Eight real LIVE runs on 2026-09-14/15 produced
+// five report failures of which only ONE could be attributed, and only via a
+// temporarily compiled-in debug print; the rest are permanently unexplainable.
+//
+// Closed enum, never a free-form message — the same stance RunFailedEventSchema
+// below states for failureMessage. See report-invariant.ts for why the
+// vocabulary is authored there rather than forwarding the schema's own
+// literals.
+//
+// Non-empty by construction: this event is only ever emitted from a branch
+// that has already rejected a report, and classifyReportInvariants returns at
+// least one member (falling back to OTHER/STRUCTURAL) for any non-empty issue
+// list. `.min(1)` makes "rejected but nothing to attribute" unrepresentable
+// rather than merely unlikely. The max matches the vocabulary size, since the
+// classifier de-duplicates.
 const ReportValidationFailedEventSchema = z
   .object({
     type: z.literal("REPORT_VALIDATION_FAILED"),
     failureCode: ReportValidationFailureCodeSchema,
+    violatedInvariants: z
+      .array(ReportInvariantSchema)
+      .min(1)
+      .max(REPORT_INVARIANT_VALUES.length)
+      .readonly(),
+  })
+  .strict()
+  .readonly();
+
+// READ variant: `violatedInvariants` is OPTIONAL, because every
+// REPORT_VALIDATION_FAILED row persisted before Issue #105 lacks the field
+// entirely and must stay readable and reducible. Exactly the pattern
+// ToolRequestedRecordEventSchema established for #58's `assessment` — the
+// bounds are single-sourced by deriving from the write schema rather than
+// re-declaring them, so only the required/optional distinction can differ.
+const ReportValidationFailedRecordEventSchema = ReportValidationFailedEventSchema.unwrap()
+  .extend({
+    violatedInvariants: z
+      .array(ReportInvariantSchema)
+      .min(1)
+      .max(REPORT_INVARIANT_VALUES.length)
+      .readonly()
+      .optional(),
   })
   .strict()
   .readonly();
@@ -215,7 +258,7 @@ const INVESTIGATION_EVENT_RECORD_BRANCHES = [
   ReportGenerationStartedEventSchema,
   ReportSubmittedEventSchema,
   ReportValidatedEventSchema,
-  ReportValidationFailedEventSchema,
+  ReportValidationFailedRecordEventSchema,
   RunCompletedEventSchema,
   RunFailedEventSchema,
   ReportGeneratedTraceEventSchema,

@@ -169,6 +169,12 @@ export type {
   SuggestedActionWrite,
 } from "./resolution-report";
 export type { ReportValidationIssue } from "./resolution-report-validation";
+export {
+  ReportInvariantSchema,
+  REPORT_INVARIANT_VALUES,
+  classifyReportInvariants,
+} from "./report-invariant";
+export type { ReportInvariant } from "./report-invariant";
 export type {
   AgentProtocolErrorCode,
   AgentTurnResult,

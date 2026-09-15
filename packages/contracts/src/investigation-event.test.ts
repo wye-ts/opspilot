@@ -15,6 +15,7 @@ import {
   INVESTIGATION_EXECUTION_STAGE_ORDER,
   type InvestigationExecutionStage,
 } from "./investigation-execution-stage";
+import { deriveExecutionStageProgress } from "./investigation-stage-progress-reducer";
 
 const RUN_ID = "11111111-1111-4111-8111-111111111111";
 
@@ -106,7 +107,14 @@ describe("strict union behavior", () => {
     REPORT_GENERATION_STARTED: { type: "REPORT_GENERATION_STARTED" },
     REPORT_SUBMITTED: { type: "REPORT_SUBMITTED" },
     REPORT_VALIDATED: { type: "REPORT_VALIDATED" },
-    REPORT_VALIDATION_FAILED: { type: "REPORT_VALIDATION_FAILED", failureCode: "REPORT_SCHEMA_INVALID" },
+    REPORT_VALIDATION_FAILED: {
+      type: "REPORT_VALIDATION_FAILED",
+      failureCode: "REPORT_SCHEMA_INVALID",
+      // Issue #105: attribution is part of this type's minimal legal WRITE
+      // shape. The read-side fixture below deliberately omits it, since every
+      // pre-#105 persisted row lacks it.
+      violatedInvariants: ["GROUNDED_BY_NOT_IN_EVIDENCE"],
+    },
     RUN_COMPLETED: { type: "RUN_COMPLETED" },
     RUN_FAILED: {
       type: "RUN_FAILED",
@@ -187,7 +195,14 @@ describe("strict union behavior", () => {
   it("accepts both legal report-validation failure codes", () => {
     for (const failureCode of ["REPORT_SCHEMA_INVALID", "REPORT_EVIDENCE_INVALID"]) {
       expect(
-        InvestigationEventPayloadSchema.safeParse({ type: "REPORT_VALIDATION_FAILED", failureCode }).success,
+        InvestigationEventPayloadSchema.safeParse({
+          type: "REPORT_VALIDATION_FAILED",
+          failureCode,
+          // Issue #105 made attribution required on write. The subject of this
+          // test is unchanged — which failure CODES are legal — so the field is
+          // supplied rather than the assertion weakened.
+          violatedInvariants: ["GROUNDED_BY_NOT_IN_EVIDENCE"],
+        }).success,
       ).toBe(true);
     }
   });
@@ -201,6 +216,83 @@ describe("strict union behavior", () => {
           failedStage: "AGENT_ANALYSIS",
         }).success,
       ).toBe(true);
+    }
+  });
+});
+
+describe("REPORT_VALIDATION_FAILED attribution (Issue #105)", () => {
+  const WITH_ATTRIBUTION = {
+    type: "REPORT_VALIDATION_FAILED",
+    failureCode: "REPORT_SCHEMA_INVALID",
+    violatedInvariants: ["GROUNDED_BY_NOT_IN_EVIDENCE"],
+  } as const;
+
+  // Exactly the shape every REPORT_VALIDATION_FAILED row persisted before this
+  // issue has on disk.
+  const PRE_105_PERSISTED = {
+    type: "REPORT_VALIDATION_FAILED",
+    failureCode: "REPORT_SCHEMA_INVALID",
+  } as const;
+
+  it("a fresh write must carry the attribution", () => {
+    expect(InvestigationEventPayloadSchema.safeParse(WITH_ATTRIBUTION).success).toBe(true);
+    // Required on write: "rejected, but nothing to attribute" is
+    // unrepresentable rather than merely discouraged.
+    expect(InvestigationEventPayloadSchema.safeParse(PRE_105_PERSISTED).success).toBe(false);
+  });
+
+  it("an empty attribution array is rejected on write", () => {
+    expect(
+      InvestigationEventPayloadSchema.safeParse({ ...WITH_ATTRIBUTION, violatedInvariants: [] })
+        .success,
+    ).toBe(false);
+  });
+
+  it("an identifier outside the closed vocabulary is rejected", () => {
+    // The field is a closed enum, never free-form text — the same stance
+    // RUN_FAILED takes on failureMessage.
+    expect(
+      InvestigationEventPayloadSchema.safeParse({
+        ...WITH_ATTRIBUTION,
+        violatedInvariants: ["the model wrote something odd"],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("a pre-#105 persisted row still parses and still reduces", () => {
+    // Read-compatibility is the load-bearing half of this change: every
+    // already-persisted row lacks the field, and a strict write schema applied
+    // to reads would make historical runs unreadable.
+    expect(InvestigationEventRecordPayloadSchema.safeParse(PRE_105_PERSISTED).success).toBe(true);
+    expect(InvestigationEventRecordPayloadSchema.safeParse(WITH_ATTRIBUTION).success).toBe(true);
+
+    const events = [
+      { type: "RUN_CREATED" },
+      { type: "AGENT_STARTED" },
+      // A tool call must precede REPORT_GENERATION_STARTED: the finalization
+      // turn is only reached after diagnostic execution, and the reducer
+      // enforces that independently of anything this issue changes.
+      { type: "TOOL_REQUESTED", toolCallId: "toolu_01AAAA", toolName: "get_service_status" },
+      { type: "TOOL_COMPLETED", toolCallId: "toolu_01AAAA", toolName: "get_service_status" },
+      { type: "REPORT_GENERATION_STARTED" },
+      { type: "REPORT_SUBMITTED" },
+      PRE_105_PERSISTED,
+      { type: "RUN_FAILED", failureCode: "REPORT_SCHEMA_INVALID", failedStage: "REPORT_GENERATION" },
+    ].map((payload, index) => ({
+      runId: RUN_ID,
+      sequence: index + 1,
+      recordedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+      payload: InvestigationEventRecordPayloadSchema.parse(payload),
+    }));
+
+    const progress = deriveExecutionStageProgress({
+      events,
+      runStatus: "FAILED",
+      now: events[events.length - 1]!.recordedAt,
+    });
+
+    for (const stage of progress) {
+      expect(["completed", "failed", "omitted", "pending", "active"]).toContain(stage.status);
     }
   });
 });
