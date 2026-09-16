@@ -1,5 +1,6 @@
 import {
   EvidenceAssessmentSchema,
+  EvidenceLocatorSchema,
   MAX_DIAGNOSTIC_TOOL_CALLS,
   MAX_PROVIDER_TURNS,
   ResolutionReportSchema,
@@ -15,6 +16,8 @@ import {
   type ResolutionReport,
   type RetrievalSummaryEntry,
 } from "@opspilot/contracts";
+
+import { z } from "zod";
 
 import { LlmProviderError } from "../providers/llm-provider";
 import type {
@@ -127,6 +130,23 @@ export type AgentOrchestratorResult =
       readonly status: "completed";
       readonly report: ResolutionReport;
       readonly trace: readonly AgentTraceEvent[];
+      /**
+       * Issue #114: the exact locators the harness synthesized into
+       * `report.evidence` this run, when the accepted report's ONLY schema
+       * violation was GROUNDED_BY_NOT_IN_EVIDENCE (F5) and every omitted
+       * groundedBy locator was independently confirmed real against run
+       * state. Empty (not omitted) when auto-completion did not fire — every
+       * accepted report has this field, so a caller never needs to
+       * distinguish "not present" from "empty."
+       *
+       * BEST-EFFORT OBSERVABILITY ONLY, not a durable audit trail (Issue
+       * #114 plan §2.6/§0.6): this field lives only in this in-process
+       * result. Nothing in this issue persists it to the database alongside
+       * the report — see agent-run-service.ts's onEvidenceAutoCompleted hook
+       * for how a caller may observe it, and that hook's own doc comment for
+       * the same limit restated at the point a caller would rely on it.
+       */
+      readonly autoCompletedEvidence: readonly EvidenceLocator[];
     }
   | {
       readonly status: "failed";
@@ -197,6 +217,27 @@ function providerFailureCode(category: LlmProviderErrorCategory): AgentOrchestra
   }
 }
 
+// The run's single source-aware grounding predicate, shared by
+// findInvalidEvidence below and, since Issue #114, the groundedBy-omission
+// auto-completion gate (agent-orchestrator.ts's report_submission branch). A
+// locator is a KNOWN RUN OBSERVATION only if a RAG_CHUNK id is among the
+// retrieved chunks or a TOOL_EXECUTION id belongs to a successfully completed
+// tool call — a failed, merely-requested, or never-attempted tool id is never
+// known, and a RAG id is never treated as TOOL_EXECUTION merely because the
+// strings match. Factored out of findInvalidEvidence (pure refactor; that
+// function's own behavior and tests are unchanged) so both this check and the
+// new #114 confirmation gate share exactly one source-aware definition of
+// "real" rather than risking two definitions drifting apart.
+export function isKnownRunObservation(
+  locator: Pick<EvidenceLocator, "evidenceId" | "sourceType">,
+  allowedRagChunkIds: ReadonlySet<string>,
+  successfulToolExecutionIds: ReadonlySet<string>,
+): boolean {
+  return locator.sourceType === "RAG_CHUNK"
+    ? allowedRagChunkIds.has(locator.evidenceId)
+    : successfulToolExecutionIds.has(locator.evidenceId);
+}
+
 // The run's single source-aware grounding helper, shared by the report path
 // (report evidence) and, since Issue #58 Checkpoint B (§9.2), the diagnostic
 // assessment path (supportedBy locators). A locator is grounded only if a
@@ -212,11 +253,165 @@ export function findInvalidEvidence(
   allowedRagChunkIds: ReadonlySet<string>,
   successfulToolExecutionIds: ReadonlySet<string>,
 ): boolean {
-  return evidence.some((entry) =>
-    entry.sourceType === "RAG_CHUNK"
-      ? !allowedRagChunkIds.has(entry.evidenceId)
-      : !successfulToolExecutionIds.has(entry.evidenceId),
+  return evidence.some(
+    (entry) => !isKnownRunObservation(entry, allowedRagChunkIds, successfulToolExecutionIds),
   );
+}
+
+// ── Issue #114: auto-complete evidence for a real observation the model ──
+// already cited via groundedBy but never independently listed in evidence.
+// See docs/reviews/44-issue-114-conditional-evidence-nonempty-plan.md for
+// the full design and six rounds of review that shaped it; comments below
+// cite that plan's section numbers rather than restating the reasoning.
+
+// §2.3: a permissive probe used ONLY on a payload that has already failed
+// the strict ResolutionReportSchema, to extract the two locator sets needed
+// to decide whether GROUNDED_BY_NOT_IN_EVIDENCE can be auto-healed. Built
+// from the same EvidenceLocatorSchema both strict schemas use, so it cannot
+// itself drift from the locator shape. `.passthrough()` on the partial
+// locator is required (not optional): a real EvidenceReference always
+// carries `finding`/`supports` on top of the strict locator (via `.extend()`
+// in resolution-report.ts), and without passthrough those fields would read
+// as unrecognized keys, incorrectly rejecting the exact non-empty-evidence
+// shape this probe exists to handle (caught by round-2 review).
+const GroundedByProbeSchema = z
+  .object({
+    evidence: z.array(EvidenceLocatorSchema.partial().passthrough()).optional(),
+    suggestedActions: z
+      .array(z.object({ groundedBy: z.array(EvidenceLocatorSchema).optional() }).passthrough())
+      .optional(),
+  })
+  .passthrough();
+
+// §2.5: fixed, harness-authored, never derived from anything model-authored
+// — same no-echo convention as A3_CORRECTIVE_GUIDANCE_TEXT and
+// REPORT_INVARIANT_REMEDIES below. PRESENTATION TEXT ONLY, not a reliable
+// provenance discriminator: `finding` is model-controllable free text
+// (`.min(1).max(500)`, no other constraint — resolution-report.ts), so a
+// report built from untrusted ticket/runbook content could in principle
+// produce its own entry whose `finding` collides with this exact literal.
+// The authoritative-for-this-run provenance record is
+// AgentOrchestratorResult.autoCompletedEvidence (the exact locator list),
+// never this string — see that field's own doc comment for the "best-effort
+// observability, not a durable audit trail" limit (plan §0.6).
+export const EVIDENCE_AUTO_COMPLETION_FINDING =
+  "Cited by a suggested action's grounding; not independently described by the model this run.";
+
+/**
+ * Issue #114 §2.2–2.5: attempts to auto-heal a report whose ONLY schema
+ * violation is GROUNDED_BY_NOT_IN_EVIDENCE (F5), by synthesizing the missing
+ * evidence entries for every omitted `groundedBy` locator that is
+ * independently confirmed real against this run's own observation sets.
+ *
+ * Returns the augmented, successfully-reparsed report plus the exact
+ * locators synthesized when auto-completion applies; returns `null` on ANY
+ * doubt (single-invariant eligibility fails, the probe itself cannot parse
+ * the payload, a missing or pre-existing locator is not confirmed real, or
+ * the re-parse still fails for any reason including the evidence-capacity
+ * bound) — the caller then falls through to the existing, byte-for-byte
+ * unchanged failure/retry path. This function never has a second way to
+ * fail loudly; every non-success path is exactly "not eligible."
+ */
+function tryAutoCompleteGroundedByOmission(
+  rawInput: unknown,
+  violatedInvariants: readonly string[],
+  allowedRagChunkIds: ReadonlySet<string>,
+  successfulToolExecutionIds: ReadonlySet<string>,
+): { readonly report: ResolutionReport; readonly autoCompletedEvidence: readonly EvidenceLocator[] } | null {
+  // §2.2: eligible only when GROUNDED_BY_NOT_IN_EVIDENCE is the SOLE
+  // violated invariant — any co-occurring invariant bails out entirely, so
+  // this mechanism never has to reason about an invariant it wasn't built
+  // to handle (round-2 review confirmed ACTIONABLE_REQUIRES_ACTION cannot
+  // co-occur with F5, but e.g. ADVISORY_FORBIDS_ACTIONS can).
+  if (violatedInvariants.length !== 1 || violatedInvariants[0] !== "GROUNDED_BY_NOT_IN_EVIDENCE") {
+    return null;
+  }
+
+  const probe = GroundedByProbeSchema.safeParse(rawInput);
+  if (!probe.success) {
+    return null;
+  }
+
+  const existingEvidence = probe.data.evidence ?? [];
+  const presentKeys = new Set(
+    existingEvidence
+      .filter((e): e is { evidenceId: string; sourceType: "RAG_CHUNK" | "TOOL_EXECUTION" } =>
+        e.evidenceId !== undefined && e.sourceType !== undefined,
+      )
+      .map((e) => `${e.sourceType}:${e.evidenceId}`),
+  );
+
+  const citedKeys = new Map<string, EvidenceLocator>();
+  for (const action of probe.data.suggestedActions ?? []) {
+    for (const locator of action.groundedBy ?? []) {
+      citedKeys.set(`${locator.sourceType}:${locator.evidenceId}`, locator);
+    }
+  }
+
+  const missing = [...citedKeys.entries()]
+    .filter(([key]) => !presentKeys.has(key))
+    .map(([, locator]) => locator);
+
+  // §2.3: if GROUNDED_BY_NOT_IN_EVIDENCE fired but nothing is actually
+  // missing relative to this extraction, the eligibility check above was a
+  // false positive relative to what the probe could see — bail out
+  // defensively rather than assume anything.
+  if (missing.length === 0) {
+    return null;
+  }
+
+  // §2.4 (round-3 fix): confirm realness of `missing` AND every
+  // PRE-EXISTING evidence entry — not `missing` alone. A report can be
+  // F5-only at Zod while its EXISTING evidence array separately contains a
+  // fabricated locator Zod cannot see (Zod has no run-state visibility).
+  // Auto-completing anyway would re-parse successfully and only then hit
+  // findInvalidEvidence, converting today's F5 retry into an unannounced
+  // terminal REPORT_EVIDENCE_INVALID — the opposite of "strictly additive."
+  const allCandidates = [
+    ...missing,
+    ...existingEvidence.filter(
+      (e): e is { evidenceId: string; sourceType: "RAG_CHUNK" | "TOOL_EXECUTION" } =>
+        e.evidenceId !== undefined && e.sourceType !== undefined,
+    ),
+  ];
+  const allReal = allCandidates.every((locator) =>
+    isKnownRunObservation(locator, allowedRagChunkIds, successfulToolExecutionIds),
+  );
+  if (!allReal) {
+    return null;
+  }
+
+  // §2.5: append harness-authored entries for the missing (confirmed-real)
+  // locators to the ORIGINAL raw evidence array, then re-parse the WHOLE
+  // payload through the real strict schema — never assemble the accepted
+  // report by hand. This is what makes the evidence-capacity bound (.max(10)
+  // — round-5 finding) and any other refinement apply exactly as they would
+  // to a model-submitted report; the mechanism gets no special exemption.
+  const rawObject = rawInput as Record<string, unknown>;
+  const augmentedRawInput = {
+    ...rawObject,
+    evidence: [
+      ...(Array.isArray(rawObject["evidence"]) ? rawObject["evidence"] : []),
+      ...missing.map((locator) => ({
+        evidenceId: locator.evidenceId,
+        sourceType: locator.sourceType,
+        finding: EVIDENCE_AUTO_COMPLETION_FINDING,
+        supports: [],
+      })),
+    ],
+  };
+
+  const reparsed = ResolutionReportSchema.safeParse(augmentedRawInput, { reportInput: true });
+  if (!reparsed.success) {
+    // Includes the evidence-capacity boundary (round-5 MINOR): appending
+    // pushed the array past .max(10), or some other refinement not visible
+    // at the original single-invariant classification now trips. Either
+    // way, discard the attempt entirely — the caller re-validates the
+    // ORIGINAL rawInput and falls through to the existing path unchanged.
+    return null;
+  }
+
+  return { report: reparsed.data, autoCompletedEvidence: missing };
 }
 
 // Caller-contract-level validity: retriever and retrievalInput must both be
@@ -644,6 +839,47 @@ export async function runAgentOrchestrator(
       if (!parsedReport.success) {
         const issues = summarizeReportValidationIssues(parsedReport.error);
 
+        // Issue #114 §2.1: attempt auto-completion BEFORE the existing
+        // retry decision. On success this returns { status: "completed" }
+        // directly, using the AUGMENTED parsed report as the run's result —
+        // never touching reportRetryUsed or emitting REPORT_SUBMITTED for a
+        // rejected attempt, since this attempt was never terminal.
+        const autoCompleted = tryAutoCompleteGroundedByOmission(
+          result.rawInput,
+          classifyReportInvariants(issues),
+          allowedRagChunkIds,
+          successfulToolExecutionIds,
+        );
+        if (autoCompleted !== null) {
+          // Defense-in-depth parity with the ordinary accepted path below:
+          // §2.4's confirmation gate already guarantees every entry in
+          // autoCompleted.report.evidence is a known run observation, so
+          // this can never actually trip — but running the exact same check
+          // here rather than assuming the gate is airtight matches how the
+          // ordinary accepted path treats this invariant.
+          if (
+            findInvalidEvidence(
+              autoCompleted.report.evidence,
+              allowedRagChunkIds,
+              successfulToolExecutionIds,
+            )
+          ) {
+            // Unreachable in practice (see comment above); if it ever did
+            // trip, fall through to the existing failure/retry path on the
+            // ORIGINAL rejection rather than inventing a new failure shape.
+          } else {
+            await emit({ type: "REPORT_SUBMITTED" });
+            await emit({ type: "REPORT_VALIDATED" });
+            trace.push({ type: "REPORT_GENERATED" });
+            return {
+              status: "completed",
+              report: autoCompleted.report,
+              trace,
+              autoCompletedEvidence: autoCompleted.autoCompletedEvidence,
+            };
+          }
+        }
+
         // Issue #101 (docs/reviews/39-issue-101-...-plan.md §2.1): one bounded
         // corrective re-prompt instead of discarding the whole run, when this
         // is BOTH the first rejected report this run AND a later turn remains
@@ -759,7 +995,7 @@ export async function runAgentOrchestrator(
       // records — two names for one fact, neither derived from the other.
       await emit({ type: "REPORT_VALIDATED" });
       trace.push({ type: "REPORT_GENERATED" });
-      return { status: "completed", report: parsedReport.data, trace };
+      return { status: "completed", report: parsedReport.data, trace, autoCompletedEvidence: [] };
     }
 
     // result.type === "diagnostic_tool_request"

@@ -38,6 +38,7 @@ import type {
 } from "../execution/live-run-admission";
 import { logBudgetReconciliationFailure } from "../execution/live-run-budget-log";
 import { logEventEmissionFailure } from "../execution/event-emission-log";
+import { logEvidenceAutoCompletion } from "../execution/evidence-auto-completion-log";
 import { logReportValidationFailure } from "../execution/report-validation-log";
 import { createRunAbortHandles } from "../execution/run-abort-context";
 import { PUBLIC_TRIAL_DEFAULTS, type RunExecutionConfig } from "../execution/run-execution-config";
@@ -195,6 +196,7 @@ export class AgentRunsController {
         retrievalInputFactory: buildRetrievalInput,
         onReportSchemaInvalid: logReportValidationFailure,
         onEventEmissionFailure: logEventEmissionFailure,
+        onEvidenceAutoCompleted: logEvidenceAutoCompletion,
       });
     } catch (error) {
       if (error instanceof AgentRunServiceError) {
@@ -347,6 +349,7 @@ export class AgentRunsController {
         abortContext: abort.context,
         onReportSchemaInvalid: logReportValidationFailure,
         onEventEmissionFailure: logEventEmissionFailure,
+        onEvidenceAutoCompleted: logEvidenceAutoCompletion,
       });
 
       // Settled from the AUTHORITATIVE result, before responding — not from

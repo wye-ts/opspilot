@@ -135,6 +135,37 @@ REPORT_GENERATED
 
 **Explicit omissions**: no persisted `stage` field, no generic per-event `status` field (success/failure is the event *type*), no `eventId`, no `details: unknown`, no schema-version field.
 
+**Issue #114 — a completed report's `evidence` may contain harness-synthesized entries.**
+Previously, whatever a `COMPLETED` run persisted as `report.evidence` was always byte-identical to
+the model's own validated payload. Since #114 this no longer holds unconditionally: when a
+submitted report's ONLY schema violation is `GROUNDED_BY_NOT_IN_EVIDENCE` (a suggested action's
+`groundedBy` cites a real, run-confirmed locator — a genuinely retrieved RAG chunk or a genuinely
+completed tool call — that the model never independently listed in `evidence`), the orchestrator
+synthesizes the missing evidence entry itself and re-validates, rather than relying on the model to
+self-correct via the existing corrective-retry prose (#80, #101). A synthesized entry carries the
+fixed literal `EVIDENCE_AUTO_COMPLETION_FINDING` as its `finding` and `supports: []`.
+
+This mechanism NEVER fires when: any other invariant also failed alongside F5; the omitted or any
+pre-existing `evidence` locator cannot be confirmed real against the run's own
+`allowedRagChunkIds`/`successfulToolExecutionIds`; or completing it would push `evidence` past its
+`.max(10)` bound. In every such case the report falls through unchanged to the existing
+retry/terminal failure path — auto-completion never converts a recoverable rejection into a
+different failure code, and never a fail-closed fabrication rejection into a false acceptance.
+
+**The fixed finding string is a human-readable hint, not a reliable provenance marker** — `finding`
+is model-controllable free text (`.min(1).max(500)`, no other constraint), so a model-authored entry
+could in principle collide with it verbatim. Whether an accepted run's evidence was auto-completed,
+and which locators, is **best-effort observability only**: `AgentOrchestratorResult`'s completed
+variant carries the exact synthesized locators for that in-process execution
+(`autoCompletedEvidence`), and `agent-run-service.ts` exposes it via a best-effort,
+swallowed-on-throw `onEvidenceAutoCompleted` hook (mirroring `onReportSchemaInvalid`'s own pattern) —
+**neither is persisted to the database alongside the report.** A later read, replay, or database
+query of a completed run cannot reliably reconstruct which entries, if any, were synthesized; only a
+log line contemporaneous with the run can, and only if one was captured. See
+`docs/reviews/44-issue-114-conditional-evidence-nonempty-plan.md` §2.6/§0.6 for the full reasoning,
+including why durable, queryable provenance was deliberately left as a separable follow-up rather
+than folded into this change (it would require a new database migration this issue does not need).
+
 ---
 
 ## 5. `deriveExecutionStageProgress` — the reducer

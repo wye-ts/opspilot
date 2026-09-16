@@ -62,6 +62,25 @@ describe("corrective-retry availability under the turn budget (Issue #107)", () 
     ],
   };
 
+  // Issue #114: identical to reportViolatingF5 except the cited groundedBy
+  // locator ("call-unconfirmed") never corresponds to any diagnostic tool
+  // call in this file's turn sequences — auto-completion's confirmation gate
+  // (§2.4) always rejects it, so tests using this fixture keep exercising
+  // the #101/#107 retry-under-turn-budget-pressure path they were written to
+  // test. reportViolatingF5 itself (citing "call-1") is now auto-healed by
+  // #114 whenever a real "call-1" diagnostic tool call ran earlier in the
+  // sequence — which every test below does — so this file uses the
+  // unconfirmable variant throughout instead.
+  const reportViolatingF5Unconfirmable = {
+    ...reportViolatingF5,
+    suggestedActions: [
+      {
+        ...reportViolatingF5.suggestedActions[0],
+        groundedBy: [{ evidenceId: "call-unconfirmed", sourceType: "TOOL_EXECUTION" as const }],
+      },
+    ],
+  };
+
   // Turn 0 has genuinely gathered nothing, so NO_EVIDENCE_YET with an empty
   // supportedBy is the truthful assessment. Every LATER turn has evidence (the
   // prior tool result) and must cite it — claiming NO_EVIDENCE_YET there trips
@@ -149,8 +168,8 @@ describe("corrective-retry availability under the turn budget (Issue #107)", () 
       firstDiagnosticTurn("call-1"),
       followUpDiagnosticTurn("call-2", "call-1"),
       // Voluntary report on turn 2, with turn 3 still free.
-      { kind: "report_submission", usage, rawInput: reportViolatingF5 },
-      { kind: "report_submission", usage, rawInput: reportViolatingF5 },
+      { kind: "report_submission", usage, rawInput: reportViolatingF5Unconfirmable },
+      { kind: "report_submission", usage, rawInput: reportViolatingF5Unconfirmable },
     ]);
 
     // The run still fails — both attempts are bad — but a FOURTH provider call
@@ -179,12 +198,12 @@ describe("corrective-retry availability under the turn budget (Issue #107)", () 
       followUpDiagnosticTurn("call-2", "call-1"),
       followUpDiagnosticTurn("call-3", "call-1"),
       // Turn 3 — budget exhausted. The report turn, with turn 4 still after it.
-      { kind: "report_submission", usage, rawInput: reportViolatingF5 },
+      { kind: "report_submission", usage, rawInput: reportViolatingF5Unconfirmable },
       // Turn 4 — the corrected resubmission. Still invalid here, so the run
       // fails: this test measures whether the correction RAN, not whether the
       // model got it right. Those are different claims and only the first is
       // deterministically provable.
-      { kind: "report_submission", usage, rawInput: reportViolatingF5 },
+      { kind: "report_submission", usage, rawInput: reportViolatingF5Unconfirmable },
     ]);
 
     expect(result.status).toBe("failed");
@@ -233,8 +252,8 @@ describe("corrective-retry availability under the turn budget (Issue #107)", () 
         ],
       },
       followUpDiagnosticTurn("call-3", "call-1"),
-      { kind: "report_submission", usage, rawInput: reportViolatingF5 },
-      { kind: "report_submission", usage, rawInput: reportViolatingF5 },
+      { kind: "report_submission", usage, rawInput: reportViolatingF5Unconfirmable },
+      { kind: "report_submission", usage, rawInput: reportViolatingF5Unconfirmable },
     ]);
 
     expect(result.status).toBe("failed");

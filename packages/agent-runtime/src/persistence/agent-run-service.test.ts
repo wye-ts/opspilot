@@ -589,6 +589,90 @@ describe("executeAndPersist", () => {
     expect(onReportSchemaInvalid).not.toHaveBeenCalled();
   });
 
+  it("invokes onEvidenceAutoCompleted exactly once with the exact synthesized locators, and still persists the completed run normally (issue #114)", async () => {
+    const { repository } = createFakeRepository();
+    const service = createAgentRunService(repository);
+    const onEvidenceAutoCompleted = vi.fn();
+    const usage = { inputTokens: 1, outputTokens: 1 };
+    const autoCompleteScenario: FakeAgentScenario = {
+      id: "agent-run-service-auto-complete",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: TOOL_CALL_ID,
+              toolName: "get_service_status",
+              input: { serviceSlug: "auth-service" },
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "NO_EVIDENCE_YET",
+                supportedBy: [],
+              },
+            },
+          ],
+        },
+        {
+          kind: "report_submission",
+          usage,
+          rawInput: {
+            ...VALID_REPORT,
+            // F5-only violation: evidence empty, groundedBy cites the real
+            // completed tool call above. rootCause/evidenceState must also be
+            // overridden to INSUFFICIENT/null — VALID_REPORT's own SUFFICIENT
+            // + non-null rootCause would otherwise trip additional
+            // co-occurring invariants once evidence is emptied, defeating
+            // the "F5 is the SOLE violation" eligibility this test needs.
+            rootCause: null,
+            evidence: [],
+            evidenceState: "INSUFFICIENT",
+            suggestedActions: [
+              {
+                type: "CREATE_ESCALATION",
+                payload: { team: "Notifications", reason: "reason", priority: "MEDIUM" },
+                groundedBy: [{ evidenceId: TOOL_CALL_ID, sourceType: "TOOL_EXECUTION" }],
+              },
+            ],
+            recommendationDisposition: "ACTIONABLE",
+          },
+        },
+      ],
+    };
+
+    const result = await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "FAKE",
+      createProvider: () => new FakeLlmProvider(autoCompleteScenario),
+      toolRegistry: toolRegistryWithServiceStatus(),
+      onEvidenceAutoCompleted,
+    });
+
+    expect(onEvidenceAutoCompleted).toHaveBeenCalledTimes(1);
+    expect(onEvidenceAutoCompleted).toHaveBeenCalledWith({
+      runId: "run-1",
+      locators: [{ evidenceId: TOOL_CALL_ID, sourceType: "TOOL_EXECUTION" }],
+    });
+    expect(result.persistence).toBe("persisted");
+  });
+
+  it("never invokes onEvidenceAutoCompleted for an ordinary accepted report (no auto-completion occurred)", async () => {
+    const { repository } = createFakeRepository();
+    const service = createAgentRunService(repository);
+    const onEvidenceAutoCompleted = vi.fn();
+
+    const result = await service.executeAndPersist({
+      jobId: JOB_ID,
+      providerMode: "FAKE",
+      createProvider: () => reportSubmittingProvider(),
+      toolRegistry: toolRegistryWithServiceStatus(),
+      onEvidenceAutoCompleted,
+    });
+
+    expect(onEvidenceAutoCompleted).not.toHaveBeenCalled();
+    expect(result.persistence).toBe("persisted");
+  });
+
   it("returns stage: run-creation when startRun fails, without ever calling createProvider or the orchestrator", async () => {
     const startRunError = new PersistenceError("PERSISTENCE_UNAVAILABLE", "db down");
     const { repository, calls } = createFakeRepository({ startRunError });
@@ -763,6 +847,7 @@ describe("retryFinalization", () => {
         status: "completed",
         report: VALID_REPORT,
         trace: [{ type: "REPORT_GENERATED" }],
+        autoCompletedEvidence: [],
       },
       usageSummary: null,
     });
@@ -1474,6 +1559,7 @@ describe("executeAndPersist — service-owned usage collector", () => {
         status: "completed",
         report: VALID_REPORT,
         trace: [{ type: "REPORT_GENERATED" }],
+        autoCompletedEvidence: [],
       },
       usageSummary: counting.collector.snapshot(),
     });

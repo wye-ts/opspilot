@@ -27,6 +27,7 @@ import {
 
 import {
   InvestigationEventContractError,
+  type EvidenceLocator,
   type InvestigationEventContractErrorCode,
   type InvestigationEventPayload,
   type ReportValidationIssue,
@@ -327,6 +328,30 @@ export interface ExecuteAndPersistParams<
    * change the returned result.
    */
   readonly onEventEmissionFailure?: (diagnostic: InvestigationEventEmissionDiagnostic) => void;
+  /**
+   * Fires exactly once, only when the orchestrator's accepted report was
+   * auto-completed (Issue #114: a suggested action's `groundedBy` cited a
+   * real, run-confirmed locator the model never independently listed in
+   * `evidence`) and at least one entry was synthesized — never for an
+   * ordinary accepted report. Same contract as `onReportSchemaInvalid`
+   * above: this package does no logging itself, a throwing hook cannot
+   * change the returned result, and `locators` is already the exact,
+   * harness-derived set (never model-authored content).
+   *
+   * BEST-EFFORT OBSERVABILITY ONLY, not a durable audit trail (plan
+   * §2.6/§0.6): nothing in this package persists this diagnostic to the
+   * database alongside the report. If this hook is omitted, throws, or the
+   * process ends before a caller's logger runs, the fact that specific
+   * entries were synthesized is unrecoverable from persisted state — only
+   * `report.evidence`'s fixed `EVIDENCE_AUTO_COMPLETION_FINDING` literal
+   * survives in the data, and that string is a human-readable hint only
+   * (it is written into a model-controllable free-text field, so a
+   * model-authored entry could in principle collide with it verbatim).
+   */
+  readonly onEvidenceAutoCompleted?: (diagnostic: {
+    readonly runId: string;
+    readonly locators: readonly EvidenceLocator[];
+  }) => void;
 }
 
 /**
@@ -918,6 +943,24 @@ export function createAgentRunService(repository: AgentRunRepositoryInterface): 
         } catch {
           // Swallowed deliberately: the hook's failure is not this run's
           // failure, and its error must never reach a caller or a response.
+        }
+      }
+
+      // Issue #114: same best-effort observability pattern as
+      // onReportSchemaInvalid above, for the opposite outcome — a report
+      // that was ACCEPTED only because the harness auto-completed one or
+      // more evidence entries. Fires only when autoCompletedEvidence is
+      // non-empty, never for an ordinary accepted report.
+      if (agentResult.status === "completed" && agentResult.autoCompletedEvidence.length > 0) {
+        try {
+          params.onEvidenceAutoCompleted?.({
+            runId: started.run.id,
+            locators: agentResult.autoCompletedEvidence,
+          });
+        } catch {
+          // Swallowed deliberately, same reason as onReportSchemaInvalid's
+          // own catch above: a logging bug must never become an execution
+          // bug, and this hook's failure is not this run's failure.
         }
       }
 

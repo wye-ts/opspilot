@@ -68,14 +68,14 @@ function completedResult(
   trace: readonly TraceEvent[],
   evidence: ResolutionReport["evidence"],
 ): AgentOrchestratorResult {
-  return { status: "completed", report: buildReport(evidence), trace };
+  return { status: "completed", report: buildReport(evidence), trace, autoCompletedEvidence: [] };
 }
 
 function completedResultWithReport(
   trace: readonly TraceEvent[],
   report: ResolutionReport,
 ): AgentOrchestratorResult {
-  return { status: "completed", report, trace };
+  return { status: "completed", report, trace, autoCompletedEvidence: [] };
 }
 
 function failedOrchestratorResult(
