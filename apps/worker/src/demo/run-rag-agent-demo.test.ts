@@ -35,6 +35,7 @@ function completedResult(report: ResolutionReport): RagDemoScenarioResult {
     status: "completed",
     report,
     trace: [],
+    autoCompletedEvidence: [],
   };
   return { agentResult, corpusLoad: { chunks: [], sourceFileCount: 0 } };
 }

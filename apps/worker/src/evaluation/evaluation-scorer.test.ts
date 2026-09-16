@@ -54,7 +54,12 @@ function buildCase(): EvaluationCase {
   };
 }
 
-const agentResult: AgentOrchestratorResult = { status: "completed", report: VALID_REPORT, trace: [] };
+const agentResult: AgentOrchestratorResult = {
+  status: "completed",
+  report: VALID_REPORT,
+  trace: [],
+  autoCompletedEvidence: [],
+};
 
 describe("LocalEvaluationScorer", () => {
   it("produces the exact same per-case result (mapped to wire shape) as calling evaluateCase directly", () => {

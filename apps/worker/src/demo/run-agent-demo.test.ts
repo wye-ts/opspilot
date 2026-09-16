@@ -27,7 +27,7 @@ function buildReport(rootCause: string | null, evidenceState: EvidenceState): Re
 }
 
 function completedResult(report: ResolutionReport): AgentOrchestratorResult {
-  return { status: "completed", report, trace: [] };
+  return { status: "completed", report, trace: [], autoCompletedEvidence: [] };
 }
 
 describe("runDemoScenario", () => {

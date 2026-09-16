@@ -49,7 +49,7 @@ const VALID_REPORT: ResolutionReport = {
 // receives the normalized ObservedFacts those raw results produce (see the
 // OpsPilot #61 Phase 1 HQ targeted corrections, correction 1).
 function rawCompleted(report: ResolutionReport = VALID_REPORT): AgentOrchestratorResult {
-  return { status: "completed", report, trace: [] };
+  return { status: "completed", report, trace: [], autoCompletedEvidence: [] };
 }
 
 function rawFailed(code: AgentOrchestratorErrorCode): AgentOrchestratorResult {

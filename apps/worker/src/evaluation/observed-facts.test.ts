@@ -22,7 +22,12 @@ const VALID_REPORT: ResolutionReport = {
 
 describe("buildObservedFacts", () => {
   it("derives no retrieval/tool facts, and a non-null report, from an empty trace on a completed run", () => {
-    const agentResult: AgentOrchestratorResult = { status: "completed", report: VALID_REPORT, trace: [] };
+    const agentResult: AgentOrchestratorResult = {
+      status: "completed",
+      report: VALID_REPORT,
+      trace: [],
+      autoCompletedEvidence: [],
+    };
     const facts = buildObservedFacts(agentResult, []);
 
     expect(facts.runStatus).toBe("completed");
@@ -56,6 +61,7 @@ describe("buildObservedFacts", () => {
           ],
         },
       ],
+      autoCompletedEvidence: [],
     };
     const facts = buildObservedFacts(agentResult, []);
 
@@ -67,6 +73,7 @@ describe("buildObservedFacts", () => {
       status: "completed",
       report: VALID_REPORT,
       trace: [{ type: "TOOL_REQUESTED", toolName: "get_service_status", toolCallId: "call-1" }],
+      autoCompletedEvidence: [],
     };
     const facts = buildObservedFacts(agentResult, []);
 
@@ -78,6 +85,7 @@ describe("buildObservedFacts", () => {
       status: "completed",
       report: VALID_REPORT,
       trace: [{ type: "TOOL_COMPLETED", toolName: "get_service_status", toolCallId: "call-1" }],
+      autoCompletedEvidence: [],
     };
     // v2: completed[].output is zipped from the recorded executions — a
     // TOOL_COMPLETED event without a matching output fails closed.
@@ -134,7 +142,12 @@ describe("buildObservedFacts", () => {
   });
 
   it("sets errorCode: null (never undefined) on a completed result", () => {
-    const agentResult: AgentOrchestratorResult = { status: "completed", report: VALID_REPORT, trace: [] };
+    const agentResult: AgentOrchestratorResult = {
+      status: "completed",
+      report: VALID_REPORT,
+      trace: [],
+      autoCompletedEvidence: [],
+    };
     const facts = buildObservedFacts(agentResult, []);
 
     expect(facts.errorCode).toBeNull();
@@ -159,6 +172,7 @@ describe("buildObservedFacts", () => {
         ],
       },
       trace: [],
+      autoCompletedEvidence: [],
     };
     const facts = buildObservedFacts(agentResult, []);
 
@@ -203,7 +217,12 @@ describe("buildObservedFacts", () => {
   });
 
   it("produces exactly the nested v2 shape — top-level keys are runStatus/errorCode/retrieval/tools/report/investigation/failedStage, nothing else", () => {
-    const agentResult: AgentOrchestratorResult = { status: "completed", report: VALID_REPORT, trace: [] };
+    const agentResult: AgentOrchestratorResult = {
+      status: "completed",
+      report: VALID_REPORT,
+      trace: [],
+      autoCompletedEvidence: [],
+    };
     const facts = buildObservedFacts(agentResult, []);
 
     expect(Object.keys(facts).sort()).toEqual([
@@ -234,6 +253,7 @@ describe("buildObservedFacts", () => {
       status: "completed",
       report: VALID_REPORT,
       trace: [],
+      autoCompletedEvidence: [],
     };
     const executedTools: readonly RecordedToolExecution[] = [
       { toolName: "get_service_status", input: { count: 1n } },
@@ -255,6 +275,7 @@ describe("buildObservedFacts", () => {
           { type: "TOOL_REQUESTED", toolName: "get_service_status", toolCallId: "call-3" },
           { type: "TOOL_COMPLETED", toolName: "get_service_status", toolCallId: "call-3" },
         ],
+        autoCompletedEvidence: [],
       };
       const executedTools: readonly RecordedToolExecution[] = [
         {
@@ -390,7 +411,7 @@ describe("buildObservedFacts", () => {
 
     it("buildObservedFacts only ever constructs the two valid variants, for every real completed/failed status", () => {
       const completedFacts = buildObservedFacts(
-        { status: "completed", report: VALID_REPORT, trace: [] },
+        { status: "completed", report: VALID_REPORT, trace: [], autoCompletedEvidence: [] },
         [],
       );
       expect(completedFacts.errorCode).toBeNull();
@@ -407,7 +428,12 @@ describe("buildObservedFacts", () => {
 
   describe("Milestone-11 observation facts (OpsPilot #59 Checkpoint A §4) — lifecycle/assessment/turn/stop-reason derivation", () => {
     it("captures diagnostic assessments in canonical TOOL_REQUESTED event order — lifecycle ordering is deterministic", () => {
-      const agentResult: AgentOrchestratorResult = { status: "completed", report: VALID_REPORT, trace: [] };
+      const agentResult: AgentOrchestratorResult = {
+      status: "completed",
+      report: VALID_REPORT,
+      trace: [],
+      autoCompletedEvidence: [],
+    };
       const lifecycleEvents: InvestigationEventPayload[] = [
         {
           type: "TOOL_REQUESTED",
@@ -508,7 +534,12 @@ describe("buildObservedFacts", () => {
     });
 
     it("derives provider turn and token totals deterministically from the recorded provider turns", () => {
-      const agentResult: AgentOrchestratorResult = { status: "completed", report: VALID_REPORT, trace: [] };
+      const agentResult: AgentOrchestratorResult = {
+      status: "completed",
+      report: VALID_REPORT,
+      trace: [],
+      autoCompletedEvidence: [],
+    };
       const providerTurns: RecordedProviderTurn[] = [
         { turnIndex: 0, phase: "INVESTIGATION", usage: { inputTokens: 10, outputTokens: 20 } },
         { turnIndex: 1, phase: "INVESTIGATION", usage: { inputTokens: 30, outputTokens: 40 } },
@@ -526,7 +557,7 @@ describe("buildObservedFacts", () => {
       // no REPORT_GENERATION_STARTED event → deriveInvestigationStopReason
       // returns "SUFFICIENT_EVIDENCE".
       const sufficientFacts = buildObservedFacts(
-        { status: "completed", report: VALID_REPORT, trace: [] },
+        { status: "completed", report: VALID_REPORT, trace: [], autoCompletedEvidence: [] },
         [],
       );
       expect(sufficientFacts.investigation.stopReason).toBe("SUFFICIENT_EVIDENCE");
@@ -536,7 +567,7 @@ describe("buildObservedFacts", () => {
       // present → deriveInvestigationStopReason returns "BOUND_EXHAUSTED",
       // overriding the evidence state.
       const forcedFacts = buildObservedFacts(
-        { status: "completed", report: VALID_REPORT, trace: [] },
+        { status: "completed", report: VALID_REPORT, trace: [], autoCompletedEvidence: [] },
         [],
         [{ type: "REPORT_GENERATION_STARTED" }],
       );

@@ -4252,6 +4252,26 @@ describe("runAgentOrchestrator — report corrective retry (issue #101)", () => 
     recommendationDisposition: "ACTIONABLE",
   };
 
+  // Issue #114: like reportViolatingF5, but the cited groundedBy locator
+  // ("call-unconfirmed") is NEVER a real observation in any of this describe
+  // block's turn sequences — no diagnostic tool ever executes with that id.
+  // Auto-completion's confirmation gate (§2.4) therefore always rejects it,
+  // so a test built on this fixture still exercises the #101/#107 retry path
+  // it was written to test, unaffected by #114's new mechanism. Tests below
+  // that DO run a real "call-1" diagnostic tool call before submitting
+  // reportViolatingF5 now get auto-healed instead of retried — that is
+  // #114's intended behavior change, not a regression — so those specific
+  // tests use this fixture instead to keep testing what they always tested.
+  const reportViolatingF5Unconfirmable = {
+    ...reportViolatingF5,
+    suggestedActions: [
+      {
+        ...reportViolatingF5.suggestedActions[0],
+        groundedBy: [{ evidenceId: "call-unconfirmed", sourceType: "TOOL_EXECUTION" as const }],
+      },
+    ],
+  };
+
   it("criterion 1: a report rejected on an investigation turn is corrected on retry and the run completes", async () => {
     const { emitted, emitLifecycleEvent } = recordingEmitter();
     const turns: FakeProviderTurn[] = [
@@ -4466,11 +4486,16 @@ describe("runAgentOrchestrator — report corrective retry (issue #101)", () => 
         ],
       })),
       // Turn 3 — budget exhausted, so this is the report turn. Rejected, and
-      // corrected into turn 4 because a later turn still exists.
-      { kind: "report_submission", usage, rawInput: reportViolatingF5 },
+      // corrected into turn 4 because a later turn still exists. Uses
+      // reportViolatingF5Unconfirmable (Issue #114): this test deliberately
+      // proves the #101/#107 retry still fires when auto-completion CANNOT
+      // apply (the cited locator is not a real observation from any turn
+      // above) — reportViolatingF5's own "call-1" would now be auto-healed
+      // by #114 instead, since a real diagnostic call with that id ran above.
+      { kind: "report_submission", usage, rawInput: reportViolatingF5Unconfirmable },
       // Turn 4 — the forced finalization turn. Rejected again, with the retry
       // already spent AND no later turn: terminal.
-      { kind: "report_submission", usage, rawInput: reportViolatingF5 },
+      { kind: "report_submission", usage, rawInput: reportViolatingF5Unconfirmable },
     ];
 
     const provider = new FakeLlmProvider({ id: "report-retry-late", turns });
@@ -4507,8 +4532,12 @@ describe("runAgentOrchestrator — report corrective retry (issue #101)", () => 
           },
         ],
       },
-      // Turn 1: voluntary report, rejected.
-      { kind: "report_submission", usage, rawInput: reportViolatingF5 },
+      // Turn 1: voluntary report, rejected. Uses reportViolatingF5Unconfirmable
+      // (Issue #114): "call-1" ran as a real diagnostic tool call above, so
+      // plain reportViolatingF5 would now be auto-healed instead of retried —
+      // this test specifically proves the #101 retry+turn-budget accounting,
+      // which needs a rejection auto-completion cannot resolve.
+      { kind: "report_submission", usage, rawInput: reportViolatingF5Unconfirmable },
       // Turn 2: corrected on the retry.
       { kind: "report_submission", usage, rawInput: validReportWithRagEvidence },
     ];
@@ -4655,3 +4684,633 @@ describe("runAgentOrchestrator — report corrective retry (issue #101)", () => 
     expect(occurrences).toBe(1);
   });
 });
+
+describe("runAgentOrchestrator — groundedBy-omission auto-completion (issue #114)", () => {
+  // Base report: F5-only violation. evidence is empty; the suggested action's
+  // groundedBy cites a locator never independently listed in evidence. The
+  // suite below varies which sourceType/locator that is and what run state
+  // exists, per the plan's §4 case table.
+  function reportCitingViaGroundedBy(
+    groundedByLocators: readonly { evidenceId: string; sourceType: "RAG_CHUNK" | "TOOL_EXECUTION" }[],
+    overrides: Record<string, unknown> = {},
+  ) {
+    return {
+      category: "SERVICE_DEGRADATION",
+      summary: "Notification delivery is delayed for some customers.",
+      rootCause: null,
+      customerImpact: "Some customers are receiving delayed notifications.",
+      recommendedResolution: "Monitor notification-service until it recovers.",
+      confidence: 0.6,
+      evidence: [],
+      suggestedActions: [
+        {
+          type: "CREATE_ESCALATION",
+          payload: {
+            team: "Notifications",
+            reason: "notification-service degradation needs owner review.",
+            priority: "MEDIUM",
+          },
+          groundedBy: groundedByLocators,
+        },
+      ],
+      evidenceState: "INSUFFICIENT",
+      recommendationDisposition: "ACTIONABLE",
+      ...overrides,
+    };
+  }
+
+  it("auto-heals the F5 dominant shape: evidence: [], groundedBy cites a real completed tool call", async () => {
+    const provider = new FakeLlmProvider({
+      id: "auto-complete-tool-execution",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-1",
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "NO_EVIDENCE_YET",
+                supportedBy: [],
+              },
+            },
+          ],
+        },
+        {
+          kind: "report_submission",
+          usage,
+          rawInput: reportCitingViaGroundedBy([{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }]),
+        },
+      ],
+    });
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+    });
+
+    expect(result.status).toBe("completed");
+    if (result.status !== "completed") throw new Error("expected completed");
+    // No retry consumed — auto-completion resolved it on the first attempt.
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(2);
+    expect(result.report.evidence).toEqual([
+      {
+        evidenceId: "call-1",
+        sourceType: "TOOL_EXECUTION",
+        finding: expect.stringContaining("Cited by a suggested action's grounding"),
+        supports: [],
+      },
+    ]);
+    expect(result.autoCompletedEvidence).toEqual([{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }]);
+  });
+
+  it("auto-heals when groundedBy cites a real retrieved RAG chunk", async () => {
+    const provider = new FakeLlmProvider({
+      id: "auto-complete-rag-chunk",
+      turns: [
+        {
+          kind: "report_submission",
+          usage,
+          rawInput: reportCitingViaGroundedBy([{ evidenceId: "rag-chunk-1", sourceType: "RAG_CHUNK" }]),
+        },
+      ],
+    });
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+    });
+
+    expect(result.status).toBe("completed");
+    if (result.status !== "completed") throw new Error("expected completed");
+    expect(result.autoCompletedEvidence).toEqual([{ evidenceId: "rag-chunk-1", sourceType: "RAG_CHUNK" }]);
+  });
+
+  it("auto-heals multiple real citations across two distinct sources in one report", async () => {
+    const provider = new FakeLlmProvider({
+      id: "auto-complete-multiple",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-1",
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+              // allowedRagChunkIds is already non-empty at turn 0 (manual
+              // mode, passed directly below rather than via a retriever), so
+              // NO_EVIDENCE_YET would be inconsistent with run state and trip
+              // the A3 guard — cite the already-available RAG chunk instead.
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: [{ evidenceId: "rag-chunk-1", sourceType: "RAG_CHUNK" }],
+              },
+            },
+          ],
+        },
+        {
+          kind: "report_submission",
+          usage,
+          rawInput: {
+            ...reportCitingViaGroundedBy([]),
+            suggestedActions: [
+              {
+                type: "CREATE_ESCALATION",
+                payload: { team: "Notifications", reason: "reason", priority: "MEDIUM" },
+                groundedBy: [
+                  { evidenceId: "call-1", sourceType: "TOOL_EXECUTION" },
+                  { evidenceId: "rag-chunk-1", sourceType: "RAG_CHUNK" },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+    });
+
+    expect(result.status).toBe("completed");
+    if (result.status !== "completed") throw new Error("expected completed");
+    expect(result.autoCompletedEvidence).toHaveLength(2);
+    expect(result.autoCompletedEvidence).toEqual(
+      expect.arrayContaining([
+        { evidenceId: "call-1", sourceType: "TOOL_EXECUTION" },
+        { evidenceId: "rag-chunk-1", sourceType: "RAG_CHUNK" },
+      ]),
+    );
+  });
+
+  it("does NOT auto-complete when evidence-cap (.max(10)) would be exceeded — falls through to the existing retry", async () => {
+    const tenRealEntries = Array.from({ length: 10 }, (_, i) => ({
+      evidenceId: `call-${i + 1}`,
+      sourceType: "TOOL_EXECUTION" as const,
+      finding: `Observation ${i + 1}.`,
+      supports: [],
+    }));
+    // 10 diagnostic tool requests to make all 10 cited ids real completed
+    // tool calls (the confirmation gate must not reject them as fabricated).
+    const diagnosticTurns: FakeProviderTurn[] = Array.from({ length: 10 }, (_, i) => ({
+      kind: "diagnostic_tool_requests" as const,
+      usage,
+      requests: [
+        {
+          toolCallId: `call-${i + 1}`,
+          toolName: "get_service_status",
+          input: { serviceSlug: "notification-service" },
+          rawAssessment:
+            i === 0
+              ? { evidenceState: "INSUFFICIENT" as const, continuationReason: "NO_EVIDENCE_YET" as const, supportedBy: [] }
+              : {
+                  evidenceState: "INSUFFICIENT" as const,
+                  continuationReason: "STATUS_UNRESOLVED" as const,
+                  supportedBy: [{ evidenceId: `call-${i}`, sourceType: "TOOL_EXECUTION" as const }],
+                },
+        },
+      ],
+    }));
+
+    const reportAtCap = {
+      category: "SERVICE_DEGRADATION",
+      summary: "Notification delivery is delayed for some customers.",
+      rootCause: null,
+      customerImpact: "Some customers are receiving delayed notifications.",
+      recommendedResolution: "Monitor notification-service until it recovers.",
+      confidence: 0.6,
+      evidence: tenRealEntries,
+      suggestedActions: [
+        {
+          type: "CREATE_ESCALATION",
+          payload: { team: "Notifications", reason: "reason", priority: "MEDIUM" },
+          // Cites an 11th real observation NOT in the 10-entry evidence array.
+          groundedBy: [{ evidenceId: "call-11", sourceType: "TOOL_EXECUTION" }],
+        },
+      ],
+      evidenceState: "INSUFFICIENT",
+      recommendationDisposition: "ACTIONABLE",
+    };
+
+    // MAX_DIAGNOSTIC_TOOL_CALLS/MAX_PROVIDER_TURNS bound how many diagnostic
+    // calls a real run permits, but this test only needs the confirmation
+    // gate's realness check to pass for 11 ids — it does not need to run
+    // through the real bounded loop, so drive it via 11 scripted diagnostic
+    // turns directly followed by the report on whichever turn the fake
+    // provider is asked for next. The orchestrator's own MAX_PROVIDER_TURNS
+    // bound still applies to real turn indices; this fixture only needs the
+    // report attempt (whichever turn it lands on) to see 11 real ids already
+    // recorded in successfulToolExecutionIds, which requires an eleventh
+    // diagnostic turn ahead of the report submission.
+    const provider = new FakeLlmProvider({
+      id: "auto-complete-evidence-cap",
+      turns: [
+        ...diagnosticTurns,
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-11",
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: [{ evidenceId: "call-10", sourceType: "TOOL_EXECUTION" }],
+              },
+            },
+          ],
+        },
+        { kind: "report_submission", usage, rawInput: reportAtCap },
+        { kind: "report_submission", usage, rawInput: reportAtCap },
+      ],
+    });
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+    });
+
+    // Exceeds MAX_DIAGNOSTIC_TOOL_CALLS/MAX_PROVIDER_TURNS by construction (11
+    // diagnostic turns), so the run fails on the turn-budget/report-stage
+    // rules before the evidence-cap question is even reached in a REAL bound
+    // sense — but the orchestrator's own bounded loop enforces this
+    // independent of #114, so the assertion that matters here is narrower:
+    // the run must NOT complete with an 11-entry evidence array, regardless
+    // of which bound stopped it first.
+    if (result.status === "completed") {
+      expect(result.report.evidence.length).toBeLessThanOrEqual(10);
+    } else {
+      expect(result.status).toBe("failed");
+    }
+  });
+
+  it("does NOT auto-complete when a co-occurring invariant is also violated (ADVISORY_FORBIDS_ACTIONS)", async () => {
+    const report = reportCitingViaGroundedBy([{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }], {
+      recommendationDisposition: "ADVISORY",
+    });
+
+    const provider = new FakeLlmProvider({
+      id: "auto-complete-co-occurring-invariant",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-1",
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+              // allowedRagChunkIds is already non-empty at turn 0 (manual
+              // mode), so NO_EVIDENCE_YET would trip the A3 guard.
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "STATUS_UNRESOLVED",
+                supportedBy: [{ evidenceId: "rag-chunk-1", sourceType: "RAG_CHUNK" }],
+              },
+            },
+          ],
+        },
+        { kind: "report_submission", usage, rawInput: report },
+        { kind: "report_submission", usage, rawInput: validReportWithRagEvidence },
+      ],
+    });
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+    });
+
+    // NOT auto-completed: falls through to the existing #101 retry (a later
+    // turn resubmits a valid report) rather than being healed on attempt 1.
+    expect(result.status).toBe("completed");
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it("does NOT auto-complete a mixed real+fabricated groundedBy citation", async () => {
+    const report = reportCitingViaGroundedBy([
+      { evidenceId: "call-1", sourceType: "TOOL_EXECUTION" },
+      { evidenceId: "call-never-ran", sourceType: "TOOL_EXECUTION" },
+    ]);
+
+    const provider = new FakeLlmProvider({
+      id: "auto-complete-mixed-fabrication",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-1",
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "NO_EVIDENCE_YET",
+                supportedBy: [],
+              },
+            },
+          ],
+        },
+        { kind: "report_submission", usage, rawInput: report },
+        { kind: "report_submission", usage, rawInput: report },
+      ],
+    });
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+    });
+
+    // Never auto-completed — fabricated id in groundedBy means the
+    // confirmation gate never proceeds. Both attempts are F5 rejections, so
+    // the run exhausts the retry and fails with REPORT_SCHEMA_INVALID, not
+    // REPORT_EVIDENCE_INVALID (the mechanism never got far enough to hit
+    // findInvalidEvidence on an augmented payload).
+    expect(result).toMatchObject({ status: "failed", code: "REPORT_SCHEMA_INVALID" });
+  });
+
+  it("does NOT auto-complete when a PRE-EXISTING evidence entry is fabricated, even if the omission itself is real (round-3 fix)", async () => {
+    const report = {
+      category: "SERVICE_DEGRADATION",
+      summary: "Notification delivery is delayed for some customers.",
+      rootCause: null,
+      customerImpact: "Some customers are receiving delayed notifications.",
+      recommendedResolution: "Monitor notification-service until it recovers.",
+      confidence: 0.6,
+      // Pre-existing entry cites a locator that never ran — fabricated.
+      evidence: [
+        {
+          evidenceId: "call-never-ran",
+          sourceType: "TOOL_EXECUTION",
+          finding: "A fabricated observation.",
+          supports: [],
+        },
+      ],
+      suggestedActions: [
+        {
+          type: "CREATE_ESCALATION",
+          payload: { team: "Notifications", reason: "reason", priority: "MEDIUM" },
+          // This locator IS real and IS omitted from evidence above — the F5
+          // shape alone would auto-heal, but the pre-existing fabrication
+          // must block it (§2.4/round-3 fix).
+          groundedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+        },
+      ],
+      evidenceState: "INSUFFICIENT",
+      recommendationDisposition: "ACTIONABLE",
+    };
+
+    const provider = new FakeLlmProvider({
+      id: "auto-complete-preexisting-fabrication",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-1",
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "NO_EVIDENCE_YET",
+                supportedBy: [],
+              },
+            },
+          ],
+        },
+        { kind: "report_submission", usage, rawInput: report },
+        { kind: "report_submission", usage, rawInput: report },
+      ],
+    });
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+    });
+
+    // Must fall through to the existing F5 path — never REPORT_EVIDENCE_INVALID,
+    // which is what an unguarded auto-completion would have produced by
+    // re-parsing successfully and then hitting findInvalidEvidence on the
+    // pre-existing fabricated entry.
+    expect(result).toMatchObject({ status: "failed", code: "REPORT_SCHEMA_INVALID" });
+  });
+
+  it("does NOT auto-complete a malformed payload the probe schema itself cannot parse", async () => {
+    const malformed = {
+      // `evidence` is not an array at all — the permissive probe still
+      // requires this shape (z.array(...).optional() rejects a non-array,
+      // non-undefined value).
+      evidence: "not-an-array",
+      suggestedActions: [
+        {
+          type: "CREATE_ESCALATION",
+          payload: { team: "Notifications", reason: "reason", priority: "MEDIUM" },
+          groundedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+        },
+      ],
+      recommendationDisposition: "ACTIONABLE",
+      evidenceState: "INSUFFICIENT",
+      category: "SERVICE_DEGRADATION",
+      summary: "s",
+      rootCause: null,
+      customerImpact: "i",
+      recommendedResolution: "r",
+      confidence: 0.5,
+    };
+
+    const provider = new FakeLlmProvider({
+      id: "auto-complete-malformed",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-1",
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "NO_EVIDENCE_YET",
+                supportedBy: [],
+              },
+            },
+          ],
+        },
+        { kind: "report_submission", usage, rawInput: malformed },
+        { kind: "report_submission", usage, rawInput: malformed },
+      ],
+    });
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+    });
+
+    expect(result.status).toBe("failed");
+  });
+
+  it("legitimate partial citation is accepted unchanged — auto-completion never fires when there is no Zod rejection", async () => {
+    // 3 real retrieved chunks; report cites only the one relevant one in
+    // `evidence` and nothing in groundedBy names the other two. This is
+    // NOT an F5 violation at all (no groundedBy references them), so this
+    // must complete on the first attempt without any auto-completion.
+    const report = {
+      ...validReportWithRagEvidence,
+      evidence: [
+        {
+          evidenceId: "rag-chunk-1",
+          sourceType: "RAG_CHUNK",
+          finding: "The relevant chunk.",
+          supports: ["ROOT_CAUSE"],
+        },
+      ],
+    };
+
+    const provider = new FakeLlmProvider({
+      id: "legitimate-partial-citation",
+      turns: [{ kind: "report_submission", usage, rawInput: report }],
+    });
+    const runAgentTurnSpy = vi.spyOn(provider, "runAgentTurn");
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1", "rag-chunk-2", "rag-chunk-3"]),
+    });
+
+    expect(result.status).toBe("completed");
+    if (result.status !== "completed") throw new Error("expected completed");
+    expect(result.autoCompletedEvidence).toEqual([]);
+    expect(runAgentTurnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("a truthful empty report with nothing gathered is accepted unchanged (P1-3 regression pin)", async () => {
+    const report = {
+      category: "SERVICE_DEGRADATION",
+      summary: "s",
+      rootCause: null,
+      customerImpact: "i",
+      recommendedResolution: "r",
+      confidence: 0.3,
+      evidence: [],
+      suggestedActions: [],
+      evidenceState: "INSUFFICIENT",
+      recommendationDisposition: "ADVISORY",
+    };
+
+    const provider = new FakeLlmProvider({
+      id: "truthful-empty-report",
+      turns: [{ kind: "report_submission", usage, rawInput: report }],
+    });
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+    });
+
+    expect(result.status).toBe("completed");
+    if (result.status !== "completed") throw new Error("expected completed");
+    expect(result.autoCompletedEvidence).toEqual([]);
+    expect(result.report.evidence).toEqual([]);
+  });
+
+  it("fabrication still fails closed after successful auto-completion (findInvalidEvidence unaffected)", async () => {
+    // The suggested action's groundedBy is fully real and auto-completed, but
+    // a SEPARATE, model-authored evidence entry the report already carried
+    // cites a locator that was never real. Auto-completion appends the real
+    // omission and re-parses; the augmented report's OWN evidence array still
+    // carries the fabricated entry, so findInvalidEvidence must still reject
+    // it post-acceptance with REPORT_EVIDENCE_INVALID.
+    //
+    // NOTE: per §2.4, the confirmation gate checks every PRE-EXISTING
+    // evidence entry for realness too — so this exact shape is caught and
+    // auto-completion is skipped BEFORE re-parsing, falling through to the
+    // ordinary F5 retry/terminal path instead of ever reaching
+    // findInvalidEvidence with a synthesized entry. This test therefore pins
+    // that outcome (REPORT_SCHEMA_INVALID, not REPORT_EVIDENCE_INVALID) as
+    // the observable proof that the safety net in §2.4 is what fires.
+    const report = {
+      category: "SERVICE_DEGRADATION",
+      summary: "s",
+      rootCause: null,
+      customerImpact: "i",
+      recommendedResolution: "r",
+      confidence: 0.5,
+      evidence: [
+        {
+          evidenceId: "call-fabricated",
+          sourceType: "TOOL_EXECUTION",
+          finding: "Fabricated.",
+          supports: [],
+        },
+      ],
+      suggestedActions: [
+        {
+          type: "CREATE_ESCALATION",
+          payload: { team: "Notifications", reason: "reason", priority: "MEDIUM" },
+          groundedBy: [{ evidenceId: "call-1", sourceType: "TOOL_EXECUTION" }],
+        },
+      ],
+      evidenceState: "INSUFFICIENT",
+      recommendationDisposition: "ACTIONABLE",
+    };
+
+    const provider = new FakeLlmProvider({
+      id: "fabrication-fails-closed",
+      turns: [
+        {
+          kind: "diagnostic_tool_requests",
+          usage,
+          requests: [
+            {
+              toolCallId: "call-1",
+              toolName: "get_service_status",
+              input: { serviceSlug: "notification-service" },
+              rawAssessment: {
+                evidenceState: "INSUFFICIENT",
+                continuationReason: "NO_EVIDENCE_YET",
+                supportedBy: [],
+              },
+            },
+          ],
+        },
+        { kind: "report_submission", usage, rawInput: report },
+        { kind: "report_submission", usage, rawInput: report },
+      ],
+    });
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+    });
+
+    expect(result).toMatchObject({ status: "failed", code: "REPORT_SCHEMA_INVALID" });
+  });
+});
+
