@@ -12,6 +12,7 @@ import {
   type EvidenceLocator,
   type InvestigationEventPayload,
   type InvestigationExecutionStage,
+  type ReportCorrectionHistory,
   type ReportValidationIssue,
   type ResolutionReport,
   type RetrievalSummaryEntry,
@@ -549,6 +550,29 @@ export function buildReportCorrectiveGuidanceText(
   );
 }
 
+/**
+ * Derives Issue #116's persisted correction history from the run's two
+ * corrective-retry flags.
+ *
+ * The flags are independent and both can be set in one run, which is why the
+ * persisted value is a four-member enum rather than a boolean — see
+ * ReportCorrectionHistorySchema for the full rationale.
+ *
+ * Called at every deciding REPORT_SUBMITTED emit. No call site may substitute
+ * a constant: a run corrected by a retry and THEN auto-completed reports the
+ * retry, and hardcoding "NONE" anywhere would corrupt exactly the aggregate
+ * this field exists to produce.
+ */
+function reportCorrectionHistory(
+  reportRetryUsed: boolean,
+  a3RetryUsed: boolean,
+): ReportCorrectionHistory {
+  if (reportRetryUsed && a3RetryUsed) return "BOTH";
+  if (reportRetryUsed) return "REPORT_RETRY";
+  if (a3RetryUsed) return "DIAGNOSTIC_RETRY";
+  return "NONE";
+}
+
 export async function runAgentOrchestrator(
   params: AgentOrchestratorParams,
 ): Promise<AgentOrchestratorResult> {
@@ -868,7 +892,14 @@ export async function runAgentOrchestrator(
             // trip, fall through to the existing failure/retry path on the
             // ORIGINAL rejection rather than inventing a new failure shape.
           } else {
-            await emit({ type: "REPORT_SUBMITTED" });
+            // Issue #116: this is a DECIDING submission, so it carries the
+            // run's correction history like the other two. Deriving it here
+            // rather than defaulting matters: auto-completion is reachable
+            // AFTER a corrective retry, and that run must report the retry.
+            await emit({
+              type: "REPORT_SUBMITTED",
+              correctionHistory: reportCorrectionHistory(reportRetryUsed, a3RetryUsed),
+            });
             await emit({ type: "REPORT_VALIDATED" });
             trace.push({ type: "REPORT_GENERATED" });
             return {
@@ -945,7 +976,10 @@ export async function runAgentOrchestrator(
         }
 
         // Terminal rejection: this attempt decides the run, so it IS recorded.
-        await emit({ type: "REPORT_SUBMITTED" });
+        await emit({
+          type: "REPORT_SUBMITTED",
+          correctionHistory: reportCorrectionHistory(reportRetryUsed, a3RetryUsed),
+        });
         await emit({
           type: "REPORT_VALIDATION_FAILED",
           failureCode: "REPORT_SCHEMA_INVALID",
@@ -964,7 +998,10 @@ export async function runAgentOrchestrator(
       }
 
       // Accepted: this attempt decides the run, so it is recorded.
-      await emit({ type: "REPORT_SUBMITTED" });
+      await emit({
+        type: "REPORT_SUBMITTED",
+        correctionHistory: reportCorrectionHistory(reportRetryUsed, a3RetryUsed),
+      });
 
       if (
         findInvalidEvidence(

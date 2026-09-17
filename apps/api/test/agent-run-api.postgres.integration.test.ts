@@ -127,7 +127,7 @@ const APPROVAL_EMPTY_ACTIONS_REPORT = {
  */
 async function appendDirectSuccessPrefix(prisma: PrismaClient, runId: string) {
   await appendInvestigationEvent(prisma, runId, { type: "AGENT_STARTED" });
-  await appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED" });
+  await appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED", correctionHistory: "NONE" });
   await appendInvestigationEvent(prisma, runId, { type: "REPORT_VALIDATED" });
 }
 

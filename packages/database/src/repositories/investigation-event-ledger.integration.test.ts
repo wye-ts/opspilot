@@ -308,7 +308,7 @@ describe("appendInvestigationEvent — exact replay", () => {
     it("REPORT_VALIDATION_FAILED: a changed failureCode conflicts", async () => {
       const runId = await createRunningRunWithRunCreated();
       await appendInvestigationEvent(prisma, runId, { type: "AGENT_STARTED" });
-      await appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED" });
+      await appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED", correctionHistory: "NONE" });
       await appendInvestigationEvent(prisma, runId, {
         type: "REPORT_VALIDATION_FAILED",
         failureCode: "REPORT_SCHEMA_INVALID",
@@ -642,7 +642,7 @@ describe("appendInvestigationEvent — transactional reducer validation", () => 
       assessment: NO_EVIDENCE_YET_ASSESSMENT,
     }); // open tool call, never completed
 
-    await expect(appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED" })).rejects.toMatchObject({
+    await expect(appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED", correctionHistory: "NONE" })).rejects.toMatchObject({
       code: "PERSISTENCE_EVENT_STREAM_INVALID",
     });
 
@@ -692,7 +692,7 @@ describe("appendInvestigationEvent — concurrent appends", () => {
 
     const results = await Promise.allSettled([
       appendInvestigationEvent(prisma, runId, { type: "RETRIEVAL_COMPLETED", chunks: [] }),
-      appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED" }),
+      appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED", correctionHistory: "NONE" }),
     ]);
 
     const fulfilled = results.filter(
@@ -769,7 +769,7 @@ describe("the old persist-after batch behavior is no longer used", () => {
   it("finalizeCompleted writes exactly ONE new row (the terminal event), not a batch", async () => {
     const runId = await createRunningRunWithRunCreated();
     await appendInvestigationEvent(prisma, runId, { type: "AGENT_STARTED" });
-    await appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED" });
+    await appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED", correctionHistory: "NONE" });
     await appendInvestigationEvent(prisma, runId, { type: "REPORT_VALIDATED" });
     const before = await traceEventCount(runId);
 
@@ -798,7 +798,7 @@ describe("the old persist-after batch behavior is no longer used", () => {
       toolName: "get_service_status",
     });
     await appendInvestigationEvent(prisma, runId, { type: "REPORT_GENERATION_STARTED" });
-    await appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED" });
+    await appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED", correctionHistory: "NONE" });
     await appendInvestigationEvent(prisma, runId, { type: "REPORT_VALIDATED" });
     await finalizeCompleted(prisma, runId, VALID_REPORT);
 

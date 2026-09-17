@@ -105,7 +105,10 @@ describe("strict union behavior", () => {
       failureCode: "TOOL_EXECUTION_FAILED",
     },
     REPORT_GENERATION_STARTED: { type: "REPORT_GENERATION_STARTED" },
-    REPORT_SUBMITTED: { type: "REPORT_SUBMITTED" },
+    // Issue #116: correctionHistory is part of this type's minimal legal WRITE
+    // shape. The read-side fixture below deliberately omits it, since every
+    // REPORT_SUBMITTED row persisted before #116 lacks the field.
+    REPORT_SUBMITTED: { type: "REPORT_SUBMITTED", correctionHistory: "NONE" },
     REPORT_VALIDATED: { type: "REPORT_VALIDATED" },
     REPORT_VALIDATION_FAILED: {
       type: "REPORT_VALIDATION_FAILED",
@@ -670,5 +673,42 @@ describe("TOOL_REQUESTED write/record split (Issue #58 Checkpoint B §4)", () =>
         assessment: { ...groundedAssessment, evidenceState: "SUFFICIENT" },
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("REPORT_SUBMITTED.correctionHistory — write/read asymmetry (issue #116)", () => {
+  it("the WRITE schema rejects a REPORT_SUBMITTED with no correctionHistory", () => {
+    // Fresh writes must always attribute. Without this, a new emit site added
+    // later would silently persist unattributed rows indistinguishable from
+    // pre-#116 history.
+    expect(InvestigationEventPayloadSchema.safeParse({ type: "REPORT_SUBMITTED" }).success).toBe(
+      false,
+    );
+  });
+
+  it("the READ schema accepts a pre-#116 REPORT_SUBMITTED with no correctionHistory", () => {
+    expect(
+      InvestigationEventRecordPayloadSchema.safeParse({ type: "REPORT_SUBMITTED" }).success,
+    ).toBe(true);
+  });
+
+  it("both schemas accept every correctionHistory member and reject anything else", () => {
+    for (const member of ["NONE", "REPORT_RETRY", "DIAGNOSTIC_RETRY", "BOTH"]) {
+      const payload = { type: "REPORT_SUBMITTED", correctionHistory: member };
+      expect(InvestigationEventPayloadSchema.safeParse(payload).success, member).toBe(true);
+      expect(InvestigationEventRecordPayloadSchema.safeParse(payload).success, member).toBe(true);
+    }
+    expect(
+      InvestigationEventPayloadSchema.safeParse({
+        type: "REPORT_SUBMITTED",
+        correctionHistory: "RETRY",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("stays strict: an unknown sibling key is still rejected on both variants", () => {
+    const payload = { type: "REPORT_SUBMITTED", correctionHistory: "NONE", retryCount: 1 };
+    expect(InvestigationEventPayloadSchema.safeParse(payload).success).toBe(false);
+    expect(InvestigationEventRecordPayloadSchema.safeParse(payload).success).toBe(false);
   });
 });

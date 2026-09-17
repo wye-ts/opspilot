@@ -5314,3 +5314,206 @@ describe("runAgentOrchestrator — groundedBy-omission auto-completion (issue #1
   });
 });
 
+describe("runAgentOrchestrator — correctionHistory on the deciding submission (issue #116)", () => {
+  function recordingEmitter() {
+    const emitted: InvestigationEventPayload[] = [];
+    return {
+      emitted,
+      emitLifecycleEvent: async (payload: InvestigationEventPayload) => {
+        emitted.push(payload);
+      },
+    };
+  }
+
+  // The single assertion every case below makes. Reads the ONE deciding
+  // REPORT_SUBMITTED — a corrected-away attempt emits nothing, so finding more
+  // than one here would itself be a defect.
+  function submittedHistory(emitted: readonly InvestigationEventPayload[]) {
+    const submissions = emitted.filter((e) => e.type === "REPORT_SUBMITTED");
+    expect(submissions).toHaveLength(1);
+    return (submissions[0] as { correctionHistory?: string }).correctionHistory;
+  }
+
+  // Trips A3: claims NO_EVIDENCE_YET while the run already allows RAG evidence.
+  const a3TrippingTurn: FakeProviderTurn = {
+    kind: "diagnostic_tool_requests",
+    usage,
+    requests: [
+      {
+        toolCallId: "trip-1",
+        toolName: "get_service_status",
+        input: { serviceSlug: "notification-service" },
+        rawAssessment: NO_EVIDENCE_YET_ASSESSMENT,
+      },
+    ],
+  };
+
+  const correctedDiagnosticTurn: FakeProviderTurn = {
+    kind: "diagnostic_tool_requests",
+    usage,
+    requests: [
+      {
+        toolCallId: "call-1",
+        toolName: "get_service_status",
+        input: { serviceSlug: "notification-service" },
+        rawAssessment: {
+          evidenceState: "INSUFFICIENT",
+          continuationReason: "STATUS_UNRESOLVED",
+          supportedBy: [{ evidenceId: "rag-chunk-1", sourceType: "RAG_CHUNK" as const }],
+        },
+      },
+    ],
+  };
+
+  // F5-only violation whose missing locator IS confirmable, so #114's
+  // auto-completion decides the run at agent-orchestrator.ts:900.
+  const reportAutoCompletable = {
+    ...validReportWithRagEvidence,
+    evidence: [],
+    suggestedActions: [
+      {
+        type: "CREATE_ESCALATION" as const,
+        payload: { team: "Notifications", reason: "reason", priority: "MEDIUM" as const },
+        groundedBy: [{ evidenceId: "rag-chunk-1", sourceType: "RAG_CHUNK" as const }],
+      },
+    ],
+    recommendationDisposition: "ACTIONABLE" as const,
+    evidenceState: "INSUFFICIENT" as const,
+    rootCause: null,
+  };
+
+  // F5-only violation citing a locator the run cannot confirm, so
+  // auto-completion declines and the ordinary retry/terminal path runs.
+  const reportUnconfirmable = {
+    ...reportAutoCompletable,
+    suggestedActions: [
+      {
+        ...reportAutoCompletable.suggestedActions[0]!,
+        groundedBy: [{ evidenceId: "call-unconfirmed", sourceType: "TOOL_EXECUTION" as const }],
+      },
+    ],
+  };
+
+  async function run(turns: FakeProviderTurn[]) {
+    const { emitted, emitLifecycleEvent } = recordingEmitter();
+    const result = await runAgentOrchestrator({
+      provider: new FakeLlmProvider({ id: "correction-history", turns }),
+      toolRegistry: new InMemoryToolRegistry([getServiceStatusTool]),
+      initialConversation: [ticketContext],
+      allowedRagChunkIds: new Set(["rag-chunk-1"]),
+      emitLifecycleEvent,
+    });
+    return { result, emitted };
+  }
+
+  it("case 1: a report accepted on the first attempt records NONE — present, never absent", async () => {
+    const { result, emitted } = await run([
+      { kind: "report_submission", usage, rawInput: validReportWithRagEvidence },
+    ]);
+
+    expect(result.status).toBe("completed");
+    // Explicitly not `toBeUndefined()`: absence means "persisted before #116",
+    // and the whole field is worthless if a clean run is indistinguishable
+    // from a historical row.
+    expect(submittedHistory(emitted)).toBe("NONE");
+  });
+
+  it("case 2: a report accepted only after a corrective retry records REPORT_RETRY", async () => {
+    const { result, emitted } = await run([
+      { kind: "report_submission", usage, rawInput: reportUnconfirmable },
+      { kind: "report_submission", usage, rawInput: validReportWithRagEvidence },
+    ]);
+
+    expect(result.status).toBe("completed");
+    expect(submittedHistory(emitted)).toBe("REPORT_RETRY");
+  });
+
+  it("case 3: a report TERMINALLY REJECTED after a corrective retry records REPORT_RETRY too", async () => {
+    const { result, emitted } = await run([
+      { kind: "report_submission", usage, rawInput: reportUnconfirmable },
+      { kind: "report_submission", usage, rawInput: reportUnconfirmable },
+    ]);
+
+    // The field describes the deciding submission's history on BOTH outcomes.
+    // This is the case that makes "the retry ran and did not help" derivable
+    // at all: join this value with the report outcome.
+    expect(result).toMatchObject({ status: "failed", code: "REPORT_SCHEMA_INVALID" });
+    expect(submittedHistory(emitted)).toBe("REPORT_RETRY");
+  });
+
+  it("case 4: an A3 retry followed by a clean report records DIAGNOSTIC_RETRY", async () => {
+    const { result, emitted } = await run([
+      a3TrippingTurn,
+      correctedDiagnosticTurn,
+      { kind: "report_submission", usage, rawInput: validReportWithRagEvidence },
+    ]);
+
+    expect(result.status).toBe("completed");
+    expect(submittedHistory(emitted)).toBe("DIAGNOSTIC_RETRY");
+  });
+
+  it("case 5: both corrective paths firing in one run records BOTH", async () => {
+    const { result, emitted } = await run([
+      a3TrippingTurn,
+      correctedDiagnosticTurn,
+      { kind: "report_submission", usage, rawInput: reportUnconfirmable },
+      { kind: "report_submission", usage, rawInput: validReportWithRagEvidence },
+    ]);
+
+    expect(result.status).toBe("completed");
+    // The case a boolean could not express, and the reason this field is an
+    // enum (agent-orchestrator.ts:665-673 keeps the two flags separate).
+    expect(submittedHistory(emitted)).toBe("BOTH");
+  });
+
+  // Cases 5a-5d cover the auto-completion emit site (#114,
+  // agent-orchestrator.ts:900). Round 1 of this plan's review caught the plan
+  // omitting this site entirely, round 3 caught it covering only half its
+  // states. It decided 4 of the 10 runs in the 2026-09-16 LIVE sample, so a
+  // hardcoded "NONE" here would corrupt the majority of the aggregate.
+
+  it("case 5a: auto-completion deciding a clean first attempt records NONE", async () => {
+    const { result, emitted } = await run([
+      { kind: "report_submission", usage, rawInput: reportAutoCompletable },
+    ]);
+
+    expect(result.status).toBe("completed");
+    expect((result as { autoCompletedEvidence: readonly unknown[] }).autoCompletedEvidence).toHaveLength(1);
+    expect(submittedHistory(emitted)).toBe("NONE");
+  });
+
+  it("case 5b: auto-completion after a report retry records REPORT_RETRY, not NONE", async () => {
+    const { result, emitted } = await run([
+      { kind: "report_submission", usage, rawInput: reportUnconfirmable },
+      { kind: "report_submission", usage, rawInput: reportAutoCompletable },
+    ]);
+
+    expect(result.status).toBe("completed");
+    expect((result as { autoCompletedEvidence: readonly unknown[] }).autoCompletedEvidence).toHaveLength(1);
+    expect(submittedHistory(emitted)).toBe("REPORT_RETRY");
+  });
+
+  it("case 5c: auto-completion after an A3 retry records DIAGNOSTIC_RETRY", async () => {
+    const { result, emitted } = await run([
+      a3TrippingTurn,
+      correctedDiagnosticTurn,
+      { kind: "report_submission", usage, rawInput: reportAutoCompletable },
+    ]);
+
+    expect(result.status).toBe("completed");
+    expect(submittedHistory(emitted)).toBe("DIAGNOSTIC_RETRY");
+  });
+
+  it("case 5d: auto-completion after both retries records BOTH", async () => {
+    const { result, emitted } = await run([
+      a3TrippingTurn,
+      correctedDiagnosticTurn,
+      { kind: "report_submission", usage, rawInput: reportUnconfirmable },
+      { kind: "report_submission", usage, rawInput: reportAutoCompletable },
+    ]);
+
+    expect(result.status).toBe("completed");
+    expect(submittedHistory(emitted)).toBe("BOTH");
+  });
+});
+

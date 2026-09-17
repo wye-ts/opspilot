@@ -60,7 +60,7 @@ export const FIXTURE_TOOL_NAME = "get_service_status";
 /** `AGENT_STARTED -> REPORT_SUBMITTED -> REPORT_VALIDATED` — the direct, no-tool success path. */
 export async function appendDirectSuccessPrefix(prisma: PrismaClient, runId: string): Promise<void> {
   await appendInvestigationEvent(prisma, runId, { type: "AGENT_STARTED" });
-  await appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED" });
+  await appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED", correctionHistory: "NONE" });
   await appendInvestigationEvent(prisma, runId, { type: "REPORT_VALIDATED" });
 }
 
@@ -84,7 +84,7 @@ export async function appendOneToolSuccessPrefix(prisma: PrismaClient, runId: st
     toolName: FIXTURE_TOOL_NAME,
   });
   await appendInvestigationEvent(prisma, runId, { type: "REPORT_GENERATION_STARTED" });
-  await appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED" });
+  await appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED", correctionHistory: "NONE" });
   await appendInvestigationEvent(prisma, runId, { type: "REPORT_VALIDATED" });
 }
 
@@ -147,7 +147,7 @@ export async function appendMultiToolSuccessPrefix(
   if (count >= MAX_DIAGNOSTIC_TOOL_CALLS) {
     await appendInvestigationEvent(prisma, runId, { type: "REPORT_GENERATION_STARTED" });
   }
-  await appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED" });
+  await appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED", correctionHistory: "NONE" });
   await appendInvestigationEvent(prisma, runId, { type: "REPORT_VALIDATED" });
 }
 
@@ -203,7 +203,7 @@ export async function appendFailurePrefix(
     case "REPORT_SCHEMA_INVALID":
     case "REPORT_EVIDENCE_INVALID":
       await appendInvestigationEvent(prisma, runId, { type: "AGENT_STARTED" });
-      await appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED" });
+      await appendInvestigationEvent(prisma, runId, { type: "REPORT_SUBMITTED", correctionHistory: "NONE" });
       await appendInvestigationEvent(prisma, runId, {
         type: "REPORT_VALIDATION_FAILED",
         failureCode: code,
