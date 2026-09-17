@@ -82,9 +82,9 @@ function remoteScorer() {
 }
 
 describe.skipIf(!serviceIsReachable)("cross-service parity — real Python/FastAPI service", () => {
-  it("scores the active 22-case suite remotely with semantic identity to the local parity oracle", async () => {
+  it("scores the active 26-case suite remotely with semantic identity to the local parity oracle", async () => {
     const suiteInput = suiteInputFromFixture();
-    expect(suiteInput.cases).toHaveLength(22);
+    expect(suiteInput.cases).toHaveLength(26);
     expect(suiteInput.datasetId).toBe("opspilot-deterministic-v2");
     expect(suiteInput.contractVersion).toBe(2);
 

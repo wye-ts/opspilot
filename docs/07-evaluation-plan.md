@@ -6,7 +6,7 @@
 | Version | 2.0 |
 | Status | Implemented |
 | Project | OpsPilot |
-| Purpose | Describe the fully offline, deterministic evaluation harness that regression-tests the RAG + agent vertical slice: the fixed 22-case dataset, the stage-aware evaluator, the fifteen aggregate metrics (six legacy + nine Milestone-11), the three-state check outcome model, and the CLI report |
+| Purpose | Describe the fully offline, deterministic evaluation harness that regression-tests the RAG + agent vertical slice: the fixed 26-case dataset, the stage-aware evaluator, the fifteen aggregate metrics (six legacy + nine Milestone-11), the three-state check outcome model, and the CLI report |
 | Related Documents | `docs/04-agent-design.md`, `docs/05-rag-design.md` §10, `docs/10-engineering-challenges.md` §4 (Challenge 2), `services/evaluation/README.md` (Python evaluation service, §10 below) |
 
 ---
@@ -66,7 +66,8 @@ Modules, under `apps/worker/src/evaluation/`:
 | `cases/evidence-grounding-cases.ts` | Cases 7, 8, 15, 21, 22: fabricated RAG evidence, fabricated tool evidence, the injection-probe case, fabricated tool-output evidence, and adversarial tool-input shape. |
 | `cases/protocol-and-failure-cases.ts` | Cases 9–14: unknown tool, invalid input, protocol error, missing final report, tool execution failure, malformed report. |
 | `cases/checkpoint-b-cases.ts` | Cases 16–20: the five #59 Milestone-11 cases. |
-| `evaluation-dataset.ts` | Assembles the 22 cases into `EVALUATION_CASES`, in the fixed approved order. |
+| `cases/two-tool-deployment-cases.ts` | Cases 23–26: the #94 two-tool chains over `get_service_status` + `get_recent_deployments` — one negative conclusion (deployment ruled out) and three ambiguity locks. |
+| `evaluation-dataset.ts` | Assembles the 26 cases into `EVALUATION_CASES`, in the fixed approved order. |
 | `dataset-validation.ts` | `validateEvaluationDataset(...)` — every structural rule in §5, including bounded case-id slug validation, using only fixed messages; also exports `resolveCorpus`, shared with the runner. |
 | `recording-tool-registry.ts` | `createRecordingToolRegistry(...)` — wraps each tool's `execute()` to record `{toolName, input}` (and, on success, `output`) before delegating, without altering lookup/execute behavior. |
 | `recording-provider.ts` | `createRecordingProvider(...)` — records a `runAgentTurn` attempt **before** delegating (so a thrown provider call is still counted) and stamps the returned `usage` on success. |
@@ -80,7 +81,7 @@ Modules, under `apps/worker/src/evaluation/`:
 | `legacy-v1/` | The frozen v1 offline oracle: `v1-types.ts`, `evaluator-v1.ts`, `metrics-v1.ts`, `local-scorer-v1.ts`, `parity-v1.test.ts`. Unwired from the active runtime. |
 | `run-eval.ts` | CLI composition root: `runEvaluation` (load corpus, validate, run), `resolveEvaluationRun` (the sole catch boundary), `renderEvaluationOutput`, `main()`. See §7. |
 
-## 3. Case Inventory (22 cases, fixed order)
+## 3. Case Inventory (26 cases, fixed order)
 
 | # | Case ID | Corpus | Tool profile | Status / code |
 |---|---|---|---|---|
@@ -106,6 +107,10 @@ Modules, under `apps/worker/src/evaluation/`:
 | 20 | `bound-exhausted-finalization` | default | default | completed |
 | 21 | `fabricated-tool-output-evidence` | default | with-adversarial-tool-output | failed / `REPORT_EVIDENCE_INVALID` |
 | 22 | `adversarial-tool-input-shape` | default | default | failed / `TOOL_INPUT_INVALID` |
+| 23 | `deployment-ruled-out` | default | with-deployments-tool | completed |
+| 24 | `deployment-unresolved-lead` | default | with-deployments-tool | completed |
+| 25 | `deployment-unknown-service` | default | with-deployments-tool | completed |
+| 26 | `deployment-failed-behind-success` | default | with-deployments-tool | completed |
 
 Cases 1–6 exercise retrieval + tool + report end to end, using queries built
 from a target chunk's exact title tokens (the deterministic keyword
@@ -130,6 +135,32 @@ RAG/tool-execution IDs; case 22 proves the real `get_service_status` tool's
 string). The corresponding live-Claude model-behavior scenarios (C/D/E,
 manual `spike:rag` runs, not part of this CI-gated dataset) are recorded in
 `docs/reviews/33-issue-77-adversarial-case-expansion-spike-results.md`.
+
+Cases 23–26 are the Issue #94 two-tool additions, and the first cases to use
+the `with-deployments-tool` profile (a registry containing both catalog tools;
+every earlier case keeps the single-tool `default` registry). They exercise the
+heterogeneous-tool path — `registry.find → inputSchema.safeParse → execute →
+outputSchema → TOOL_EXECUTION evidence` — with a second input/output shape, and
+each locks one evidential shape of `get_recent_deployments`. Case 23 is the
+only one carrying a non-null conclusion, and it is a NEGATIVE one: a confirmed
+`OUTAGE` with `knownService: true` and zero deployments grounds "deployment is
+ruled out as a contributing factor" on two distinct `TOOL_EXECUTION` locators
+plus a `RAG_CHUNK`. Cases 24–26 are ambiguity locks: a recent `ROLLED_BACK`
+deployment stays an unresolved lead, `knownService: false` is an absence of
+RECORDS rather than evidence of no deployments, and a `FAILED` deployment
+behind a later `SUCCEEDED` one supports nothing in either direction.
+
+**No case here asserts a root cause grounded on deployment outcome, and none
+may be added that does.** `runbook-deployment-rollback-001` requires an
+error-budget burn rate tripling within ten minutes of a rollout AND
+reproducibility on the new revision but not the previous one;
+`get_recent_deployments` reports neither, and both of its non-success outcomes
+are ambiguous in the wrong direction (a `FAILED` rollout may never have reached
+production; a `ROLLED_BACK` one may already be remediated). A fixture-scripted
+case asserting that chain would not test the inference — it would CI-bless an
+unsupported causal conclusion. These cases also do **not** measure tool
+*selection*: the provider is fixture-driven, so they prove the orchestrator
+honors a declared two-tool chain, not that a model chose well.
 
 
 ### 3.1 The eight required scenario classes
@@ -452,7 +483,7 @@ LLM/embedding provider).
   — every case in this dataset uses a valid, in-bounds query/topK.
 - `TOOL_OUTPUT_INVALID` is not exercised — `get_service_status`'s output is
   always schema-valid.
-- This is a fixed, 22-case regression harness, not a statistical quality
+- This is a fixed, 26-case regression harness, not a statistical quality
   benchmark, an LLM-as-a-judge system, or a large-scale evaluation corpus.
 - No live Claude or Voyage evaluation and no dashboard are part of this
   slice. Persistence is no longer deferred — see §10: the default `SERVICE`
@@ -719,7 +750,7 @@ side of the exact-bound state is exercised there instead.
 
 ### 11.6 Negative evaluator vectors
 
-The 22-case acceptance dataset is green by construction. Proof that the
+The 26-case acceptance dataset is green by construction. Proof that the
 metrics reject bad shapes lives in a dedicated, shared negative-vector
 fixture — `apps/worker/src/evaluation/fixtures/negative-vectors-v2.json` — a
 list of synthetic `{ id, expectations, observed, expectedFailures }` scorer

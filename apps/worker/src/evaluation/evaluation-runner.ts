@@ -12,7 +12,8 @@ import { createRecordingToolRegistry, type RecordedToolExecution } from "./recor
 import { EVALUATION_TOP_K, type EvaluationCase, type ToolProfile } from "./types";
 import { buildEvaluationCaseInputV2, type EvaluationCaseInputV2 } from "./v2-types";
 
-const { runAgentOrchestrator, FakeLlmProvider, getServiceStatusTool } = opspilotAgentRuntime;
+const { runAgentOrchestrator, FakeLlmProvider, getServiceStatusTool, getRecentDeploymentsTool } =
+  opspilotAgentRuntime;
 
 export function resolveTools(profile: ToolProfile) {
   switch (profile) {
@@ -22,6 +23,12 @@ export function resolveTools(profile: ToolProfile) {
       return [getServiceStatusTool, alwaysFailsTool];
     case "with-adversarial-tool-output":
       return [adversarialToolOutputTool];
+    // Issue #94: both real catalog tools, so a case can script a chain that
+    // corroborates across them. The two tools seed the SAME three service
+    // slugs on purpose (get-recent-deployments.ts:64-66), which is what makes
+    // a cross-tool conclusion legitimate rather than two disjoint worlds.
+    case "with-deployments-tool":
+      return [getServiceStatusTool, getRecentDeploymentsTool];
   }
 }
 

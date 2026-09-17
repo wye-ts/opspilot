@@ -69,10 +69,11 @@ function validateCase(
   if (
     evaluationCase.toolProfile !== "default" &&
     evaluationCase.toolProfile !== "with-always-fails-tool" &&
-    evaluationCase.toolProfile !== "with-adversarial-tool-output"
+    evaluationCase.toolProfile !== "with-adversarial-tool-output" &&
+    evaluationCase.toolProfile !== "with-deployments-tool"
   ) {
     messages.push(
-      `${prefix} toolProfile must be "default", "with-always-fails-tool", or "with-adversarial-tool-output".`,
+      `${prefix} toolProfile must be "default", "with-always-fails-tool", "with-adversarial-tool-output", or "with-deployments-tool".`,
     );
   }
 

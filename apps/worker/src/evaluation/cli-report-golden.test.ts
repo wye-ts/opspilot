@@ -20,7 +20,7 @@ const GOLDEN_PATH = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "c
 // lines and the six v1 denominators byte-identical (see the OpsPilot #61 Phase 1
 // plan, "byte-identical" requirement, and Checkpoint B §11).
 describe("CLI report — byte-identical against the captured golden output", () => {
-  it("renders exactly the captured golden text for the real 22-case dataset", async () => {
+  it("renders exactly the captured golden text for the real 26-case dataset", async () => {
     const resolution = await resolveEvaluationRun();
     const rendered = renderEvaluationResolution(resolution);
 
