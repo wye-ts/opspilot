@@ -511,7 +511,7 @@ describe("buildObservedFacts", () => {
           toolName: "get_service_status",
           failureCode: "TOOL_EXECUTION_FAILED",
         },
-        { type: "REPORT_SUBMITTED" },
+        { type: "REPORT_SUBMITTED", correctionHistory: "NONE" },
       ];
 
       const facts = buildObservedFacts(agentResult, [], lifecycleEvents, []);

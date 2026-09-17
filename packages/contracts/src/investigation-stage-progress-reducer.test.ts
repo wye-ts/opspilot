@@ -2115,3 +2115,102 @@ describe("every current orchestrator error code has a runtime-exercised policy",
     }
   });
 });
+
+describe("REPORT_SUBMITTED.correctionHistory (issue #116)", () => {
+  // These streams go through the REAL reducer. The orchestrator's own tests
+  // use a collecting emitter that performs no validation at all, so every
+  // ordering and duplication rule here is invisible to them — which is how a
+  // reducer-rejected stream once passed a fully green suite.
+
+  it("a pre-#116 REPORT_SUBMITTED (no correctionHistory) still parses and reduces identically", () => {
+    // Read-compatibility: every row persisted before #116 lacks the field.
+    const legacy = stream([
+      ev({ type: "RUN_CREATED" }, 0),
+      ev({ type: "AGENT_STARTED" }, 1),
+      ev({ type: "REPORT_SUBMITTED" }, 5),
+      ev({ type: "REPORT_VALIDATED" }, 6),
+      ev({ type: "RUN_COMPLETED" }, 6),
+    ]);
+    const withField = stream([
+      ev({ type: "RUN_CREATED" }, 0),
+      ev({ type: "AGENT_STARTED" }, 1),
+      ev({ type: "REPORT_SUBMITTED", correctionHistory: "NONE" }, 5),
+      ev({ type: "REPORT_VALIDATED" }, 6),
+      ev({ type: "RUN_COMPLETED" }, 6),
+    ]);
+
+    const legacyProgress = derive({ events: legacy, runStatus: "COMPLETED", now: at(6) });
+    const modernProgress = derive({ events: withField, runStatus: "COMPLETED", now: at(6) });
+
+    expect(stage(legacyProgress, "REPORT_GENERATION").status).toBe("completed");
+    expect(legacyProgress).toEqual(modernProgress);
+  });
+
+  it("a retried-then-COMPLETED stream reduces with REPORT_GENERATION completed", () => {
+    const progress = derive({
+      events: stream([
+        ev({ type: "RUN_CREATED" }, 0),
+        ev({ type: "AGENT_STARTED" }, 1),
+        ev({ type: "TOOL_REQUESTED", toolCallId: "c1", toolName: "check_status" }, 2),
+        ev({ type: "TOOL_COMPLETED", toolCallId: "c1", toolName: "check_status" }, 2),
+        ev({ type: "REPORT_GENERATION_STARTED" }, 2),
+        ev({ type: "REPORT_SUBMITTED", correctionHistory: "REPORT_RETRY" }, 3),
+        ev({ type: "REPORT_VALIDATED" }, 4),
+        ev({ type: "RUN_COMPLETED" }, 4),
+      ]),
+      runStatus: "COMPLETED",
+      now: at(4),
+    });
+
+    expect(stage(progress, "REPORT_GENERATION").status).toBe("completed");
+  });
+
+  it("a retried-then-TERMINALLY-REJECTED stream leaves REPORT_GENERATION failed with its code", () => {
+    // Deliberately NOT asserting "no stage in an error state": round 2 of this
+    // plan's review caught that as unsatisfiable here. The reducer fails this
+    // stage by design, and weakening the assertion would trade truthful
+    // failure reporting for a green test.
+    const progress = derive({
+      events: stream([
+        ev({ type: "RUN_CREATED" }, 0),
+        ev({ type: "AGENT_STARTED" }, 1),
+        ev({ type: "TOOL_REQUESTED", toolCallId: "c1", toolName: "check_status" }, 2),
+        ev({ type: "TOOL_COMPLETED", toolCallId: "c1", toolName: "check_status" }, 2),
+        ev({ type: "REPORT_GENERATION_STARTED" }, 2),
+        ev({ type: "REPORT_SUBMITTED", correctionHistory: "REPORT_RETRY" }, 3),
+        ev(
+          {
+            type: "REPORT_VALIDATION_FAILED",
+            failureCode: "REPORT_SCHEMA_INVALID",
+            violatedInvariants: ["ACTIONABLE_REQUIRES_ACTION"],
+          },
+          4,
+        ),
+        ev({ type: "RUN_FAILED", failureCode: "REPORT_SCHEMA_INVALID", failedStage: "REPORT_GENERATION" }, 4),
+      ]),
+      runStatus: "FAILED",
+      now: at(4),
+    });
+
+    const reportStage = stage(progress, "REPORT_GENERATION");
+    expect(reportStage.status).toBe("failed");
+    expect(reportStage.failureCode).toBe("REPORT_SCHEMA_INVALID");
+  });
+
+  it("every correctionHistory member is accepted on a record payload", () => {
+    for (const member of ["NONE", "REPORT_RETRY", "DIAGNOSTIC_RETRY", "BOTH"] as const) {
+      const progress = derive({
+        events: stream([
+          ev({ type: "RUN_CREATED" }, 0),
+          ev({ type: "AGENT_STARTED" }, 1),
+          ev({ type: "REPORT_SUBMITTED", correctionHistory: member }, 2),
+          ev({ type: "REPORT_VALIDATED" }, 3),
+          ev({ type: "RUN_COMPLETED" }, 3),
+        ]),
+        runStatus: "COMPLETED",
+        now: at(3),
+      });
+      expect(stage(progress, "REPORT_GENERATION").status, member).toBe("completed");
+    }
+  });
+});

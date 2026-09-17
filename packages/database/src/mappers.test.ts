@@ -285,7 +285,10 @@ describe("toInvestigationEventCreateInput", () => {
       { type: "TOOL_COMPLETED", toolCallId: "call-1", toolName: "get_service_status" },
       { type: "TOOL_FAILED", toolCallId: "call-1", toolName: "get_service_status", failureCode: "TOOL_NOT_FOUND" },
       { type: "REPORT_GENERATION_STARTED" },
-      { type: "REPORT_SUBMITTED" },
+      // Issue #116 made correctionHistory required on fresh writes, for the
+      // same reason #105 did for attribution below: this test's subject is
+      // that the mapper accepts every write-eligible type, not the field.
+      { type: "REPORT_SUBMITTED", correctionHistory: "NONE" },
       { type: "REPORT_VALIDATED" },
       {
         type: "REPORT_VALIDATION_FAILED",

@@ -155,7 +155,7 @@ async function createMultiStepCompletedRun(
   if (count >= 3) {
     await appendInvestigationEvent(prisma, started.run.id, { type: "REPORT_GENERATION_STARTED" });
   }
-  await appendInvestigationEvent(prisma, started.run.id, { type: "REPORT_SUBMITTED" });
+  await appendInvestigationEvent(prisma, started.run.id, { type: "REPORT_SUBMITTED", correctionHistory: "NONE" });
   await appendInvestigationEvent(prisma, started.run.id, { type: "REPORT_VALIDATED" });
   await finalizeCompleted(prisma, started.run.id, completedReport(callIds));
   return job;
@@ -274,7 +274,7 @@ async function createReportedRun(
   if (args.forceFinalization) {
     await appendInvestigationEvent(prisma, started.run.id, { type: "REPORT_GENERATION_STARTED" });
   }
-  await appendInvestigationEvent(prisma, started.run.id, { type: "REPORT_SUBMITTED" });
+  await appendInvestigationEvent(prisma, started.run.id, { type: "REPORT_SUBMITTED", correctionHistory: "NONE" });
   await appendInvestigationEvent(prisma, started.run.id, { type: "REPORT_VALIDATED" });
   await finalizeCompleted(prisma, started.run.id, args.buildReport(callIds));
   return job;
@@ -351,7 +351,7 @@ async function createConflictLedgerRun(prisma: PrismaClient, ticketId: string): 
   // the run is honestly still conflicting when forced finalization ends it,
   // not resolved merely because a third diagnostic was attempted (§3.2/§3.3).
   await appendInvestigationEvent(prisma, started.run.id, { type: "REPORT_GENERATION_STARTED" });
-  await appendInvestigationEvent(prisma, started.run.id, { type: "REPORT_SUBMITTED" });
+  await appendInvestigationEvent(prisma, started.run.id, { type: "REPORT_SUBMITTED", correctionHistory: "NONE" });
   await appendInvestigationEvent(prisma, started.run.id, { type: "REPORT_VALIDATED" });
   await finalizeCompleted(prisma, started.run.id, conflictingReport(["call-1", "call-2", "call-3"]));
   return job;
@@ -737,7 +737,7 @@ describe("issue #58 Checkpoint C — stopReason readback matrix (§6)", () => {
       toolCallId: "call-1",
       toolName: "get_service_status",
     });
-    await appendInvestigationEvent(controlHandle.prisma, started.run.id, { type: "REPORT_SUBMITTED" });
+    await appendInvestigationEvent(controlHandle.prisma, started.run.id, { type: "REPORT_SUBMITTED", correctionHistory: "NONE" });
     await appendInvestigationEvent(controlHandle.prisma, started.run.id, { type: "REPORT_VALIDATED" });
 
     // A genuine pre-#58 stored report shape — no evidenceState key at all.

@@ -87,7 +87,71 @@ const ReportGenerationStartedEventSchema = z
   .strict()
   .readonly();
 
-const ReportSubmittedEventSchema = z.object({ type: z.literal("REPORT_SUBMITTED") }).strict().readonly();
+// Issue #116: `correctionHistory` records whether a corrective retry preceded
+// the submission that DECIDED this run. A run that was corrected and still
+// failed, and a run that never got a correction at all, are different findings
+// with different fixes — and today they are indistinguishable in persisted
+// data. The only available signal was `provider_calls_observed`, which is
+// capped by MAX_PROVIDER_TURNS (so a retried run often reads the same value as
+// a non-retried one) and cannot say WHICH corrective path fired.
+//
+// This blocked a real decision on 2026-09-16: a 10-run LIVE sample produced
+// three ACTIONABLE_REQUIRES_ACTION failures, and whether to read them as a
+// guidance defect or a model-compliance finding depended on whether correction
+// ran — answerable then only by turn arithmetic over the orchestrator source.
+//
+// A closed enum rather than a boolean, because the orchestrator tracks TWO
+// independent corrective paths (`reportRetryUsed` and `a3RetryUsed`,
+// agent-orchestrator.ts:665-673, deliberately separate so an early A3 trip
+// cannot silently consume the report path's only correction). Both can fire in
+// one run, so a boolean could not express what happened — which is the exact
+// ambiguity this field exists to remove.
+//
+// NONE is a MEMBER, never an absent field. Absence means "persisted before
+// #116, unknown", and reading a historical NULL as NONE would silently
+// under-count corrections in the first aggregate anyone writes.
+//
+// Named for what happened, not for the guard's internal label: the flag is
+// called `a3RetryUsed` after a plan-era section number, but a persisted
+// vocabulary has to describe the event.
+export const ReportCorrectionHistorySchema = z.enum([
+  "NONE",
+  "REPORT_RETRY",
+  "DIAGNOSTIC_RETRY",
+  "BOTH",
+]);
+
+export type ReportCorrectionHistory = z.infer<typeof ReportCorrectionHistorySchema>;
+
+// REPORT_SUBMITTED is the only event that can carry this fact: it is emitted
+// exactly once per run, at the deciding attempt, on all THREE deciding paths
+// (terminal rejection, ordinary acceptance, and #114's F5 auto-completion) —
+// and never for an attempt that was corrected away, which the ledger
+// deliberately does not record at all.
+//
+// Unlike #105's `violatedInvariants` below there is no pairing refinement,
+// because this field draws from a single vocabulary and pairs with no other
+// field on this event. Stated explicitly so the absence reads as a decision
+// rather than an omission.
+const ReportSubmittedEventSchema = z
+  .object({
+    type: z.literal("REPORT_SUBMITTED"),
+    correctionHistory: ReportCorrectionHistorySchema,
+  })
+  .strict()
+  .readonly();
+
+// READ variant: `correctionHistory` is OPTIONAL, because every REPORT_SUBMITTED
+// row persisted before Issue #116 lacks the field entirely and must stay
+// readable and reducible — the same pattern
+// ReportValidationFailedRecordEventSchema uses for #105's `violatedInvariants`.
+const ReportSubmittedRecordEventSchema = z
+  .object({
+    type: z.literal("REPORT_SUBMITTED"),
+    correctionHistory: ReportCorrectionHistorySchema.optional(),
+  })
+  .strict()
+  .readonly();
 
 const ReportValidatedEventSchema = z.object({ type: z.literal("REPORT_VALIDATED") }).strict().readonly();
 
@@ -317,7 +381,7 @@ const INVESTIGATION_EVENT_RECORD_BRANCHES = [
   ToolCompletedTraceEventSchema,
   ToolFailedEventSchema,
   ReportGenerationStartedEventSchema,
-  ReportSubmittedEventSchema,
+  ReportSubmittedRecordEventSchema,
   ReportValidatedEventSchema,
   ReportValidationFailedRecordEventSchema,
   RunCompletedEventSchema,

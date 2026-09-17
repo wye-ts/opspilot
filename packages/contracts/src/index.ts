@@ -76,6 +76,7 @@ import {
   InvestigationEventPayloadSchema as _InvestigationEventPayloadSchema,
   InvestigationEventRecordPayloadSchema as _InvestigationEventRecordPayloadSchema,
   InvestigationEventRecordSchema as _InvestigationEventRecordSchema,
+  ReportCorrectionHistorySchema as _ReportCorrectionHistorySchema,
   ReportValidationFailureCodeSchema as _ReportValidationFailureCodeSchema,
   ToolFailureCodeSchema as _ToolFailureCodeSchema,
   ToolRequestedRecordEventSchema as _ToolRequestedRecordEventSchema,
@@ -137,6 +138,7 @@ export const ExecutionStageProgressSchema = _ExecutionStageProgressSchema;
 export const ExecutionStageProgressListSchema = _ExecutionStageProgressListSchema;
 export const ToolFailureCodeSchema = _ToolFailureCodeSchema;
 export const ReportValidationFailureCodeSchema = _ReportValidationFailureCodeSchema;
+export const ReportCorrectionHistorySchema = _ReportCorrectionHistorySchema;
 export const InvestigationEventPayloadSchema = _InvestigationEventPayloadSchema;
 export const InvestigationEventRecordPayloadSchema = _InvestigationEventRecordPayloadSchema;
 export const InvestigationEventRecordSchema = _InvestigationEventRecordSchema;
@@ -196,6 +198,7 @@ export type {
   InvestigationEventRecord,
   InvestigationEventRecordPayload,
   InvestigationEventType,
+  ReportCorrectionHistory,
   ReportValidationFailureCode,
   ToolFailureCode,
   ToolRequestedRecordEvent,
