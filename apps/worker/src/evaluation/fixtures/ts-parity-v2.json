@@ -4771,6 +4771,10 @@
             {
               "toolName": "get_recent_deployments",
               "toolCallId": "case23-call-2"
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "toolCallId": "case23-call-3"
             }
           ],
           "expectedExecuted": [
@@ -4785,6 +4789,12 @@
               "input": {
                 "serviceSlug": "billing-service"
               }
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "input": {
+                "serviceSlug": "auth-service"
+              }
             }
           ],
           "expectedCompleted": [
@@ -4795,6 +4805,10 @@
             {
               "toolName": "get_recent_deployments",
               "toolCallId": "case23-call-2"
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "toolCallId": "case23-call-3"
             }
           ]
         },
@@ -4829,6 +4843,10 @@
           {
             "evidenceState": "INSUFFICIENT",
             "continuationReason": "SCOPE_NOT_COVERED"
+          },
+          {
+            "evidenceState": "INSUFFICIENT",
+            "continuationReason": "SCOPE_NOT_COVERED"
           }
         ],
         "expectedTelemetryEvidence": {
@@ -4842,7 +4860,12 @@
               "sourceType": "TOOL_EXECUTION"
             }
           ],
-          "nonProbative": []
+          "nonProbative": [
+            {
+              "evidenceId": "case23-call-3",
+              "sourceType": "TOOL_EXECUTION"
+            }
+          ]
         },
         "expectedConfidence": {
           "min": 0.4,
@@ -4878,7 +4901,7 @@
           }
         ],
         "expectedBounds": {
-          "maxTotalTokens": 360
+          "maxTotalTokens": 480
         }
       },
       "observed": {
@@ -4901,6 +4924,10 @@
             {
               "toolName": "get_recent_deployments",
               "toolCallId": "case23-call-2"
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "toolCallId": "case23-call-3"
             }
           ],
           "executed": [
@@ -4914,6 +4941,12 @@
               "toolName": "get_recent_deployments",
               "input": {
                 "serviceSlug": "billing-service"
+              }
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "input": {
+                "serviceSlug": "auth-service"
               }
             }
           ],
@@ -4933,6 +4966,28 @@
                 "serviceSlug": "billing-service",
                 "knownService": true,
                 "deployments": []
+              }
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "toolCallId": "case23-call-3",
+              "output": {
+                "serviceSlug": "auth-service",
+                "knownService": true,
+                "deployments": [
+                  {
+                    "deploymentId": "deploy-auth-0113",
+                    "version": "2.7.1",
+                    "outcome": "SUCCEEDED",
+                    "deployedAt": "2026-09-09T14:05:00.000Z"
+                  },
+                  {
+                    "deploymentId": "deploy-auth-0112",
+                    "version": "2.7.0",
+                    "outcome": "FAILED",
+                    "deployedAt": "2026-09-09T11:40:00.000Z"
+                  }
+                ]
               }
             }
           ]
@@ -4977,10 +5032,10 @@
           ]
         },
         "investigation": {
-          "providerTurnsUsed": 3,
-          "diagnosticRequestCount": 2,
-          "forcedFinalization": false,
-          "stopReason": "NO_JUSTIFIED_DIAGNOSTIC",
+          "providerTurnsUsed": 4,
+          "diagnosticRequestCount": 3,
+          "forcedFinalization": true,
+          "stopReason": "BOUND_EXHAUSTED",
           "assessments": [
             {
               "toolCallId": "case23-call-1",
@@ -5009,6 +5064,20 @@
                   }
                 ]
               }
+            },
+            {
+              "toolCallId": "case23-call-3",
+              "toolName": "get_recent_deployments",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "SCOPE_NOT_COVERED",
+                "supportedBy": [
+                  {
+                    "evidenceId": "case23-call-2",
+                    "sourceType": "TOOL_EXECUTION"
+                  }
+                ]
+              }
             }
           ],
           "toolFailures": [],
@@ -5017,9 +5086,9 @@
             "maxDiagnosticToolCalls": 3
           },
           "usage": {
-            "inputTokens": 300,
-            "outputTokens": 60,
-            "providerCalls": 3
+            "inputTokens": 400,
+            "outputTokens": 80,
+            "providerCalls": 4
           }
         },
         "failedStage": null
@@ -5079,8 +5148,8 @@
           },
           {
             "name": "unknown-telemetry-handling",
-            "status": "NOT_APPLICABLE",
-            "reasonCode": "NA_EXPECTATION_NOT_DECLARED"
+            "status": "PASS",
+            "reasonCode": null
           },
           {
             "name": "diagnostic-justification",
@@ -6090,8 +6159,8 @@
       "denominator": 12
     },
     "unknownHandling": {
-      "numerator": 7,
-      "denominator": 7
+      "numerator": 8,
+      "denominator": 8
     },
     "diagnosticJustification": {
       "numerator": 12,

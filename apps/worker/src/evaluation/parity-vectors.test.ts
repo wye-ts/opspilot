@@ -103,7 +103,7 @@ describe("parity fixture — TS-owned (fixtures/ts-parity-v2.json)", () => {
     // Rule 10 always scores).
     expect(metrics.rootCauseDiscipline).toEqual({ numerator: 12, denominator: 12 });
     expect(metrics.evidenceSupport).toEqual({ numerator: 12, denominator: 12 });
-    expect(metrics.unknownHandling).toEqual({ numerator: 7, denominator: 7 });
+    expect(metrics.unknownHandling).toEqual({ numerator: 8, denominator: 8 });
     expect(metrics.diagnosticJustification).toEqual({ numerator: 12, denominator: 12 });
     expect(metrics.confidenceCalibration).toEqual({ numerator: 12, denominator: 12 });
     expect(metrics.actionGrounding).toEqual({ numerator: 6, denominator: 6 });

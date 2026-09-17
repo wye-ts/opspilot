@@ -244,6 +244,30 @@ export const TWO_TOOL_DEPLOYMENT_CASES: readonly EvaluationCase[] = [
           },
         ],
       },
+      {
+        // Third and FINAL diagnostic call — this case deliberately sits at
+        // MAX_DIAGNOSTIC_TOOL_CALLS (3) so the bound is exercised at its edge
+        // rather than only below it (plan §2.3, acceptance criterion 4). A
+        // regression in third-request sequencing would otherwise ship green.
+        //
+        // Checking auth-service is justified, not filler: billing is down and
+        // an upstream dependency is a live hypothesis the first two calls do
+        // not address.
+        kind: "diagnostic_tool_requests",
+        usage: USAGE,
+        requests: [
+          {
+            toolCallId: "case23-call-3",
+            toolName: "get_recent_deployments",
+            input: { serviceSlug: "auth-service" },
+            rawAssessment: {
+              evidenceState: "INSUFFICIENT",
+              continuationReason: "SCOPE_NOT_COVERED",
+              supportedBy: [{ evidenceId: "case23-call-2", sourceType: "TOOL_EXECUTION" }],
+            },
+          },
+        ],
+      },
       { kind: "report_submission", usage: USAGE, rawInput: DEPLOYMENT_RULED_OUT_REPORT },
     ]),
     expectations: {
@@ -253,14 +277,17 @@ export const TWO_TOOL_DEPLOYMENT_CASES: readonly EvaluationCase[] = [
         expectedRequested: [
           { toolName: "get_service_status", toolCallId: "case23-call-1" },
           { toolName: "get_recent_deployments", toolCallId: "case23-call-2" },
+          { toolName: "get_recent_deployments", toolCallId: "case23-call-3" },
         ],
         expectedExecuted: [
           { toolName: "get_service_status", input: { serviceSlug: "billing-service" } },
           { toolName: "get_recent_deployments", input: { serviceSlug: "billing-service" } },
+          { toolName: "get_recent_deployments", input: { serviceSlug: "auth-service" } },
         ],
         expectedCompleted: [
           { toolName: "get_service_status", toolCallId: "case23-call-1" },
           { toolName: "get_recent_deployments", toolCallId: "case23-call-2" },
+          { toolName: "get_recent_deployments", toolCallId: "case23-call-3" },
         ],
       },
       report: {
@@ -281,16 +308,21 @@ export const TWO_TOOL_DEPLOYMENT_CASES: readonly EvaluationCase[] = [
       expectedDiagnostics: [
         { evidenceState: "INSUFFICIENT", continuationReason: "STATUS_UNRESOLVED" },
         { evidenceState: "INSUFFICIENT", continuationReason: "SCOPE_NOT_COVERED" },
+        { evidenceState: "INSUFFICIENT", continuationReason: "SCOPE_NOT_COVERED" },
       ],
-      // Both tool results are probative: a confirmed OUTAGE and a confirmed
+      // The billing results are probative: a confirmed OUTAGE and a confirmed
       // "known service, zero deployments" each carry real evidential weight,
-      // and the second is what makes the negative conclusion legitimate.
+      // and the second is what makes the negative conclusion legitimate. The
+      // third call (auth-service deployments) is NOT probative for billing's
+      // outage — it rules an upstream lead in or out for no service the report
+      // concludes about, so it is declared non-probative rather than padded
+      // into the grounding.
       expectedTelemetryEvidence: {
         probative: [
           { evidenceId: "case23-call-1", sourceType: "TOOL_EXECUTION" },
           { evidenceId: "case23-call-2", sourceType: "TOOL_EXECUTION" },
         ],
-        nonProbative: [],
+        nonProbative: [{ evidenceId: "case23-call-3", sourceType: "TOOL_EXECUTION" }],
       },
       expectedConfidence: { min: 0.4, max: 0.75 },
       expectedActions: [
@@ -307,7 +339,9 @@ export const TWO_TOOL_DEPLOYMENT_CASES: readonly EvaluationCase[] = [
           ],
         },
       ],
-      expectedBounds: { maxTotalTokens: 360 },
+      // Four provider turns (3 diagnostics at the MAX_DIAGNOSTIC_TOOL_CALLS
+      // bound + the report) * 120 = 480, versus 360 for the three-turn cases.
+      expectedBounds: { maxTotalTokens: 480 },
     },
   },
   {

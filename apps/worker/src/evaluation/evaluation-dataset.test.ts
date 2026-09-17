@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ResolutionReport } from "@opspilot/contracts";
+import { MAX_DIAGNOSTIC_TOOL_CALLS } from "@opspilot/contracts";
 import { INJECTION_PROBE_CHUNK, loadDefaultRunbookCorpus } from "../rag";
 import { validateEvaluationDataset } from "./dataset-validation";
 import { EVALUATION_CASES } from "./evaluation-dataset";
@@ -61,6 +62,25 @@ describe("EVALUATION_CASES", () => {
     expect(EVALUATION_CASES[23]?.id).toBe("deployment-unresolved-lead");
     expect(EVALUATION_CASES[24]?.id).toBe("deployment-unknown-service");
     expect(EVALUATION_CASES[25]?.id).toBe("deployment-failed-behind-success");
+  });
+
+  // Issue #94 acceptance criterion 4 (Codex-review missingTest): the plan
+  // promised a chain that sits AT MAX_DIAGNOSTIC_TOOL_CALLS, not merely below
+  // it. A first implementation shipped two calls and every case stayed green,
+  // which is exactly the off-by-one/sequencing regression this pins.
+  it("deployment-ruled-out exercises the diagnostic bound at its edge, across both tools", () => {
+    const boundCase = EVALUATION_CASES.find((c) => c.id === "deployment-ruled-out");
+    const requested = boundCase?.expectations.tool?.expectedRequested ?? [];
+
+    expect(requested).toHaveLength(MAX_DIAGNOSTIC_TOOL_CALLS);
+    expect(new Set(requested.map((r) => r.toolName))).toEqual(
+      new Set(["get_service_status", "get_recent_deployments"]),
+    );
+    // All three are COMPLETED, so the bound is reached by real executions
+    // rather than by a rejected third request.
+    expect(boundCase?.expectations.tool?.expectedCompleted).toHaveLength(
+      MAX_DIAGNOSTIC_TOOL_CALLS,
+    );
   });
 
   it("has no duplicate case ids", () => {

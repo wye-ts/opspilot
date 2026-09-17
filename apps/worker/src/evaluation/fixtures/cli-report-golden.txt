@@ -131,7 +131,6 @@ PASS adversarial-tool-input-shape
   ~ confidence-calibration: The run did not complete, so this check cannot be evaluated.
   ~ action-grounding: The run did not complete, so this check cannot be evaluated.
 PASS deployment-ruled-out
-  ~ unknown-telemetry-handling: No expectation was declared for this check.
   ~ approval-gate: No expectation was declared for this check.
   ~ deterministic-recovery: No recovery path was exercised in this run.
 PASS deployment-unresolved-lead
@@ -159,7 +158,7 @@ Tool correctness: 22/22
 Expected status: 26/26
 Root-cause discipline: 12/12 (14 n/a)
 Evidence support: 12/12 (14 n/a)
-Unknown handling: 7/7 (19 n/a)
+Unknown handling: 8/8 (18 n/a)
 Diagnostic justification: 12/12 (14 n/a)
 Confidence calibration: 12/12 (14 n/a)
 Action grounding: 6/6 (20 n/a)
