@@ -123,8 +123,8 @@ usable:
 ## Run ledger
 
 Seven invocations total: five completed, one failed after billing, one failed
-before it. Only runs 3, 5 and 6 are recorded as observations; the ledger lists
-every invocation so the cost total and the discarded outcomes reconcile.
+before it. Only runs 3, 5, 6 and 7 are recorded as observations; the ledger
+lists every invocation so the cost total and the discarded outcomes reconcile.
 
 Run 1 performed **no retrieval at all** — that is exactly why it is discarded.
 Every invocation from run 2 onward retrieved the identical ranking
