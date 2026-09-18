@@ -103,7 +103,7 @@ currently answer that question**, and the two candidates fail for structurally d
 | Mechanism | Why it cannot answer it |
 | --- | --- |
 | Evaluation harness (CI) | `evaluation-runner.ts` constructs a `FakeLlmProvider` per case, so every tool request in all 26 cases is scripted by the case fixture. It measures correctness against a declared expectation. No model choice occurs, so no number of added cases makes it informative about selection. |
-| LIVE spike (`two-tool-usage`) | A real model does choose, but the scenario is manual, single-sample, non-deterministic, and not CI-gated. Four identical runs on one ticket bound the observable variation only very loosely. |
+| LIVE spike (`two-tool-usage`) | A real model does choose, but the scenario is manual, single-*scenario*, non-deterministic, and not CI-gated. Its four recorded runs agree, but they vary nothing: one ticket, one prompt, one retrieval result. Agreement across repetitions of an identical input bounds the observable variation only very loosely, and says nothing about behavior on any other ticket. |
 
 An earlier revision of `docs/reviews/47-issue-95-two-tool-usage-spike-results.md` did draw a
 catalog-sizing conclusion from the spike — that a `get_recent_deployments` call on a
