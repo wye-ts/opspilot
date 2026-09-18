@@ -8,7 +8,7 @@ import {
   InternalServerError,
   RateLimitError,
 } from "@anthropic-ai/sdk";
-import { LlmProviderError, getServiceStatusTool, A3_CORRECTIVE_GUIDANCE_TEXT, buildReportCorrectiveGuidanceText } from "@opspilot/agent-runtime";
+import { LlmProviderError, getServiceStatusTool, DIAGNOSTIC_TOOL_CATALOG, A3_CORRECTIVE_GUIDANCE_TEXT, buildReportCorrectiveGuidanceText } from "@opspilot/agent-runtime";
 import { ResolutionReportSchema } from "@opspilot/contracts";
 import type { AgentTurnInput, RawProviderTurnContext } from "@opspilot/agent-runtime";
 import { describe, expect, it, vi } from "vitest";
@@ -1092,6 +1092,38 @@ describe("ClaudeLlmProvider", () => {
       "get_service_status",
       SUBMIT_RESOLUTION_REPORT_TOOL_NAME,
     ]);
+  });
+
+  // Issue #95 acceptance criterion 3: the LIVE spike's tool-discipline
+  // scenario asks whether the model spends budget on a second tool. That
+  // question is only meaningful if the second tool actually reaches the
+  // provider request — and the spike's composition root previously pinned a
+  // single-entry list, which would have made a "no deployments call" result
+  // an artifact of the wiring. This asserts the whole catalog arrives on the
+  // wire, at transport level, rather than trusting the catalog constant.
+  it("offers every catalog diagnostic tool on the wire when constructed from the full catalog", async () => {
+    const create = vi.fn().mockResolvedValue(buildFakeMessage({ stop_reason: "end_turn", content: [] }));
+    const provider = new ClaudeLlmProvider({
+      client: buildFakeClient(create),
+      model: "claude-sonnet-5",
+      configuredMaxRetries: 1,
+      diagnosticTools: DIAGNOSTIC_TOOL_CATALOG,
+    });
+
+    await provider.runAgentTurn(buildInput({ phase: "INVESTIGATION" }));
+
+    const params = create.mock.calls[0]?.[0] as Anthropic.MessageCreateParamsNonStreaming;
+    const offered = params.tools?.map((tool) => tool.name) ?? [];
+
+    // Every catalog member is offered...
+    for (const { tool } of DIAGNOSTIC_TOOL_CATALOG) {
+      expect(offered, `${tool.name} was not offered to the model`).toContain(tool.name);
+    }
+    // ...specifically including the second tool this milestone added, named
+    // explicitly so the assertion cannot pass vacuously on a one-tool catalog.
+    expect(offered).toContain("get_recent_deployments");
+    expect(offered).toContain(SUBMIT_RESOLUTION_REPORT_TOOL_NAME);
+    expect(offered).toHaveLength(DIAGNOSTIC_TOOL_CATALOG.length + 1);
   });
 
   it("uses forced tool_choice and only the report tool during FINALIZATION", async () => {
