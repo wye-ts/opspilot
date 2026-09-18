@@ -18,7 +18,7 @@ import {
   runInjectionProbeScenario,
   runRoleConfusionScenario,
   runSelectedScenarios,
-  runToolDisciplineScenario,
+  runTwoToolUsageScenario,
   runToolOutputOverrideScenario,
   selectionNeedsVoyage,
   type SpikeScenarioResult,
@@ -176,12 +176,12 @@ async function main(): Promise<void> {
   // output, and silently widening what they offer would change what those
   // recorded observations mean. They keep the narrow provider below.
   //
-  // tool-discipline needs the opposite. Its whole question is whether the
+  // two-tool-usage needs the opposite. Its whole question is which tools the
   // model spends budget on a SECOND tool it was genuinely offered, so a
   // provider pinned to one entry would make a "no deployments call" result
   // an artifact of the wiring rather than an observation about the model.
   // It therefore gets its own provider built from the real catalog, and
-  // evaluateToolDisciplineScenario fails closed if either tool is missing
+  // evaluateTwoToolUsageScenario fails closed if either tool is missing
   // from the offered list it is handed.
   const narrowDiagnosticTools = [GET_SERVICE_STATUS_CATALOG_ENTRY];
   const bothCatalogTools = [GET_SERVICE_STATUS_CATALOG_ENTRY, GET_RECENT_DEPLOYMENTS_CATALOG_ENTRY];
@@ -245,9 +245,9 @@ async function main(): Promise<void> {
     // model is genuinely shown the rate-limit evidence the scenario's premise
     // depends on (lazily, inside this closure — a non-selected scenario never
     // touches the corpus).
-    runToolDiscipline: async () => {
+    runTwoToolUsage: async () => {
       const { chunks } = await loadDefaultRunbookCorpus();
-      return runToolDisciplineScenario(
+      return runTwoToolUsageScenario(
         twoToolProvider,
         bothCatalogTools.map((entry) => entry.tool.name),
         chunks,

@@ -152,7 +152,7 @@ export type SpikeScenarioName =
   | "tool-output-override"
   | "exfiltration"
   | "role-confusion"
-  | "tool-discipline";
+  | "two-tool-usage";
 
 const RAG_SPIKE_SCENARIO_VALUES = [
   "all",
@@ -161,7 +161,7 @@ const RAG_SPIKE_SCENARIO_VALUES = [
   "tool-output-override",
   "exfiltration",
   "role-confusion",
-  "tool-discipline",
+  "two-tool-usage",
 ] as const;
 type RagSpikeScenarioValue = (typeof RAG_SPIKE_SCENARIO_VALUES)[number];
 
@@ -180,7 +180,7 @@ export function resolveScenarioSelection(raw: string | undefined): readonly Spik
   }
   switch (value as RagSpikeScenarioValue) {
     case "all":
-      // Deliberately EXCLUDES "tool-discipline": it answers a milestone-14
+      // Deliberately EXCLUDES "two-tool-usage": it answers a milestone-14
       // catalog-sizing question, not an adversarial-robustness one, and
       // folding it into "all" would silently add a paid call to every
       // historical full-suite invocation. It must be selected by name.
@@ -195,8 +195,8 @@ export function resolveScenarioSelection(raw: string | undefined): readonly Spik
       return ["exfiltration"];
     case "role-confusion":
       return ["role-confusion"];
-    case "tool-discipline":
-      return ["tool-discipline"];
+    case "two-tool-usage":
+      return ["two-tool-usage"];
   }
 }
 
@@ -211,9 +211,9 @@ export function resolveScenarioSelection(raw: string | undefined): readonly Spik
 // an earlier version of the composition root required VOYAGE_API_KEY
 // unconditionally, before scenario selection was even resolved).
 export function selectionNeedsVoyage(selection: readonly SpikeScenarioName[]): boolean {
-  // tool-discipline joins tool-output-override as a scenario that performs no
+  // two-tool-usage joins tool-output-override as a scenario that performs no
   // RAG retrieval, so neither should force a VOYAGE_API_KEY to be configured.
-  const noRetrievalScenarios: readonly SpikeScenarioName[] = ["tool-output-override", "tool-discipline"];
+  const noRetrievalScenarios: readonly SpikeScenarioName[] = ["tool-output-override", "two-tool-usage"];
   return selection.some((name) => !noRetrievalScenarios.includes(name));
 }
 
@@ -223,7 +223,7 @@ export interface ScenarioCallbacks {
   readonly runToolOutputOverride: () => Promise<SpikeScenarioResult>;
   readonly runExfiltration: () => Promise<SpikeScenarioResult>;
   readonly runRoleConfusion: () => Promise<SpikeScenarioResult>;
-  readonly runToolDiscipline: () => Promise<SpikeScenarioResult>;
+  readonly runTwoToolUsage: () => Promise<SpikeScenarioResult>;
 }
 
 // Pure orchestration over injected callbacks: invokes only the callback(s)
@@ -253,8 +253,8 @@ export async function runSelectedScenarios(
       case "role-confusion":
         results.push(await callbacks.runRoleConfusion());
         break;
-      case "tool-discipline":
-        results.push(await callbacks.runToolDiscipline());
+      case "two-tool-usage":
+        results.push(await callbacks.runTwoToolUsage());
         break;
     }
   }
@@ -276,7 +276,7 @@ export function buildScenarioCallbacks(deps: {
   readonly runToolOutputOverride: () => Promise<SpikeScenarioResult>;
   readonly runExfiltration: () => Promise<SpikeScenarioResult>;
   readonly runRoleConfusion: () => Promise<SpikeScenarioResult>;
-  readonly runToolDiscipline: () => Promise<SpikeScenarioResult>;
+  readonly runTwoToolUsage: () => Promise<SpikeScenarioResult>;
 }): ScenarioCallbacks {
   return {
     runBaseline: async () => {
@@ -288,7 +288,7 @@ export function buildScenarioCallbacks(deps: {
     runToolOutputOverride: deps.runToolOutputOverride,
     runExfiltration: deps.runExfiltration,
     runRoleConfusion: deps.runRoleConfusion,
-    runToolDiscipline: deps.runToolDiscipline,
+    runTwoToolUsage: deps.runTwoToolUsage,
   };
 }
 
@@ -1026,22 +1026,31 @@ export async function runRoleConfusionScenario(
 
 
 // ---------------------------------------------------------------------------
-// Scenario F: tool-discipline (Issue #95)
+// Scenario F: two-tool-usage (Issue #95)
 //
 // THE QUESTION THIS ANSWERS, AND THE ONE IT DOES NOT
 //
-// It asks: offered BOTH catalog tools on a ticket whose runbook evidence
-// points at provider-side rate limiting and mentions deployments nowhere,
-// does the model spend diagnostic budget on `get_recent_deployments`?
+// It asks, descriptively: offered BOTH catalog tools on a realistic ticket,
+// which tools does a live model actually reach for, and what evidence is it
+// holding when it does? Before this scenario existed the spike pinned a
+// one-entry tool list, so no live run had ever put both catalog tools in
+// front of a real model. That gap is what it closes.
 //
-// It does NOT ask whether the model "chooses well" in general. A handful of
-// runs against a
-// non-deterministic model. What makes a single run worth paying for here is
-// that the DECISION it informs is a stop/go on a third tool: if two tools
-// already draw an unmotivated call, that is evidence against adding a third
-// (`get_error_rate_metrics`, milestone-14 candidate B). A clean run is weaker
-// — it fails to find that evidence, which is not the same as showing the
-// model is disciplined.
+// It does NOT ask whether the model chooses tools WELL, and no run of it
+// supports a catalog-sizing conclusion. An earlier version claimed exactly
+// that — it argued a `get_recent_deployments` call was "unmotivated" because
+// the ticket said no release had been announced, and offered that as evidence
+// against adding a third tool. The argument does not hold: an unannounced
+// release is not an absent one, so consulting the deployment record is a
+// legitimate differential-diagnosis step, not budget waste. Top-ranked
+// retrieval is likewise not authoritative exclusion. The claim was retracted;
+// the scenario was renamed from "tool-discipline" because it never measured
+// discipline, and a name that implies it is a claim the mechanism cannot back.
+//
+// Deciding on a third tool (`get_error_rate_metrics`, milestone-14 candidate
+// B) would need a context that authoritatively rules deployments out, plus
+// enough runs to distinguish a tendency from sampling noise. Neither exists
+// here.
 //
 // WHY `passed` DOES NOT MEAN "THE MODEL BEHAVED WELL"
 //
@@ -1053,20 +1062,30 @@ export async function runRoleConfusionScenario(
 // Whether the deployments tool was called is reported as an OBSERVATION line
 // either way, and never changes the exit code. A reviewer reads the verdict;
 // CI does not.
-const TOOL_DISCIPLINE_TICKET_SUMMARY =
+const TWO_TOOL_USAGE_TICKET_SUMMARY =
   "Customers on one tenant report outbound notification emails arriving late or not at all. " +
   "The notification worker pool is healthy and no release has been announced.";
-const TOOL_DISCIPLINE_RETRIEVAL_QUERY =
+const TWO_TOOL_USAGE_RETRIEVAL_QUERY =
   "notification provider rate limit 429 rejections throttled tenant";
 // Verified against the real keyword retriever before this scenario was
 // written: this query ranks runbook-notification-rate-limit-001 first at
 // score 12, well clear of the runner-up. That chunk attributes the symptom
-// to provider-side throttling and does not mention deployments or releases
-// at all — which is what makes a get_recent_deployments call here
-// unmotivated by the run's own evidence rather than merely unusual.
-export const EXPECTED_TOOL_DISCIPLINE_RANK_ONE_CHUNK_ID = "runbook-notification-rate-limit-001";
+// to provider-side throttling and does not mention deployments or releases.
+//
+// It is pinned so successive runs are comparable — NOT to license a claim
+// that a get_recent_deployments call here is unmotivated. An earlier version
+// of this scenario did make that claim, reasoning from the ticket's "no
+// release has been announced". That reasoning was wrong: an unannounced
+// release is not an absent one, and consulting the deployment record instead
+// of trusting the announcement is exactly what a differential diagnosis
+// looks like. Ranked retrieval is also not authoritative exclusion — the
+// retriever returns the best keyword matches, not a ruling that other causes
+// are eliminated. Establishing that a deployments call is genuinely
+// unmotivated would require a context that authoritatively rules deployments
+// out, which this scenario does not construct.
+export const EXPECTED_TWO_TOOL_USAGE_RANK_ONE_CHUNK_ID = "runbook-notification-rate-limit-001";
 
-export interface ToolDisciplineObservation {
+export interface TwoToolUsageObservation {
   readonly runStatus: string;
   readonly offeredToolNames: readonly string[];
   readonly calledToolNames: readonly string[];
@@ -1087,10 +1106,10 @@ export interface ToolDisciplineObservation {
 // Pure, unit-testable, and deliberately separate from the live call: given
 // what a run recorded, decide whether the OBSERVATION is usable. Note what is
 // absent — no branch here reads `deploymentsToolCalled` to decide `passed`.
-export function evaluateToolDisciplineScenario(
-  observation: ToolDisciplineObservation,
+export function evaluateTwoToolUsageScenario(
+  observation: TwoToolUsageObservation,
 ): SpikeScenarioResult {
-  const name = "tool-discipline";
+  const name = "two-tool-usage";
   // Both tools must genuinely have been on offer, or the run answers a
   // different question than the one asked. This is the guard against the
   // composition-root defect #95 called out: the spike previously pinned a
@@ -1114,7 +1133,7 @@ export function evaluateToolDisciplineScenario(
   // The premise must have actually held: the model has to have been shown the
   // rate-limit runbook for a deployments call to be "unmotivated by the run's
   // own evidence". Without it there is no finding, in either direction.
-  if (!observation.retrievedChunkIds.includes(EXPECTED_TOOL_DISCIPLINE_RANK_ONE_CHUNK_ID)) {
+  if (!observation.retrievedChunkIds.includes(EXPECTED_TWO_TOOL_USAGE_RANK_ONE_CHUNK_ID)) {
     return failedResult(name, "PREMISE_CHUNK_NOT_RETRIEVED");
   }
   // ...and it must be RANK 1, because that is what the finding claims. A
@@ -1122,7 +1141,7 @@ export function evaluateToolDisciplineScenario(
   // that does point at deployments, while the write-up still called it
   // "the top-ranked runbook it was shown" — an overclaim of exactly the kind
   // this scenario exists to avoid making (Codex-review MAJOR).
-  if (observation.rankOneChunkId !== EXPECTED_TOOL_DISCIPLINE_RANK_ONE_CHUNK_ID) {
+  if (observation.rankOneChunkId !== EXPECTED_TWO_TOOL_USAGE_RANK_ONE_CHUNK_ID) {
     return failedResult(name, "PREMISE_CHUNK_NOT_RANK_ONE");
   }
   return passedResult(name);
@@ -1130,28 +1149,31 @@ export function evaluateToolDisciplineScenario(
 
 // Renders the finding a human reads. Kept separate from the pass/fail
 // decision above precisely so the two cannot drift into each other.
-export function describeToolDisciplineFinding(observation: ToolDisciplineObservation): string {
+export function describeTwoToolUsageObservation(observation: TwoToolUsageObservation): string {
   const shown =
     `Retrieved and shown to the model: ${JSON.stringify(observation.retrievedChunkIds)} ` +
     `(rank 1 = ${observation.rankOneChunkId ?? "none"}). `;
   return observation.deploymentsToolCalled
     ? shown +
-        "OBSERVATION (this run): the model spent diagnostic budget on get_recent_deployments even though " +
-        "the top-ranked runbook it was shown attributes the symptom to provider-side rate limiting " +
-        "and never mentions deployments. This is evidence — one sample — AGAINST adding a third " +
-        "catalog tool, and does not by itself establish a general tendency."
+        "OBSERVATION (this run): offered both catalog tools, the model called get_recent_deployments " +
+        "as well as get_service_status, on a ticket whose top-ranked runbook attributes the symptom " +
+        "to provider-side rate limiting. This records WHICH tools a live model reached for and what " +
+        "evidence it held at the time. It is NOT a finding that the call was unmotivated: the ticket " +
+        "says no release was ANNOUNCED, which an unannounced deploy would also satisfy, so checking " +
+        "the deployment record is a legitimate differential-diagnosis step. No catalog-sizing " +
+        "conclusion follows from it in either direction."
     : shown +
-        "OBSERVATION (this run): the model did not call get_recent_deployments, though it was offered. " +
-        "This FAILED TO FIND evidence of budget waste; it does not establish that the model is " +
-        "reliably disciplined, and one clean run is not grounds for adding a third tool either.";
+        "OBSERVATION (this run): the model called only get_service_status, though get_recent_deployments " +
+        "was also offered. This records which tools were reached for; it establishes nothing about " +
+        "whether the model selects tools well, and no catalog-sizing conclusion follows from it.";
 }
 
-export async function runToolDisciplineScenario(
+export async function runTwoToolUsageScenario(
   provider: LlmProvider,
   offeredToolNames: readonly string[],
   corpus: readonly StoredRunbookChunk[],
 ): Promise<SpikeScenarioResult> {
-  console.log("\n=== Scenario F: tool-discipline (two tools offered, deployments unmotivated) ===");
+  console.log("\n=== Scenario F: two-tool-usage (both catalog tools offered) ===");
 
   const calledToolNames: string[] = [];
   const recordedSlugs: string[] = [];
@@ -1167,7 +1189,7 @@ export async function runToolDisciplineScenario(
   const ticketContext: AgentConversationMessage = {
     role: "ticket_context",
     ticketId: "TICKET-3006",
-    summary: TOOL_DISCIPLINE_TICKET_SUMMARY,
+    summary: TWO_TOOL_USAGE_TICKET_SUMMARY,
   };
 
   try {
@@ -1186,14 +1208,14 @@ export async function runToolDisciplineScenario(
       toolRegistry: registry,
       initialConversation: [ticketContext],
       retriever,
-      retrievalInput: { query: TOOL_DISCIPLINE_RETRIEVAL_QUERY, topK: RETRIEVAL_TOP_K },
+      retrievalInput: { query: TWO_TOOL_USAGE_RETRIEVAL_QUERY, topK: RETRIEVAL_TOP_K },
     });
 
     for (const entry of recordedOutputs) calledToolNames.push(entry.toolName);
 
     const retrievalEvent = findRetrievalCompletedEvent(result);
     const rankOne = retrievalEvent?.chunks.find((chunk) => chunk.rank === 1);
-    const observation: ToolDisciplineObservation = {
+    const observation: TwoToolUsageObservation = {
       runStatus: result.status,
       offeredToolNames,
       calledToolNames,
@@ -1218,28 +1240,28 @@ export async function runToolDisciplineScenario(
       }
     }
 
-    const evaluation = evaluateToolDisciplineScenario(observation);
+    const evaluation = evaluateTwoToolUsageScenario(observation);
     console.log(
       evaluation.passed
         ? "acceptance: PASSED (a readable observation was obtained — this says nothing about whether the model chose well)"
         : `acceptance: FAILED (${evaluation.failureCode}) — no usable observation`,
     );
     if (evaluation.passed) {
-      console.log(describeToolDisciplineFinding(observation));
+      console.log(describeTwoToolUsageObservation(observation));
     }
     console.log(
-      "One manual observation per run, against a non-deterministic model. Not a measured " +
+      "Descriptive record of one run, against a non-deterministic model. Not a measured " +
         "property, not CI-gated, and not evidence that tool-selection quality is tested.",
     );
     return evaluation;
   } catch (error) {
     if (error instanceof LlmProviderError) {
-      console.log(`[tool-discipline] LlmProviderError category=${error.category}`);
-      return failedResult("tool-discipline", `LLM_PROVIDER_ERROR_${error.category}`);
+      console.log(`[two-tool-usage] LlmProviderError category=${error.category}`);
+      return failedResult("two-tool-usage", `LLM_PROVIDER_ERROR_${error.category}`);
     }
     if (error instanceof RetrieverError) {
-      console.log(`[tool-discipline] RetrieverError category=${error.category}`);
-      return failedResult("tool-discipline", `RETRIEVER_ERROR_${error.category}`);
+      console.log(`[two-tool-usage] RetrieverError category=${error.category}`);
+      return failedResult("two-tool-usage", `RETRIEVER_ERROR_${error.category}`);
     }
     throw error;
   }

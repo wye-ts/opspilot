@@ -1094,7 +1094,7 @@ describe("ClaudeLlmProvider", () => {
     ]);
   });
 
-  // Issue #95 acceptance criterion 3: the LIVE spike's tool-discipline
+  // Issue #95 acceptance criterion 3: the LIVE spike's two-tool-usage
   // scenario asks whether the model spends budget on a second tool. That
   // question is only meaningful if the second tool actually reaches the
   // provider request — and the spike's composition root previously pinned a

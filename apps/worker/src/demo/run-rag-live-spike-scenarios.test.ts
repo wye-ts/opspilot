@@ -17,10 +17,10 @@ import {
   evaluateExfiltrationScenario,
   evaluateInjectionProbeScenario,
   evaluateRoleConfusionScenario,
-  evaluateToolDisciplineScenario,
+  evaluateTwoToolUsageScenario,
   evaluateToolOutputOverrideScenario,
-  describeToolDisciplineFinding,
-  type ToolDisciplineObservation,
+  describeTwoToolUsageObservation,
+  type TwoToolUsageObservation,
   hasFailingScenario,
   resolveScenarioSelection,
   runSelectedScenarios,
@@ -757,14 +757,14 @@ describe("runSelectedScenarios", () => {
     toolOutputOverrideCalls: number[];
     exfiltrationCalls: number[];
     roleConfusionCalls: number[];
-    toolDisciplineCalls: number[];
+    twoToolUsageCalls: number[];
   } {
     const baselineCalls: number[] = [];
     const injectionCalls: number[] = [];
     const toolOutputOverrideCalls: number[] = [];
     const exfiltrationCalls: number[] = [];
     const roleConfusionCalls: number[] = [];
-    const toolDisciplineCalls: number[] = [];
+    const twoToolUsageCalls: number[] = [];
     let callIndex = 0;
     return {
       baselineCalls,
@@ -772,7 +772,7 @@ describe("runSelectedScenarios", () => {
       toolOutputOverrideCalls,
       exfiltrationCalls,
       roleConfusionCalls,
-      toolDisciplineCalls,
+      twoToolUsageCalls,
       callbacks: {
         runBaseline: async () => {
           baselineCalls.push(callIndex++);
@@ -794,22 +794,22 @@ describe("runSelectedScenarios", () => {
           roleConfusionCalls.push(callIndex++);
           return { name: "role-confusion", passed: true };
         },
-        runToolDiscipline: async () => {
-          toolDisciplineCalls.push(callIndex++);
-          return { name: "tool-discipline", passed: true };
+        runTwoToolUsage: async () => {
+          twoToolUsageCalls.push(callIndex++);
+          return { name: "two-tool-usage", passed: true };
         },
       },
     };
   }
 
-  // Money-relevant: "all" must not invoke the tool-discipline callback, or
+  // Money-relevant: "all" must not invoke the two-tool-usage callback, or
   // every historical full-suite run silently gains a billed Claude call.
-  it('does not invoke the tool-discipline callback for "all"', async () => {
-    const { callbacks, toolDisciplineCalls } = fakeCallbacks();
+  it('does not invoke the two-tool-usage callback for "all"', async () => {
+    const { callbacks, twoToolUsageCalls } = fakeCallbacks();
 
     await runSelectedScenarios(resolveScenarioSelection("all"), callbacks);
 
-    expect(toolDisciplineCalls).toEqual([]);
+    expect(twoToolUsageCalls).toEqual([]);
   });
 
   it('runs all five scenarios, in order, for "all"', async () => {
@@ -958,7 +958,7 @@ describe("buildScenarioCallbacks (scenario isolation)", () => {
     runToolOutputOverride: async () => ({ name: "tool-output-override", passed: true }) as SpikeScenarioResult,
     runExfiltration: async () => ({ name: "exfiltration", passed: true }) as SpikeScenarioResult,
     runRoleConfusion: async () => ({ name: "role-confusion", passed: true }) as SpikeScenarioResult,
-    runToolDiscipline: async () => ({ name: "tool-discipline", passed: true }) as SpikeScenarioResult,
+    runTwoToolUsage: async () => ({ name: "two-tool-usage", passed: true }) as SpikeScenarioResult,
   };
 
   function fakeDeps() {
@@ -1052,8 +1052,8 @@ describe("buildScenarioCallbacks (scenario isolation)", () => {
 });
 
 
-describe("evaluateToolDisciplineScenario (issue #95)", () => {
-  function observation(over: Partial<ToolDisciplineObservation> = {}): ToolDisciplineObservation {
+describe("evaluateTwoToolUsageScenario (issue #95)", () => {
+  function observation(over: Partial<TwoToolUsageObservation> = {}): TwoToolUsageObservation {
     return {
       runStatus: "completed",
       offeredToolNames: ["get_service_status", "get_recent_deployments"],
@@ -1071,10 +1071,10 @@ describe("evaluateToolDisciplineScenario (issue #95)", () => {
   // would become a model-behavior gate — the semantic upgrade issue #95
   // acceptance criterion 5 forbids. Both branches must be PASSED.
   it("returns the same verdict whether or not the model called the deployments tool", () => {
-    const didNotCall = evaluateToolDisciplineScenario(
+    const didNotCall = evaluateTwoToolUsageScenario(
       observation({ deploymentsToolCalled: false, calledToolNames: ["get_service_status"] }),
     );
-    const didCall = evaluateToolDisciplineScenario(
+    const didCall = evaluateTwoToolUsageScenario(
       observation({
         deploymentsToolCalled: true,
         calledToolNames: ["get_service_status", "get_recent_deployments"],
@@ -1091,7 +1091,7 @@ describe("evaluateToolDisciplineScenario (issue #95)", () => {
   // reached the model, "no deployments call" is an artifact of the wiring and
   // must not be reported as an observation about the model at all.
   it("fails closed when the deployments tool was never offered", () => {
-    const result = evaluateToolDisciplineScenario(
+    const result = evaluateTwoToolUsageScenario(
       observation({ offeredToolNames: ["get_service_status"] }),
     );
     expect(result.passed).toBe(false);
@@ -1099,7 +1099,7 @@ describe("evaluateToolDisciplineScenario (issue #95)", () => {
   });
 
   it("fails closed when the status tool was never offered", () => {
-    const result = evaluateToolDisciplineScenario(
+    const result = evaluateTwoToolUsageScenario(
       observation({ offeredToolNames: ["get_recent_deployments"] }),
     );
     expect(result.passed).toBe(false);
@@ -1107,13 +1107,13 @@ describe("evaluateToolDisciplineScenario (issue #95)", () => {
   });
 
   it("fails when the run did not complete, since there is no readable observation", () => {
-    const result = evaluateToolDisciplineScenario(observation({ runStatus: "failed" }));
+    const result = evaluateTwoToolUsageScenario(observation({ runStatus: "failed" }));
     expect(result.passed).toBe(false);
     expect(result.failureCode).toBe("RUN_NOT_COMPLETED_FAILED");
   });
 
   it("fails when no diagnostic call happened at all", () => {
-    const result = evaluateToolDisciplineScenario(
+    const result = evaluateTwoToolUsageScenario(
       observation({ calledToolNames: [], diagnosticCallCount: 0 }),
     );
     expect(result.passed).toBe(false);
@@ -1125,13 +1125,13 @@ describe("evaluateToolDisciplineScenario (issue #95)", () => {
   // finding asserted it had. The premise must now be verified from the run's
   // own trace, not assumed by the scenario's prose.
   it("fails closed when the premise runbook was never actually retrieved", () => {
-    const result = evaluateToolDisciplineScenario(observation({ retrievedChunkIds: [] }));
+    const result = evaluateTwoToolUsageScenario(observation({ retrievedChunkIds: [] }));
     expect(result.passed).toBe(false);
     expect(result.failureCode).toBe("PREMISE_CHUNK_NOT_RETRIEVED");
   });
 
   it("fails closed when retrieval returned some other chunk", () => {
-    const result = evaluateToolDisciplineScenario(
+    const result = evaluateTwoToolUsageScenario(
       observation({
         retrievedChunkIds: ["runbook-deployment-rollback-001"],
         rankOneChunkId: "runbook-deployment-rollback-001",
@@ -1146,7 +1146,7 @@ describe("evaluateToolDisciplineScenario (issue #95)", () => {
   // the finding still called it "the top-ranked runbook it was shown". The
   // premise is specifically about what ranked first.
   it("fails closed when the premise chunk was retrieved but did not rank first", () => {
-    const result = evaluateToolDisciplineScenario(
+    const result = evaluateTwoToolUsageScenario(
       observation({
         retrievedChunkIds: [
           "runbook-deployment-rollback-001",
@@ -1160,57 +1160,70 @@ describe("evaluateToolDisciplineScenario (issue #95)", () => {
   });
 
   it("names the rank-1 chunk in the finding text", () => {
-    const text = describeToolDisciplineFinding(observation());
+    const text = describeTwoToolUsageObservation(observation());
     expect(text).toContain("rank 1 = runbook-notification-rate-limit-001");
   });
 
   it("states which chunks the model was actually shown in the finding text", () => {
-    const text = describeToolDisciplineFinding(
+    const text = describeTwoToolUsageObservation(
       observation({ retrievedChunkIds: ["runbook-notification-rate-limit-001"] }),
     );
     expect(text).toContain("Retrieved and shown to the model");
     expect(text).toContain("runbook-notification-rate-limit-001");
   });
 
-  // The write-up wording is the deliverable of this scenario, so it is pinned:
-  // a clean run must be described as FAILING TO FIND evidence, never as
-  // positive proof of discipline.
-  it("describes a clean run as failing to find evidence, not as proof of discipline", () => {
-    const text = describeToolDisciplineFinding(observation({ deploymentsToolCalled: false }));
-    expect(text).toContain("FAILED TO FIND");
+  // The write-up wording IS the deliverable of this scenario, so it is pinned.
+  // Both branches must stay descriptive: neither may be phrased as a finding
+  // about tool-selection quality, and neither may support a catalog-sizing
+  // conclusion. An earlier version claimed a deployments call was
+  // "unmotivated" and offered it as evidence against a third tool; these
+  // assertions exist so that claim cannot quietly return.
+  it("describes a call-only-status run without claiming the model chose well", () => {
+    const text = describeTwoToolUsageObservation(observation({ deploymentsToolCalled: false }));
     expect(text).toContain("OBSERVATION (this run)");
+    expect(text).toContain("establishes nothing about");
+    expect(text).toContain("no catalog-sizing conclusion follows");
     expect(text).not.toMatch(/\bproves\b|\bdemonstrates that the model\b|reliably disciplined\./);
   });
 
-  it("describes a wasteful run as one sample of evidence against a third tool", () => {
-    const text = describeToolDisciplineFinding(observation({ deploymentsToolCalled: true }));
-    expect(text).toContain("AGAINST adding a third");
+  it("describes a deployments call without calling it unmotivated or budget waste", () => {
+    const text = describeTwoToolUsageObservation(observation({ deploymentsToolCalled: true }));
     expect(text).toContain("OBSERVATION (this run)");
-    expect(text).toContain("does not by itself establish");
+    expect(text).toContain("legitimate differential-diagnosis step");
+    expect(text).toContain("No catalog-sizing conclusion follows");
+    // The retracted claim, in the ASSERTED shapes it took. The text may still
+    // contain the word "unmotivated" — it says the call was NOT unmotivated —
+    // so the guard targets the affirmative phrasings only.
+    // Matching on "unmotivated" alone is what a naive guard would do, and it
+    // fires on the retraction itself. Only the AFFIRMATIVE claim is banned:
+    // an "unmotivated" not immediately preceded by "NOT a finding that ...".
+    expect(text).not.toMatch(/(?<!NOT a finding that the call was )\bunmotivated\b/i);
+    expect(text).not.toMatch(/budget waste|AGAINST adding|evidence against/i);
+    expect(text).toContain("NOT a finding that the call was unmotivated");
   });
 });
 
-describe("tool-discipline scenario selection (issue #95)", () => {
+describe("two-tool-usage scenario selection (issue #95)", () => {
   it("is selectable by name", () => {
-    expect(resolveScenarioSelection("tool-discipline")).toEqual(["tool-discipline"]);
+    expect(resolveScenarioSelection("two-tool-usage")).toEqual(["two-tool-usage"]);
   });
 
   // Deliberate: "all" is the historical adversarial suite. Folding a paid
   // catalog-sizing probe into it would silently add a billed call to every
   // existing full-suite invocation.
   it("is NOT included in 'all'", () => {
-    expect(resolveScenarioSelection("all")).not.toContain("tool-discipline");
+    expect(resolveScenarioSelection("all")).not.toContain("two-tool-usage");
   });
 
   it("does not require a Voyage client, since it performs no retrieval", () => {
-    expect(selectionNeedsVoyage(["tool-discipline"])).toBe(false);
+    expect(selectionNeedsVoyage(["two-tool-usage"])).toBe(false);
   });
 
   it("still requires Voyage when combined with a retrieval scenario", () => {
-    expect(selectionNeedsVoyage(["tool-discipline", "baseline"])).toBe(true);
+    expect(selectionNeedsVoyage(["two-tool-usage", "baseline"])).toBe(true);
   });
 
-  it("invokes only the tool-discipline callback when selected alone", async () => {
+  it("invokes only the two-tool-usage callback when selected alone", async () => {
     const called: string[] = [];
     const mark = (name: string) => async () => {
       called.push(name);
@@ -1222,11 +1235,11 @@ describe("tool-discipline scenario selection (issue #95)", () => {
       runToolOutputOverride: mark("tool-output-override"),
       runExfiltration: mark("exfiltration"),
       runRoleConfusion: mark("role-confusion"),
-      runToolDiscipline: mark("tool-discipline"),
+      runTwoToolUsage: mark("two-tool-usage"),
     };
 
-    await runSelectedScenarios(["tool-discipline"], callbacks);
+    await runSelectedScenarios(["two-tool-usage"], callbacks);
 
-    expect(called).toEqual(["tool-discipline"]);
+    expect(called).toEqual(["two-tool-usage"]);
   });
 });
