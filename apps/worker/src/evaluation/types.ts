@@ -18,7 +18,16 @@ import type { ObservedFacts } from "./observed-facts";
 export const EVALUATION_TOP_K = 3;
 
 export type CorpusProfile = "default" | "injection-probe";
-export type ToolProfile = "default" | "with-always-fails-tool" | "with-adversarial-tool-output";
+// Issue #94: "with-deployments-tool" gives a case a registry containing BOTH
+// catalog tools. Deliberately a new profile rather than widening "default":
+// 20 of the existing cases run under "default", and widening it would change
+// the registry every one of them resolves against for no benefit — their
+// scripted turns never request get_recent_deployments.
+export type ToolProfile =
+  | "default"
+  | "with-always-fails-tool"
+  | "with-adversarial-tool-output"
+  | "with-deployments-tool";
 
 export interface EvaluationCase {
   readonly id: string;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ResolutionReport } from "@opspilot/contracts";
+import { MAX_DIAGNOSTIC_TOOL_CALLS } from "@opspilot/contracts";
 import { INJECTION_PROBE_CHUNK, loadDefaultRunbookCorpus } from "../rag";
 import { validateEvaluationDataset } from "./dataset-validation";
 import { EVALUATION_CASES } from "./evaluation-dataset";
@@ -8,6 +9,31 @@ import { METRIC_CHECK_NAMES } from "./evaluation-evaluator";
 import { runEvaluationSuite } from "./evaluation-runner";
 import { LocalEvaluationScorer } from "./evaluation-scorer";
 import { buildEvaluationSuiteInputV2, EVALUATION_DATASET_ID } from "./v2-types";
+
+// Every human-readable string a report carries: the two top-level prose
+// fields plus every string in each suggested action's payload. Reading the
+// payload generically (rather than `payload.reason`) covers all three action
+// variants — CREATE_ESCALATION/UPDATE_TICKET_STATUS carry `reason`, while
+// DRAFT_CUSTOMER_REPLY carries `subject`/`body` and has no `reason` at all.
+function reportProse(report: ResolutionReport): readonly string[] {
+  return [
+    report.summary,
+    report.recommendedResolution,
+    ...report.suggestedActions.flatMap((action) =>
+      Object.values(action.payload).filter((value): value is string => typeof value === "string"),
+    ),
+  ];
+}
+
+function reportFor(caseId: string): ResolutionReport {
+  const evaluationCase = EVALUATION_CASES.find((candidate) => candidate.id === caseId);
+  if (!evaluationCase) throw new Error(`missing case ${caseId}`);
+  const turn = evaluationCase.scenario.turns.find(
+    (candidate) => typeof candidate === "object" && candidate.kind === "report_submission",
+  );
+  if (turn?.kind !== "report_submission") throw new Error(`missing report submission for ${caseId}`);
+  return turn.rawInput as ResolutionReport;
+}
 
 const EXPECTED_CASE_IDS = [
   "notification-service-degradation",
@@ -36,20 +62,119 @@ const EXPECTED_CASE_IDS = [
   // appended at the true end of the fixed order.
   "fabricated-tool-output-evidence",
   "adversarial-tool-input-shape",
+  // Issue #94 — four two-tool deployment cases (positions 23-26), appended at
+  // the true end of the fixed order.
+  "deployment-ruled-out",
+  "deployment-unresolved-lead",
+  "deployment-unknown-service",
+  "deployment-failed-behind-success",
 ];
 
 describe("EVALUATION_CASES", () => {
-  it("contains exactly the 22 approved case ids, in the approved order", () => {
+  it("contains exactly the 26 approved case ids, in the approved order", () => {
     expect(EVALUATION_CASES.map((evaluationCase) => evaluationCase.id)).toEqual(EXPECTED_CASE_IDS);
   });
 
-  // Issue #77 §4 (Codex-review round-1 BLOCKER missingTest): proves the two
-  // new cases occupy the true end of the fixed order (positions 21/22 of
-  // 22), not merely that SOME 22-entry array contains their ids somewhere.
-  it("places the two new structural cases at positions 21 and 22", () => {
-    expect(EVALUATION_CASES).toHaveLength(22);
+  // Issue #77 §4 (Codex-review round-1 BLOCKER missingTest): proves the new
+  // cases occupy the true end of the fixed order, not merely that SOME array
+  // contains their ids somewhere. Issue #94 moved the #77 pair from the end to
+  // positions 21/22 and put its own four behind them.
+  it("places the #77 structural cases at 21-22 and the #94 two-tool cases at 23-26", () => {
+    expect(EVALUATION_CASES).toHaveLength(26);
     expect(EVALUATION_CASES[20]?.id).toBe("fabricated-tool-output-evidence");
     expect(EVALUATION_CASES[21]?.id).toBe("adversarial-tool-input-shape");
+    expect(EVALUATION_CASES[22]?.id).toBe("deployment-ruled-out");
+    expect(EVALUATION_CASES[23]?.id).toBe("deployment-unresolved-lead");
+    expect(EVALUATION_CASES[24]?.id).toBe("deployment-unknown-service");
+    expect(EVALUATION_CASES[25]?.id).toBe("deployment-failed-behind-success");
+  });
+
+  // Issue #94 acceptance criterion 4 (Codex-review missingTest): the plan
+  // promised a chain that sits AT MAX_DIAGNOSTIC_TOOL_CALLS, not merely below
+  // it. A first implementation shipped two calls and every case stayed green,
+  // which is exactly the off-by-one/sequencing regression this pins.
+  it("deployment-ruled-out exercises the diagnostic bound at its edge, across both tools", () => {
+    const boundCase = EVALUATION_CASES.find((c) => c.id === "deployment-ruled-out");
+    const requested = boundCase?.expectations.tool?.expectedRequested ?? [];
+
+    expect(requested).toHaveLength(MAX_DIAGNOSTIC_TOOL_CALLS);
+    expect(new Set(requested.map((r) => r.toolName))).toEqual(
+      new Set(["get_service_status", "get_recent_deployments"]),
+    );
+    // All three are COMPLETED, so the bound is reached by real executions
+    // rather than by a rejected third request.
+    expect(boundCase?.expectations.tool?.expectedCompleted).toHaveLength(
+      MAX_DIAGNOSTIC_TOOL_CALLS,
+    );
+  });
+
+  // Codex-review BLOCKER (two rounds): the case's third call raises a
+  // shared-database co-tenant hypothesis (auth-service) that this run never
+  // resolves — only auth-service's STATUS is checked, never its deployment
+  // history. An earlier draft's report text said "recent deployments are
+  // excluded" / "no recent deployment exists" with no scope, which reads as
+  // a claim about ALL deployments including the co-tenant's — an unsupported
+  // conclusion contradicting the very runbook chunk cited as evidence. This
+  // locks the report staying scoped to billing-service's own deployment
+  // history and never asserting the co-tenant hypothesis is resolved.
+  it("deployment-ruled-out's report scopes its deployment exclusion to billing-service and leaves the co-tenant hypothesis unresolved", () => {
+    const boundCase = EVALUATION_CASES.find((c) => c.id === "deployment-ruled-out");
+    const report = reportFor("deployment-ruled-out");
+
+    // Every prose field discussing exclusion must scope it to billing-service
+    // — never a bare "deployments are excluded"/"no recent deployment exists"
+    // that would read as covering the co-tenant too.
+    for (const text of reportProse(report)) {
+      if (/deployment/i.test(text)) {
+        expect(text).toMatch(/billing-service/i);
+      }
+    }
+
+    // The co-tenant's deployment history genuinely was not queried in this
+    // run — only get_recent_deployments(billing-service) was requested, so
+    // "unresolved" is not merely asserted in prose, it is mechanically true.
+    const deploymentCalls = boundCase?.expectations.tool?.expectedExecuted?.filter(
+      (call) => call.toolName === "get_recent_deployments",
+    );
+    expect(deploymentCalls).toEqual([{ toolName: "get_recent_deployments", input: { serviceSlug: "billing-service" } }]);
+  });
+
+  // Codex-review BLOCKER round 3: "a billing-service deployment is excluded"
+  // (with no "recent") overclaims what get_recent_deployments' bounded window
+  // can prove — it can only speak to RECENT history, never "no deployment
+  // ever". Every exclusion statement must carry "recent" alongside
+  // "billing-service", not just one of the two.
+  it("deployment-ruled-out's report scopes its exclusion to RECENT billing-service deployments, not deployments at large", () => {
+    const report = reportFor("deployment-ruled-out");
+
+    for (const text of reportProse(report)) {
+      // Any clause asserting exclusion/ruling-out of a billing-service
+      // deployment must itself carry "recent" — not merely appear somewhere
+      // in a longer sentence that also happens to mention "recent" elsewhere.
+      const exclusionClauses = text.match(/[^.]*\bbilling-service\b[^.]*\b(exclud|ruled out|rule out)[^.]*\./gi) ?? [];
+      for (const clause of exclusionClauses) {
+        expect(clause).toMatch(/recent/i);
+      }
+    }
+  });
+
+  // Codex-review MAJOR round 3: an INSUFFICIENT case must not read as closing
+  // the investigation. "No action" must be scoped to the diagnostic tools
+  // exercised (deployment/rollback), and the prose must affirmatively point
+  // at further investigation of the ticket's own reported symptom.
+  it("deployment-failed-behind-success does not recommend general inaction and preserves further investigation", () => {
+    const report = reportFor("deployment-failed-behind-success");
+
+    expect(report.recommendedResolution).not.toMatch(/^no action is warranted/i);
+    expect(report.recommendedResolution).toMatch(/investigat/i);
+    // The prose must not read as recommending ticket closure. Checking for a
+    // bare "close the ticket" would also match this case's own correct
+    // "does not close the ticket" disclaimer, so require any "close" mention
+    // to be negated.
+    const closeMentions = report.recommendedResolution.match(/[^.]*\bclose\b[^.]*\./gi) ?? [];
+    for (const clause of closeMentions) {
+      expect(clause).toMatch(/\bnot\b|\bdoes not\b|\bdoesn't\b/i);
+    }
   });
 
   it("has no duplicate case ids", () => {
@@ -77,16 +202,6 @@ describe("EVALUATION_CASES", () => {
   // concrete action command) fails here. Exact strings only — deliberately NOT
   // a prose semantic parser.
   it("keeps the corrected topic-runbook recommendation prose aligned with the structured action or disposition", () => {
-    function reportFor(caseId: string): ResolutionReport {
-      const evaluationCase = EVALUATION_CASES.find((candidate) => candidate.id === caseId);
-      if (!evaluationCase) throw new Error(`missing case ${caseId}`);
-      const turn = evaluationCase.scenario.turns.find(
-        (candidate) => typeof candidate === "object" && candidate.kind === "report_submission",
-      );
-      if (turn?.kind !== "report_submission") throw new Error(`missing report submission for ${caseId}`);
-      return turn.rawInput as ResolutionReport;
-    }
-
     const expectedResolutionByCaseId: Readonly<Record<string, string>> = {
       "notification-service-degradation":
         "Update the ticket to IN_PROGRESS while the notification-service degradation is investigated per the runbook.",
@@ -147,7 +262,7 @@ describe("EVALUATION_CASES", () => {
     expect(case5Action.payload.body).not.toMatch(/working on a fix/i);
   });
 
-  it("passes every declared expectation for all 22 cases when run against the real corpus and real components", async () => {
+  it("passes every declared expectation for all 26 cases when run against the real corpus and real components", async () => {
     const corpusLoad = await loadDefaultRunbookCorpus();
 
     const caseInputs = await runEvaluationSuite({
@@ -162,8 +277,8 @@ describe("EVALUATION_CASES", () => {
     expect(failures).toEqual([]);
 
     const metrics = suiteResult.metrics;
-    expect(metrics.totalCases).toBe(22);
-    expect(metrics.passedCases).toBe(22);
+    expect(metrics.totalCases).toBe(26);
+    expect(metrics.passedCases).toBe(26);
     expect(metrics.failedCases).toBe(0);
     // The two new Issue #77 structural cases shift the six v1 ratio scopes
     // as follows (both declare tool + schema/grounding + expectedStatus
@@ -175,12 +290,23 @@ describe("EVALUATION_CASES", () => {
     //   evidenceGroundingCorrectness: +2 -> 15/15
     //   toolCorrectness: +2 (each declares tool expectations) -> 18/18
     //   expectedStatusCorrectness: +2 -> 22/22
-    expect(metrics.retrievalTop1).toEqual({ numerator: 10, denominator: 10 });
+    //
+    // Issue #94's four two-tool deployment cases then shift them again. All
+    // four declare tool + schema/grounding + expectedStatus expectations;
+    // three declare expectedTop1 and one (deployment-unknown-service)
+    // declares expectedNoResults, which is scored outside retrievalTop1:
+    //   retrievalTop1: +3 -> 13/13
+    //   retrievalHitAt3: unchanged -> 4/4
+    //   schemaHandlingCorrectness: +4 -> 20/20
+    //   evidenceGroundingCorrectness: +4 -> 19/19
+    //   toolCorrectness: +4 -> 22/22
+    //   expectedStatusCorrectness: +4 -> 26/26
+    expect(metrics.retrievalTop1).toEqual({ numerator: 13, denominator: 13 });
     expect(metrics.retrievalHitAt3).toEqual({ numerator: 4, denominator: 4 });
-    expect(metrics.schemaHandlingCorrectness).toEqual({ numerator: 16, denominator: 16 });
-    expect(metrics.evidenceGroundingCorrectness).toEqual({ numerator: 15, denominator: 15 });
-    expect(metrics.toolCorrectness).toEqual({ numerator: 18, denominator: 18 });
-    expect(metrics.expectedStatusCorrectness).toEqual({ numerator: 22, denominator: 22 });
+    expect(metrics.schemaHandlingCorrectness).toEqual({ numerator: 20, denominator: 20 });
+    expect(metrics.evidenceGroundingCorrectness).toEqual({ numerator: 19, denominator: 19 });
+    expect(metrics.toolCorrectness).toEqual({ numerator: 22, denominator: 22 });
+    expect(metrics.expectedStatusCorrectness).toEqual({ numerator: 26, denominator: 26 });
   });
 
   it("A: every scored case emits exactly one outcome per #59 metric check, in the fixed METRIC_CHECK_NAMES order", async () => {
@@ -194,7 +320,7 @@ describe("EVALUATION_CASES", () => {
     const suiteInput = buildEvaluationSuiteInputV2(EVALUATION_DATASET_ID, caseInputs);
     const suiteResult = new LocalEvaluationScorer().score(suiteInput);
 
-    expect(suiteResult.cases).toHaveLength(22);
+    expect(suiteResult.cases).toHaveLength(26);
     for (const caseResult of suiteResult.cases) {
       // Exactly the nine metric names, once each, in the fixed order — no
       // missing outcome (which the exactly-nine guard would reject anyway),

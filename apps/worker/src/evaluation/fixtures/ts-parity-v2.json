@@ -4754,68 +4754,1433 @@
           }
         ]
       }
+    },
+    {
+      "caseId": "deployment-ruled-out",
+      "expectations": {
+        "runStatus": "completed",
+        "retrieval": {
+          "expectedTop1": "runbook-database-connection-saturation-001"
+        },
+        "tool": {
+          "expectedRequested": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case23-call-1"
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "toolCallId": "case23-call-2"
+            },
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case23-call-3"
+            }
+          ],
+          "expectedExecuted": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "billing-service"
+              }
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "input": {
+                "serviceSlug": "billing-service"
+              }
+            },
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "auth-service"
+              }
+            }
+          ],
+          "expectedCompleted": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case23-call-1"
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "toolCallId": "case23-call-2"
+            },
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case23-call-3"
+            }
+          ]
+        },
+        "report": {
+          "schemaExpectation": "VALID",
+          "groundingExpectation": "VALID",
+          "requiredEvidenceTypes": [
+            "TOOL_EXECUTION",
+            "RAG_CHUNK"
+          ]
+        },
+        "expectedRootCause": "ABSENT",
+        "expectedEvidence": {
+          "state": "INSUFFICIENT",
+          "requiredLocators": [
+            {
+              "evidenceId": "case23-call-1",
+              "sourceType": "TOOL_EXECUTION"
+            },
+            {
+              "evidenceId": "case23-call-2",
+              "sourceType": "TOOL_EXECUTION"
+            }
+          ],
+          "minDistinctLocators": 3
+        },
+        "expectedDiagnostics": [
+          {
+            "evidenceState": "INSUFFICIENT",
+            "continuationReason": "STATUS_UNRESOLVED"
+          },
+          {
+            "evidenceState": "INSUFFICIENT",
+            "continuationReason": "SCOPE_NOT_COVERED"
+          },
+          {
+            "evidenceState": "INSUFFICIENT",
+            "continuationReason": "SCOPE_NOT_COVERED"
+          }
+        ],
+        "expectedTelemetryEvidence": {
+          "probative": [
+            {
+              "evidenceId": "case23-call-1",
+              "sourceType": "TOOL_EXECUTION"
+            },
+            {
+              "evidenceId": "case23-call-2",
+              "sourceType": "TOOL_EXECUTION"
+            }
+          ],
+          "nonProbative": [
+            {
+              "evidenceId": "case23-call-3",
+              "sourceType": "TOOL_EXECUTION"
+            }
+          ]
+        },
+        "expectedConfidence": {
+          "min": 0.4,
+          "max": 0.75
+        },
+        "expectedActions": [
+          {
+            "type": "CREATE_ESCALATION",
+            "requiredGrounding": [
+              {
+                "evidenceId": "case23-call-1",
+                "sourceType": "TOOL_EXECUTION"
+              },
+              {
+                "evidenceId": "case23-call-2",
+                "sourceType": "TOOL_EXECUTION"
+              }
+            ],
+            "allowedGrounding": [
+              {
+                "evidenceId": "case23-call-1",
+                "sourceType": "TOOL_EXECUTION"
+              },
+              {
+                "evidenceId": "case23-call-2",
+                "sourceType": "TOOL_EXECUTION"
+              },
+              {
+                "evidenceId": "runbook-database-connection-saturation-001",
+                "sourceType": "RAG_CHUNK"
+              }
+            ]
+          }
+        ],
+        "expectedBounds": {
+          "maxTotalTokens": 480
+        }
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": {
+          "completed": true,
+          "chunkIds": [
+            "runbook-database-connection-saturation-001"
+          ]
+        },
+        "tools": {
+          "requested": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case23-call-1"
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "toolCallId": "case23-call-2"
+            },
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case23-call-3"
+            }
+          ],
+          "executed": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "billing-service"
+              }
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "input": {
+                "serviceSlug": "billing-service"
+              }
+            },
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "auth-service"
+              }
+            }
+          ],
+          "completed": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case23-call-1",
+              "output": {
+                "serviceSlug": "billing-service",
+                "status": "OUTAGE"
+              }
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "toolCallId": "case23-call-2",
+              "output": {
+                "serviceSlug": "billing-service",
+                "knownService": true,
+                "deployments": []
+              }
+            },
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case23-call-3",
+              "output": {
+                "serviceSlug": "auth-service",
+                "status": "OPERATIONAL"
+              }
+            }
+          ]
+        },
+        "report": {
+          "evidence": [
+            {
+              "evidenceId": "case23-call-1",
+              "sourceType": "TOOL_EXECUTION"
+            },
+            {
+              "evidenceId": "case23-call-2",
+              "sourceType": "TOOL_EXECUTION"
+            },
+            {
+              "evidenceId": "runbook-database-connection-saturation-001",
+              "sourceType": "RAG_CHUNK"
+            },
+            {
+              "evidenceId": "case23-call-3",
+              "sourceType": "TOOL_EXECUTION"
+            }
+          ],
+          "suggestedActionTypes": [
+            "CREATE_ESCALATION"
+          ],
+          "category": "UNKNOWN",
+          "rootCausePresent": false,
+          "confidence": 0.6,
+          "evidenceState": "INSUFFICIENT",
+          "recommendationDisposition": "ACTIONABLE",
+          "suggestedActions": [
+            {
+              "type": "CREATE_ESCALATION",
+              "groundedBy": [
+                {
+                  "sourceType": "TOOL_EXECUTION",
+                  "evidenceId": "case23-call-1"
+                },
+                {
+                  "sourceType": "TOOL_EXECUTION",
+                  "evidenceId": "case23-call-2"
+                }
+              ]
+            }
+          ]
+        },
+        "investigation": {
+          "providerTurnsUsed": 4,
+          "diagnosticRequestCount": 3,
+          "forcedFinalization": true,
+          "stopReason": "BOUND_EXHAUSTED",
+          "assessments": [
+            {
+              "toolCallId": "case23-call-1",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "STATUS_UNRESOLVED",
+                "supportedBy": [
+                  {
+                    "evidenceId": "runbook-database-connection-saturation-001",
+                    "sourceType": "RAG_CHUNK"
+                  }
+                ]
+              }
+            },
+            {
+              "toolCallId": "case23-call-2",
+              "toolName": "get_recent_deployments",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "SCOPE_NOT_COVERED",
+                "supportedBy": [
+                  {
+                    "evidenceId": "case23-call-1",
+                    "sourceType": "TOOL_EXECUTION"
+                  }
+                ]
+              }
+            },
+            {
+              "toolCallId": "case23-call-3",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "SCOPE_NOT_COVERED",
+                "supportedBy": [
+                  {
+                    "evidenceId": "case23-call-2",
+                    "sourceType": "TOOL_EXECUTION"
+                  },
+                  {
+                    "evidenceId": "runbook-database-connection-saturation-001",
+                    "sourceType": "RAG_CHUNK"
+                  }
+                ]
+              }
+            }
+          ],
+          "toolFailures": [],
+          "bounds": {
+            "maxProviderTurns": 5,
+            "maxDiagnosticToolCalls": 3
+          },
+          "usage": {
+            "inputTokens": 400,
+            "outputTokens": 80,
+            "providerCalls": 4
+          }
+        },
+        "failedStage": null
+      },
+      "expected": {
+        "passed": true,
+        "checks": [
+          {
+            "name": "status",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "retrieval-top1",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-requested",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-executed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-completed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "schema-handling",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-grounding",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-types",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "root-cause-discipline",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-support",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "unknown-telemetry-handling",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "diagnostic-justification",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "confidence-calibration",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "action-grounding",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "approval-gate",
+            "status": "NOT_APPLICABLE",
+            "reasonCode": "NA_EXPECTATION_NOT_DECLARED"
+          },
+          {
+            "name": "bounds-respected",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "deterministic-recovery",
+            "status": "NOT_APPLICABLE",
+            "reasonCode": "NA_NO_RECOVERY_PATH_EXERCISED"
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "deployment-unresolved-lead",
+      "expectations": {
+        "runStatus": "completed",
+        "retrieval": {
+          "expectedTop1": "runbook-deployment-rollback-001"
+        },
+        "tool": {
+          "expectedRequested": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case24-call-1"
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "toolCallId": "case24-call-2"
+            }
+          ],
+          "expectedExecuted": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "notification-service"
+              }
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "input": {
+                "serviceSlug": "notification-service"
+              }
+            }
+          ],
+          "expectedCompleted": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case24-call-1"
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "toolCallId": "case24-call-2"
+            }
+          ]
+        },
+        "report": {
+          "schemaExpectation": "VALID",
+          "groundingExpectation": "VALID",
+          "requiredEvidenceTypes": [
+            "TOOL_EXECUTION",
+            "RAG_CHUNK"
+          ]
+        },
+        "expectedRootCause": "ABSENT",
+        "expectedEvidence": {
+          "state": "INSUFFICIENT",
+          "requiredLocators": [
+            {
+              "evidenceId": "case24-call-2",
+              "sourceType": "TOOL_EXECUTION"
+            },
+            {
+              "evidenceId": "runbook-deployment-rollback-001",
+              "sourceType": "RAG_CHUNK"
+            }
+          ]
+        },
+        "expectedDiagnostics": [
+          {
+            "evidenceState": "INSUFFICIENT",
+            "continuationReason": "STATUS_UNRESOLVED"
+          },
+          {
+            "evidenceState": "INSUFFICIENT",
+            "continuationReason": "SCOPE_NOT_COVERED"
+          }
+        ],
+        "expectedTelemetryEvidence": {
+          "probative": [
+            {
+              "evidenceId": "case24-call-1",
+              "sourceType": "TOOL_EXECUTION"
+            }
+          ],
+          "nonProbative": [
+            {
+              "evidenceId": "case24-call-2",
+              "sourceType": "TOOL_EXECUTION"
+            }
+          ]
+        },
+        "expectedConfidence": {
+          "min": 0.15,
+          "max": 0.45
+        },
+        "expectedActions": [],
+        "expectedBounds": {
+          "maxTotalTokens": 360
+        }
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": {
+          "completed": true,
+          "chunkIds": [
+            "runbook-deployment-rollback-001",
+            "runbook-deployment-rollback-002"
+          ]
+        },
+        "tools": {
+          "requested": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case24-call-1"
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "toolCallId": "case24-call-2"
+            }
+          ],
+          "executed": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "notification-service"
+              }
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "input": {
+                "serviceSlug": "notification-service"
+              }
+            }
+          ],
+          "completed": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case24-call-1",
+              "output": {
+                "serviceSlug": "notification-service",
+                "status": "DEGRADED"
+              }
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "toolCallId": "case24-call-2",
+              "output": {
+                "serviceSlug": "notification-service",
+                "knownService": true,
+                "deployments": [
+                  {
+                    "deploymentId": "deploy-notification-0042",
+                    "version": "4.2.0",
+                    "outcome": "ROLLED_BACK",
+                    "deployedAt": "2026-09-10T18:15:00.000Z"
+                  },
+                  {
+                    "deploymentId": "deploy-notification-0041",
+                    "version": "4.1.3",
+                    "outcome": "SUCCEEDED",
+                    "deployedAt": "2026-09-04T09:30:00.000Z"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "report": {
+          "evidence": [
+            {
+              "evidenceId": "case24-call-1",
+              "sourceType": "TOOL_EXECUTION"
+            },
+            {
+              "evidenceId": "case24-call-2",
+              "sourceType": "TOOL_EXECUTION"
+            },
+            {
+              "evidenceId": "runbook-deployment-rollback-001",
+              "sourceType": "RAG_CHUNK"
+            }
+          ],
+          "suggestedActionTypes": [],
+          "category": "UNKNOWN",
+          "rootCausePresent": false,
+          "confidence": 0.3,
+          "evidenceState": "INSUFFICIENT",
+          "recommendationDisposition": "ADVISORY",
+          "suggestedActions": []
+        },
+        "investigation": {
+          "providerTurnsUsed": 3,
+          "diagnosticRequestCount": 2,
+          "forcedFinalization": false,
+          "stopReason": "NO_JUSTIFIED_DIAGNOSTIC",
+          "assessments": [
+            {
+              "toolCallId": "case24-call-1",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "STATUS_UNRESOLVED",
+                "supportedBy": [
+                  {
+                    "evidenceId": "runbook-deployment-rollback-001",
+                    "sourceType": "RAG_CHUNK"
+                  }
+                ]
+              }
+            },
+            {
+              "toolCallId": "case24-call-2",
+              "toolName": "get_recent_deployments",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "SCOPE_NOT_COVERED",
+                "supportedBy": [
+                  {
+                    "evidenceId": "case24-call-1",
+                    "sourceType": "TOOL_EXECUTION"
+                  }
+                ]
+              }
+            }
+          ],
+          "toolFailures": [],
+          "bounds": {
+            "maxProviderTurns": 5,
+            "maxDiagnosticToolCalls": 3
+          },
+          "usage": {
+            "inputTokens": 300,
+            "outputTokens": 60,
+            "providerCalls": 3
+          }
+        },
+        "failedStage": null
+      },
+      "expected": {
+        "passed": true,
+        "checks": [
+          {
+            "name": "status",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "retrieval-top1",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-requested",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-executed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-completed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "schema-handling",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-grounding",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-types",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "root-cause-discipline",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-support",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "unknown-telemetry-handling",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "diagnostic-justification",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "confidence-calibration",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "action-grounding",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "approval-gate",
+            "status": "NOT_APPLICABLE",
+            "reasonCode": "NA_EXPECTATION_NOT_DECLARED"
+          },
+          {
+            "name": "bounds-respected",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "deterministic-recovery",
+            "status": "NOT_APPLICABLE",
+            "reasonCode": "NA_NO_RECOVERY_PATH_EXERCISED"
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "deployment-unknown-service",
+      "expectations": {
+        "runStatus": "completed",
+        "retrieval": {
+          "expectedNoResults": true
+        },
+        "tool": {
+          "expectedRequested": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case25-call-1"
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "toolCallId": "case25-call-2"
+            }
+          ],
+          "expectedExecuted": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "checkout-service"
+              }
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "input": {
+                "serviceSlug": "checkout-service"
+              }
+            }
+          ],
+          "expectedCompleted": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case25-call-1"
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "toolCallId": "case25-call-2"
+            }
+          ]
+        },
+        "report": {
+          "schemaExpectation": "VALID",
+          "groundingExpectation": "VALID",
+          "requiredEvidenceTypes": [
+            "TOOL_EXECUTION"
+          ]
+        },
+        "expectedRootCause": "ABSENT",
+        "expectedEvidence": {
+          "state": "INSUFFICIENT",
+          "requiredLocators": [
+            {
+              "evidenceId": "case25-call-2",
+              "sourceType": "TOOL_EXECUTION"
+            }
+          ]
+        },
+        "expectedDiagnostics": [
+          {
+            "evidenceState": "INSUFFICIENT",
+            "continuationReason": "NO_EVIDENCE_YET"
+          },
+          {
+            "evidenceState": "INSUFFICIENT",
+            "continuationReason": "SCOPE_NOT_COVERED"
+          }
+        ],
+        "expectedTelemetryEvidence": {
+          "probative": [],
+          "nonProbative": [
+            {
+              "evidenceId": "case25-call-1",
+              "sourceType": "TOOL_EXECUTION"
+            },
+            {
+              "evidenceId": "case25-call-2",
+              "sourceType": "TOOL_EXECUTION"
+            }
+          ]
+        },
+        "expectedConfidence": {
+          "min": 0.05,
+          "max": 0.3
+        },
+        "expectedActions": [],
+        "expectedBounds": {
+          "maxTotalTokens": 360
+        }
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": {
+          "completed": true,
+          "chunkIds": []
+        },
+        "tools": {
+          "requested": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case25-call-1"
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "toolCallId": "case25-call-2"
+            }
+          ],
+          "executed": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "checkout-service"
+              }
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "input": {
+                "serviceSlug": "checkout-service"
+              }
+            }
+          ],
+          "completed": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case25-call-1",
+              "output": {
+                "serviceSlug": "checkout-service",
+                "status": "UNKNOWN"
+              }
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "toolCallId": "case25-call-2",
+              "output": {
+                "serviceSlug": "checkout-service",
+                "knownService": false,
+                "deployments": []
+              }
+            }
+          ]
+        },
+        "report": {
+          "evidence": [
+            {
+              "evidenceId": "case25-call-1",
+              "sourceType": "TOOL_EXECUTION"
+            },
+            {
+              "evidenceId": "case25-call-2",
+              "sourceType": "TOOL_EXECUTION"
+            }
+          ],
+          "suggestedActionTypes": [],
+          "category": "UNKNOWN",
+          "rootCausePresent": false,
+          "confidence": 0.1,
+          "evidenceState": "INSUFFICIENT",
+          "recommendationDisposition": "ADVISORY",
+          "suggestedActions": []
+        },
+        "investigation": {
+          "providerTurnsUsed": 3,
+          "diagnosticRequestCount": 2,
+          "forcedFinalization": false,
+          "stopReason": "NO_JUSTIFIED_DIAGNOSTIC",
+          "assessments": [
+            {
+              "toolCallId": "case25-call-1",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "NO_EVIDENCE_YET",
+                "supportedBy": []
+              }
+            },
+            {
+              "toolCallId": "case25-call-2",
+              "toolName": "get_recent_deployments",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "SCOPE_NOT_COVERED",
+                "supportedBy": [
+                  {
+                    "evidenceId": "case25-call-1",
+                    "sourceType": "TOOL_EXECUTION"
+                  }
+                ]
+              }
+            }
+          ],
+          "toolFailures": [],
+          "bounds": {
+            "maxProviderTurns": 5,
+            "maxDiagnosticToolCalls": 3
+          },
+          "usage": {
+            "inputTokens": 300,
+            "outputTokens": 60,
+            "providerCalls": 3
+          }
+        },
+        "failedStage": null
+      },
+      "expected": {
+        "passed": true,
+        "checks": [
+          {
+            "name": "status",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "retrieval-no-results",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-requested",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-executed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-completed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "schema-handling",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-grounding",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-types",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "root-cause-discipline",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-support",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "unknown-telemetry-handling",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "diagnostic-justification",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "confidence-calibration",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "action-grounding",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "approval-gate",
+            "status": "NOT_APPLICABLE",
+            "reasonCode": "NA_EXPECTATION_NOT_DECLARED"
+          },
+          {
+            "name": "bounds-respected",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "deterministic-recovery",
+            "status": "NOT_APPLICABLE",
+            "reasonCode": "NA_NO_RECOVERY_PATH_EXERCISED"
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "deployment-failed-behind-success",
+      "expectations": {
+        "runStatus": "completed",
+        "retrieval": {
+          "expectedTop1": "runbook-auth-failures-001"
+        },
+        "tool": {
+          "expectedRequested": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case26-call-1"
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "toolCallId": "case26-call-2"
+            }
+          ],
+          "expectedExecuted": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "auth-service"
+              }
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "input": {
+                "serviceSlug": "auth-service"
+              }
+            }
+          ],
+          "expectedCompleted": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case26-call-1"
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "toolCallId": "case26-call-2"
+            }
+          ]
+        },
+        "report": {
+          "schemaExpectation": "VALID",
+          "groundingExpectation": "VALID",
+          "requiredEvidenceTypes": [
+            "TOOL_EXECUTION"
+          ]
+        },
+        "expectedRootCause": "ABSENT",
+        "expectedEvidence": {
+          "state": "INSUFFICIENT",
+          "requiredLocators": [
+            {
+              "evidenceId": "case26-call-2",
+              "sourceType": "TOOL_EXECUTION"
+            }
+          ]
+        },
+        "expectedDiagnostics": [
+          {
+            "evidenceState": "INSUFFICIENT",
+            "continuationReason": "STATUS_UNRESOLVED"
+          },
+          {
+            "evidenceState": "INSUFFICIENT",
+            "continuationReason": "SCOPE_NOT_COVERED"
+          }
+        ],
+        "expectedTelemetryEvidence": {
+          "probative": [
+            {
+              "evidenceId": "case26-call-1",
+              "sourceType": "TOOL_EXECUTION"
+            }
+          ],
+          "nonProbative": [
+            {
+              "evidenceId": "case26-call-2",
+              "sourceType": "TOOL_EXECUTION"
+            }
+          ]
+        },
+        "expectedConfidence": {
+          "min": 0.1,
+          "max": 0.4
+        },
+        "expectedActions": [],
+        "expectedBounds": {
+          "maxTotalTokens": 360
+        }
+      },
+      "observed": {
+        "runStatus": "completed",
+        "errorCode": null,
+        "retrieval": {
+          "completed": true,
+          "chunkIds": [
+            "runbook-auth-failures-001",
+            "runbook-auth-failures-002"
+          ]
+        },
+        "tools": {
+          "requested": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case26-call-1"
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "toolCallId": "case26-call-2"
+            }
+          ],
+          "executed": [
+            {
+              "toolName": "get_service_status",
+              "input": {
+                "serviceSlug": "auth-service"
+              }
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "input": {
+                "serviceSlug": "auth-service"
+              }
+            }
+          ],
+          "completed": [
+            {
+              "toolName": "get_service_status",
+              "toolCallId": "case26-call-1",
+              "output": {
+                "serviceSlug": "auth-service",
+                "status": "OPERATIONAL"
+              }
+            },
+            {
+              "toolName": "get_recent_deployments",
+              "toolCallId": "case26-call-2",
+              "output": {
+                "serviceSlug": "auth-service",
+                "knownService": true,
+                "deployments": [
+                  {
+                    "deploymentId": "deploy-auth-0113",
+                    "version": "2.7.1",
+                    "outcome": "SUCCEEDED",
+                    "deployedAt": "2026-09-09T14:05:00.000Z"
+                  },
+                  {
+                    "deploymentId": "deploy-auth-0112",
+                    "version": "2.7.0",
+                    "outcome": "FAILED",
+                    "deployedAt": "2026-09-09T11:40:00.000Z"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "report": {
+          "evidence": [
+            {
+              "evidenceId": "case26-call-1",
+              "sourceType": "TOOL_EXECUTION"
+            },
+            {
+              "evidenceId": "case26-call-2",
+              "sourceType": "TOOL_EXECUTION"
+            }
+          ],
+          "suggestedActionTypes": [],
+          "category": "UNKNOWN",
+          "rootCausePresent": false,
+          "confidence": 0.25,
+          "evidenceState": "INSUFFICIENT",
+          "recommendationDisposition": "ADVISORY",
+          "suggestedActions": []
+        },
+        "investigation": {
+          "providerTurnsUsed": 3,
+          "diagnosticRequestCount": 2,
+          "forcedFinalization": false,
+          "stopReason": "NO_JUSTIFIED_DIAGNOSTIC",
+          "assessments": [
+            {
+              "toolCallId": "case26-call-1",
+              "toolName": "get_service_status",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "STATUS_UNRESOLVED",
+                "supportedBy": [
+                  {
+                    "evidenceId": "runbook-auth-failures-001",
+                    "sourceType": "RAG_CHUNK"
+                  }
+                ]
+              }
+            },
+            {
+              "toolCallId": "case26-call-2",
+              "toolName": "get_recent_deployments",
+              "assessment": {
+                "evidenceState": "INSUFFICIENT",
+                "continuationReason": "SCOPE_NOT_COVERED",
+                "supportedBy": [
+                  {
+                    "evidenceId": "case26-call-1",
+                    "sourceType": "TOOL_EXECUTION"
+                  }
+                ]
+              }
+            }
+          ],
+          "toolFailures": [],
+          "bounds": {
+            "maxProviderTurns": 5,
+            "maxDiagnosticToolCalls": 3
+          },
+          "usage": {
+            "inputTokens": 300,
+            "outputTokens": 60,
+            "providerCalls": 3
+          }
+        },
+        "failedStage": null
+      },
+      "expected": {
+        "passed": true,
+        "checks": [
+          {
+            "name": "status",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "retrieval-top1",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-requested",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-executed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "tool-completed",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "schema-handling",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-grounding",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-types",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "root-cause-discipline",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "evidence-support",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "unknown-telemetry-handling",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "diagnostic-justification",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "confidence-calibration",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "action-grounding",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "approval-gate",
+            "status": "NOT_APPLICABLE",
+            "reasonCode": "NA_EXPECTATION_NOT_DECLARED"
+          },
+          {
+            "name": "bounds-respected",
+            "status": "PASS",
+            "reasonCode": null
+          },
+          {
+            "name": "deterministic-recovery",
+            "status": "NOT_APPLICABLE",
+            "reasonCode": "NA_NO_RECOVERY_PATH_EXERCISED"
+          }
+        ]
+      }
     }
   ],
   "expectedMetrics": {
-    "totalCases": 22,
-    "passedCases": 22,
+    "totalCases": 26,
+    "passedCases": 26,
     "failedCases": 0,
     "passRate": 1,
     "retrievalTop1": {
-      "numerator": 10,
-      "denominator": 10
+      "numerator": 13,
+      "denominator": 13
     },
     "retrievalHitAt3": {
       "numerator": 4,
       "denominator": 4
     },
     "schemaHandlingCorrectness": {
-      "numerator": 16,
-      "denominator": 16
+      "numerator": 20,
+      "denominator": 20
     },
     "evidenceGroundingCorrectness": {
-      "numerator": 15,
-      "denominator": 15
+      "numerator": 19,
+      "denominator": 19
     },
     "toolCorrectness": {
-      "numerator": 18,
-      "denominator": 18
-    },
-    "expectedStatusCorrectness": {
       "numerator": 22,
       "denominator": 22
     },
+    "expectedStatusCorrectness": {
+      "numerator": 26,
+      "denominator": 26
+    },
     "rootCauseDiscipline": {
-      "numerator": 8,
-      "denominator": 8
+      "numerator": 12,
+      "denominator": 12
     },
     "evidenceSupport": {
-      "numerator": 8,
-      "denominator": 8
+      "numerator": 12,
+      "denominator": 12
     },
     "unknownHandling": {
-      "numerator": 4,
-      "denominator": 4
+      "numerator": 8,
+      "denominator": 8
     },
     "diagnosticJustification": {
-      "numerator": 8,
-      "denominator": 8
+      "numerator": 12,
+      "denominator": 12
     },
     "confidenceCalibration": {
-      "numerator": 8,
-      "denominator": 8
+      "numerator": 12,
+      "denominator": 12
     },
     "actionGrounding": {
-      "numerator": 2,
-      "denominator": 2
+      "numerator": 6,
+      "denominator": 6
     },
     "approvalGate": {
       "numerator": 19,
       "denominator": 19
     },
     "boundsRespected": {
-      "numerator": 22,
-      "denominator": 22
+      "numerator": 26,
+      "denominator": 26
     },
     "deterministicRecovery": {
       "numerator": 11,

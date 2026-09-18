@@ -8,6 +8,7 @@ import {
 } from "./cases/evidence-grounding-cases";
 import { PROTOCOL_AND_FAILURE_CASES } from "./cases/protocol-and-failure-cases";
 import { TOPIC_RUNBOOK_CASES } from "./cases/topic-runbook-cases";
+import { TWO_TOOL_DEPLOYMENT_CASES } from "./cases/two-tool-deployment-cases";
 import type { EvaluationCase } from "./types";
 
 // Fixed array order — the runner is required to execute (and report) cases in
@@ -32,4 +33,9 @@ export const EVALUATION_CASES: readonly EvaluationCase[] = [
   // correct for any future consumer of that array.
   FABRICATED_TOOL_OUTPUT_EVIDENCE_CASE,
   ADVERSARIAL_TOOL_INPUT_SHAPE_CASE,
+  // Issue #94 — the four two-tool deployment cases (positions 23-26),
+  // appended at the true end of the fixed order. They are the first cases to
+  // use the "with-deployments-tool" profile; every earlier case keeps the
+  // single-tool "default" registry it has always resolved against.
+  ...TWO_TOOL_DEPLOYMENT_CASES,
 ];

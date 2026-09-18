@@ -3,8 +3,9 @@ import type { EvaluationCaseResultV2 } from "./v2-types";
 // Issue #78 §2.1 — the declared structural adversarial case set.
 //
 // WHY THIS CONSTANT EXISTS. `evaluation-dataset.test.ts` already pins the exact
-// 22 case ids and their order, so deleting one of these three fails CI today —
-// but only as "the 22-id list changed", indistinguishable from renaming a
+// case ids and their order (22 at the time of Issue #78, 26 since Issue #94),
+// so deleting one of these three fails CI today —
+// but only as "the pinned id list changed", indistinguishable from renaming a
 // topical case, and satisfiable by an editor who simply updates the pinned list
 // to match their edit. This constant plus its membership test (see
 // adversarial-gate.test.ts) makes the removal of a SECURITY case fail with a
