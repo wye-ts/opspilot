@@ -5,6 +5,7 @@ import type { InvestigationEventRecordPayload } from "@opspilot/contracts";
 // the generic wording below instead.
 const KNOWN_TOOL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   get_service_status: "Get service status",
+  get_recent_deployments: "Get recent deployments",
 };
 
 /**

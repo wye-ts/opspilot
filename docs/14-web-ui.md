@@ -50,7 +50,7 @@ the Milestone 10 visual system: OpsPilot / AI Operations Investigator product
 
 ```text
 apps/web/
-  package.json        14 dependency entries — see §9
+  package.json        15 dependency entries — see §9
   tsconfig.json        extends ../../tsconfig.base.json; adds DOM lib, JSX, bundler resolution
   vite.config.ts        React plugin, relative /v1 dev+preview proxy, Vitest jsdom config
   index.html
@@ -629,15 +629,29 @@ a refusal creates no state.
 
 ## 10. Dependencies
 
-`apps/web/package.json` — 14 entries total (3 `dependencies` + 11 `devDependencies`; 13 external packages + 1 workspace dependency, `@opspilot/contracts`, imported type-only):
+`apps/web/package.json` — 15 entries total (3 `dependencies` + 12 `devDependencies`; 13 external packages + 2 workspace dependencies):
 
 ```text
 dependencies:     @opspilot/contracts (workspace:*), react ^19, react-dom ^19
-devDependencies:  @testing-library/dom ^10, @testing-library/jest-dom ^6,
-                   @testing-library/react ^16, @testing-library/user-event ^14,
-                   @types/react ^19, @types/react-dom ^19, @vitejs/plugin-react ^6,
+devDependencies:  @opspilot/agent-runtime (workspace:*), @testing-library/dom ^10,
+                   @testing-library/jest-dom ^6, @testing-library/react ^16,
+                   @testing-library/user-event ^14, @types/react ^19,
+                   @types/react-dom ^19, @vitejs/plugin-react ^6,
                    jsdom ^29, typescript ^7.0.2, vite ^8, vitest ^4.1.10
 ```
+
+The two workspace dependencies sit on opposite sides of the bundle boundary:
+
+- **`@opspilot/contracts`** is a production `dependency`, imported **type-only** — it contributes
+  types, not runtime code.
+- **`@opspilot/agent-runtime`** is a **test-only `devDependency`** and is deliberately *not*
+  production browser code. One test (`src/trace/trace-product-labels.test.ts`) imports
+  `DIAGNOSTIC_TOOL_CATALOG` so the Agent Activity label tables are checked against the real tool
+  catalog rather than a hand-copied list that cannot detect drift. Nothing under `src/` outside a
+  `.test.ts` may import it: it is unreachable from vite's entry graph, so the package's Zod
+  schemas and tool `execute()` bodies never enter the bundle. Verified on the built output — the
+  bundle contains no `DIAGNOSTIC_TOOL_CATALOG`, `knownService`, or `SEEDED_DEPLOYMENTS` — and
+  `check:bundle` (§ CI) guards the production artifact independently.
 
 `@testing-library/dom` is a required peer of `@testing-library/react` v16, which does not bundle it. `typescript` and `vitest` deliberately match the root pins exactly. All majors are current and stable — nothing experimental or pre-release. **No new dependency was added for the approval interaction** — it reuses the existing HTTP client, form, and badge patterns.
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { AgentTraceEvent } from "../api/types";
 import type { InvestigationEventRecordPayload } from "@opspilot/contracts";
+import { DIAGNOSTIC_TOOL_CATALOG } from "@opspilot/agent-runtime";
 import { presentInvestigationActivityLabel, presentTraceProductLabel, traceTechnicalEntries } from "./trace-product-labels";
 
 describe("presentTraceProductLabel", () => {
@@ -17,6 +18,53 @@ describe("presentTraceProductLabel", () => {
     const result = presentTraceProductLabel(event);
     expect(result.label).toBe("Checked service status");
     expect(result.detail).toBeNull();
+  });
+
+  // Milestone 14 (#94/#95): the second catalog tool. Before this, a two-tool
+  // investigation rendered as two indistinguishable "Running a diagnostic
+  // tool" rows — the one surface where the milestone is visible to a reader
+  // showed nothing of it. Every DIAGNOSTIC_TOOL_CATALOG member must have
+  // product language here, so the exhaustiveness test below is the real guard.
+  it("maps the deployments tool to product language, not the generic fallback", () => {
+    const requested: AgentTraceEvent = {
+      type: "TOOL_REQUESTED",
+      toolCallId: "job-1-call-2",
+      toolName: "get_recent_deployments",
+    };
+    expect(presentTraceProductLabel(requested).label).toBe("Checking recent deployments");
+
+    const completed: AgentTraceEvent = {
+      type: "TOOL_COMPLETED",
+      toolCallId: "job-1-call-2",
+      toolName: "get_recent_deployments",
+    };
+    expect(presentTraceProductLabel(completed).label).toBe("Checked recent deployments");
+  });
+
+  // Anti-erosion: a future catalog addition that forgets these tables degrades
+  // silently to the generic wording rather than failing anything. This
+  // iterates the REAL DIAGNOSTIC_TOOL_CATALOG, so adding a third tool without
+  // product language fails here — a hand-maintained copy of the names could
+  // not detect that, which is the drift the test exists to catch (Codex-review
+  // MINOR). @opspilot/agent-runtime is a devDependency: it is reachable only
+  // from this test, never from src/, so it cannot enter the vite bundle —
+  // apps/web's production build is guarded separately by `check:bundle`.
+  it("has product language for every tool in the real diagnostic catalog", () => {
+    expect(DIAGNOSTIC_TOOL_CATALOG.length).toBeGreaterThan(0);
+
+    for (const { tool } of DIAGNOSTIC_TOOL_CATALOG) {
+      const requested = { type: "TOOL_REQUESTED", toolCallId: "c", toolName: tool.name } as AgentTraceEvent;
+      expect(
+        presentTraceProductLabel(requested).label,
+        `${tool.name} has no requested-label in TOOL_PRODUCT_ACTIONS`,
+      ).not.toBe("Running a diagnostic tool");
+
+      const completed = { type: "TOOL_COMPLETED", toolCallId: "c", toolName: tool.name } as AgentTraceEvent;
+      expect(
+        presentTraceProductLabel(completed).label,
+        `${tool.name} has no completed-label in TOOL_PRODUCT_ACTIONS`,
+      ).not.toBe("Diagnostic tool completed");
+    }
   });
 
   it("presents REPORT_GENERATED as the resolution report", () => {

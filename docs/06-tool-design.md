@@ -32,7 +32,9 @@ page. It adds no new design decisions.
 
 ## Implementation state (September 2026)
 
-The designed MVP set in §14.3 names five read-only diagnostic tools. **One is implemented.**
+The designed MVP set in §14.3 names five read-only diagnostic tools. **One is implemented from
+that list**, and one shipped tool has no §14.3 counterpart at all — the catalog and the design
+list have diverged, which is recorded here rather than quietly reconciled.
 
 | Designed tool (§14.3) | Implemented |
 | --- | --- |
@@ -42,8 +44,12 @@ The designed MVP set in §14.3 names five read-only diagnostic tools. **One is i
 | `find_similar_incidents` | No |
 | `lookup_customer_account` | No |
 
+| Shipped tool with no §14.3 entry | Origin |
+| --- | --- |
+| `get_recent_deployments` | Issue #93 (Milestone 14). A seeded most-recent-first deployment lookup over the same three service slugs, returning `knownService` plus `SUCCEEDED`/`FAILED`/`ROLLED_BACK` outcomes (`packages/agent-runtime/src/tools/get-recent-deployments.ts`). It was never part of the §14.3 draft — that list is a pre-implementation design artifact, not a queue being worked through in order |
+
 `DIAGNOSTIC_TOOL_CATALOG` (`packages/agent-runtime/src/tools/diagnostic-tool-catalog.ts`) is
-therefore a one-entry array. The surrounding machinery is not specific to that one tool, but the
+therefore a two-entry array. The surrounding machinery is not specific to either tool, but the
 ownership split matters if you extend the catalog:
 
 - **`InMemoryToolRegistry`** accepts any `readonly DiagnosticToolDefinition[]` and resolves a
@@ -71,16 +77,20 @@ ownership split matters if you extend the catalog:
 Two consequences worth stating plainly rather than leaving for a reader to infer:
 
 - **Multi-step investigation is bounded by turns, not by tool variety.** Issues #57/#58 allow
-  up to three diagnostic calls with evidence-sufficiency-driven continuation, but with a
-  one-entry catalog the only available variation between calls is the `serviceSlug` argument.
+  up to three diagnostic calls with evidence-sufficiency-driven continuation. With a two-entry
+  catalog a run can now vary both *which* tool it calls and its `serviceSlug` argument, but the
+  binding constraint is still `MAX_DIAGNOSTIC_TOOL_CALLS = 3`, not the catalog's size.
 - **Tool-*selection* quality is not a measurable property today.** `docs/01-prd.md` §11 lists
   "tool selection accuracy" as an AI quality metric. The evaluation harness does ship a real
   `toolCorrectness` metric (five checks: `tool-requested`, `tool-executed`, `tool-completed`,
   and two forbidden-tool checks — `apps/worker/src/evaluation/evaluation-metrics.ts`), which
   catches a missing, misnamed, or forbidden call. But it measures *correctness against a
-  case-declared expectation* under a fixture-driven provider, not *selection* — and with one
-  tool in the catalog there is no alternative to choose wrongly. Adding tools is what would
-  make a selection metric informative.
+  case-declared expectation* under a fixture-driven provider, not *selection*. **Catalog size
+  does not change this.** `apps/worker/src/evaluation/evaluation-runner.ts` constructs a
+  `FakeLlmProvider` per case, so every provider turn — including which tool is requested — is
+  scripted by the case fixture. A second tool shipped in #93/#94 and the metric is no more
+  informative about model choice than it was with one. Whether a real model *chooses* well is
+  answerable only by a live run, recorded as a bounded observation, never as a CI-gated property.
 
 Neither is an architectural limit — the registry and the per-turn budget accounting are already
 tool-count-neutral, and the catalog is a plain array. They are unfilled capacity.

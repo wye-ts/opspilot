@@ -1303,6 +1303,22 @@ The registry must reject:
 
 ### 14.3 MVP Read-Only Tools
 
+> **Status: audited pre-implementation draft, not queued scope.** This section was written before
+> any tool shipped and lists five candidate tools. It has since diverged from the implementation in
+> both directions, and is retained as a design record rather than a backlog:
+>
+> - **Implemented from this list:** `check_service_status` only, shipped under the name
+>   `get_service_status`. `search_runbooks` was deliberately *not* built as a model-callable tool —
+>   retrieval runs before the agent loop and is supplied as context (`docs/05-rag-design.md`).
+>   `search_logs`, `find_similar_incidents`, and `lookup_customer_account` are unbuilt with no
+>   open issue.
+> - **Shipped but absent from this list:** `get_recent_deployments` (issue #93). Nothing here
+>   anticipated it.
+>
+> Do not read an entry below as committed work. `docs/06-tool-design.md` "Implementation state"
+> holds the current, verified catalog; a future tool needs its own issue and design, and inheriting
+> a name from this draft is not a justification for building it.
+
 #### `search_runbooks`
 
 Purpose: Retrieve relevant runbook chunks.

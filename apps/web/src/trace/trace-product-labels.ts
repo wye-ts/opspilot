@@ -23,6 +23,7 @@ export interface TraceProductLabel {
  */
 const TOOL_PRODUCT_ACTIONS: Readonly<Record<string, { readonly requested: string; readonly completed: string }>> = {
   get_service_status: { requested: "Checking service status", completed: "Checked service status" },
+  get_recent_deployments: { requested: "Checking recent deployments", completed: "Checked recent deployments" },
 };
 
 const UNKNOWN_TOOL_REQUESTED = "Running a diagnostic tool";
