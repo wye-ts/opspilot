@@ -4,7 +4,7 @@
 |---|---|
 | Spike | `apps/worker/src/demo/run-rag-live-spike.ts` (`RAG_SPIKE_SCENARIO=tool-discipline pnpm --filter @opspilot/worker run spike:rag`) |
 | Scenario logic | `apps/worker/src/demo/run-rag-live-spike-scenarios.ts` (unit-tested directly in `run-rag-live-spike-scenarios.test.ts`, without importing or executing the live composition root) |
-| Related design | `docs/reviews/37-milestone-14-second-diagnostic-tool-plan.md`, `docs/06-tool-design.md` |
+| Related design | `docs/06-tool-design.md` ("Implementation state"), `docs/03-technical-design.md` §14.3. The Milestone 14 plan (`docs/reviews/37-milestone-14-second-diagnostic-tool-plan.md`) is **not on `main`** — it lives only on the unmerged `docs/milestone-14-second-diagnostic-tool` branch, so it is deliberately not cited as a resolvable path here. `docs/reviews/46-issue-94-two-tool-eval-coverage-plan.md` (line 254) carries the same dangling reference; plan documents are point-in-time records and are not retroactively edited, so that one stands. Whether to merge the planning branch is an owner decision. |
 | Date | 2026-09-18 |
 | Status | **One usable observation obtained (n=1).** The model called `get_recent_deployments` on a ticket whose retrieved evidence points at provider-side rate limiting. |
 | Model | `claude-sonnet-5`. No Voyage/embedding client — this scenario uses the shipped `InMemoryKeywordRunbookRetriever`. |
