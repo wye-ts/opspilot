@@ -6,9 +6,9 @@
 | Scenario logic | `apps/worker/src/demo/run-rag-live-spike-scenarios.ts`, unit-tested in `run-rag-live-spike-scenarios.test.ts` without executing the live composition root |
 | Related design | `docs/06-tool-design.md` ("Implementation state"), `docs/03-technical-design.md` §14.3. The Milestone 14 plan (`docs/reviews/37-milestone-14-second-diagnostic-tool-plan.md`) is **not on `main`** — it exists only on the unmerged `docs/milestone-14-second-diagnostic-tool` branch, so it is deliberately not cited as a resolvable path. `docs/reviews/46-issue-94-two-tool-eval-coverage-plan.md` (line 254) carries the same dangling reference; plan documents are point-in-time records and are not retroactively edited. |
 | Date | 2026-09-18 |
-| Status | **Descriptive record obtained from 3 recorded runs** (of 4 that completed — run 1 completed but is discarded, see the run ledger). Both catalog tools were offered to a live model for the first time; the model called both. **No catalog-sizing conclusion follows.** |
+| Status | **Descriptive record obtained from 4 recorded runs** (of 5 that completed — run 1 completed but is discarded, see the run ledger). Both catalog tools were offered to a live model for the first time; the model called both. **No catalog-sizing conclusion follows.** |
 | Model | `claude-sonnet-5`. No Voyage/embedding client — this scenario uses the shipped `InMemoryKeywordRunbookRetriever`. |
-| Cost | 3 billed Claude calls per run that reaches the model, ≈ $0.13 each. Five of six invocations were billed (run 4 died at the first call), so ≈ $0.65 total. |
+| Cost | 3 billed Claude calls per run that reaches the model, ≈ $0.13 each. Six of seven invocations were billed (run 4 died at the first call), so ≈ $0.78 total. |
 
 ## What this scenario is for
 
@@ -33,7 +33,7 @@ The question is deliberately **descriptive**:
 
 ## Observed result
 
-The three recorded runs, across two separate API-credit periods, produced identical tool usage:
+The four recorded runs, across two separate API-credit periods, produced identical tool usage:
 
 ```
 status=completed
@@ -88,9 +88,9 @@ plumbing and behavior observation the one-entry list could not produce.
 
 - That the model selects tools well, or badly. The scenario does not construct
   a situation with a known-correct tool choice, so neither verdict is available.
-- **That the three identical runs establish stability.** Samples that agree do
+- **That the four identical runs establish stability.** Samples that agree do
   not rule out sampling variability — they merely failed to exhibit it. With
-  n=3 against a non-deterministic model the observable variation is bounded
+  n=4 against a non-deterministic model the observable variation is bounded
   only very loosely; this is consistent with anything from fully deterministic
   behavior to a meaningful minority of runs behaving differently.
 - That tool-*selection* quality is measured anywhere. The CI evaluation harness
@@ -122,12 +122,14 @@ usable:
 
 ## Run ledger
 
-Six invocations total: four completed, one failed after billing, one failed
-before it. All six retrieved the identical ranking
-(`runbook-notification-rate-limit-001` at rank 1, score 12), since retrieval is
-deterministic here — keyword retriever, fixed corpus, fixed query. Only runs 3,
-5 and 6 are recorded as observations; the ledger lists every invocation so the
-cost total and the discarded outcomes reconcile.
+Seven invocations total: five completed, one failed after billing, one failed
+before it. Only runs 3, 5 and 6 are recorded as observations; the ledger lists
+every invocation so the cost total and the discarded outcomes reconcile.
+
+Run 1 performed **no retrieval at all** — that is exactly why it is discarded.
+Every invocation from run 2 onward retrieved the identical ranking
+(`runbook-notification-rate-limit-001` at rank 1, score 12), retrieval being
+deterministic here: keyword retriever, fixed corpus, fixed query.
 
 | # | Outcome | Billed calls | Disposition |
 |---|---|---|---|
@@ -137,6 +139,7 @@ cost total and the discarded outcomes reconcile.
 | 4 | `status=failed` (`PROVIDER_UNAVAILABLE`) | 0 (failed at the first call) | Provider outage — exhausted API credit, unrelated to the change. |
 | 5 | Completed | 3 | **Recorded.** Verifies the tightened rank-1 guard end-to-end; same tool usage as run 3. |
 | 6 | Completed | 3 | **Recorded.** Confirms the `tool-discipline` → `two-tool-usage` rename did not break the live path; same tool usage again. |
+| 7 | Completed | 3 | **Recorded.** Confirms the corrected `.env` loading and the call list rendered from recorded data; same tool usage again. |
 
 Runs 1 and 2 are documented rather than quietly dropped, because each exposed a
 real defect that is fixed in this change:
@@ -163,7 +166,26 @@ Every sibling (`demo:persisted`, `test:claude:live`,
 `generate:embedding-fixture`) passes `--env-file-if-exists`. The first
 invocation therefore failed at `requireEnv("ANTHROPIC_API_KEY")` and, because
 the script's top-level catch is deliberately opaque to avoid leaking
-credentials, reported only "The spike failed to run." Fixed here.
+credentials, reported only "The spike failed to run."
+
+The fix loads **both** env files, and the order matters. This repository keeps
+`ANTHROPIC_API_KEY` and the database URLs in the root `.env`, but
+`VOYAGE_API_KEY` / `EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS` exist **only** in
+`apps/worker/.env` — and the spike's other scenarios need Voyage. Loading just
+the root file would have left every embedding-backed scenario without a
+credential; this scenario only escaped that because it deliberately uses the
+keyword retriever.
+
+Node applies `--env-file-if-exists` so that **later files override earlier
+ones** (verified directly, not assumed — it is the opposite of the intuitive
+reading). The worker-local file is therefore passed last, so its values win:
+
+```
+--env-file-if-exists=../../.env --env-file-if-exists=.env
+```
+
+Verified after the change: `VOYAGE_API_KEY`, `ANTHROPIC_API_KEY`,
+`DATABASE_URL` and `EMBEDDING_MODEL` are all visible to the process.
 
 ## Reproducing
 

@@ -1181,9 +1181,38 @@ describe("evaluateTwoToolUsageScenario (issue #95)", () => {
   it("describes a call-only-status run without claiming the model chose well", () => {
     const text = describeTwoToolUsageObservation(observation({ deploymentsToolCalled: false }));
     expect(text).toContain("OBSERVATION (this run)");
+    expect(text).toContain("the model called get_service_status");
     expect(text).toContain("establishes nothing about");
     expect(text).toContain("no catalog-sizing conclusion follows");
     expect(text).not.toMatch(/\bproves\b|\bdemonstrates that the model\b|reliably disciplined\./);
+  });
+
+  // Codex-review MAJOR: the text hardcoded "as well as get_service_status",
+  // so a deployments-only run would have been reported as calling a tool it
+  // never called — a false behavior claim in the field this scenario exists
+  // to record accurately.
+  it("does not claim get_service_status was called when it was not", () => {
+    const text = describeTwoToolUsageObservation(
+      observation({
+        calledToolNames: ["get_recent_deployments"],
+        deploymentsToolCalled: true,
+        diagnosticCallCount: 1,
+      }),
+    );
+    expect(text).toContain("the model called get_recent_deployments");
+    expect(text).not.toContain("as well as get_service_status");
+    expect(text).not.toMatch(/called[^.]*get_service_status/);
+  });
+
+  it("lists both tools when both were actually called", () => {
+    const text = describeTwoToolUsageObservation(
+      observation({
+        calledToolNames: ["get_service_status", "get_recent_deployments"],
+        deploymentsToolCalled: true,
+        diagnosticCallCount: 2,
+      }),
+    );
+    expect(text).toContain("the model called get_service_status and get_recent_deployments");
   });
 
   it("describes a deployments call without calling it unmotivated or budget waste", () => {

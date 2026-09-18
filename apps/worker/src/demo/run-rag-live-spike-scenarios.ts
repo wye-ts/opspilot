@@ -1149,23 +1149,35 @@ export function evaluateTwoToolUsageScenario(
 
 // Renders the finding a human reads. Kept separate from the pass/fail
 // decision above precisely so the two cannot drift into each other.
+// Renders a tool list as prose without ever implying a tool that is not in it.
+function formatToolList(names: readonly string[]): string {
+  if (names.length === 0) return "no diagnostic tools";
+  if (names.length === 1) return names[0] as string;
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
 export function describeTwoToolUsageObservation(observation: TwoToolUsageObservation): string {
   const shown =
     `Retrieved and shown to the model: ${JSON.stringify(observation.retrievedChunkIds)} ` +
     `(rank 1 = ${observation.rankOneChunkId ?? "none"}). `;
+  // Rendered from the RECORDED call list, never from a hardcoded sentence. An
+  // earlier version branched only on `deploymentsToolCalled` and asserted the
+  // model called deployments "as well as get_service_status" — which would
+  // misreport a deployments-only run, in the very field this scenario exists
+  // to record accurately.
+  const called = `the model called ${formatToolList(observation.calledToolNames)}`;
   return observation.deploymentsToolCalled
     ? shown +
-        "OBSERVATION (this run): offered both catalog tools, the model called get_recent_deployments " +
-        "as well as get_service_status, on a ticket whose top-ranked runbook attributes the symptom " +
-        "to provider-side rate limiting. This records WHICH tools a live model reached for and what " +
-        "evidence it held at the time. It is NOT a finding that the call was unmotivated: the ticket " +
-        "says no release was ANNOUNCED, which an unannounced deploy would also satisfy, so checking " +
-        "the deployment record is a legitimate differential-diagnosis step. No catalog-sizing " +
-        "conclusion follows from it in either direction."
+        `OBSERVATION (this run): offered both catalog tools, ${called}, on a ticket whose ` +
+        "top-ranked runbook attributes the symptom to provider-side rate limiting. This records " +
+        "WHICH tools a live model reached for and what evidence it held at the time. It is NOT a " +
+        "finding that the call was unmotivated: the ticket says no release was ANNOUNCED, which an " +
+        "unannounced deploy would also satisfy, so checking the deployment record is a legitimate " +
+        "differential-diagnosis step. No catalog-sizing conclusion follows from it in either direction."
     : shown +
-        "OBSERVATION (this run): the model called only get_service_status, though get_recent_deployments " +
-        "was also offered. This records which tools were reached for; it establishes nothing about " +
-        "whether the model selects tools well, and no catalog-sizing conclusion follows from it.";
+        `OBSERVATION (this run): offered both catalog tools, ${called} — get_recent_deployments was ` +
+        "offered but not called. This records which tools were reached for; it establishes nothing " +
+        "about whether the model selects tools well, and no catalog-sizing conclusion follows from it.";
 }
 
 export async function runTwoToolUsageScenario(
