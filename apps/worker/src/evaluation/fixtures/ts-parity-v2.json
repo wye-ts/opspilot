@@ -4760,7 +4760,7 @@
       "expectations": {
         "runStatus": "completed",
         "retrieval": {
-          "expectedTop1": "runbook-storage-quota-exhaustion-001"
+          "expectedTop1": "runbook-database-connection-saturation-001"
         },
         "tool": {
           "expectedRequested": [
@@ -4773,7 +4773,7 @@
               "toolCallId": "case23-call-2"
             },
             {
-              "toolName": "get_recent_deployments",
+              "toolName": "get_service_status",
               "toolCallId": "case23-call-3"
             }
           ],
@@ -4791,7 +4791,7 @@
               }
             },
             {
-              "toolName": "get_recent_deployments",
+              "toolName": "get_service_status",
               "input": {
                 "serviceSlug": "auth-service"
               }
@@ -4807,7 +4807,7 @@
               "toolCallId": "case23-call-2"
             },
             {
-              "toolName": "get_recent_deployments",
+              "toolName": "get_service_status",
               "toolCallId": "case23-call-3"
             }
           ]
@@ -4894,7 +4894,7 @@
                 "sourceType": "TOOL_EXECUTION"
               },
               {
-                "evidenceId": "runbook-storage-quota-exhaustion-001",
+                "evidenceId": "runbook-database-connection-saturation-001",
                 "sourceType": "RAG_CHUNK"
               }
             ]
@@ -4910,9 +4910,7 @@
         "retrieval": {
           "completed": true,
           "chunkIds": [
-            "runbook-storage-quota-exhaustion-001",
-            "runbook-public-api-rate-limit-002",
-            "runbook-storage-upload-corruption-001"
+            "runbook-database-connection-saturation-001"
           ]
         },
         "tools": {
@@ -4926,7 +4924,7 @@
               "toolCallId": "case23-call-2"
             },
             {
-              "toolName": "get_recent_deployments",
+              "toolName": "get_service_status",
               "toolCallId": "case23-call-3"
             }
           ],
@@ -4944,7 +4942,7 @@
               }
             },
             {
-              "toolName": "get_recent_deployments",
+              "toolName": "get_service_status",
               "input": {
                 "serviceSlug": "auth-service"
               }
@@ -4969,25 +4967,11 @@
               }
             },
             {
-              "toolName": "get_recent_deployments",
+              "toolName": "get_service_status",
               "toolCallId": "case23-call-3",
               "output": {
                 "serviceSlug": "auth-service",
-                "knownService": true,
-                "deployments": [
-                  {
-                    "deploymentId": "deploy-auth-0113",
-                    "version": "2.7.1",
-                    "outcome": "SUCCEEDED",
-                    "deployedAt": "2026-09-09T14:05:00.000Z"
-                  },
-                  {
-                    "deploymentId": "deploy-auth-0112",
-                    "version": "2.7.0",
-                    "outcome": "FAILED",
-                    "deployedAt": "2026-09-09T11:40:00.000Z"
-                  }
-                ]
+                "status": "OPERATIONAL"
               }
             }
           ]
@@ -5003,8 +4987,12 @@
               "sourceType": "TOOL_EXECUTION"
             },
             {
-              "evidenceId": "runbook-storage-quota-exhaustion-001",
+              "evidenceId": "runbook-database-connection-saturation-001",
               "sourceType": "RAG_CHUNK"
+            },
+            {
+              "evidenceId": "case23-call-3",
+              "sourceType": "TOOL_EXECUTION"
             }
           ],
           "suggestedActionTypes": [
@@ -5045,7 +5033,7 @@
                 "continuationReason": "STATUS_UNRESOLVED",
                 "supportedBy": [
                   {
-                    "evidenceId": "runbook-storage-quota-exhaustion-001",
+                    "evidenceId": "runbook-database-connection-saturation-001",
                     "sourceType": "RAG_CHUNK"
                   }
                 ]
@@ -5067,7 +5055,7 @@
             },
             {
               "toolCallId": "case23-call-3",
-              "toolName": "get_recent_deployments",
+              "toolName": "get_service_status",
               "assessment": {
                 "evidenceState": "INSUFFICIENT",
                 "continuationReason": "SCOPE_NOT_COVERED",
@@ -5075,6 +5063,10 @@
                   {
                     "evidenceId": "case23-call-2",
                     "sourceType": "TOOL_EXECUTION"
+                  },
+                  {
+                    "evidenceId": "runbook-database-connection-saturation-001",
+                    "sourceType": "RAG_CHUNK"
                   }
                 ]
               }
@@ -5189,7 +5181,7 @@
       "expectations": {
         "runStatus": "completed",
         "retrieval": {
-          "expectedTop1": "runbook-notification-degradation-001"
+          "expectedTop1": "runbook-deployment-rollback-001"
         },
         "tool": {
           "expectedRequested": [
@@ -5231,7 +5223,8 @@
           "schemaExpectation": "VALID",
           "groundingExpectation": "VALID",
           "requiredEvidenceTypes": [
-            "TOOL_EXECUTION"
+            "TOOL_EXECUTION",
+            "RAG_CHUNK"
           ]
         },
         "expectedRootCause": "ABSENT",
@@ -5241,6 +5234,10 @@
             {
               "evidenceId": "case24-call-2",
               "sourceType": "TOOL_EXECUTION"
+            },
+            {
+              "evidenceId": "runbook-deployment-rollback-001",
+              "sourceType": "RAG_CHUNK"
             }
           ]
         },
@@ -5283,9 +5280,8 @@
         "retrieval": {
           "completed": true,
           "chunkIds": [
-            "runbook-notification-degradation-001",
-            "runbook-notification-queue-backlog-001",
-            "runbook-billing-invoice-formatting-001"
+            "runbook-deployment-rollback-001",
+            "runbook-deployment-rollback-002"
           ]
         },
         "tools": {
@@ -5355,6 +5351,10 @@
             {
               "evidenceId": "case24-call-2",
               "sourceType": "TOOL_EXECUTION"
+            },
+            {
+              "evidenceId": "runbook-deployment-rollback-001",
+              "sourceType": "RAG_CHUNK"
             }
           ],
           "suggestedActionTypes": [],
@@ -5379,7 +5379,7 @@
                 "continuationReason": "STATUS_UNRESOLVED",
                 "supportedBy": [
                   {
-                    "evidenceId": "runbook-notification-degradation-001",
+                    "evidenceId": "runbook-deployment-rollback-001",
                     "sourceType": "RAG_CHUNK"
                   }
                 ]

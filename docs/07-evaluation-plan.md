@@ -142,10 +142,15 @@ every earlier case keeps the single-tool `default` registry). They exercise the
 heterogeneous-tool path — `registry.find → inputSchema.safeParse → execute →
 outputSchema → TOOL_EXECUTION evidence` — with a second input/output shape, and
 each locks one evidential shape of `get_recent_deployments`. Case 23 is the
-only one carrying a non-null conclusion, and it is a NEGATIVE one: a confirmed
-`OUTAGE` with `knownService: true` and zero deployments grounds "deployment is
-ruled out as a contributing factor" on two distinct `TOOL_EXECUTION` locators
-plus a `RAG_CHUNK`. Cases 24–26 are ambiguity locks: a recent `ROLLED_BACK`
+only one carrying a non-null conclusion, and it is a NEGATIVE one, narrowly
+scoped: a confirmed `OUTAGE` with `knownService: true` and zero RECENT
+deployments grounds "a recent billing-service deployment is ruled out as a
+contributing factor" on two distinct `TOOL_EXECUTION` locators plus a
+`RAG_CHUNK` — never "deployment, full stop," which `get_recent_deployments`'
+bounded window cannot prove. A third call checks the shared-database
+co-tenant's status (not its deployment history), and the report explicitly
+leaves that co-tenant hypothesis unresolved rather than folding it into the
+exclusion. Cases 24–26 are ambiguity locks: a recent `ROLLED_BACK`
 deployment stays an unresolved lead, `knownService: false` is an absence of
 RECORDS rather than evidence of no deployments, and a `FAILED` deployment
 behind a later `SUCCEEDED` one supports nothing in either direction.

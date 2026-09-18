@@ -83,6 +83,93 @@ describe("EVALUATION_CASES", () => {
     );
   });
 
+  // Codex-review BLOCKER (two rounds): the case's third call raises a
+  // shared-database co-tenant hypothesis (auth-service) that this run never
+  // resolves — only auth-service's STATUS is checked, never its deployment
+  // history. An earlier draft's report text said "recent deployments are
+  // excluded" / "no recent deployment exists" with no scope, which reads as
+  // a claim about ALL deployments including the co-tenant's — an unsupported
+  // conclusion contradicting the very runbook chunk cited as evidence. This
+  // locks the report staying scoped to billing-service's own deployment
+  // history and never asserting the co-tenant hypothesis is resolved.
+  it("deployment-ruled-out's report scopes its deployment exclusion to billing-service and leaves the co-tenant hypothesis unresolved", () => {
+    const boundCase = EVALUATION_CASES.find((c) => c.id === "deployment-ruled-out");
+    const turn = boundCase?.scenario.turns.find(
+      (candidate) => typeof candidate === "object" && candidate.kind === "report_submission",
+    );
+    if (turn?.kind !== "report_submission") throw new Error("missing report submission for deployment-ruled-out");
+    const report = turn.rawInput as ResolutionReport;
+
+    // Every prose field discussing exclusion must scope it to billing-service
+    // — never a bare "deployments are excluded"/"no recent deployment exists"
+    // that would read as covering the co-tenant too.
+    const prose = [report.summary, report.recommendedResolution, ...report.suggestedActions.map((a) => a.payload.reason)];
+    for (const text of prose) {
+      if (/deployment/i.test(text)) {
+        expect(text).toMatch(/billing-service/i);
+      }
+    }
+
+    // The co-tenant's deployment history genuinely was not queried in this
+    // run — only get_recent_deployments(billing-service) was requested, so
+    // "unresolved" is not merely asserted in prose, it is mechanically true.
+    const deploymentCalls = boundCase?.expectations.tool?.expectedExecuted?.filter(
+      (call) => call.toolName === "get_recent_deployments",
+    );
+    expect(deploymentCalls).toEqual([{ toolName: "get_recent_deployments", input: { serviceSlug: "billing-service" } }]);
+  });
+
+  // Codex-review BLOCKER round 3: "a billing-service deployment is excluded"
+  // (with no "recent") overclaims what get_recent_deployments' bounded window
+  // can prove — it can only speak to RECENT history, never "no deployment
+  // ever". Every exclusion statement must carry "recent" alongside
+  // "billing-service", not just one of the two.
+  it("deployment-ruled-out's report scopes its exclusion to RECENT billing-service deployments, not deployments at large", () => {
+    const boundCase = EVALUATION_CASES.find((c) => c.id === "deployment-ruled-out");
+    const turn = boundCase?.scenario.turns.find(
+      (candidate) => typeof candidate === "object" && candidate.kind === "report_submission",
+    );
+    if (turn?.kind !== "report_submission") throw new Error("missing report submission for deployment-ruled-out");
+    const report = turn.rawInput as ResolutionReport;
+
+    const prose = [report.summary, report.recommendedResolution, ...report.suggestedActions.map((a) => a.payload.reason)];
+    for (const text of prose) {
+      // Any clause asserting exclusion/ruling-out of a billing-service
+      // deployment must itself carry "recent" — not merely appear somewhere
+      // in a longer sentence that also happens to mention "recent" elsewhere.
+      const exclusionClauses = text.match(/[^.]*\bbilling-service\b[^.]*\b(exclud|ruled out|rule out)[^.]*\./gi) ?? [];
+      for (const clause of exclusionClauses) {
+        expect(clause).toMatch(/recent/i);
+      }
+    }
+  });
+
+  // Codex-review MAJOR round 3: an INSUFFICIENT case must not read as closing
+  // the investigation. "No action" must be scoped to the diagnostic tools
+  // exercised (deployment/rollback), and the prose must affirmatively point
+  // at further investigation of the ticket's own reported symptom.
+  it("deployment-failed-behind-success does not recommend general inaction and preserves further investigation", () => {
+    const failedBehindCase = EVALUATION_CASES.find((c) => c.id === "deployment-failed-behind-success");
+    const turn = failedBehindCase?.scenario.turns.find(
+      (candidate) => typeof candidate === "object" && candidate.kind === "report_submission",
+    );
+    if (turn?.kind !== "report_submission") {
+      throw new Error("missing report submission for deployment-failed-behind-success");
+    }
+    const report = turn.rawInput as ResolutionReport;
+
+    expect(report.recommendedResolution).not.toMatch(/^no action is warranted/i);
+    expect(report.recommendedResolution).toMatch(/investigat/i);
+    // The prose must not read as recommending ticket closure. Checking for a
+    // bare "close the ticket" would also match this case's own correct
+    // "does not close the ticket" disclaimer, so require any "close" mention
+    // to be negated.
+    const closeMentions = report.recommendedResolution.match(/[^.]*\bclose\b[^.]*\./gi) ?? [];
+    for (const clause of closeMentions) {
+      expect(clause).toMatch(/\bnot\b|\bdoes not\b|\bdoesn't\b/i);
+    }
+  });
+
   it("has no duplicate case ids", () => {
     const ids = EVALUATION_CASES.map((evaluationCase) => evaluationCase.id);
     expect(new Set(ids).size).toBe(ids.length);

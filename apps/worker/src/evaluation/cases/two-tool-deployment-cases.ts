@@ -42,20 +42,22 @@ function scenario(id: string, turns: FakeAgentScenario["turns"]): FakeAgentScena
 
 // 23. deployment-ruled-out — the one case carrying a non-null conclusion, and
 // it is a NEGATIVE one. billing-service is OUTAGE with `knownService: true`
-// and zero deployments, so "deployment is not a contributing factor" is
-// earned rather than assumed. This is also the acceptance-criterion-1 case:
+// and zero RECENT deployments, so "a recent deployment is not a contributing
+// factor" is earned — deliberately scoped to what get_recent_deployments'
+// bounded window can actually prove, never to "no deployment ever", which
+// this tool cannot establish. This is also the acceptance-criterion-1 case:
 // two distinct TOOL_EXECUTION locators from two DIFFERENT tools, plus a
 // RAG_CHUNK.
 const DEPLOYMENT_RULED_OUT_REPORT: ResolutionReport = {
   category: "UNKNOWN",
   summary:
-    "billing-service is in a confirmed outage, and no recent deployment exists that could have caused it.",
+    "billing-service is in a confirmed outage, and billing-service's own deployment history shows no recent rollout that could have caused it.",
   // Deliberately null. Ruling a candidate OUT does not establish what the
   // cause IS, and the tools in this run cannot.
   rootCause: null,
   customerImpact: "Billing operations are unavailable while the outage persists.",
   recommendedResolution:
-    "Escalate to the billing on-call team. Recent deployments are excluded as a contributing factor, so investigation should start from infrastructure and dependency health.",
+    "Escalate to the billing on-call team. A recent billing-service deployment is excluded as a contributing factor. The shared-database co-tenant hypothesis this run raised — that a recent deploy on a service sharing the database, such as auth-service, could saturate the pool — is NOT resolved here: auth-service's own status is OPERATIONAL with no symptom, but its deployment history was never queried in this run, so a deploy-driven contribution from that angle is neither confirmed nor ruled out.",
   confidence: 0.6,
   evidence: [
     {
@@ -68,13 +70,21 @@ const DEPLOYMENT_RULED_OUT_REPORT: ResolutionReport = {
       evidenceId: "case23-call-2",
       sourceType: "TOOL_EXECUTION",
       finding:
-        "billing-service is a known service with zero recent deployments, so no rollout coincides with this outage.",
+        "billing-service is a known service with zero recent deployments, so no rollout on billing-service itself coincides with this outage.",
       supports: [],
     },
     {
-      evidenceId: "runbook-storage-quota-exhaustion-001",
+      evidenceId: "runbook-database-connection-saturation-001",
       sourceType: "RAG_CHUNK",
-      finding: "Runbook guidance for storage-related service outages.",
+      finding:
+        "Connection pool saturation across services sharing the same database can present as an outage, and the runbook names a leaked connection from a recent deploy — on ANY sharing service, not only billing-service — as a common cause.",
+      supports: [],
+    },
+    {
+      evidenceId: "case23-call-3",
+      sourceType: "TOOL_EXECUTION",
+      finding:
+        "auth-service, the co-tenant the ticket and runbook raised as a hypothesis, is OPERATIONAL with no symptom. Its deployment history was not queried, so this observation narrows but does not resolve the shared-database hypothesis.",
       supports: [],
     },
   ],
@@ -86,7 +96,7 @@ const DEPLOYMENT_RULED_OUT_REPORT: ResolutionReport = {
       payload: {
         team: "Billing",
         reason:
-          "billing-service is in a confirmed outage with no recent deployment to explain it; deployment is ruled out and the cause remains unidentified.",
+          "billing-service is in a confirmed outage with no recent billing-service deployment to explain it; a recent billing-service deployment is ruled out, and the cause remains unidentified. The shared-database co-tenant hypothesis remains unresolved and is not part of this grounding.",
         priority: "HIGH",
       },
       groundedBy: [
@@ -122,6 +132,18 @@ const DEPLOYMENT_UNRESOLVED_LEAD_REPORT: ResolutionReport = {
       sourceType: "TOOL_EXECUTION",
       finding:
         "The most recent notification-service deployment was ROLLED_BACK; the tool reports no burn-rate or revision-reproducibility data.",
+      supports: [],
+    },
+    {
+      // The report's prose names the burn-rate and revision-reproducibility
+      // criteria. Those exist ONLY in this chunk, so the run must actually
+      // retrieve and cite it — otherwise the report states requirements it
+      // never had evidence for, and the suite would score that as correctly
+      // grounded. Caught by Codex review of the real diff.
+      evidenceId: "runbook-deployment-rollback-001",
+      sourceType: "RAG_CHUNK",
+      finding:
+        "Rollback decision criteria: an error-budget burn rate tripling within ten minutes of a rollout AND reproducibility on the new revision but not the previous one.",
       supports: [],
     },
   ],
@@ -173,7 +195,7 @@ const DEPLOYMENT_FAILED_BEHIND_SUCCESS_REPORT: ResolutionReport = {
   rootCause: null,
   customerImpact: "No customer impact is confirmed for auth-service.",
   recommendedResolution:
-    "No action is warranted from these signals. The failed deployment predates a successful one and may never have reached production, so it is not evidence of a fault.",
+    "No deployment or rollback action is warranted from these signals: the failed deployment predates a successful one and may never have reached production, so it is not evidence of a fault. This does not close the ticket — the reported login failures are still unexplained and need investigation through diagnostics other than deployment history (e.g. auth-service's own error logs or session data), which this run did not have available.",
   confidence: 0.25,
   evidence: [
     {
@@ -199,12 +221,25 @@ export const TWO_TOOL_DEPLOYMENT_CASES: readonly EvaluationCase[] = [
   {
     id: "deployment-ruled-out",
     description:
-      "Two-tool chain: a confirmed outage with zero recent deployments grounds a NEGATIVE conclusion (deployment excluded) on two distinct tools plus a runbook chunk.",
+      "Two-tool chain: a confirmed outage with zero RECENT billing-service deployments grounds a NEGATIVE, narrowly-scoped conclusion (a recent billing-service deployment excluded) on two distinct tools plus a runbook chunk — a shared-database co-tenant hypothesis the run raises is explicitly left unresolved rather than folded into the exclusion.",
     ticketContext: {
       ticketId: "EVAL-23",
-      summary: "Billing operations are failing and customers cannot be invoiced.",
+      summary:
+        "Billing operations are failing and customers cannot be invoiced. Platform on-call asked whether auth-service, which shares the same database, might also be affected.",
     },
-    retrievalQuery: "storage quota exhaustion",
+    // The runbook this retrieves names shared database connection pool
+    // saturation as a candidate cause of a multi-service outage, and calls
+    // out "a leaked connection from a recent deploy" as the most common
+    // trigger — on any service sharing the pool, not only billing-service.
+    // That is what makes call 3 (auth-service status) a live hypothesis
+    // rather than an arbitrary third call: auth-service is a co-tenant of
+    // the same database, so checking whether IT shows a symptom is the
+    // runbook's own next question. Its deployment history is deliberately
+    // NOT queried here — auth-service is fixture-seeded with a real
+    // SUCCEEDED/FAILED deployment pair, and surfacing that would have to be
+    // reconciled with this report's "deployment is ruled out" conclusion,
+    // which only ever covers billing-service.
+    retrievalQuery: "database connection pool saturation shared services",
     corpusProfile: "default",
     toolProfile: "with-deployments-tool",
     scenario: scenario("deployment-ruled-out", [
@@ -221,7 +256,7 @@ export const TWO_TOOL_DEPLOYMENT_CASES: readonly EvaluationCase[] = [
             rawAssessment: {
               evidenceState: "INSUFFICIENT",
               continuationReason: "STATUS_UNRESOLVED",
-              supportedBy: [{ evidenceId: "runbook-storage-quota-exhaustion-001", sourceType: "RAG_CHUNK" }],
+              supportedBy: [{ evidenceId: "runbook-database-connection-saturation-001", sourceType: "RAG_CHUNK" }],
             },
           },
         ],
@@ -250,20 +285,32 @@ export const TWO_TOOL_DEPLOYMENT_CASES: readonly EvaluationCase[] = [
         // rather than only below it (plan §2.3, acceptance criterion 4). A
         // regression in third-request sequencing would otherwise ship green.
         //
-        // Checking auth-service is justified, not filler: billing is down and
-        // an upstream dependency is a live hypothesis the first two calls do
-        // not address.
+        // Checking auth-service's STATUS (not its deployments) is the
+        // deliberate choice here. The ticket raises a co-tenant hypothesis
+        // and the retrieved runbook names a shared-database mechanism, so
+        // checking auth-service at all is grounded — but auth-service is
+        // fixture-seeded OPERATIONAL, so this call resolves the hypothesis
+        // by finding NO symptom there, not by surfacing a deployment that
+        // would have to be reconciled with billing-service's "deployment
+        // ruled out" conclusion. A call that instead queried auth-service's
+        // deployments would return a real SUCCEEDED/FAILED pair with no
+        // service-level symptom to explain, self-contradicting the report's
+        // global deployment-exclusion claim (the defect an earlier draft of
+        // this case had, caught by Codex review).
         kind: "diagnostic_tool_requests",
         usage: USAGE,
         requests: [
           {
             toolCallId: "case23-call-3",
-            toolName: "get_recent_deployments",
+            toolName: "get_service_status",
             input: { serviceSlug: "auth-service" },
             rawAssessment: {
               evidenceState: "INSUFFICIENT",
               continuationReason: "SCOPE_NOT_COVERED",
-              supportedBy: [{ evidenceId: "case23-call-2", sourceType: "TOOL_EXECUTION" }],
+              supportedBy: [
+                { evidenceId: "case23-call-2", sourceType: "TOOL_EXECUTION" },
+                { evidenceId: "runbook-database-connection-saturation-001", sourceType: "RAG_CHUNK" },
+              ],
             },
           },
         ],
@@ -272,22 +319,22 @@ export const TWO_TOOL_DEPLOYMENT_CASES: readonly EvaluationCase[] = [
     ]),
     expectations: {
       runStatus: "completed",
-      retrieval: { expectedTop1: "runbook-storage-quota-exhaustion-001" },
+      retrieval: { expectedTop1: "runbook-database-connection-saturation-001" },
       tool: {
         expectedRequested: [
           { toolName: "get_service_status", toolCallId: "case23-call-1" },
           { toolName: "get_recent_deployments", toolCallId: "case23-call-2" },
-          { toolName: "get_recent_deployments", toolCallId: "case23-call-3" },
+          { toolName: "get_service_status", toolCallId: "case23-call-3" },
         ],
         expectedExecuted: [
           { toolName: "get_service_status", input: { serviceSlug: "billing-service" } },
           { toolName: "get_recent_deployments", input: { serviceSlug: "billing-service" } },
-          { toolName: "get_recent_deployments", input: { serviceSlug: "auth-service" } },
+          { toolName: "get_service_status", input: { serviceSlug: "auth-service" } },
         ],
         expectedCompleted: [
           { toolName: "get_service_status", toolCallId: "case23-call-1" },
           { toolName: "get_recent_deployments", toolCallId: "case23-call-2" },
-          { toolName: "get_recent_deployments", toolCallId: "case23-call-3" },
+          { toolName: "get_service_status", toolCallId: "case23-call-3" },
         ],
       },
       report: {
@@ -313,10 +360,10 @@ export const TWO_TOOL_DEPLOYMENT_CASES: readonly EvaluationCase[] = [
       // The billing results are probative: a confirmed OUTAGE and a confirmed
       // "known service, zero deployments" each carry real evidential weight,
       // and the second is what makes the negative conclusion legitimate. The
-      // third call (auth-service deployments) is NOT probative for billing's
-      // outage — it rules an upstream lead in or out for no service the report
-      // concludes about, so it is declared non-probative rather than padded
-      // into the grounding.
+      // third call (auth-service STATUS) is NOT probative for billing's
+      // outage — it resolves the co-tenant hypothesis (OPERATIONAL, no
+      // symptom there) for a service the report never concludes about, so
+      // it is declared non-probative rather than padded into the grounding.
       expectedTelemetryEvidence: {
         probative: [
           { evidenceId: "case23-call-1", sourceType: "TOOL_EXECUTION" },
@@ -335,7 +382,7 @@ export const TWO_TOOL_DEPLOYMENT_CASES: readonly EvaluationCase[] = [
           allowedGrounding: [
             { evidenceId: "case23-call-1", sourceType: "TOOL_EXECUTION" },
             { evidenceId: "case23-call-2", sourceType: "TOOL_EXECUTION" },
-            { evidenceId: "runbook-storage-quota-exhaustion-001", sourceType: "RAG_CHUNK" },
+            { evidenceId: "runbook-database-connection-saturation-001", sourceType: "RAG_CHUNK" },
           ],
         },
       ],
@@ -352,7 +399,11 @@ export const TWO_TOOL_DEPLOYMENT_CASES: readonly EvaluationCase[] = [
       ticketId: "EVAL-24",
       summary: "Customers report delayed notification emails after a recent release.",
     },
-    retrievalQuery: "notification service degradation",
+    // Retrieves the ROLLBACK runbook, not the notification one: this case's
+    // report reasons about rollback DECISION CRITERIA, so that is the chunk it
+    // must have in evidence. Verified against the real keyword retriever —
+    // runbook-deployment-rollback-001 scores 8, dominant over the runner-up.
+    retrievalQuery: "deployment rollback decision criteria",
     corpusProfile: "default",
     toolProfile: "with-deployments-tool",
     scenario: scenario("deployment-unresolved-lead", [
@@ -368,7 +419,7 @@ export const TWO_TOOL_DEPLOYMENT_CASES: readonly EvaluationCase[] = [
               evidenceState: "INSUFFICIENT",
               continuationReason: "STATUS_UNRESOLVED",
               supportedBy: [
-                { evidenceId: "runbook-notification-degradation-001", sourceType: "RAG_CHUNK" },
+                { evidenceId: "runbook-deployment-rollback-001", sourceType: "RAG_CHUNK" },
               ],
             },
           },
@@ -394,7 +445,7 @@ export const TWO_TOOL_DEPLOYMENT_CASES: readonly EvaluationCase[] = [
     ]),
     expectations: {
       runStatus: "completed",
-      retrieval: { expectedTop1: "runbook-notification-degradation-001" },
+      retrieval: { expectedTop1: "runbook-deployment-rollback-001" },
       tool: {
         expectedRequested: [
           { toolName: "get_service_status", toolCallId: "case24-call-1" },
@@ -412,14 +463,17 @@ export const TWO_TOOL_DEPLOYMENT_CASES: readonly EvaluationCase[] = [
       report: {
         schemaExpectation: "VALID",
         groundingExpectation: "VALID",
-        requiredEvidenceTypes: ["TOOL_EXECUTION"],
+        requiredEvidenceTypes: ["TOOL_EXECUTION", "RAG_CHUNK"],
       },
       // The whole point of the case: a suggestive rollback does not become a
       // root cause on this evidence.
       expectedRootCause: "ABSENT",
       expectedEvidence: {
         state: "INSUFFICIENT",
-        requiredLocators: [{ evidenceId: "case24-call-2", sourceType: "TOOL_EXECUTION" }],
+        requiredLocators: [
+          { evidenceId: "case24-call-2", sourceType: "TOOL_EXECUTION" },
+          { evidenceId: "runbook-deployment-rollback-001", sourceType: "RAG_CHUNK" },
+        ],
       },
       expectedDiagnostics: [
         { evidenceState: "INSUFFICIENT", continuationReason: "STATUS_UNRESOLVED" },
