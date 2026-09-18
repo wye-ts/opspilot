@@ -6,9 +6,9 @@
 | Scenario logic | `apps/worker/src/demo/run-rag-live-spike-scenarios.ts` (unit-tested directly in `run-rag-live-spike-scenarios.test.ts`, without importing or executing the live composition root) |
 | Related design | `docs/06-tool-design.md` ("Implementation state"), `docs/03-technical-design.md` §14.3. The Milestone 14 plan (`docs/reviews/37-milestone-14-second-diagnostic-tool-plan.md`) is **not on `main`** — it lives only on the unmerged `docs/milestone-14-second-diagnostic-tool` branch, so it is deliberately not cited as a resolvable path here. `docs/reviews/46-issue-94-two-tool-eval-coverage-plan.md` (line 254) carries the same dangling reference; plan documents are point-in-time records and are not retroactively edited, so that one stands. Whether to merge the planning branch is an owner decision. |
 | Date | 2026-09-18 |
-| Status | **One usable observation obtained (n=1).** The model called `get_recent_deployments` on a ticket whose retrieved evidence points at provider-side rate limiting. |
+| Status | **Two usable observations obtained (n=2), same outcome both times.** The model called `get_recent_deployments` on a ticket whose retrieved evidence points at provider-side rate limiting. |
 | Model | `claude-sonnet-5`. No Voyage/embedding client — this scenario uses the shipped `InMemoryKeywordRunbookRetriever`. |
-| Cost | 3 billed Claude calls, ≈ $0.13 for the recorded run (≈ $0.34 including two discarded runs, see "Runs discarded"). |
+| Cost | 3 billed Claude calls per completed run, ≈ $0.13 each; ≈ $0.46 total across five invocations (two completed, two discarded, one provider outage). |
 
 ## The question this run was designed to answer
 
@@ -60,7 +60,7 @@ acceptance: PASSED (a readable observation was obtained — this says nothing
 about whether the model chose well)
 ```
 
-**OBSERVATION (n=1):** the model spent diagnostic budget on
+**OBSERVATION (this run):** the model spent diagnostic budget on
 `get_recent_deployments` even though the top-ranked runbook it was shown
 attributes the symptom to provider-side rate limiting and never mentions
 deployments.
@@ -74,8 +74,9 @@ a third widens the surface for the same behavior while consuming the same fixed
 
 **Does not follow:**
 
-- That the model is generally undisciplined. n=1, non-deterministic model,
-  single prompt, single ticket.
+- That the model is generally undisciplined. n=2, non-deterministic model,
+  single prompt, single ticket. Two identical outcomes rule out a pure
+  sampling fluke and nothing more.
 - That tool-*selection* quality is now measured. It is not, and cannot be by
   this route — the CI evaluation harness drives `FakeLlmProvider` from typed
   fixtures, so every tool request in every one of the 26 cases is scripted.
@@ -152,27 +153,46 @@ deliberately opaque to avoid leaking credentials, reported only "The spike
 failed to run." Fixed in the same change. Anyone who ran this script previously
 would have had to export the variables by hand.
 
-## Status of the rank-1 guard against live traffic
+## The rank-1 guard, and an independent reproduction
 
-The `PREMISE_CHUNK_NOT_RANK_ONE` guard was added *after* the recorded run, in
-response to review: the original check only asserted the rate-limit runbook was
-retrieved *somewhere*, while the finding called it "the top-ranked runbook".
-Rank is now read from the `RETRIEVAL_COMPLETED` event's own `rank` field rather
-than inferred from array position.
+The `PREMISE_CHUNK_NOT_RANK_ONE` guard was added *after* the first recorded
+run, in response to review: the original check only asserted the rate-limit
+runbook was retrieved *somewhere*, while the finding called it "the top-ranked
+runbook". Rank is now read from the `RETRIEVAL_COMPLETED` event's own `rank`
+field rather than inferred from array position.
 
-The recorded run above **satisfies** the tightened guard — its trace shows
-`runbook-notification-rate-limit-001` at `rank: 1, score: 12`, clear of the
-runner-up at 9. Retrieval is deterministic here (keyword retriever, fixed
-corpus, fixed query), and the identical ranking reappeared in both subsequent
-invocations, so the premise is not in doubt.
+A full run was then completed against the tightened guard, and it reproduced
+the finding independently:
 
-What has **not** been re-confirmed end-to-end is a full green run *after* the
-guard change: two attempts both terminated at the first provider call with
-`code=PROVIDER_UNAVAILABLE` and zero tool calls — an Anthropic-side transient,
-not a behavior change (retrieval still succeeded identically in both). The
-guard itself is covered by unit tests, including one asserting it fails closed
-when the chunk is retrieved at a lower rank. Re-running the scenario when the
-API recovers would close this gap; the finding above does not depend on it.
+```
+status=completed
+tools offered to the model: ["get_service_status","get_recent_deployments"]
+tools actually called (in order): ["get_service_status","get_recent_deployments"]
+retrieval: 3 chunk(s) — [
+  {"chunkId":"runbook-notification-rate-limit-001","rank":1,"score":12},
+  {"chunkId":"runbook-notification-rate-limit-002","rank":2,"score":9},
+  {"chunkId":"runbook-public-api-rate-limit-001","rank":3,"score":7}
+]
+acceptance: PASSED
+```
+
+Billed calls: 3 (`diagnostic_tool_request`, `diagnostic_tool_request`,
+`report_submission`), ≈ $0.12.
+
+**This makes the observation n=2, not n=1** — two independent live runs, on
+separate days' API credit, both ending with the model calling
+`get_recent_deployments` against top-ranked evidence that names provider-side
+throttling and never mentions deployments.
+
+Two samples is still not a measured property and still not a general tendency.
+It does mean the behavior was not a one-off sampling artifact, which is the
+only thing the second run adds. Everything under "What follows from this, and
+what does not" stands unchanged.
+
+Retrieval is deterministic here (keyword retriever, fixed corpus, fixed query),
+and the identical ranking appeared in all five invocations including the failed
+ones — so the premise itself was never in question; only the model's response
+to it varies.
 
 ## Reproducing
 

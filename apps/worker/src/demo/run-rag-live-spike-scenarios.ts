@@ -1034,7 +1034,8 @@ export async function runRoleConfusionScenario(
 // points at provider-side rate limiting and mentions deployments nowhere,
 // does the model spend diagnostic budget on `get_recent_deployments`?
 //
-// It does NOT ask whether the model "chooses well" in general. n=1 against a
+// It does NOT ask whether the model "chooses well" in general. A handful of
+// runs against a
 // non-deterministic model. What makes a single run worth paying for here is
 // that the DECISION it informs is a stop/go on a third tool: if two tools
 // already draw an unmotivated call, that is evidence against adding a third
@@ -1135,12 +1136,12 @@ export function describeToolDisciplineFinding(observation: ToolDisciplineObserva
     `(rank 1 = ${observation.rankOneChunkId ?? "none"}). `;
   return observation.deploymentsToolCalled
     ? shown +
-        "OBSERVATION (n=1): the model spent diagnostic budget on get_recent_deployments even though " +
+        "OBSERVATION (this run): the model spent diagnostic budget on get_recent_deployments even though " +
         "the top-ranked runbook it was shown attributes the symptom to provider-side rate limiting " +
         "and never mentions deployments. This is evidence — one sample — AGAINST adding a third " +
         "catalog tool, and does not by itself establish a general tendency."
     : shown +
-        "OBSERVATION (n=1): the model did not call get_recent_deployments, though it was offered. " +
+        "OBSERVATION (this run): the model did not call get_recent_deployments, though it was offered. " +
         "This FAILED TO FIND evidence of budget waste; it does not establish that the model is " +
         "reliably disciplined, and one clean run is not grounds for adding a third tool either.";
 }
@@ -1227,7 +1228,7 @@ export async function runToolDisciplineScenario(
       console.log(describeToolDisciplineFinding(observation));
     }
     console.log(
-      "Single manual observation (n=1) against a non-deterministic model. Not a measured " +
+      "One manual observation per run, against a non-deterministic model. Not a measured " +
         "property, not CI-gated, and not evidence that tool-selection quality is tested.",
     );
     return evaluation;

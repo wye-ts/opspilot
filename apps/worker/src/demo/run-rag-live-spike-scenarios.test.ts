@@ -1067,7 +1067,7 @@ describe("evaluateToolDisciplineScenario (issue #95)", () => {
   }
 
   // THE LOAD-BEARING TEST. `passed` drives the process exit code, so if it
-  // tracked the model's tool choice this paid, n=1, non-deterministic probe
+  // tracked the model's tool choice this paid, single-sample, non-deterministic probe
   // would become a model-behavior gate — the semantic upgrade issue #95
   // acceptance criterion 5 forbids. Both branches must be PASSED.
   it("returns the same verdict whether or not the model called the deployments tool", () => {
@@ -1178,14 +1178,14 @@ describe("evaluateToolDisciplineScenario (issue #95)", () => {
   it("describes a clean run as failing to find evidence, not as proof of discipline", () => {
     const text = describeToolDisciplineFinding(observation({ deploymentsToolCalled: false }));
     expect(text).toContain("FAILED TO FIND");
-    expect(text).toContain("n=1");
+    expect(text).toContain("OBSERVATION (this run)");
     expect(text).not.toMatch(/\bproves\b|\bdemonstrates that the model\b|reliably disciplined\./);
   });
 
   it("describes a wasteful run as one sample of evidence against a third tool", () => {
     const text = describeToolDisciplineFinding(observation({ deploymentsToolCalled: true }));
     expect(text).toContain("AGAINST adding a third");
-    expect(text).toContain("n=1");
+    expect(text).toContain("OBSERVATION (this run)");
     expect(text).toContain("does not by itself establish");
   });
 });
