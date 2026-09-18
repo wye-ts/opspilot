@@ -101,6 +101,7 @@ fails closed when the observation is *not* usable:
 | `RUN_NOT_COMPLETED_*` | The agent did not finish; nothing to read. |
 | `NO_DIAGNOSTIC_CALL_OBSERVED` | Nothing was investigated at all. |
 | `PREMISE_CHUNK_NOT_RETRIEVED` | The rate-limit runbook was never shown to the model, so "unmotivated" cannot be claimed. |
+| `PREMISE_CHUNK_NOT_RANK_ONE` | It was retrieved but did not rank first, so the finding's "top-ranked runbook" wording would overstate what the model was shown. |
 
 `run-rag-live-spike-scenarios.test.ts` pins this directly: a test asserts the
 verdict is **identical** whether or not the deployments tool was called.
@@ -150,6 +151,28 @@ passes `--env-file-if-exists`. The first invocation therefore failed at
 deliberately opaque to avoid leaking credentials, reported only "The spike
 failed to run." Fixed in the same change. Anyone who ran this script previously
 would have had to export the variables by hand.
+
+## Status of the rank-1 guard against live traffic
+
+The `PREMISE_CHUNK_NOT_RANK_ONE` guard was added *after* the recorded run, in
+response to review: the original check only asserted the rate-limit runbook was
+retrieved *somewhere*, while the finding called it "the top-ranked runbook".
+Rank is now read from the `RETRIEVAL_COMPLETED` event's own `rank` field rather
+than inferred from array position.
+
+The recorded run above **satisfies** the tightened guard — its trace shows
+`runbook-notification-rate-limit-001` at `rank: 1, score: 12`, clear of the
+runner-up at 9. Retrieval is deterministic here (keyword retriever, fixed
+corpus, fixed query), and the identical ranking reappeared in both subsequent
+invocations, so the premise is not in doubt.
+
+What has **not** been re-confirmed end-to-end is a full green run *after* the
+guard change: two attempts both terminated at the first provider call with
+`code=PROVIDER_UNAVAILABLE` and zero tool calls — an Anthropic-side transient,
+not a behavior change (retrieval still succeeded identically in both). The
+guard itself is covered by unit tests, including one asserting it fails closed
+when the chunk is retrieved at a lower rank. Re-running the scenario when the
+API recovers would close this gap; the finding above does not depend on it.
 
 ## Reproducing
 

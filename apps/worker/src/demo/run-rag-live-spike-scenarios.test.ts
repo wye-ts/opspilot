@@ -1061,6 +1061,7 @@ describe("evaluateToolDisciplineScenario (issue #95)", () => {
       deploymentsToolCalled: false,
       diagnosticCallCount: 1,
       retrievedChunkIds: ["runbook-notification-rate-limit-001"],
+      rankOneChunkId: "runbook-notification-rate-limit-001",
       ...over,
     };
   }
@@ -1131,10 +1132,36 @@ describe("evaluateToolDisciplineScenario (issue #95)", () => {
 
   it("fails closed when retrieval returned some other chunk", () => {
     const result = evaluateToolDisciplineScenario(
-      observation({ retrievedChunkIds: ["runbook-deployment-rollback-001"] }),
+      observation({
+        retrievedChunkIds: ["runbook-deployment-rollback-001"],
+        rankOneChunkId: "runbook-deployment-rollback-001",
+      }),
     );
     expect(result.passed).toBe(false);
     expect(result.failureCode).toBe("PREMISE_CHUNK_NOT_RETRIEVED");
+  });
+
+  // Codex-review MAJOR: a presence check would accept the rate-limit runbook
+  // sitting at rank 3 behind evidence that DOES point at deployments, while
+  // the finding still called it "the top-ranked runbook it was shown". The
+  // premise is specifically about what ranked first.
+  it("fails closed when the premise chunk was retrieved but did not rank first", () => {
+    const result = evaluateToolDisciplineScenario(
+      observation({
+        retrievedChunkIds: [
+          "runbook-deployment-rollback-001",
+          "runbook-notification-rate-limit-001",
+        ],
+        rankOneChunkId: "runbook-deployment-rollback-001",
+      }),
+    );
+    expect(result.passed).toBe(false);
+    expect(result.failureCode).toBe("PREMISE_CHUNK_NOT_RANK_ONE");
+  });
+
+  it("names the rank-1 chunk in the finding text", () => {
+    const text = describeToolDisciplineFinding(observation());
+    expect(text).toContain("rank 1 = runbook-notification-rate-limit-001");
   });
 
   it("states which chunks the model was actually shown in the finding text", () => {

@@ -1076,6 +1076,11 @@ export interface ToolDisciplineObservation {
   // was not retrieved, that premise did not hold for this run and no finding
   // about "unmotivated" tool use can be drawn from it.
   readonly retrievedChunkIds: readonly string[];
+  // The chunkId the retriever ranked FIRST, taken from the trace event's own
+  // `rank` field rather than inferred from array position — the finding says
+  // "top-ranked", so that claim is checked against the rank the retriever
+  // actually assigned. `undefined` when nothing was retrieved.
+  readonly rankOneChunkId: string | undefined;
 }
 
 // Pure, unit-testable, and deliberately separate from the live call: given
@@ -1111,13 +1116,23 @@ export function evaluateToolDisciplineScenario(
   if (!observation.retrievedChunkIds.includes(EXPECTED_TOOL_DISCIPLINE_RANK_ONE_CHUNK_ID)) {
     return failedResult(name, "PREMISE_CHUNK_NOT_RETRIEVED");
   }
+  // ...and it must be RANK 1, because that is what the finding claims. A
+  // mere presence check would let the chunk sit at rank 3 behind evidence
+  // that does point at deployments, while the write-up still called it
+  // "the top-ranked runbook it was shown" — an overclaim of exactly the kind
+  // this scenario exists to avoid making (Codex-review MAJOR).
+  if (observation.rankOneChunkId !== EXPECTED_TOOL_DISCIPLINE_RANK_ONE_CHUNK_ID) {
+    return failedResult(name, "PREMISE_CHUNK_NOT_RANK_ONE");
+  }
   return passedResult(name);
 }
 
 // Renders the finding a human reads. Kept separate from the pass/fail
 // decision above precisely so the two cannot drift into each other.
 export function describeToolDisciplineFinding(observation: ToolDisciplineObservation): string {
-  const shown = `Retrieved and shown to the model: ${JSON.stringify(observation.retrievedChunkIds)}. `;
+  const shown =
+    `Retrieved and shown to the model: ${JSON.stringify(observation.retrievedChunkIds)} ` +
+    `(rank 1 = ${observation.rankOneChunkId ?? "none"}). `;
   return observation.deploymentsToolCalled
     ? shown +
         "OBSERVATION (n=1): the model spent diagnostic budget on get_recent_deployments even though " +
@@ -1176,6 +1191,7 @@ export async function runToolDisciplineScenario(
     for (const entry of recordedOutputs) calledToolNames.push(entry.toolName);
 
     const retrievalEvent = findRetrievalCompletedEvent(result);
+    const rankOne = retrievalEvent?.chunks.find((chunk) => chunk.rank === 1);
     const observation: ToolDisciplineObservation = {
       runStatus: result.status,
       offeredToolNames,
@@ -1183,6 +1199,7 @@ export async function runToolDisciplineScenario(
       deploymentsToolCalled: calledToolNames.includes("get_recent_deployments"),
       diagnosticCallCount: calledToolNames.length,
       retrievedChunkIds: retrievalEvent?.chunks.map((chunk) => chunk.chunkId) ?? [],
+      rankOneChunkId: rankOne?.chunkId,
     };
 
     console.log(`status=${result.status}`);
