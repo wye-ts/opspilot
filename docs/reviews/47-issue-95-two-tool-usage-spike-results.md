@@ -6,9 +6,9 @@
 | Scenario logic | `apps/worker/src/demo/run-rag-live-spike-scenarios.ts`, unit-tested in `run-rag-live-spike-scenarios.test.ts` without executing the live composition root |
 | Related design | `docs/06-tool-design.md` ("Implementation state"), `docs/03-technical-design.md` §14.3. The Milestone 14 plan (`docs/reviews/37-milestone-14-second-diagnostic-tool-plan.md`) is **not on `main`** — it exists only on the unmerged `docs/milestone-14-second-diagnostic-tool` branch, so it is deliberately not cited as a resolvable path. `docs/reviews/46-issue-94-two-tool-eval-coverage-plan.md` (line 254) carries the same dangling reference; plan documents are point-in-time records and are not retroactively edited. |
 | Date | 2026-09-18 |
-| Status | **Descriptive record obtained from 2 completed runs.** Both catalog tools were offered to a live model for the first time; the model called both. **No catalog-sizing conclusion follows.** |
+| Status | **Descriptive record obtained from 3 recorded runs** (of 4 that completed — run 1 completed but is discarded, see the run ledger). Both catalog tools were offered to a live model for the first time; the model called both. **No catalog-sizing conclusion follows.** |
 | Model | `claude-sonnet-5`. No Voyage/embedding client — this scenario uses the shipped `InMemoryKeywordRunbookRetriever`. |
-| Cost | 3 billed Claude calls per completed run, ≈ $0.13 each; ≈ $0.46 total across five invocations. |
+| Cost | 3 billed Claude calls per run that reaches the model, ≈ $0.13 each. Five of six invocations were billed (run 4 died at the first call), so ≈ $0.65 total. |
 
 ## What this scenario is for
 
@@ -33,7 +33,7 @@ The question is deliberately **descriptive**:
 
 ## Observed result
 
-Two completed runs, on separate days' API credit, produced the same tool usage:
+The three recorded runs, across two separate API-credit periods, produced identical tool usage:
 
 ```
 status=completed
@@ -88,11 +88,11 @@ plumbing and behavior observation the one-entry list could not produce.
 
 - That the model selects tools well, or badly. The scenario does not construct
   a situation with a known-correct tool choice, so neither verdict is available.
-- **That the two identical runs establish stability.** Two samples that agree
-  do not rule out sampling variability — they merely failed to exhibit it. With
-  n=2 against a non-deterministic model the observable variation is bounded
+- **That the three identical runs establish stability.** Samples that agree do
+  not rule out sampling variability — they merely failed to exhibit it. With
+  n=3 against a non-deterministic model the observable variation is bounded
   only very loosely; this is consistent with anything from fully deterministic
-  behavior to a substantial minority of runs behaving differently.
+  behavior to a meaningful minority of runs behaving differently.
 - That tool-*selection* quality is measured anywhere. The CI evaluation harness
   drives `FakeLlmProvider` from typed fixtures, so every tool request in all 26
   cases is scripted. This spike is manual, not CI-gated, and must never be
@@ -122,17 +122,21 @@ usable:
 
 ## Run ledger
 
-Five invocations total. All five retrieved the identical ranking
-(`runbook-notification-rate-limit-001` at rank 1, score 12), since retrieval
-here is deterministic — keyword retriever, fixed corpus, fixed query.
+Six invocations total: four completed, one failed after billing, one failed
+before it. All six retrieved the identical ranking
+(`runbook-notification-rate-limit-001` at rank 1, score 12), since retrieval is
+deterministic here — keyword retriever, fixed corpus, fixed query. Only runs 3,
+5 and 6 are recorded as observations; the ledger lists every invocation so the
+cost total and the discarded outcomes reconcile.
 
 | # | Outcome | Billed calls | Disposition |
 |---|---|---|---|
 | 1 | Completed | 3 | **Discarded.** No retriever was wired, so the model never saw the rate-limit runbook, yet the printed finding asserted it had. |
-| 2 | `status=failed` | 0 | **Discarded.** The guard correctly refused to emit a finding, but no failure code was printed, making it undiagnosable. |
+| 2 | `status=failed` | ~3 | **Discarded.** The guard correctly refused to emit a finding, but no failure code was printed, making it undiagnosable. |
 | 3 | Completed | 3 | **Recorded.** Premise verified from the run's own trace. |
-| 4 | `status=failed` (`PROVIDER_UNAVAILABLE`) | 0 | Provider outage — exhausted API credit, unrelated to the change. |
+| 4 | `status=failed` (`PROVIDER_UNAVAILABLE`) | 0 (failed at the first call) | Provider outage — exhausted API credit, unrelated to the change. |
 | 5 | Completed | 3 | **Recorded.** Verifies the tightened rank-1 guard end-to-end; same tool usage as run 3. |
+| 6 | Completed | 3 | **Recorded.** Confirms the `tool-discipline` → `two-tool-usage` rename did not break the live path; same tool usage again. |
 
 Runs 1 and 2 are documented rather than quietly dropped, because each exposed a
 real defect that is fixed in this change:
