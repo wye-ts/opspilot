@@ -12,7 +12,9 @@ import {
   adversarialToolOutputTool,
 } from "../evaluation/fixtures/adversarial-tool-output-tool";
 import {
+  DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE,
   INJECTION_PROBE_CHUNK,
+  InMemoryKeywordRunbookRetriever,
   RetrieverError,
   VoyageRunbookRetriever,
   type RunbookCorpusLoadResult,
@@ -22,6 +24,7 @@ import {
 import {
   InMemoryToolRegistry,
   getServiceStatusTool,
+  getRecentDeploymentsTool,
   type DiagnosticToolDefinition,
 } from "../tools";
 
@@ -148,7 +151,8 @@ export type SpikeScenarioName =
   | "injection"
   | "tool-output-override"
   | "exfiltration"
-  | "role-confusion";
+  | "role-confusion"
+  | "two-tool-usage";
 
 const RAG_SPIKE_SCENARIO_VALUES = [
   "all",
@@ -157,6 +161,7 @@ const RAG_SPIKE_SCENARIO_VALUES = [
   "tool-output-override",
   "exfiltration",
   "role-confusion",
+  "two-tool-usage",
 ] as const;
 type RagSpikeScenarioValue = (typeof RAG_SPIKE_SCENARIO_VALUES)[number];
 
@@ -175,6 +180,10 @@ export function resolveScenarioSelection(raw: string | undefined): readonly Spik
   }
   switch (value as RagSpikeScenarioValue) {
     case "all":
+      // Deliberately EXCLUDES "two-tool-usage": it answers a milestone-14
+      // catalog-sizing question, not an adversarial-robustness one, and
+      // folding it into "all" would silently add a paid call to every
+      // historical full-suite invocation. It must be selected by name.
       return ["baseline", "injection", "tool-output-override", "exfiltration", "role-confusion"];
     case "baseline":
       return ["baseline"];
@@ -186,6 +195,8 @@ export function resolveScenarioSelection(raw: string | undefined): readonly Spik
       return ["exfiltration"];
     case "role-confusion":
       return ["role-confusion"];
+    case "two-tool-usage":
+      return ["two-tool-usage"];
   }
 }
 
@@ -200,7 +211,10 @@ export function resolveScenarioSelection(raw: string | undefined): readonly Spik
 // an earlier version of the composition root required VOYAGE_API_KEY
 // unconditionally, before scenario selection was even resolved).
 export function selectionNeedsVoyage(selection: readonly SpikeScenarioName[]): boolean {
-  return selection.some((name) => name !== "tool-output-override");
+  // two-tool-usage joins tool-output-override as a scenario that performs no
+  // RAG retrieval, so neither should force a VOYAGE_API_KEY to be configured.
+  const noRetrievalScenarios: readonly SpikeScenarioName[] = ["tool-output-override", "two-tool-usage"];
+  return selection.some((name) => !noRetrievalScenarios.includes(name));
 }
 
 export interface ScenarioCallbacks {
@@ -209,6 +223,7 @@ export interface ScenarioCallbacks {
   readonly runToolOutputOverride: () => Promise<SpikeScenarioResult>;
   readonly runExfiltration: () => Promise<SpikeScenarioResult>;
   readonly runRoleConfusion: () => Promise<SpikeScenarioResult>;
+  readonly runTwoToolUsage: () => Promise<SpikeScenarioResult>;
 }
 
 // Pure orchestration over injected callbacks: invokes only the callback(s)
@@ -238,6 +253,9 @@ export async function runSelectedScenarios(
       case "role-confusion":
         results.push(await callbacks.runRoleConfusion());
         break;
+      case "two-tool-usage":
+        results.push(await callbacks.runTwoToolUsage());
+        break;
     }
   }
   return results;
@@ -258,6 +276,7 @@ export function buildScenarioCallbacks(deps: {
   readonly runToolOutputOverride: () => Promise<SpikeScenarioResult>;
   readonly runExfiltration: () => Promise<SpikeScenarioResult>;
   readonly runRoleConfusion: () => Promise<SpikeScenarioResult>;
+  readonly runTwoToolUsage: () => Promise<SpikeScenarioResult>;
 }): ScenarioCallbacks {
   return {
     runBaseline: async () => {
@@ -269,6 +288,7 @@ export function buildScenarioCallbacks(deps: {
     runToolOutputOverride: deps.runToolOutputOverride,
     runExfiltration: deps.runExfiltration,
     runRoleConfusion: deps.runRoleConfusion,
+    runTwoToolUsage: deps.runTwoToolUsage,
   };
 }
 
@@ -1004,3 +1024,257 @@ export async function runRoleConfusionScenario(
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Scenario F: two-tool-usage (Issue #95)
+//
+// THE QUESTION THIS ANSWERS, AND THE ONE IT DOES NOT
+//
+// It asks, descriptively: offered BOTH catalog tools on a realistic ticket,
+// which tools does a live model actually reach for, and what evidence is it
+// holding when it does? Before this scenario existed the spike pinned a
+// one-entry tool list, so no live run had ever put both catalog tools in
+// front of a real model. That gap is what it closes.
+//
+// It does NOT ask whether the model chooses tools WELL, and no run of it
+// supports a catalog-sizing conclusion. An earlier version claimed exactly
+// that — it argued a `get_recent_deployments` call was "unmotivated" because
+// the ticket said no release had been announced, and offered that as evidence
+// against adding a third tool. The argument does not hold: an unannounced
+// release is not an absent one, so consulting the deployment record is a
+// legitimate differential-diagnosis step, not budget waste. Top-ranked
+// retrieval is likewise not authoritative exclusion. The claim was retracted;
+// the scenario was renamed from "tool-discipline" because it never measured
+// discipline, and a name that implies it is a claim the mechanism cannot back.
+//
+// Deciding on a third tool (`get_error_rate_metrics`, milestone-14 candidate
+// B) would need a context that authoritatively rules deployments out, plus
+// enough runs to distinguish a tendency from sampling noise. Neither exists
+// here.
+//
+// WHY `passed` DOES NOT MEAN "THE MODEL BEHAVED WELL"
+//
+// `passed` drives the process exit code. Making it track the model's choice
+// would turn a paid, non-deterministic, single-sample observation into a
+// pass/fail gate — exactly the semantic upgrade issue #95 acceptance
+// criterion 5 forbids. So `passed` means only: THE RUN PRODUCED A READABLE
+// OBSERVATION (the agent completed and both tools were genuinely offered).
+// Whether the deployments tool was called is reported as an OBSERVATION line
+// either way, and never changes the exit code. A reviewer reads the verdict;
+// CI does not.
+const TWO_TOOL_USAGE_TICKET_SUMMARY =
+  "Customers on one tenant report outbound notification emails arriving late or not at all. " +
+  "The notification worker pool is healthy and no release has been announced.";
+const TWO_TOOL_USAGE_RETRIEVAL_QUERY =
+  "notification provider rate limit 429 rejections throttled tenant";
+// Verified against the real keyword retriever before this scenario was
+// written: this query ranks runbook-notification-rate-limit-001 first at
+// score 12, well clear of the runner-up. That chunk attributes the symptom
+// to provider-side throttling and does not mention deployments or releases.
+//
+// It is pinned so successive runs are comparable — NOT to license a claim
+// that a get_recent_deployments call here is unmotivated. An earlier version
+// of this scenario did make that claim, reasoning from the ticket's "no
+// release has been announced". That reasoning was wrong: an unannounced
+// release is not an absent one, and consulting the deployment record instead
+// of trusting the announcement is exactly what a differential diagnosis
+// looks like. Ranked retrieval is also not authoritative exclusion — the
+// retriever returns the best keyword matches, not a ruling that other causes
+// are eliminated. Establishing that a deployments call is genuinely
+// unmotivated would require a context that authoritatively rules deployments
+// out, which this scenario does not construct.
+export const EXPECTED_TWO_TOOL_USAGE_RANK_ONE_CHUNK_ID = "runbook-notification-rate-limit-001";
+
+export interface TwoToolUsageObservation {
+  readonly runStatus: string;
+  readonly offeredToolNames: readonly string[];
+  readonly calledToolNames: readonly string[];
+  readonly deploymentsToolCalled: boolean;
+  readonly diagnosticCallCount: number;
+  // What the model was ACTUALLY shown. The scenario's premise is that the
+  // retrieved evidence points away from deployments; if the expected chunk
+  // was not retrieved, that premise did not hold for this run and no finding
+  // about "unmotivated" tool use can be drawn from it.
+  readonly retrievedChunkIds: readonly string[];
+  // The chunkId the retriever ranked FIRST, taken from the trace event's own
+  // `rank` field rather than inferred from array position — the finding says
+  // "top-ranked", so that claim is checked against the rank the retriever
+  // actually assigned. `undefined` when nothing was retrieved.
+  readonly rankOneChunkId: string | undefined;
+}
+
+// Pure, unit-testable, and deliberately separate from the live call: given
+// what a run recorded, decide whether the OBSERVATION is usable. Note what is
+// absent — no branch here reads `deploymentsToolCalled` to decide `passed`.
+export function evaluateTwoToolUsageScenario(
+  observation: TwoToolUsageObservation,
+): SpikeScenarioResult {
+  const name = "two-tool-usage";
+  // Both tools must genuinely have been on offer, or the run answers a
+  // different question than the one asked. This is the guard against the
+  // composition-root defect #95 called out: the spike previously pinned a
+  // single-entry tool list, so the model was never offered the second tool
+  // and a "no deployments call" result would have been an artifact of the
+  // wiring, not an observation about the model.
+  if (!observation.offeredToolNames.includes("get_service_status")) {
+    return failedResult(name, "SERVICE_STATUS_TOOL_NOT_OFFERED");
+  }
+  if (!observation.offeredToolNames.includes("get_recent_deployments")) {
+    return failedResult(name, "DEPLOYMENTS_TOOL_NOT_OFFERED");
+  }
+  if (observation.runStatus !== "completed") {
+    return failedResult(name, `RUN_NOT_COMPLETED_${observation.runStatus.toUpperCase()}`);
+  }
+  if (observation.diagnosticCallCount === 0) {
+    // Nothing was investigated, so there is no tool-selection behavior to
+    // observe in either direction.
+    return failedResult(name, "NO_DIAGNOSTIC_CALL_OBSERVED");
+  }
+  // The premise must have actually held: the model has to have been shown the
+  // rate-limit runbook for a deployments call to be "unmotivated by the run's
+  // own evidence". Without it there is no finding, in either direction.
+  if (!observation.retrievedChunkIds.includes(EXPECTED_TWO_TOOL_USAGE_RANK_ONE_CHUNK_ID)) {
+    return failedResult(name, "PREMISE_CHUNK_NOT_RETRIEVED");
+  }
+  // ...and it must be RANK 1, because that is what the finding claims. A
+  // mere presence check would let the chunk sit at rank 3 behind evidence
+  // that does point at deployments, while the write-up still called it
+  // "the top-ranked runbook it was shown" — an overclaim of exactly the kind
+  // this scenario exists to avoid making (Codex-review MAJOR).
+  if (observation.rankOneChunkId !== EXPECTED_TWO_TOOL_USAGE_RANK_ONE_CHUNK_ID) {
+    return failedResult(name, "PREMISE_CHUNK_NOT_RANK_ONE");
+  }
+  return passedResult(name);
+}
+
+// Renders the finding a human reads. Kept separate from the pass/fail
+// decision above precisely so the two cannot drift into each other.
+// Renders a tool list as prose without ever implying a tool that is not in it.
+function formatToolList(names: readonly string[]): string {
+  if (names.length === 0) return "no diagnostic tools";
+  if (names.length === 1) return names[0] as string;
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+export function describeTwoToolUsageObservation(observation: TwoToolUsageObservation): string {
+  const shown =
+    `Retrieved and shown to the model: ${JSON.stringify(observation.retrievedChunkIds)} ` +
+    `(rank 1 = ${observation.rankOneChunkId ?? "none"}). `;
+  // Rendered from the RECORDED call list, never from a hardcoded sentence. An
+  // earlier version branched only on `deploymentsToolCalled` and asserted the
+  // model called deployments "as well as get_service_status" — which would
+  // misreport a deployments-only run, in the very field this scenario exists
+  // to record accurately.
+  const called = `the model called ${formatToolList(observation.calledToolNames)}`;
+  return observation.deploymentsToolCalled
+    ? shown +
+        `OBSERVATION (this run): offered both catalog tools, ${called}, on a ticket whose ` +
+        "top-ranked runbook attributes the symptom to provider-side rate limiting. This records " +
+        "WHICH tools a live model reached for and what evidence it held at the time. It is NOT a " +
+        "finding that the call was unmotivated: the ticket says no release was ANNOUNCED, which an " +
+        "unannounced deploy would also satisfy, so checking the deployment record is a legitimate " +
+        "differential-diagnosis step. No catalog-sizing conclusion follows from it in either direction."
+    : shown +
+        `OBSERVATION (this run): offered both catalog tools, ${called} — get_recent_deployments was ` +
+        "offered but not called. This records which tools were reached for; it establishes nothing " +
+        "about whether the model selects tools well, and no catalog-sizing conclusion follows from it.";
+}
+
+export async function runTwoToolUsageScenario(
+  provider: LlmProvider,
+  offeredToolNames: readonly string[],
+  corpus: readonly StoredRunbookChunk[],
+): Promise<SpikeScenarioResult> {
+  console.log("\n=== Scenario F: two-tool-usage (both catalog tools offered) ===");
+
+  const calledToolNames: string[] = [];
+  const recordedSlugs: string[] = [];
+  const recordedOutputs: { readonly toolName: string; readonly output: unknown }[] = [];
+  // Both REAL catalog tools, each wrapped so the call is observable. Using the
+  // real tools (not a fixture stand-in) is the point: the question is about
+  // behavior against the shipped catalog.
+  const registry = new InMemoryToolRegistry([
+    createRecordingAdversarialTool(getServiceStatusTool, recordedSlugs, recordedOutputs),
+    createRecordingAdversarialTool(getRecentDeploymentsTool, recordedSlugs, recordedOutputs),
+  ]);
+
+  const ticketContext: AgentConversationMessage = {
+    role: "ticket_context",
+    ticketId: "TICKET-3006",
+    summary: TWO_TOOL_USAGE_TICKET_SUMMARY,
+  };
+
+  try {
+    // REAL retrieval, using the SHIPPED keyword retriever over the real
+    // runbook corpus — not the Voyage one (no extra credential, and the
+    // deployed API constructs this retriever anyway). Without this the model
+    // never sees the rate-limit runbook, and the scenario's whole premise
+    // ("evidence that points away from deployments") would be a claim the run
+    // never actually put in front of the model. A first version of this
+    // scenario omitted the retriever and printed exactly that unsupported
+    // finding; the omission was caught by reading the run's own output.
+    const retriever = new InMemoryKeywordRunbookRetriever(corpus, DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE);
+
+    const result = await runAgentOrchestrator({
+      provider,
+      toolRegistry: registry,
+      initialConversation: [ticketContext],
+      retriever,
+      retrievalInput: { query: TWO_TOOL_USAGE_RETRIEVAL_QUERY, topK: RETRIEVAL_TOP_K },
+    });
+
+    for (const entry of recordedOutputs) calledToolNames.push(entry.toolName);
+
+    const retrievalEvent = findRetrievalCompletedEvent(result);
+    const rankOne = retrievalEvent?.chunks.find((chunk) => chunk.rank === 1);
+    const observation: TwoToolUsageObservation = {
+      runStatus: result.status,
+      offeredToolNames,
+      calledToolNames,
+      deploymentsToolCalled: calledToolNames.includes("get_recent_deployments"),
+      diagnosticCallCount: calledToolNames.length,
+      retrievedChunkIds: retrievalEvent?.chunks.map((chunk) => chunk.chunkId) ?? [],
+      rankOneChunkId: rankOne?.chunkId,
+    };
+
+    console.log(`status=${result.status}`);
+    console.log(`tools offered to the model: ${JSON.stringify(observation.offeredToolNames)}`);
+    console.log(`tools actually called (in order): ${JSON.stringify(calledToolNames)}`);
+    console.log(`serviceSlug value(s): ${JSON.stringify(recordedSlugs)}`);
+    printRetrievalSummary(result);
+    // A failed run is the most likely thing a reader needs to debug, and the
+    // first real invocation of this scenario printed status=failed with no
+    // reason at all. Mirrors what the other scenarios already surface.
+    if (result.status !== "completed") {
+      console.log(`code=${result.code} message=${result.message}`);
+      if (result.reportValidationIssues) {
+        console.log(`reportValidationIssues=${JSON.stringify(result.reportValidationIssues)}`);
+      }
+    }
+
+    const evaluation = evaluateTwoToolUsageScenario(observation);
+    console.log(
+      evaluation.passed
+        ? "acceptance: PASSED (a readable observation was obtained — this says nothing about whether the model chose well)"
+        : `acceptance: FAILED (${evaluation.failureCode}) — no usable observation`,
+    );
+    if (evaluation.passed) {
+      console.log(describeTwoToolUsageObservation(observation));
+    }
+    console.log(
+      "Descriptive record of one run, against a non-deterministic model. Not a measured " +
+        "property, not CI-gated, and not evidence that tool-selection quality is tested.",
+    );
+    return evaluation;
+  } catch (error) {
+    if (error instanceof LlmProviderError) {
+      console.log(`[two-tool-usage] LlmProviderError category=${error.category}`);
+      return failedResult("two-tool-usage", `LLM_PROVIDER_ERROR_${error.category}`);
+    }
+    if (error instanceof RetrieverError) {
+      console.log(`[two-tool-usage] RetrieverError category=${error.category}`);
+      return failedResult("two-tool-usage", `RETRIEVER_ERROR_${error.category}`);
+    }
+    throw error;
+  }
+}

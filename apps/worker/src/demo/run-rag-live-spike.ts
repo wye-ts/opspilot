@@ -18,12 +18,14 @@ import {
   runInjectionProbeScenario,
   runRoleConfusionScenario,
   runSelectedScenarios,
+  runTwoToolUsageScenario,
   runToolOutputOverrideScenario,
   selectionNeedsVoyage,
   type SpikeScenarioResult,
 } from "./run-rag-live-spike-scenarios";
 
-const { GET_SERVICE_STATUS_CATALOG_ENTRY } = opspilotAgentRuntime;
+const { GET_SERVICE_STATUS_CATALOG_ENTRY, GET_RECENT_DEPLOYMENTS_CATALOG_ENTRY } =
+  opspilotAgentRuntime;
 const { ClaudeLlmProvider, requireSupportedClaudeModel } = opspilotProviderClaude;
 
 // This script predates the validated worker configuration and builds its own
@@ -167,14 +169,39 @@ async function main(): Promise<void> {
   // script's own sanitized telemetry, never the SDKs' own debug/warn logging
   // (which could print raw request/response payloads).
   const anthropicClient = new Anthropic({ apiKey: anthropicApiKey, logLevel: "off" });
+  // SCENARIO-SPECIFIC TOOL WIRING (issue #95).
+  //
+  // The historical adversarial scenarios (B/C/D/E) deliberately pin a
+  // single-entry list: their acceptance logic reasons about one tool's
+  // output, and silently widening what they offer would change what those
+  // recorded observations mean. They keep the narrow provider below.
+  //
+  // two-tool-usage needs the opposite. Its whole question is which tools the
+  // model spends budget on a SECOND tool it was genuinely offered, so a
+  // provider pinned to one entry would make a "no deployments call" result
+  // an artifact of the wiring rather than an observation about the model.
+  // It therefore gets its own provider built from the real catalog, and
+  // evaluateTwoToolUsageScenario fails closed if either tool is missing
+  // from the offered list it is handed.
+  const narrowDiagnosticTools = [GET_SERVICE_STATUS_CATALOG_ENTRY];
+  const bothCatalogTools = [GET_SERVICE_STATUS_CATALOG_ENTRY, GET_RECENT_DEPLOYMENTS_CATALOG_ENTRY];
+
   const claudeProvider = new ClaudeLlmProvider({
     client: anthropicClient,
     model: anthropicModel,
     // The tool description now comes from the shared catalog rather than a
     // literal duplicated with run-claude-agent-spike.ts.
-    diagnosticTools: [GET_SERVICE_STATUS_CATALOG_ENTRY],
+    diagnosticTools: narrowDiagnosticTools,
     // This historical spike constructs its own client without the configured
     // retry ceiling, so it reports the SDK default it actually inherits.
+    configuredMaxRetries: SDK_DEFAULT_MAX_RETRIES,
+    logger: logSpikeEvent,
+  });
+
+  const twoToolProvider = new ClaudeLlmProvider({
+    client: anthropicClient,
+    model: anthropicModel,
+    diagnosticTools: bothCatalogTools,
     configuredMaxRetries: SDK_DEFAULT_MAX_RETRIES,
     logger: logSpikeEvent,
   });
@@ -211,6 +238,21 @@ async function main(): Promise<void> {
       runExfiltrationScenario(claudeProvider, loggedVoyageClient!, embeddingModel!, embeddingDimensions!),
     runRoleConfusion: () =>
       runRoleConfusionScenario(claudeProvider, loggedVoyageClient!, embeddingModel!, embeddingDimensions!),
+    // The offered names are derived from the SAME array handed to the
+    // provider, so the scenario's own guard cannot be satisfied by a
+    // hand-written list that has drifted from the wiring.
+    // Loads the same real runbook corpus the baseline scenario uses, so the
+    // model is genuinely shown the rate-limit evidence the scenario's premise
+    // depends on (lazily, inside this closure — a non-selected scenario never
+    // touches the corpus).
+    runTwoToolUsage: async () => {
+      const { chunks } = await loadDefaultRunbookCorpus();
+      return runTwoToolUsageScenario(
+        twoToolProvider,
+        bothCatalogTools.map((entry) => entry.tool.name),
+        chunks,
+      );
+    },
   });
   const results = await runSelectedScenarios(scenarioSelection, callbacks);
 
