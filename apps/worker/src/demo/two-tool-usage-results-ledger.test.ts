@@ -107,6 +107,37 @@ describe("two-tool-usage spike results — run ledger consistency", () => {
     expect(Math.abs(Number(statedTotal) - expected)).toBeLessThan(0.02);
   });
 
+  // Codex-review MINOR: docs/06-tool-design.md described the spike as
+  // "single-sample" in the same table cell that said "Four identical runs".
+  // The real limitation is single-SCENARIO — one ticket, one prompt — not a
+  // single sample. Pinned across the summarising docs so the two cannot drift
+  // apart again.
+  it("never calls the multi-run spike single-sample in the summarising docs", () => {
+    const readmePath = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../README.md");
+    const toolDesignPath = resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      "../../../../docs/06-tool-design.md",
+    );
+    for (const path of [readmePath, toolDesignPath, DOC_PATH]) {
+      const text = readFileSync(path, "utf8");
+      expect(text, `${path} calls the spike single-sample`).not.toMatch(/single[- ]sample/i);
+    }
+  });
+
+  // Codex-review MINOR: 06-tool-design.md called itself a pointer that "adds
+  // no new design decisions" while carrying a normative catalog-growth
+  // decision. A reader could not tell whether the section binds. The two
+  // claims must not coexist.
+  it("does not disclaim authority while carrying a normative decision", () => {
+    const toolDesign = readFileSync(
+      resolve(dirname(fileURLToPath(import.meta.url)), "../../../../docs/06-tool-design.md"),
+      "utf8",
+    );
+    const carriesDecision = toolDesign.includes("## What this milestone did not settle");
+    const disclaimsAuthority = /It adds no new design decisions\./.test(toolDesign);
+    expect(carriesDecision && disclaimsAuthority).toBe(false);
+  });
+
   it("does not claim the retriever-less run retrieved anything", () => {
     // Run 1 is discarded precisely because no retriever was wired.
     expect(markdown).toMatch(/Run 1 performed \*\*no retrieval at all\*\*/);

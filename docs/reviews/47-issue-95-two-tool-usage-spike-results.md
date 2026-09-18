@@ -4,7 +4,7 @@
 |---|---|
 | Spike | `apps/worker/src/demo/run-rag-live-spike.ts` (`RAG_SPIKE_SCENARIO=two-tool-usage pnpm --filter @opspilot/worker run spike:rag`) |
 | Scenario logic | `apps/worker/src/demo/run-rag-live-spike-scenarios.ts`, unit-tested in `run-rag-live-spike-scenarios.test.ts` without executing the live composition root |
-| Related design | `docs/06-tool-design.md` ("Implementation state"), `docs/03-technical-design.md` §14.3. The Milestone 14 plan (`docs/reviews/37-milestone-14-second-diagnostic-tool-plan.md`) is **not on `main`** — it exists only on the unmerged `docs/milestone-14-second-diagnostic-tool` branch, so it is deliberately not cited as a resolvable path. `docs/reviews/46-issue-94-two-tool-eval-coverage-plan.md` (line 254) carries the same dangling reference; plan documents are point-in-time records and are not retroactively edited. |
+| Related design | `docs/06-tool-design.md` ("Implementation state" and "What this milestone did not settle"), `docs/03-technical-design.md` §14.3, and the archived Milestone 14 plan `docs/reviews/37-milestone-14-second-diagnostic-tool-plan.md` (written before the milestone, archived after it closed, and carrying a drift banner — read it as history, not current state). |
 | Date | 2026-09-18 |
 | Status | **Descriptive record obtained from 4 recorded runs** (of 5 that completed — run 1 completed but is discarded, see the run ledger). Both catalog tools were offered to a live model for the first time; the model called both. **No catalog-sizing conclusion follows.** |
 | Model | `claude-sonnet-5`. No Voyage/embedding client — this scenario uses the shipped `InMemoryKeywordRunbookRetriever`. |
