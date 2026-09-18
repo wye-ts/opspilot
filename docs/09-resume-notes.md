@@ -30,8 +30,9 @@ A claim's verb must match what shipped. `docs/01-prd.md` §18 annotates four of 
 bullets, with the specific gap named in each case: two are unearned as written (`pgvector` and a
 deployed embedding store were never built — precomputed embeddings exist only as a committed
 offline comparison fixture; and there is no action-execution path for an approval control to
-gate), one is accurate only because its verb is `Designed` (the diagnostic tool catalog holds
-one tool, not the five that were designed), and one is partly earned (the evaluation harness
+gate), one is accurate only because its verb is `Designed` (the shipped catalog holds two tools,
+but only one of them is from the five that bullet describes — a second tool shipping does not
+make a `Designed`-verb bullet more earned), and one is partly earned (the evaluation harness
 measures deterministic tool correctness but not classification accuracy, latency, cost, or
 model tool-*selection* quality). `Designed` is not `Built`;
 `Built` is not `Measured`; `records a decision` is not `gates execution`. Strengthen a bullet

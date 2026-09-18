@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { AgentTraceEvent } from "../api/types";
 import type { InvestigationEventRecordPayload } from "@opspilot/contracts";
+import { DIAGNOSTIC_TOOL_CATALOG } from "@opspilot/agent-runtime";
 import { presentInvestigationActivityLabel, presentTraceProductLabel, traceTechnicalEntries } from "./trace-product-labels";
 
 describe("presentTraceProductLabel", () => {
@@ -40,24 +41,29 @@ describe("presentTraceProductLabel", () => {
     expect(presentTraceProductLabel(completed).label).toBe("Checked recent deployments");
   });
 
-  // Anti-erosion: a future catalog addition that forgets this file degrades
-  // silently to the generic wording rather than failing anything. This pins
-  // the catalog's tool names as a local literal rather than importing
-  // DIAGNOSTIC_TOOL_CATALOG — apps/web depends only on @opspilot/contracts,
-  // and adding @opspilot/agent-runtime (which carries the tools' Zod schemas
-  // and execute() bodies) to the frontend's dependency graph to satisfy a
-  // test would be a real architectural cost for a cosmetic guarantee. The
-  // trade-off: this list must be updated by hand when the catalog grows,
-  // which is exactly the failure it guards — so the message says so.
-  const CATALOG_TOOL_NAMES = ["get_service_status", "get_recent_deployments"] as const;
+  // Anti-erosion: a future catalog addition that forgets these tables degrades
+  // silently to the generic wording rather than failing anything. This
+  // iterates the REAL DIAGNOSTIC_TOOL_CATALOG, so adding a third tool without
+  // product language fails here — a hand-maintained copy of the names could
+  // not detect that, which is the drift the test exists to catch (Codex-review
+  // MINOR). @opspilot/agent-runtime is a devDependency: it is reachable only
+  // from this test, never from src/, so it cannot enter the vite bundle —
+  // apps/web's production build is guarded separately by `check:bundle`.
+  it("has product language for every tool in the real diagnostic catalog", () => {
+    expect(DIAGNOSTIC_TOOL_CATALOG.length).toBeGreaterThan(0);
 
-  it("has product language for every tool in the diagnostic catalog", () => {
-    for (const toolName of CATALOG_TOOL_NAMES) {
-      const event = { type: "TOOL_REQUESTED", toolCallId: "c", toolName } as AgentTraceEvent;
+    for (const { tool } of DIAGNOSTIC_TOOL_CATALOG) {
+      const requested = { type: "TOOL_REQUESTED", toolCallId: "c", toolName: tool.name } as AgentTraceEvent;
       expect(
-        presentTraceProductLabel(event).label,
-        `${toolName} has no product language — add it to TOOL_PRODUCT_ACTIONS, and keep CATALOG_TOOL_NAMES in sync with DIAGNOSTIC_TOOL_CATALOG`,
+        presentTraceProductLabel(requested).label,
+        `${tool.name} has no requested-label in TOOL_PRODUCT_ACTIONS`,
       ).not.toBe("Running a diagnostic tool");
+
+      const completed = { type: "TOOL_COMPLETED", toolCallId: "c", toolName: tool.name } as AgentTraceEvent;
+      expect(
+        presentTraceProductLabel(completed).label,
+        `${tool.name} has no completed-label in TOOL_PRODUCT_ACTIONS`,
+      ).not.toBe("Diagnostic tool completed");
     }
   });
 

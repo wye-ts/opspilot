@@ -19,6 +19,7 @@
     "react-dom": "^19"
   },
   "devDependencies": {
+    "@opspilot/agent-runtime": "workspace:*",
     "@testing-library/dom": "^10",
     "@testing-library/jest-dom": "^6",
     "@testing-library/react": "^16",

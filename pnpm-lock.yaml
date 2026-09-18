@@ -88,6 +88,9 @@ importers:
         specifier: ^19
         version: 19.2.8(react@19.2.8)
     devDependencies:
+      '@opspilot/agent-runtime':
+        specifier: workspace:*
+        version: link:../../packages/agent-runtime
       '@testing-library/dom':
         specifier: ^10
         version: 10.4.1
