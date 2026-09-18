@@ -89,8 +89,39 @@ Two consequences worth stating plainly rather than leaving for a reader to infer
   does not change this.** `apps/worker/src/evaluation/evaluation-runner.ts` constructs a
   `FakeLlmProvider` per case, so every provider turn — including which tool is requested — is
   scripted by the case fixture. A second tool shipped in #93/#94 and the metric is no more
-  informative about model choice than it was with one. Whether a real model *chooses* well is
-  answerable only by a live run, recorded as a bounded observation, never as a CI-gated property.
+  informative about model choice than it was with one.
 
 Neither is an architectural limit — the registry and the per-turn budget accounting are already
 tool-count-neutral, and the catalog is a plain array. They are unfilled capacity.
+
+## What this milestone did not settle
+
+Milestone 14 closed with the catalog at two tools. It did **not** establish how many tools the
+catalog should hold, and the reason is worth recording: **no mechanism in this repository can
+currently answer that question**, and the two candidates fail for structurally different reasons.
+
+| Mechanism | Why it cannot answer it |
+| --- | --- |
+| Evaluation harness (CI) | `evaluation-runner.ts` constructs a `FakeLlmProvider` per case, so every tool request in all 26 cases is scripted by the case fixture. It measures correctness against a declared expectation. No model choice occurs, so no number of added cases makes it informative about selection. |
+| LIVE spike (`two-tool-usage`) | A real model does choose, but the scenario is manual, single-sample, non-deterministic, and not CI-gated. Four identical runs on one ticket bound the observable variation only very loosely. |
+
+An earlier revision of `docs/reviews/47-issue-95-two-tool-usage-spike-results.md` did draw a
+catalog-sizing conclusion from the spike — that a `get_recent_deployments` call on a
+rate-limiting ticket was unmotivated budget waste, and therefore evidence against a third tool.
+**That inference was withdrawn during review.** It rested on the ticket's "no release has been
+announced", but an unannounced release is not an absent one: consulting the deployment record
+rather than trusting an announcement is ordinary differential diagnosis. Top-ranked retrieval is
+likewise not authoritative exclusion. The scenario was renamed from `tool-discipline` to
+`two-tool-usage` for the same reason — it never measured discipline, and the name claimed more
+than the mechanism proves.
+
+Answering the question properly would need a context that *authoritatively rules a cause out*,
+several distinct tickets, and enough runs per ticket to separate a tendency from sampling noise —
+i.e. a real experiment, not a spike. Absent that, **a third diagnostic tool should not be added on
+the grounds that it improves investigation quality**, because there is no mechanism that would
+show whether it did. Adding one to satisfy a concrete product requirement remains fine; the
+registry and budget accounting are tool-count-neutral.
+
+The narrower lesson generalizes past the catalog: when a capability's quality is unmeasurable,
+expanding the capability does not make it measurable. It only widens the surface no one can
+assess.
