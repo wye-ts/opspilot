@@ -3,7 +3,7 @@
 | Field | Value |
 | --- | --- |
 | Document | Tool Design |
-| Status | Pointer document — no separate tool design was ever authored under this number |
+| Status | Pointer document, plus two sections that are authoritative here: "Implementation state" and "What this milestone did not settle" |
 | Project | OpsPilot — AI Support and Incident Resolution Agent |
 | Last updated | September 2026 |
 
@@ -15,7 +15,15 @@ under this number and never written — the content landed inside the two parent
 instead, and duplicating it here would create two sources of truth for the same contracts.
 
 This file exists so those references resolve to something accurate rather than to a blank
-page. It adds no new design decisions.
+page. For the *contracts* — type boundaries, registry, phase budgets — it adds nothing and
+the table below names the authoritative location for each.
+
+Two sections are exceptions and **are** authoritative here, because they have no home in the
+parent documents: "Implementation state" records which designed tools actually exist, and
+"What this milestone did not settle" records a decision about catalog growth. Both describe
+the gap between design and implementation, which is precisely what a design document cannot
+describe about itself. If either ever contradicts `docs/03-technical-design.md` or
+`docs/04-agent-design.md` on a *contract*, those win.
 
 ## Where the tool design actually lives
 

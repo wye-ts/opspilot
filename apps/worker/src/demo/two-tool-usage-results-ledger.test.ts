@@ -124,6 +124,20 @@ describe("two-tool-usage spike results — run ledger consistency", () => {
     }
   });
 
+  // Codex-review MINOR: 06-tool-design.md called itself a pointer that "adds
+  // no new design decisions" while carrying a normative catalog-growth
+  // decision. A reader could not tell whether the section binds. The two
+  // claims must not coexist.
+  it("does not disclaim authority while carrying a normative decision", () => {
+    const toolDesign = readFileSync(
+      resolve(dirname(fileURLToPath(import.meta.url)), "../../../../docs/06-tool-design.md"),
+      "utf8",
+    );
+    const carriesDecision = toolDesign.includes("## What this milestone did not settle");
+    const disclaimsAuthority = /It adds no new design decisions\./.test(toolDesign);
+    expect(carriesDecision && disclaimsAuthority).toBe(false);
+  });
+
   it("does not claim the retriever-less run retrieved anything", () => {
     // Run 1 is discarded precisely because no retriever was wired.
     expect(markdown).toMatch(/Run 1 performed \*\*no retrieval at all\*\*/);
