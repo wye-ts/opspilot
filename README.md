@@ -85,7 +85,7 @@ Key engineering boundaries include:
 
 - provider-neutral orchestration with deterministic and Claude adapters;
 - Zod-backed model, tool, trace, report, and HTTP contracts;
-- a hard two-provider-turn limit and at most one diagnostic tool call per run;
+- a hard five-provider-turn limit and at most three diagnostic tool calls per run;
 - PostgreSQL persistence for jobs, runs, ordered trace events, reports, and approval decisions;
 - fail-closed live-provider configuration and no silent provider fallback;
 - controlled real-model rollout with token protection, idempotent recovery, usage accounting,
@@ -358,4 +358,11 @@ See [CI/CD and Deployment](docs/08-cicd-deployment.md).
 
 A calibration threshold in one adversarial scenario rested on a premise the scenario's own wiring contradicted; [#89](https://github.com/wye-ts/opspilot/issues/89) replaced it with a check keyed on attacker-supplied vocabulary, which a correct run cannot produce.
 
-No milestone is currently open and there are no open issues. Tabs/workspace navigation and a historical run list remain deferred with no active issue.
+**Milestone 14 — A Second Diagnostic Tool** ([milestone](https://github.com/wye-ts/opspilot/milestone/14)): in progress. Took the diagnostic tool catalog from one entry to two, and — more to the point — used the second tool to test where the evaluation harness's guarantees actually end.
+
+- **`get_recent_deployments`** (#93): a seeded, clock-free deployment lookup over the same three service slugs `get_service_status` knows, so the two tools describe one world a run can corroborate across. Its output carries a `knownService` boolean *separately* from an empty `deployments` list, because collapsing the two would let a model ground "no recent deploys, so deployment is ruled out" on the mere absence of a fixture entry — an absence of records is not evidence of an absence of deployments.
+- **Two-tool evaluation coverage** (#94): four cases exercising a two-tool investigation chain, three of them deliberately *negative* — a `ROLLED_BACK` deployment stays an unresolved lead, `knownService: false` rules nothing out, and a `FAILED` deployment behind a later `SUCCEEDED` one supports nothing in either direction. The one case carrying a conclusion carries a narrowly-scoped negative, and four independent review rounds were spent narrowing its wording: each round caught the report claiming more than its cited evidence proved (an unrelated runbook cited only to satisfy an evidence-count threshold; criteria quoted from a chunk the run never retrieved; "deployment is excluded" dropping the word *recent* that the bounded-window tool's output actually supports). Those are the defects a fixture-scripted green case would otherwise have blessed in CI, and regression tests now pin each one.
+
+**What this milestone does not establish:** whether a real model *chooses* the right tool. `evaluation-runner.ts` builds a `FakeLlmProvider` per case, so every provider turn — including which tool is requested — is scripted by the fixture. A larger catalog does not make model-choice quality offline-measurable; that question needs a live run recorded as a bounded observation, and is tracked in #95.
+
+No other milestone is open. Tabs/workspace navigation and a historical run list remain deferred with no active issue.

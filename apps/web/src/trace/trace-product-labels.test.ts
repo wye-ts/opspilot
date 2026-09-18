@@ -19,6 +19,48 @@ describe("presentTraceProductLabel", () => {
     expect(result.detail).toBeNull();
   });
 
+  // Milestone 14 (#94/#95): the second catalog tool. Before this, a two-tool
+  // investigation rendered as two indistinguishable "Running a diagnostic
+  // tool" rows — the one surface where the milestone is visible to a reader
+  // showed nothing of it. Every DIAGNOSTIC_TOOL_CATALOG member must have
+  // product language here, so the exhaustiveness test below is the real guard.
+  it("maps the deployments tool to product language, not the generic fallback", () => {
+    const requested: AgentTraceEvent = {
+      type: "TOOL_REQUESTED",
+      toolCallId: "job-1-call-2",
+      toolName: "get_recent_deployments",
+    };
+    expect(presentTraceProductLabel(requested).label).toBe("Checking recent deployments");
+
+    const completed: AgentTraceEvent = {
+      type: "TOOL_COMPLETED",
+      toolCallId: "job-1-call-2",
+      toolName: "get_recent_deployments",
+    };
+    expect(presentTraceProductLabel(completed).label).toBe("Checked recent deployments");
+  });
+
+  // Anti-erosion: a future catalog addition that forgets this file degrades
+  // silently to the generic wording rather than failing anything. This pins
+  // the catalog's tool names as a local literal rather than importing
+  // DIAGNOSTIC_TOOL_CATALOG — apps/web depends only on @opspilot/contracts,
+  // and adding @opspilot/agent-runtime (which carries the tools' Zod schemas
+  // and execute() bodies) to the frontend's dependency graph to satisfy a
+  // test would be a real architectural cost for a cosmetic guarantee. The
+  // trade-off: this list must be updated by hand when the catalog grows,
+  // which is exactly the failure it guards — so the message says so.
+  const CATALOG_TOOL_NAMES = ["get_service_status", "get_recent_deployments"] as const;
+
+  it("has product language for every tool in the diagnostic catalog", () => {
+    for (const toolName of CATALOG_TOOL_NAMES) {
+      const event = { type: "TOOL_REQUESTED", toolCallId: "c", toolName } as AgentTraceEvent;
+      expect(
+        presentTraceProductLabel(event).label,
+        `${toolName} has no product language — add it to TOOL_PRODUCT_ACTIONS, and keep CATALOG_TOOL_NAMES in sync with DIAGNOSTIC_TOOL_CATALOG`,
+      ).not.toBe("Running a diagnostic tool");
+    }
+  });
+
   it("presents REPORT_GENERATED as the resolution report", () => {
     const event: AgentTraceEvent = { type: "REPORT_GENERATED" };
     const result = presentTraceProductLabel(event);

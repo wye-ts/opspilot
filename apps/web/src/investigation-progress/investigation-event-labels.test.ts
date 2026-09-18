@@ -58,6 +58,28 @@ describe("formatInvestigationEventLabel", () => {
     expect(label).toBe("Tool requested: Get service status");
   });
 
+  // Milestone 14 (#94/#95): the second catalog tool needs its own display
+  // name, or a two-tool investigation shows two identical "Tool requested"
+  // rows. Named per event kind because the requested/completed branches read
+  // KNOWN_TOOL_DISPLAY_NAMES independently.
+  it("expands the deployments tool for both the requested and completed events", () => {
+    expect(
+      formatInvestigationEventLabel({
+        type: "TOOL_REQUESTED",
+        toolCallId: "call-2",
+        toolName: "get_recent_deployments",
+      }),
+    ).toBe("Tool requested: Get recent deployments");
+
+    expect(
+      formatInvestigationEventLabel({
+        type: "TOOL_COMPLETED",
+        toolCallId: "call-2",
+        toolName: "get_recent_deployments",
+      }),
+    ).toBe("Tool completed: Get recent deployments");
+  });
+
   it("degrades an unknown tool identifier to the generic label without interpolating it", () => {
     const label = formatInvestigationEventLabel({
       type: "TOOL_REQUESTED",
