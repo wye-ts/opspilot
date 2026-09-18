@@ -10,6 +10,31 @@ import { runEvaluationSuite } from "./evaluation-runner";
 import { LocalEvaluationScorer } from "./evaluation-scorer";
 import { buildEvaluationSuiteInputV2, EVALUATION_DATASET_ID } from "./v2-types";
 
+// Every human-readable string a report carries: the two top-level prose
+// fields plus every string in each suggested action's payload. Reading the
+// payload generically (rather than `payload.reason`) covers all three action
+// variants — CREATE_ESCALATION/UPDATE_TICKET_STATUS carry `reason`, while
+// DRAFT_CUSTOMER_REPLY carries `subject`/`body` and has no `reason` at all.
+function reportProse(report: ResolutionReport): readonly string[] {
+  return [
+    report.summary,
+    report.recommendedResolution,
+    ...report.suggestedActions.flatMap((action) =>
+      Object.values(action.payload).filter((value): value is string => typeof value === "string"),
+    ),
+  ];
+}
+
+function reportFor(caseId: string): ResolutionReport {
+  const evaluationCase = EVALUATION_CASES.find((candidate) => candidate.id === caseId);
+  if (!evaluationCase) throw new Error(`missing case ${caseId}`);
+  const turn = evaluationCase.scenario.turns.find(
+    (candidate) => typeof candidate === "object" && candidate.kind === "report_submission",
+  );
+  if (turn?.kind !== "report_submission") throw new Error(`missing report submission for ${caseId}`);
+  return turn.rawInput as ResolutionReport;
+}
+
 const EXPECTED_CASE_IDS = [
   "notification-service-degradation",
   "notification-queue-backlog",
@@ -94,17 +119,12 @@ describe("EVALUATION_CASES", () => {
   // history and never asserting the co-tenant hypothesis is resolved.
   it("deployment-ruled-out's report scopes its deployment exclusion to billing-service and leaves the co-tenant hypothesis unresolved", () => {
     const boundCase = EVALUATION_CASES.find((c) => c.id === "deployment-ruled-out");
-    const turn = boundCase?.scenario.turns.find(
-      (candidate) => typeof candidate === "object" && candidate.kind === "report_submission",
-    );
-    if (turn?.kind !== "report_submission") throw new Error("missing report submission for deployment-ruled-out");
-    const report = turn.rawInput as ResolutionReport;
+    const report = reportFor("deployment-ruled-out");
 
     // Every prose field discussing exclusion must scope it to billing-service
     // — never a bare "deployments are excluded"/"no recent deployment exists"
     // that would read as covering the co-tenant too.
-    const prose = [report.summary, report.recommendedResolution, ...report.suggestedActions.map((a) => a.payload.reason)];
-    for (const text of prose) {
+    for (const text of reportProse(report)) {
       if (/deployment/i.test(text)) {
         expect(text).toMatch(/billing-service/i);
       }
@@ -125,15 +145,9 @@ describe("EVALUATION_CASES", () => {
   // ever". Every exclusion statement must carry "recent" alongside
   // "billing-service", not just one of the two.
   it("deployment-ruled-out's report scopes its exclusion to RECENT billing-service deployments, not deployments at large", () => {
-    const boundCase = EVALUATION_CASES.find((c) => c.id === "deployment-ruled-out");
-    const turn = boundCase?.scenario.turns.find(
-      (candidate) => typeof candidate === "object" && candidate.kind === "report_submission",
-    );
-    if (turn?.kind !== "report_submission") throw new Error("missing report submission for deployment-ruled-out");
-    const report = turn.rawInput as ResolutionReport;
+    const report = reportFor("deployment-ruled-out");
 
-    const prose = [report.summary, report.recommendedResolution, ...report.suggestedActions.map((a) => a.payload.reason)];
-    for (const text of prose) {
+    for (const text of reportProse(report)) {
       // Any clause asserting exclusion/ruling-out of a billing-service
       // deployment must itself carry "recent" — not merely appear somewhere
       // in a longer sentence that also happens to mention "recent" elsewhere.
@@ -149,14 +163,7 @@ describe("EVALUATION_CASES", () => {
   // exercised (deployment/rollback), and the prose must affirmatively point
   // at further investigation of the ticket's own reported symptom.
   it("deployment-failed-behind-success does not recommend general inaction and preserves further investigation", () => {
-    const failedBehindCase = EVALUATION_CASES.find((c) => c.id === "deployment-failed-behind-success");
-    const turn = failedBehindCase?.scenario.turns.find(
-      (candidate) => typeof candidate === "object" && candidate.kind === "report_submission",
-    );
-    if (turn?.kind !== "report_submission") {
-      throw new Error("missing report submission for deployment-failed-behind-success");
-    }
-    const report = turn.rawInput as ResolutionReport;
+    const report = reportFor("deployment-failed-behind-success");
 
     expect(report.recommendedResolution).not.toMatch(/^no action is warranted/i);
     expect(report.recommendedResolution).toMatch(/investigat/i);
@@ -195,16 +202,6 @@ describe("EVALUATION_CASES", () => {
   // concrete action command) fails here. Exact strings only — deliberately NOT
   // a prose semantic parser.
   it("keeps the corrected topic-runbook recommendation prose aligned with the structured action or disposition", () => {
-    function reportFor(caseId: string): ResolutionReport {
-      const evaluationCase = EVALUATION_CASES.find((candidate) => candidate.id === caseId);
-      if (!evaluationCase) throw new Error(`missing case ${caseId}`);
-      const turn = evaluationCase.scenario.turns.find(
-        (candidate) => typeof candidate === "object" && candidate.kind === "report_submission",
-      );
-      if (turn?.kind !== "report_submission") throw new Error(`missing report submission for ${caseId}`);
-      return turn.rawInput as ResolutionReport;
-    }
-
     const expectedResolutionByCaseId: Readonly<Record<string, string>> = {
       "notification-service-degradation":
         "Update the ticket to IN_PROGRESS while the notification-service degradation is investigated per the runbook.",
