@@ -247,8 +247,10 @@ this change enables, and what no round so far has produced.
   nothing distinguishes the two. On this evidence the threshold is *unresolved*,
   not passed.
 - **Any point estimate of the rate.** Two rounds of the same configuration gave
-  50% and 80%. Pooled 67% is the best available reading, and it is not precise
-  enough to gate a public trial on.
+  40% and 80% end-to-end (2/5 and 4/5). Pooled 60% (6/10) is the best available
+  reading, and it is not precise enough to gate a public trial on. The 50% and
+  67% figures this document previously used here were report-bearing ratios
+  (2/4, 6/9) presented as completion rates — the conflation recorded above.
 - **That the improvement is attributable to any one fix.** #115 engaged twice,
   but #107's wider budget and #101's corrective retry are also in play, and
   nothing here isolates them. Establishing that #115 *caused* a completion

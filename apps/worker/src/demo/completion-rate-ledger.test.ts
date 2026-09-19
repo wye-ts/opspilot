@@ -71,32 +71,22 @@ describe("round C is recorded as void in both documents", () => {
   });
 });
 
-describe("the entry does not claim guards it lacks", () => {
-  // The original text asserted a documentation-consistency test covered these
-  // figures. It did not exist. If a future edit reinstates that claim, the
-  // reference must be to a real file.
-  it("only claims a ledger test by naming the file that implements it", () => {
-    // Span the whole sentence: the file name sits after a "." inside
-    // `...ledger.test.ts`, so stopping at the first period truncated it.
-    // Check the SENTENCE that makes the claim, not a fixed-size window: a
-    // 240-character window swallowed the qualifying sentence that follows, so
-    // an injected "covers every figure in this entry" still satisfied both
-    // conditions. Third over-wide matcher this investigation — the lesson is
-    // to bound a pattern by the structure (a sentence) rather than by a
-    // character count.
-    const sentences = CHALLENGE.split(/(?<=\.)\s+/);
-    const claims = sentences.filter((sentence) =>
-      /documentation-consistency test/i.test(sentence),
-    );
-    expect(claims.length).toBeGreaterThan(0);
-    for (const claim of claims) {
-      // The claim sentence must attribute the test to the spike it actually
-      // covers. A blanket "covers every figure in this entry" does not.
-      expect(claim).toMatch(/exists for the tool-usage spike/i);
-      expect(claim).not.toMatch(/every figure|this entry|automatically/i);
-    }
-    // And the entry must state plainly that these figures are unguarded.
-    expect(CHALLENGE).toMatch(/No equivalent test covers this\s+document's figures/i);
+describe("claims about verification match reality", () => {
+  // The entry once asserted a consistency test covered these figures when none
+  // did. The fix was to BUILD the guard, so the correct assertion now is that
+  // the entry names the test that exists rather than that it disclaims one.
+  // The earlier version of this test pinned the disclaimer in place, which
+  // would have forced a true statement to be described as absent.
+  it("names the guard that now covers these figures", () => {
+    expect(CHALLENGE).toContain("completion-rate-ledger.test.ts");
+  });
+
+  it("does not reinstate the disclaimer the guard has made false", () => {
+    expect(CHALLENGE).not.toMatch(/No equivalent test covers this\s+document's figures/i);
+  });
+
+  it("keeps the sequence honest: the claim preceded the mechanism", () => {
+    expect(CHALLENGE).toMatch(/originally claimed the same\s+guard covered these figures when it did not/i);
   });
 });
 
@@ -135,5 +125,28 @@ describe("denominators are labelled, not conflated", () => {
 
   it("states the end-to-end pooled figure against the baseline", () => {
     expect(REVIEW).toMatch(/6\/10 \(60%\)/);
+  });
+});
+
+describe("stated percentages match their stated denominators", () => {
+  // Falsification found this gap: restoring the conflated "50% and 80%,
+  // pooled 67%" passed every existing guard, because nothing checked the
+  // percentages against the ledger. Those are 2/4 and 6/9 — report-bearing
+  // ratios — printed where end-to-end rates belong.
+  it("uses end-to-end percentages in the point-estimate paragraph", () => {
+    const paragraph = REVIEW.slice(REVIEW.indexOf("Any point estimate of the rate"));
+    const claim = paragraph.slice(0, 400);
+    expect(claim).toMatch(/40% and 80% end-to-end/);
+    expect(claim).toMatch(/Pooled 60% \(6\/10\)/);
+    // The report-bearing readings may be MENTIONED, but only as the
+    // superseded figures they are.
+    if (/\b67%/.test(claim)) {
+      expect(claim).toMatch(/previously|superseded|report-bearing/i);
+    }
+  });
+
+  it("never states a bare 50% for round A", () => {
+    const paragraph = REVIEW.slice(REVIEW.indexOf("Any point estimate of the rate"), REVIEW.indexOf("Any point estimate of the rate") + 400);
+    expect(paragraph).not.toMatch(/gave\s+50% and 80%/);
   });
 });

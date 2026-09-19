@@ -2724,7 +2724,11 @@ Concretely:
    that never produced a report is not.
 4. **Generate tickets parametrically.** A 3×5×5 service/symptom/context space,
    drawn without replacement, seeded for reproducibility.
-5. **Persist the full trajectory, with the protocol beside the results.** Each
+5. **Persist a run record, with the protocol beside the results.** Not a full
+   trajectory: the trace contract carries tool names and ids but no tool
+   inputs or outputs, so runs that queried different services are
+   indistinguishable in it. Calling it a trajectory was itself an overclaim,
+   corrected in review. Each
    round writes retrieved chunk ids, tool-call sequence, invariant
    attributions and ticket parameters, alongside the execution protocol
    (model, retries, timeout, topK, seed) and the scoring rule.
@@ -2848,10 +2852,14 @@ restored byte-identically with a `sha256` comparison:
 
 A documentation-consistency test of this kind exists for the tool-usage spike
 (`two-tool-usage-results-ledger.test.ts`), written after three consecutive
-review rounds found ledger drift there. **No equivalent test covers this
-document's figures**, and review caught drift here too: the cost table said
-five rounds and 25 billed runs while the body described six rounds and 30.
-Claiming the guard existed was itself the overclaim this entry is about.
+review rounds found ledger drift there. This entry originally claimed the same
+guard covered these figures when it did not — an overclaim about its own
+verification, in an entry about overclaiming, which review caught alongside
+real drift (the cost table said five rounds and 25 billed runs while the body
+described six and 30). The guard now exists: `completion-rate-ledger.test.ts`
+derives the round count, denominators, cost and labels from both documents.
+The sequence is the point — the claim preceded the mechanism, and only review
+separated them.
 
 ### Observability
 
