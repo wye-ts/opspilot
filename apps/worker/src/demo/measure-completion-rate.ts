@@ -40,10 +40,14 @@
  *   RUN_COUNT=5 ... (default 5)
  */
 
+import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import Anthropic from "@anthropic-ai/sdk";
 import opspilotAgentRuntime from "@opspilot/agent-runtime";
 import type { AgentConversationMessage } from "@opspilot/agent-runtime";
 import opspilotProviderClaude, { DEFAULT_TIMEOUT_MS } from "@opspilot/provider-claude";
+import { generateTickets, TICKET_COMBINATION_COUNT } from "./completion-rate-tickets";
 import {
   InMemoryKeywordRunbookRetriever,
   DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE,
@@ -120,56 +124,26 @@ function requireEnv(name: string): string {
 }
 
 /**
- * Ordinary operational tickets over the seeded three-service world, written to
- * the shape the deployed composer accepts (>= TICKET_SUMMARY_MIN_LENGTH, plain
- * operator prose). None is adversarial: no injection, no role confusion, no
- * attempt to elicit a forbidden action. The point is to exercise the NORMAL
- * path, which is what the deployed 25% was measured on.
+ * Tickets are GENERATED, not hand-written. The previous version cycled five
+ * fixed tickets with `TICKETS[i % 5]`, so a 15-run round was five tickets three
+ * times over rather than fifteen samples. See completion-rate-tickets.ts.
  */
-const TICKETS: ReadonlyArray<{
-  readonly id: string;
-  readonly summary: string;
-}> = [
-  {
-    id: "TICKET-4001",
-    summary:
-      "Customers on one tenant report outbound notification emails arriving late or not at all. " +
-      "The notification worker pool looks healthy and no release has been announced.",
-  },
-  {
-    id: "TICKET-4002",
-    summary:
-      "Billing service API calls are returning elevated 5xx rates since this morning. " +
-      "On-call wants to know whether a recent deployment is involved before paging the team.",
-  },
-  {
-    id: "TICKET-4003",
-    summary:
-      "Search results are showing stale data for some customers — records updated an hour ago " +
-      "are still missing from search. No alerts have fired on the search service itself.",
-  },
-  {
-    id: "TICKET-4004",
-    summary:
-      "Several customers cannot sign in this morning and report their credentials being rejected. " +
-      "The identity provider status page shows no incident.",
-  },
-  {
-    id: "TICKET-4005",
-    summary:
-      "Uploads to the storage service are failing intermittently for one tenant with quota errors, " +
-      "even though the account should be well under its limit.",
-  },
-];
+const TICKET_SEED = Number(process.env.TICKET_SEED?.trim() ?? 20260919);
 
 interface RunOutcome {
   readonly ticketId: string;
+  readonly ticketSummary: string;
+  readonly ticketParameters: Record<string, unknown>;
   readonly status: string;
   readonly failureCode?: string;
   /** Which invariant Zod rejected — the capability #106 added. */
   readonly validationMessages: readonly string[];
   /** Evidence entries #115 synthesized; a non-empty list means F5 was healed. */
   readonly autoCompletedEvidence: number;
+  /** What the model was actually shown — "only a full trajectory distinguishes
+   *  a harness defect from a model regression" (evaluation ch.7). */
+  readonly retrievedChunkIds: readonly string[];
+  readonly toolCallsMade: readonly string[];
 }
 
 async function main(): Promise<void> {
@@ -206,11 +180,17 @@ async function main(): Promise<void> {
   });
   console.log(`provider policy: timeoutMs=${timeoutMs} maxRetries=${maxRetries} (deployed defaults)`);
 
+  const tickets = generateTickets(runCount, TICKET_SEED);
+  console.log(
+    `tickets: ${runCount} distinct, seed=${TICKET_SEED} ` +
+      `(of ${TICKET_COMBINATION_COUNT} possible combinations)`,
+  );
+
   const outcomes: RunOutcome[] = [];
   const excluded: string[] = [];
 
   for (let i = 0; i < runCount; i += 1) {
-    const ticket = TICKETS[i % TICKETS.length]!;
+    const ticket = tickets[i]!;
     const registry = new InMemoryToolRegistry([getServiceStatusTool, getRecentDeploymentsTool]);
 
     process.stdout.write(`\n--- run ${i + 1}/${runCount} — ${ticket.id} ---\n`);
@@ -265,8 +245,23 @@ async function main(): Promise<void> {
               .filter((m): m is string => typeof m === "string")
           : [];
 
+      // Event names taken from packages/contracts/src/agent-trace-event.ts —
+      // the discriminated union is the authority, and a guessed name would
+      // silently yield an empty list rather than fail.
+      const trace = result.trace ?? [];
+      const retrievalChunks = trace.flatMap((event) =>
+        event.type === "RETRIEVAL_COMPLETED" ? event.chunks.map((chunk) => chunk.chunkId) : [],
+      );
+      const toolCalls = trace.flatMap((event) =>
+        event.type === "TOOL_COMPLETED" ? [event.toolName] : [],
+      );
+
       outcomes.push({
         ticketId: ticket.id,
+        ticketSummary: ticket.summary,
+        ticketParameters: ticket.parameters,
+        retrievedChunkIds: retrievalChunks,
+        toolCallsMade: toolCalls,
         status: result.status,
         ...(result.status === "failed" ? { failureCode: result.code } : {}),
         validationMessages,
@@ -291,6 +286,10 @@ async function main(): Promise<void> {
       if (!isProviderOutage(error)) throw error;
       outcomes.push({
         ticketId: ticket.id,
+        ticketSummary: ticket.summary,
+        ticketParameters: ticket.parameters,
+        retrievedChunkIds: [],
+        toolCallsMade: [],
         status: "threw",
         failureCode: error.category,
         validationMessages: [],
@@ -336,6 +335,51 @@ async function main(): Promise<void> {
   console.log(`REPORT_SCHEMA_INVALID:  ${schemaInvalid}/${outcomes.length}`);
   console.log(`provider-side failures: ${providerIssues}/${outcomes.length}`);
   console.log(`runs where #115 healed an F5 omission: ${healed}`);
+  // PERSIST. Four earlier rounds left no artefact: their only record was
+  // terminal output that a `tail` truncated, so the per-failure attribution
+  // was lost and the doc had to rely on transcription (which got one figure
+  // wrong). "Only auditing a full trajectory distinguishes a harness defect
+  // from a model regression" — evaluation ch.7.
+  //
+  // The execution protocol and scoring rule are stored ALONGSIDE the results,
+  // not just in prose: two rounds of this measurement were voided precisely
+  // because the configuration they ran under was not recorded with them.
+  const artefact = {
+    schemaVersion: 1,
+    recordedAt: new Date().toISOString(),
+    executionProtocol: {
+      model,
+      maxRetries,
+      timeoutMs,
+      retrievalTopK: DEPLOYED_RETRIEVAL_TOP_K,
+      retrievalQueryRule: "ticket summary verbatim (apps/api/src/execution/retrieval-input.ts)",
+      ticketSeed: TICKET_SEED,
+      requestedRuns: runCount,
+    },
+    scoringRule: {
+      completed: 'orchestrator status === "completed"',
+      excluded:
+        "PROVIDER_UNAVAILABLE — the orchestrator collapses AUTHENTICATION/BILLING/" +
+        "REQUEST_INVALID into this code, so such a run cannot be shown to have reached the model",
+      voided: "any non-LlmProviderError throw is a defect in this repo, not a measurement outcome",
+    },
+    tallies: { completed, schemaInvalid, providerIssues, healed, excluded: excluded.length },
+    excludedTickets: excluded,
+    runs: outcomes,
+  };
+  // Repo-root-relative, and NOT under .agent/ — that path is gitignored, so a
+  // measurement written there would be lost on the next clean checkout,
+  // recreating the very problem this persistence exists to fix. __dirname is
+  // apps/worker/src/demo, hence four levels up.
+  const outputDir = resolve(import.meta.dirname, "../../../../docs/measurements");
+  mkdirSync(outputDir, { recursive: true });
+  const outputPath = resolve(
+    outputDir,
+    `completion-rate-${artefact.recordedAt.replace(/[:.]/g, "-")}.json`,
+  );
+  writeFileSync(outputPath, JSON.stringify(artefact, null, 2), "utf8");
+  console.log(`\nFull trajectory written to ${outputPath}`);
+
   console.log(
     `\nBaseline for comparison: 2/8 COMPLETED (25%) on deployed runs, 2026-09-14/15 (#105).`,
   );
