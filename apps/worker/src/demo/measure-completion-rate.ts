@@ -67,6 +67,53 @@ const { ClaudeLlmProvider, requireSupportedClaudeModel } = opspilotProviderClaud
 export const MAX_RUN_COUNT = 25;
 
 /**
+ * The output ceilings a deployed LIVE run uses (LIVE_RUN_DEFAULTS in
+ * apps/api/src/execution/run-execution-config.ts). agent-runtime's default is
+ * 4096/4096 — MORE generous on both turns — so omitting this lets the model
+ * produce a report the deployed path would have truncated. Same failure
+ * direction as every other apparatus defect found here: silently favourable.
+ */
+export const LIVE_RUN_OUTPUT_BUDGET = {
+  investigationMaxOutputTokens: 1024,
+  finalizationMaxOutputTokens: 3072,
+} as const;
+
+/**
+ * The deployed per-run provider deadline (DEFAULT_PROVIDER_DEADLINE_MS in
+ * apps/api/src/execution/run-abort-context.ts). It spans the WHOLE run, not one
+ * call: three 41-second turns each clear a 45s per-call timeout while busting a
+ * shared 120s budget, so a per-call timeout alone does not reproduce it.
+ */
+export const LIVE_RUN_PROVIDER_DEADLINE_MS = 120_000;
+
+/** Production bounds for ANTHROPIC_TIMEOUT_MS (claude-config.ts). */
+export const MIN_TIMEOUT_MS = 1_000;
+export const MAX_TIMEOUT_MS = 600_000;
+
+/**
+ * Validates a numeric environment override against production bounds. An
+ * unvalidated ANTHROPIC_TIMEOUT_MS=0 disables the SDK timeout entirely and a
+ * non-numeric TICKET_SEED becomes NaN, which the PRNG coerces to seed 0 and the
+ * artefact serialises as null — a non-reproducible round that still prints a
+ * plausible result.
+ */
+export function parseBoundedEnvInteger(
+  raw: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+  name: string,
+): number {
+  const trimmed = raw?.trim();
+  if (trimmed === undefined || trimmed === "") return fallback;
+  const value = Number(trimmed);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`${name} must be an integer in ${min}..${max}`);
+  }
+  return value;
+}
+
+/**
  * The retry count a deployed LIVE run always has. Enforced at boot by
  * assertNoOpaqueRetriesOnProtectedLivePath() in
  * apps/api/src/execution/run-execution-config.ts,
@@ -128,7 +175,13 @@ function requireEnv(name: string): string {
  * fixed tickets with `TICKETS[i % 5]`, so a 15-run round was five tickets three
  * times over rather than fifteen samples. See completion-rate-tickets.ts.
  */
-const TICKET_SEED = Number(process.env.TICKET_SEED?.trim() ?? 20260919);
+const TICKET_SEED = parseBoundedEnvInteger(
+  process.env.TICKET_SEED,
+  20260919,
+  0,
+  2_147_483_647,
+  "TICKET_SEED",
+);
 
 interface RunOutcome {
   readonly ticketId: string;
@@ -144,6 +197,27 @@ interface RunOutcome {
    *  a harness defect from a model regression" (evaluation ch.7). */
   readonly retrievedChunkIds: readonly string[];
   readonly toolCallsMade: readonly string[];
+}
+
+
+/**
+ * Writes the artefact and returns its path.
+ *
+ * Called after EVERY run, not only at the end. A round that dies on run 12 of
+ * 15 otherwise discards eleven billed runs of evidence — the same "lose the
+ * paid data" defect that cost this investigation round D's failure
+ * attribution, just relocated to a crash path. The file is rewritten in place
+ * each time, so a partial round is still a readable artefact.
+ */
+function writeArtefact(artefact: { readonly startedAt: string }): string {
+  const outputDir = resolve(import.meta.dirname, "../../../../docs/measurements");
+  mkdirSync(outputDir, { recursive: true });
+  const outputPath = resolve(
+    outputDir,
+    `completion-rate-${artefact.startedAt.replace(/[:.]/g, "-")}.json`,
+  );
+  writeFileSync(outputPath, JSON.stringify(artefact, null, 2), "utf8");
+  return outputPath;
 }
 
 async function main(): Promise<void> {
@@ -164,7 +238,13 @@ async function main(): Promise<void> {
   // provider and been billed without being observable, so a live run's cost
   // could not be reported honestly. Every deployed LIVE run therefore has
   // exactly one provider attempt, and this measurement must too.
-  const timeoutMs = Number(process.env.ANTHROPIC_TIMEOUT_MS?.trim() ?? DEFAULT_TIMEOUT_MS);
+  const timeoutMs = parseBoundedEnvInteger(
+    process.env.ANTHROPIC_TIMEOUT_MS,
+    DEFAULT_TIMEOUT_MS,
+    MIN_TIMEOUT_MS,
+    MAX_TIMEOUT_MS,
+    "ANTHROPIC_TIMEOUT_MS",
+  );
   const maxRetries = LIVE_RUN_MAX_RETRIES;
   const anthropicClient = new Anthropic({
     apiKey,
@@ -189,6 +269,48 @@ async function main(): Promise<void> {
   const outcomes: RunOutcome[] = [];
   const excluded: string[] = [];
 
+  // Built before the loop and flushed after EVERY run, so a crash on run 12 of
+  // 15 still leaves eleven billed runs on disk. `completedAt` stays null until
+  // the round finishes, which is how a reader tells a partial artefact from a
+  // complete one.
+  const artefact: {
+    schemaVersion: number;
+    startedAt: string;
+    completedAt: string | null;
+    executionProtocol: Record<string, unknown>;
+    scoringRule: Record<string, string>;
+    tallies: Record<string, number> | null;
+    excludedTickets: string[];
+    runs: RunOutcome[];
+  } = {
+    schemaVersion: 2,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+    executionProtocol: {
+      model,
+      maxRetries,
+      timeoutMs,
+      providerDeadlineMs: LIVE_RUN_PROVIDER_DEADLINE_MS,
+      outputBudget: LIVE_RUN_OUTPUT_BUDGET,
+      retrievalTopK: DEPLOYED_RETRIEVAL_TOP_K,
+      retrievalQueryRule: "ticket summary verbatim (apps/api/src/execution/retrieval-input.ts)",
+      ticketSeed: TICKET_SEED,
+      requestedRuns: runCount,
+    },
+    scoringRule: {
+      completed: 'orchestrator status === "completed"',
+      excluded:
+        "PROVIDER_UNAVAILABLE / PROVIDER_TIMEOUT / PROVIDER_CANCELLED — the run did not produce " +
+        "a report for provider-side reasons, so it cannot speak to report quality. " +
+        "PROVIDER_UNAVAILABLE additionally collapses AUTHENTICATION/BILLING/REQUEST_INVALID, " +
+        "so such a run cannot even be shown to have reached the model.",
+      voided: "any non-LlmProviderError throw is a defect in this repo, not a measurement outcome",
+    },
+    tallies: null,
+    excludedTickets: excluded,
+    runs: outcomes,
+  };
+
   for (let i = 0; i < runCount; i += 1) {
     const ticket = tickets[i]!;
     const registry = new InMemoryToolRegistry([getServiceStatusTool, getRecentDeploymentsTool]);
@@ -207,6 +329,13 @@ async function main(): Promise<void> {
           } satisfies AgentConversationMessage,
         ],
         retriever,
+        // The deployed LIVE ceilings, not agent-runtime's more generous
+        // 4096/4096 defaults.
+        outputBudget: LIVE_RUN_OUTPUT_BUDGET,
+        // The deployed per-RUN deadline. A fresh signal per run, because it
+        // bounds the whole investigation rather than one call — the SDK
+        // timeout above only bounds a single request.
+        signal: AbortSignal.timeout(LIVE_RUN_PROVIDER_DEADLINE_MS),
         // EXACTLY what the deployed path does — apps/api/src/execution/
         // retrieval-input.ts: buildRetrievalInput() passes the ticket summary
         // verbatim with topK 3. A hand-tuned keyword query would hand the
@@ -228,13 +357,32 @@ async function main(): Promise<void> {
       // EXCLUDED from the denominator rather than recorded as a failed run.
       // Under-reporting the sample size is recoverable; a rate computed over
       // runs that never reached the model is not.
-      if (result.status === "failed" && result.code === "PROVIDER_UNAVAILABLE") {
+      // The orchestrator CATCHES provider errors and returns a failure code;
+      // very little reaches the throw path. So classification has to happen
+      // here, on the returned code, or the stated policy is fiction:
+      //
+      //   PROVIDER_UNAVAILABLE — ambiguous. Collapses real outages together
+      //     with AUTHENTICATION/BILLING/REQUEST_INVALID, so a run carrying it
+      //     cannot be shown to have reached the model. EXCLUDED.
+      //   PROVIDER_TIMEOUT / PROVIDER_CANCELLED — unambiguous, and both mean
+      //     the run did not finish for reasons outside report quality.
+      //     EXCLUDED, and counted as provider-side rather than silently
+      //     dropped (PROVIDER_TIMEOUT was previously invisible in the
+      //     tallies, and PROVIDER_CANCELLED was counted as an ordinary
+      //     report failure).
+      const PROVIDER_SIDE_CODES = new Set([
+        "PROVIDER_UNAVAILABLE",
+        "PROVIDER_TIMEOUT",
+        "PROVIDER_CANCELLED",
+      ]);
+      if (result.status === "failed" && PROVIDER_SIDE_CODES.has(result.code)) {
         console.log(
-          "status=failed code=PROVIDER_UNAVAILABLE — EXCLUDED from the sample. " +
-            "This code covers both real outages and our own AUTHENTICATION/BILLING/" +
-            "REQUEST_INVALID problems, which are indistinguishable here.",
+          `status=failed code=${result.code} — EXCLUDED from the sample. ` +
+            "The run did not produce a report for provider-side reasons, so it cannot " +
+            "speak to report quality either way.",
         );
-        excluded.push(ticket.id);
+        excluded.push(`${ticket.id} (${result.code})`);
+        writeArtefact(artefact);
         continue;
       }
 
@@ -277,13 +425,20 @@ async function main(): Promise<void> {
             : ""),
       );
       for (const message of validationMessages) console.log(`  invariant: ${message}`);
+      writeArtefact(artefact);
     } catch (error) {
       // A genuine provider outage is a real-world outcome and belongs in the
       // ledger. ANY other throw is a defect in this repo, and folding it into
       // "provider-side failures" would let a crash pass as an ordinary outage
       // — a 4-completion/1-crash run would still read as meeting the
       // threshold. Rethrow so the measurement fails loudly instead.
-      if (!isProviderOutage(error)) throw error;
+      if (!isProviderOutage(error)) {
+        // Preserve the runs already paid for before letting the defect
+        // surface. Losing them would repeat the exact data loss this
+        // persistence was added to prevent.
+        writeArtefact(artefact);
+        throw error;
+      }
       outcomes.push({
         ticketId: ticket.id,
         ticketSummary: ticket.summary,
@@ -296,6 +451,7 @@ async function main(): Promise<void> {
         autoCompletedEvidence: 0,
       });
       console.log(`status=threw code=${error.category}`);
+      writeArtefact(artefact);
     }
   }
 
@@ -304,6 +460,7 @@ async function main(): Promise<void> {
   // while measuring nothing at all — the same fail-quietly shape as the
   // unvalidated RUN_COUNT. A measurement with no usable runs is void.
   if (outcomes.length === 0) {
+    writeArtefact(artefact);
     throw new Error(
       `No usable runs: all ${excluded.length} invocation(s) failed before producing a report. ` +
         "This measures nothing — check credentials, credit and connectivity.",
@@ -344,40 +501,9 @@ async function main(): Promise<void> {
   // The execution protocol and scoring rule are stored ALONGSIDE the results,
   // not just in prose: two rounds of this measurement were voided precisely
   // because the configuration they ran under was not recorded with them.
-  const artefact = {
-    schemaVersion: 1,
-    recordedAt: new Date().toISOString(),
-    executionProtocol: {
-      model,
-      maxRetries,
-      timeoutMs,
-      retrievalTopK: DEPLOYED_RETRIEVAL_TOP_K,
-      retrievalQueryRule: "ticket summary verbatim (apps/api/src/execution/retrieval-input.ts)",
-      ticketSeed: TICKET_SEED,
-      requestedRuns: runCount,
-    },
-    scoringRule: {
-      completed: 'orchestrator status === "completed"',
-      excluded:
-        "PROVIDER_UNAVAILABLE — the orchestrator collapses AUTHENTICATION/BILLING/" +
-        "REQUEST_INVALID into this code, so such a run cannot be shown to have reached the model",
-      voided: "any non-LlmProviderError throw is a defect in this repo, not a measurement outcome",
-    },
-    tallies: { completed, schemaInvalid, providerIssues, healed, excluded: excluded.length },
-    excludedTickets: excluded,
-    runs: outcomes,
-  };
-  // Repo-root-relative, and NOT under .agent/ — that path is gitignored, so a
-  // measurement written there would be lost on the next clean checkout,
-  // recreating the very problem this persistence exists to fix. __dirname is
-  // apps/worker/src/demo, hence four levels up.
-  const outputDir = resolve(import.meta.dirname, "../../../../docs/measurements");
-  mkdirSync(outputDir, { recursive: true });
-  const outputPath = resolve(
-    outputDir,
-    `completion-rate-${artefact.recordedAt.replace(/[:.]/g, "-")}.json`,
-  );
-  writeFileSync(outputPath, JSON.stringify(artefact, null, 2), "utf8");
+  artefact.completedAt = new Date().toISOString();
+  artefact.tallies = { completed, schemaInvalid, providerIssues, healed, excluded: excluded.length };
+  const outputPath = writeArtefact(artefact);
   console.log(`\nFull trajectory written to ${outputPath}`);
 
   console.log(
