@@ -43,10 +43,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import opspilotAgentRuntime from "@opspilot/agent-runtime";
 import type { AgentConversationMessage } from "@opspilot/agent-runtime";
-import opspilotProviderClaude, {
-  DEFAULT_TIMEOUT_MS,
-  DEFAULT_MAX_RETRIES,
-} from "@opspilot/provider-claude";
+import opspilotProviderClaude, { DEFAULT_TIMEOUT_MS } from "@opspilot/provider-claude";
 import {
   InMemoryKeywordRunbookRetriever,
   DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE,
@@ -64,6 +61,16 @@ const { ClaudeLlmProvider, requireSupportedClaudeModel } = opspilotProviderClaud
 
 /** Hard ceiling on billed runs per invocation. */
 export const MAX_RUN_COUNT = 25;
+
+/**
+ * The retry count a deployed LIVE run always has. Enforced at boot by
+ * assertNoOpaqueRetriesOnProtectedLivePath() in
+ * apps/api/src/execution/run-execution-config.ts,
+ * which throws unless ANTHROPIC_MAX_RETRIES === 0 while LIVE runs are enabled.
+ * Pinned here rather than read from the environment so this measurement cannot
+ * silently become more permissive than the path it claims to measure.
+ */
+export const LIVE_RUN_MAX_RETRIES = 0;
 
 /**
  * A NaN, zero, negative or fractional RUN_COUNT would skip the loop and print
@@ -173,14 +180,18 @@ async function main(): Promise<void> {
   const { chunks } = await loadDefaultRunbookCorpus();
   const retriever = new InMemoryKeywordRunbookRetriever(chunks, DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE);
 
-  // Match the DEPLOYED provider policy exactly. An earlier version hardcoded
-  // maxRetries: 2 with no timeout — more permissive than deployment, so a
-  // completion this script recorded could be one the deployed path would have
-  // given up on. The defaults come from provider-claude's own config module
-  // (DEFAULT_TIMEOUT_MS / DEFAULT_MAX_RETRIES), the same constants
-  // loadClaudeConfig() applies when the env vars are unset.
+  // Match the DEPLOYED LIVE policy. Two earlier versions got this wrong in the
+  // same direction — more permissive than deployment — so a completion this
+  // script recorded could be one the deployed path would never have reached.
+  //
+  // DEFAULT_MAX_RETRIES (1) is NOT the deployed LIVE value. run-execution-config.ts
+  // REFUSES TO BOOT unless ANTHROPIC_MAX_RETRIES === 0 whenever
+  // LIVE_AGENT_RUNS_ENABLED is true: a retried attempt may have reached the
+  // provider and been billed without being observable, so a live run's cost
+  // could not be reported honestly. Every deployed LIVE run therefore has
+  // exactly one provider attempt, and this measurement must too.
   const timeoutMs = Number(process.env.ANTHROPIC_TIMEOUT_MS?.trim() ?? DEFAULT_TIMEOUT_MS);
-  const maxRetries = Number(process.env.ANTHROPIC_MAX_RETRIES?.trim() ?? DEFAULT_MAX_RETRIES);
+  const maxRetries = LIVE_RUN_MAX_RETRIES;
   const anthropicClient = new Anthropic({
     apiKey,
     logLevel: "off",
@@ -289,6 +300,16 @@ async function main(): Promise<void> {
     }
   }
 
+  // Excluding provider-unreachable runs is right, but it must not be able to
+  // empty the sample: 0 of 0 completions would print as a flawless result
+  // while measuring nothing at all — the same fail-quietly shape as the
+  // unvalidated RUN_COUNT. A measurement with no usable runs is void.
+  if (outcomes.length === 0) {
+    throw new Error(
+      `No usable runs: all ${excluded.length} invocation(s) failed before producing a report. ` +
+        "This measures nothing — check credentials, credit and connectivity.",
+    );
+  }
   if (excluded.length > 0) {
     console.log(
       `\nEXCLUDED ${excluded.length} run(s) that never produced a report ` +

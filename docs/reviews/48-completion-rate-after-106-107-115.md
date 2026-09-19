@@ -6,7 +6,7 @@
 | Date | 2026-09-18 |
 | Model | `claude-sonnet-5` |
 | Result | Pre-fix, on the corrected provider policy: **2/4 then 4/5**, pooled **6/9 (67%)**. Baseline **2/8 (25%)**. A later round on the `.describe()` change gave **5/5** but is a DIFFERENT code version and is deliberately not pooled with the two above. |
-| Cost | 20 billed runs across four rounds, ≈ $3.2 (two rounds voided — see "Two voided rounds") |
+| Cost | 25 billed runs across five rounds, ≈ $4.0 — two voided rounds (see "Two voided rounds"), rounds A and B, and one post-`.describe()` round. |
 | Owner threshold | 5 runs, at most 1 failure — **met in one round, missed in the other**. Not established. |
 
 ## Why this was measured
@@ -208,8 +208,11 @@ Round C is a single n=5 observation and **does not establish** that the change
 improves the completion rate. Experiment 7-7 is the direct warning: three
 context representations scored an identical 6/11 while failing in different
 places — *changing a context representation does not automatically repair an
-application policy*. Rounds A and B already demonstrated the same hazard here,
-both reading 4/5 on the surface while differing underneath.
+application policy*. This document already contains the same hazard: the two
+VOIDED rounds both read 4/5 on the surface while differing underneath
+(`healed=0` vs `healed=2`), and round B's 4/5 matches them on the surface too
+despite running on corrected code. Identical headline figures here have
+repeatedly concealed different mechanisms.
 
 What round C does support is narrower and still useful: the specific failure
 shape that caused 3 of the 4 observed `REPORT_SCHEMA_INVALID` results did not

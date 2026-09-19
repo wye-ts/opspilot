@@ -1,7 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import opspilotAgentRuntime from "@opspilot/agent-runtime";
 
-import { MAX_RUN_COUNT, isProviderOutage, parseRunCount } from "./measure-completion-rate";
+import {
+  LIVE_RUN_MAX_RETRIES,
+  MAX_RUN_COUNT,
+  isProviderOutage,
+  parseRunCount,
+} from "./measure-completion-rate";
 
 const { LlmProviderError } = opspilotAgentRuntime;
 
@@ -70,4 +75,35 @@ describe("isProviderOutage", () => {
       expect(isProviderOutage(thrown)).toBe(false);
     },
   );
+});
+
+describe("LIVE_RUN_MAX_RETRIES", () => {
+  // Two successive versions of this script were MORE PERMISSIVE than the path
+  // they claimed to measure (maxRetries 2, then the non-LIVE default of 1).
+  // apps/api/src/execution/run-execution-config.ts refuses to boot unless
+  // ANTHROPIC_MAX_RETRIES === 0 while LIVE runs are enabled, so a deployed LIVE
+  // run always gets exactly one provider attempt.
+  it("pins zero retries, matching what the deployed LIVE path enforces at boot", () => {
+    expect(LIVE_RUN_MAX_RETRIES).toBe(0);
+  });
+
+  it("is not driven by the ambient environment", async () => {
+    // A measurement that silently loosens itself via an env var would
+    // reintroduce exactly the defect this constant exists to prevent.
+    // vi.resetModules() forces a genuine re-evaluation of the module body,
+    // which is what would pick up process.env if the constant were derived
+    // from it. (A `?query` import suffix works in vitest but does not
+    // typecheck, so this uses the supported mechanism.)
+    const previous = process.env.ANTHROPIC_MAX_RETRIES;
+    process.env.ANTHROPIC_MAX_RETRIES = "5";
+    try {
+      vi.resetModules();
+      const reimported = await import("./measure-completion-rate");
+      expect(reimported.LIVE_RUN_MAX_RETRIES).toBe(0);
+    } finally {
+      if (previous === undefined) delete process.env.ANTHROPIC_MAX_RETRIES;
+      else process.env.ANTHROPIC_MAX_RETRIES = previous;
+      vi.resetModules();
+    }
+  });
 });
