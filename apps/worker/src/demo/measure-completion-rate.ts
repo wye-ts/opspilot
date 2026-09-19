@@ -407,6 +407,25 @@ async function main(): Promise<void> {
         "PROVIDER_CANCELLED",
       ]);
       if (result.status === "failed" && PROVIDER_SIDE_CODES.has(result.code)) {
+        // Recorded as a full outcome, not just an id: an excluded run can
+        // still have retrieved chunks and executed tool calls before the
+        // provider failed, and that trajectory is billed evidence. Dropping it
+        // is the data loss this artefact exists to prevent.
+        outcomes.push({
+          ticketId: ticket.id,
+          ticketSummary: ticket.summary,
+          ticketParameters: ticket.parameters,
+          retrievedChunkIds: (result.trace ?? [])
+            .filter((event) => event.type === "RETRIEVAL_COMPLETED")
+            .flatMap((event) => event.chunks.map((chunk) => chunk.chunkId)),
+          toolCallsMade: (result.trace ?? [])
+            .filter((event) => event.type === "TOOL_COMPLETED")
+            .map((event) => event.toolName),
+          status: "excluded",
+          failureCode: result.code,
+          validationMessages: [],
+          autoCompletedEvidence: 0,
+        });
         console.log(
           `status=failed code=${result.code} — EXCLUDED from the sample. ` +
             "The run did not produce a report for provider-side reasons, so it cannot " +
@@ -490,12 +509,13 @@ async function main(): Promise<void> {
   // empty the sample: 0 of 0 completions would print as a flawless result
   // while measuring nothing at all — the same fail-quietly shape as the
   // unvalidated RUN_COUNT. A measurement with no usable runs is void.
-  if (outcomes.length === 0) {
+  const reportBearing = outcomes.filter((outcome) => outcome.status !== "excluded");
+  if (reportBearing.length === 0) {
     writeArtefact(artefact);
     // A count and literal text — no provider-derived content — so this is
     // safe to surface, and it is the one message the operator most needs.
     throw new MeasurementConfigurationError(
-      `No usable runs: all ${excluded.length} invocation(s) failed before producing a report. ` +
+      `No usable runs: all ${outcomes.length} invocation(s) failed before producing a report. ` +
         "This measures nothing — check credentials, credit and connectivity.",
     );
   }
@@ -521,7 +541,20 @@ async function main(): Promise<void> {
       autoCompleted: o.autoCompletedEvidence,
     })),
   );
-  console.log(`COMPLETED:              ${completed}/${outcomes.length}`);
+  // Two denominators, because they answer different questions and conflating
+  // them is how a 2/5 round gets reported as 2/4.
+  //
+  //   End-to-end — every invocation, including provider failures. This is what
+  //     the public-trial gate means and what the 2/8 baseline counted, so it is
+  //     the only figure comparable to either.
+  //   Report-bearing — runs that reached the model. Provider failures cannot
+  //     speak to report quality, so this is the figure the .describe() change
+  //     is judged against. It is NOT a completion rate.
+  console.log(`END-TO-END COMPLETED:   ${completed}/${outcomes.length} (comparable to the 2/8 baseline)`);
+  console.log(
+    `REPORT-BEARING:         ${completed}/${reportBearing.length} ` +
+      "(excludes provider-side failures; not a completion rate)",
+  );
   console.log(`REPORT_SCHEMA_INVALID:  ${schemaInvalid}/${outcomes.length}`);
   console.log(`provider-side failures: ${providerIssues}/${outcomes.length}`);
   console.log(`runs where #115 healed an F5 omission: ${healed}`);
@@ -535,7 +568,15 @@ async function main(): Promise<void> {
   // not just in prose: two rounds of this measurement were voided precisely
   // because the configuration they ran under was not recorded with them.
   artefact.completedAt = new Date().toISOString();
-  artefact.tallies = { completed, schemaInvalid, providerIssues, healed, excluded: excluded.length };
+  artefact.tallies = {
+    invocations: outcomes.length,
+    reportBearing: reportBearing.length,
+    completed,
+    schemaInvalid,
+    providerIssues,
+    healed,
+    excluded: excluded.length,
+  };
   const outputPath = writeArtefact(artefact);
   console.log(`\nFull trajectory written to ${outputPath}`);
 

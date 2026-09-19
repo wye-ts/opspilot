@@ -2641,7 +2641,8 @@ were not:
 | 4 (B) | 4/5 | Valid, and contradicts round A |
 | 5 | 5/5 | Voided — still on the wrong retry policy |
 
-Twenty-five billed runs, roughly $4.0. Every defect was found by independent
+Thirty billed runs across six rounds, roughly $4.8 — three of those rounds
+voided for apparatus defects. Every defect was found by independent
 review rather than by the author. The first three rounds each produced a
 headline number that was reported before being invalidated.
 
@@ -2839,9 +2840,12 @@ restored byte-identically with a `sha256` comparison:
   entry clears both — written against the production classifier
   (`classifyReportInvariants`), not a reimplementation.
 
-A documentation-consistency test also derives figures from the results
-document's own ledger table and asserts the prose agrees, after three
-consecutive review rounds found ledger drift.
+A documentation-consistency test of this kind exists for the tool-usage spike
+(`two-tool-usage-results-ledger.test.ts`), written after three consecutive
+review rounds found ledger drift there. **No equivalent test covers this
+document's figures**, and review caught drift here too: the cost table said
+five rounds and 25 billed runs while the body described six rounds and 30.
+Claiming the guard existed was itself the overclaim this entry is about.
 
 ### Observability
 
