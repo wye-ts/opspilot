@@ -2610,3 +2610,295 @@ UTC day closed.
   terminal finalizer is called, no additional provider or tool call occurs, the
   usage snapshot reflects exactly the calls observed, and no sequence number is
   fabricated.
+
+---
+
+## 17. Challenge 15 — A Measurement That Kept Producing Confident, Wrong Numbers
+
+### Context
+
+Milestone 14 closed with a known problem: eight deployed LIVE runs on
+2026-09-14/15 completed only 2 of 8, five of them failing
+`REPORT_SCHEMA_INVALID`. Three fixes landed afterwards (#106 failure
+attribution, #107 turn-budget widening, #115 evidence auto-completion) and
+**none had been measured against a real model**. Re-opening the public trial is
+gated on an end-to-end completion rate, so that number had to be established.
+
+A local measurement script was written to re-measure it: run the real
+orchestrator against the real Anthropic API over a set of ordinary operational
+tickets, and count completions.
+
+### Problem
+
+The measurement produced four consecutive results that looked authoritative and
+were not:
+
+| Round | Reported | Fate |
+| --- | --- | --- |
+| 1 | 4/5 | Voided — retrieval input differed from deployment |
+| 2 | 4/5 | Voided — retry policy more permissive than deployment |
+| 3 (A) | 2/4 | Valid |
+| 4 (B) | 4/5 | Valid, and contradicts round A |
+| 5 | 5/5 | Voided — still on the wrong retry policy |
+
+Twenty-five billed runs, roughly $4.0. Every defect was found by independent
+review rather than by the author. The first three rounds each produced a
+headline number that was reported before being invalidated.
+
+### Why It Is Difficult
+
+**Every defect failed silently in the favourable direction.** A measurement
+that crashes is obvious. These returned a plausible completion rate that was
+simply not the rate being claimed:
+
+- A hand-tuned keyword retrieval query returns *better* evidence than the
+  deployed path, which passes the ticket summary verbatim. Completions go up.
+- `maxRetries: 2` gives the model more chances than a deployed LIVE run, which
+  is pinned to zero retries. Completions go up.
+- A `catch`-all that records any throw as a "provider failure" converts a code
+  defect into an ordinary external outage. Four completions and one crash still
+  reads as meeting a four-of-five threshold.
+- An unvalidated `RUN_COUNT=0` skips the loop and prints `0/0 COMPLETED` — a
+  flawless result over an empty sample.
+
+**Two rounds agreeing is not evidence.** Rounds A and B ran an identical
+configuration and disagreed in four of five per-ticket slots (2/4 vs 4/5). At a
+true rate near 60%, five runs yield ≥4 completions about 34% of the time and ≤2
+about 32% of the time; both observations are consistent with one underlying
+rate. Five end-to-end runs cannot distinguish a real effect from sampling
+noise.
+
+**Identical headline numbers concealed different mechanisms.** Both voided
+rounds read 4/5. Underneath, one had `healed=0` (the #115 auto-completion never
+fired) and the other `healed=2`. The summary statistic was identical while the
+system behaved differently — and the first of those rounds produced a written
+conclusion, "#115 never fires", that was an artefact of the wrong retrieval
+path.
+
+### Failure Modes
+
+- A completion rate computed over repeated tickets. The script cycled five
+  hand-written tickets with `TICKETS[i % 5]`, so a 15-run round would have been
+  five tickets three times over, reported as fifteen samples.
+- A rate whose denominator silently includes runs that never reached the model.
+  The orchestrator collapses `AUTHENTICATION`, `BILLING` and `REQUEST_INVALID`
+  into the same `PROVIDER_UNAVAILABLE` code it uses for genuine outages, so a
+  spend-limit rejection is indistinguishable from an upstream failure.
+- Permanent loss of failure attribution. The script persisted nothing; rounds
+  survived only as terminal output, and a `tail -22` truncated round D's
+  per-failure invariant records irrecoverably.
+- Transcribed rather than recorded results. With no artefact, the results
+  document relied on the author's transcription, which recorded round A as 4/5
+  when it was 2/4 — caught in review, not by the author.
+- A conclusion drawn from a counterfactual rather than an observation: "without
+  #115 this would have been 2/5" was written as fact, while #101's corrective
+  re-prompt sits on the same path and was never tested.
+
+### Decision
+
+Treat the measurement apparatus as a system requiring the same verification
+discipline as production code, and make the artefact — not the terminal — the
+record.
+
+Concretely:
+
+1. **Pin every parameter to the deployed value, from the deployed source.**
+   `LIVE_RUN_MAX_RETRIES = 0` is a constant, not an environment read, because
+   `run-execution-config.ts` refuses to boot unless `ANTHROPIC_MAX_RETRIES === 0`
+   while LIVE runs are enabled. Retrieval uses `job.ticketContext.summary`
+   verbatim with `topK: 3`, matching `buildRetrievalInput()`.
+2. **Fail loudly instead of returning a number.** Only genuinely transient
+   provider categories are recordable outcomes; anything else rethrows and
+   voids the run. An all-excluded round throws rather than printing `0/0`.
+   `RUN_COUNT` is validated to an integer in `1..25`.
+3. **Exclude, do not count, runs that never reached the model.**
+   `PROVIDER_UNAVAILABLE` leaves the denominator and is reported loudly.
+   Under-reporting the sample size is recoverable; a rate computed over runs
+   that never produced a report is not.
+4. **Generate tickets parametrically.** A 3×5×5 service/symptom/context space,
+   drawn without replacement, seeded for reproducibility.
+5. **Persist the full trajectory, with the protocol beside the results.** Each
+   round writes retrieved chunk ids, tool-call sequence, invariant
+   attributions and ticket parameters, alongside the execution protocol
+   (model, retries, timeout, topK, seed) and the scoring rule.
+
+### Alternatives Considered
+
+#### Alternative A — Run a larger sample and accept the apparatus as-is
+
+Rejected. Sample size does not fix a biased instrument: a more permissive retry
+budget shifts the mean regardless of `n`. Scaling a measurement whose
+configuration differs from production buys precision around the wrong value.
+
+#### Alternative B — Measure against the deployed service instead of locally
+
+Deferred, not rejected. It is the only like-for-like comparison against the
+2/8 baseline, and remains the honest way to answer the public-trial gate. It
+was not used because each run consumes the public-trial visitor quota, which
+stood at one remaining. Report validation and evidence auto-completion both
+live in `runAgentOrchestrator`, which both paths share, so the local path
+exercises the same logic without spending the last visitor slot — at the cost
+of a ticket distribution that is not real traffic.
+
+#### Alternative C — Write results to `.agent/measurements/`
+
+Rejected after implementation. That path is gitignored, so artefacts would
+vanish on a clean checkout — recreating the exact problem persistence was added
+to solve. Output moved to `docs/measurements/`, verified by a real invocation
+that `git status` sees the file.
+
+#### Alternative D — Relax the #115 eligibility rule
+
+Rejected as symptom repair. See "Implementation Notes" below: the failure it
+would have papered over had a root cause one layer up.
+
+### Tradeoffs
+
+**Cost of the discipline.** Pinning to deployed values means the measurement
+cannot be made more forgiving to get a cleaner number, which is the point.
+Excluding `PROVIDER_UNAVAILABLE` runs shrinks an already small sample.
+Persisting trajectories adds an artefact per round to the repository.
+
+**What is still not solved.** The public-trial gate is defined as an
+end-to-end completion rate, and this work establishes that **no mechanism
+currently available can measure that rate at acceptable cost**: the deployed
+path consumes visitor quota, and the local path has a ticket distribution that
+is not real traffic. The gate's definition has no accompanying feasible
+measurement. That is a product decision, not an engineering one.
+
+### Implementation Notes
+
+The product defect the measurement was chasing turned out to be one layer above
+where the obvious fix sat.
+
+Three of four observed `REPORT_SCHEMA_INVALID` failures carried
+`GROUNDED_BY_NOT_IN_EVIDENCE` together with `SUFFICIENT_REQUIRES_EVIDENCE`: the
+model grounded a suggested action on a locator while leaving `report.evidence`
+empty. The #115 auto-completion is eligible only when F5 is the *sole* violated
+invariant, so it declined — correctly, by its own design.
+
+The two invariants are not independent. `SUFFICIENT_REQUIRES_EVIDENCE` fires on
+`countDistinctEvidenceLocators(report.evidence) < 1`, so a totally-omitted
+evidence array necessarily trips both, from one mistake. The mechanism
+therefore heals a **partial** omission but not a **total** one — the more
+complete expression of the same defect.
+
+The tempting fix was to widen #115's eligibility. Reading the grammar the model
+actually receives showed why the omission happens at all:
+
+```json
+"evidence": {
+  "type": "array",
+  "items": { "...": "..." }
+}
+```
+
+No `description`, no `minItems`. The rule — every `groundedBy` locator must
+also appear in `evidence` — existed only in the report tool's ~1700-character
+prose description. The model fills the JSON Schema, and that schema never
+stated the requirement. An empty `evidence` array is also deliberately legal (a
+truthful zero-evidence `INSUFFICIENT` report must be submittable), so nothing
+objects at authoring time; it fails later in cross-field validation, by which
+point the model has no signal it erred.
+
+The fix adds `.describe()` to the evidence array and to `groundedBy` on all
+three write-action variants. **No invariant changes and no validation is
+relaxed** — `applyReportEvidenceInvariants` remains the sole authority. The
+constraint becomes visible where the report is written.
+
+**This fix currently has no supporting observation.** The one round that
+produced 5/5 ran under the incorrect retry policy and was voided with the rest.
+Re-running under zero retries gave 2/4, and the per-failure attribution for
+that round was lost to output truncation, so it is not known whether the
+targeted failure shape recurred. The change is well-motivated by source
+inspection and unverified by measurement, and is recorded that way.
+
+### Testing Strategy
+
+Every guard added here was falsified before being trusted — a guard that has
+only ever been seen green has not been shown to detect anything. In each case
+the defect was reintroduced, the test confirmed failing, and the source
+restored byte-identically with a `sha256` comparison:
+
+- **Retry pinning:** asserted `LIVE_RUN_MAX_RETRIES === 0` and that it survives
+  `ANTHROPIC_MAX_RETRIES=5` in the ambient environment. Falsified by making the
+  constant environment-derived.
+- **Ticket generation:** asserted no repeats within a round, across the full
+  combination space, and determinism per seed. Falsified by reverting the
+  generator to cycle five combinations — two tests fail.
+- **Error classification:** the four transient provider categories are
+  recordable; the five configuration/code categories void the run.
+- **`RUN_COUNT` validation:** `0`, `-1`, `abc`, `2.5` and values above the
+  ceiling all throw rather than silently measuring nothing.
+- **Grammar descriptions:** asserted all four reach the built tool schema, plus
+  a direct guard that `description` is not stripped. Falsified by adding
+  `description` to `UNSUPPORTED_KEYS` — six tests fail.
+- **Invariant co-occurrence:** four cases pin that an empty evidence array
+  trips both invariants, that the same omission under `INSUFFICIENT` trips F5
+  alone, that a partial omission trips F5 alone, and that listing the omitted
+  entry clears both — written against the production classifier
+  (`classifyReportInvariants`), not a reimplementation.
+
+A documentation-consistency test also derives figures from the results
+document's own ledger table and asserts the prose agrees, after three
+consecutive review rounds found ledger drift.
+
+### Observability
+
+The measurement's own observability was the gap that let defects survive.
+
+Each round now writes a JSON artefact to `docs/measurements/` containing, per
+run: ticket id and generation parameters, retrieved chunk ids, tool-call
+sequence, status, failure code, invariant attributions, and the count of
+auto-completed evidence entries. Alongside them sit the execution protocol
+(model, retries, timeout, topK, retrieval rule, seed) and the scoring rule.
+
+Storing the protocol *with* the results is deliberate: two rounds were voided
+precisely because the configuration they ran under was not recorded with them,
+and a third produced a written conclusion that was an artefact of an
+unrecorded difference.
+
+One production observability defect surfaced and is **not** fixed here: the
+orchestrator collapses `AUTHENTICATION`, `BILLING`, `REQUEST_INVALID` and
+`UNKNOWN` into `PROVIDER_UNAVAILABLE` alongside genuine outages. When the
+account's monthly spend limit was reached mid-investigation, the upstream
+response was an explicit `invalid_request_error` naming the limit and its reset
+date, while the run recorded only "provider unavailable". A caller cannot
+distinguish "upstream is down" from "we hit our own budget cap".
+
+### Interview Explanation
+
+We had a report-generation failure rate around 75% and three fixes that had
+never been validated against a real model, so I built a measurement to find out
+where we stood. The measurement was wrong four times in a row, and every one of
+those errors was found by independent review rather than by me.
+
+The errors shared a shape worth naming: each one **failed silently in the
+favourable direction**. My retrieval query was hand-tuned while production
+passes the ticket summary verbatim; my retry budget was two while a deployed
+LIVE run is pinned to zero. Both make the agent look better. None of them threw
+an error — they returned a plausible number. When I corrected the retry policy
+and re-ran, the result went from 4/5 to 2/4.
+
+The deeper lesson is about attribution. It is tempting to say the wasted effort
+was caused by not recording trajectories, and the persistence gap was real —
+one round's failure attribution was truncated away permanently, and my
+transcription of another round was wrong. But those defects were found by
+reading code, not by reading trajectories. **The root cause was not validating
+the measurement apparatus against production before spending money on it.** The
+missing trajectory was an amplifier: it let each defect survive several rounds
+and made the written record unreliable. Attributing to the amplifier would have
+produced better logging and the same wrong numbers.
+
+The same discipline applied to the product bug underneath. The obvious fix was
+to widen an auto-repair mechanism that was declining to fire. Reading the JSON
+Schema we actually send the model showed the field carrying the violated rule
+had no description at all — the constraint lived only in prose the model
+doesn't fill in. The fix moved the constraint to where the model writes,
+changing no validation rule.
+
+And I would report the result the same way again: the threshold is **unresolved**,
+not met. Two identical five-run rounds gave 2/4 and 4/5. At n=5 that is what
+noise looks like, and reporting the better round would have been selection, not
+measurement.
+
