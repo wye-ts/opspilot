@@ -6,7 +6,7 @@
 | Date | 2026-09-18 |
 | Model | `claude-sonnet-5` |
 | Result | **4/5 `COMPLETED` (80%)**, against a **2/8 (25%)** deployed baseline |
-| Cost | 5 runs, ≈ $0.8 |
+| Cost | 10 billed runs across two measurement rounds, ≈ $1.6 (the first round was void — see "A voided first round") |
 | Owner threshold | 5 runs, at most 1 failure — **met** |
 
 ## Why this was measured
@@ -25,27 +25,59 @@ model**:
 | #107 | widened the turn budget from 4/3 to 5/3 |
 | #115 | auto-completes evidence for real `groundedBy` omissions (F5) — the shape #105 called dominant |
 
-Re-opening the public trial is gated on an end-to-end completion rate (#105
-§"Re-opening the public trial"), and that number was unknown.
+Re-opening the public trial is gated on an end-to-end completion rate (#105),
+and that number was unknown.
 
 ## Result
 
-| Ticket | Outcome |
-|---|---|
-| `TICKET-4001` notification delay | `completed` |
-| `TICKET-4002` billing 5xx | **`REPORT_SCHEMA_INVALID`** |
-| `TICKET-4003` search staleness | `completed` |
-| `TICKET-4004` sign-in failures | `completed` |
-| `TICKET-4005` storage quota | `completed` |
+| Ticket | Outcome | Evidence entries auto-completed by #115 |
+|---|---|---|
+| `TICKET-4001` notification delay | `completed` | 0 |
+| `TICKET-4002` billing 5xx | **`REPORT_SCHEMA_INVALID`** | — |
+| `TICKET-4003` search staleness | `completed` | **3** |
+| `TICKET-4004` sign-in failures | `completed` | 0 |
+| `TICKET-4005` storage quota | `completed` | **2** |
 
 ```
 COMPLETED:              4/5
 REPORT_SCHEMA_INVALID:  1/5
 provider-side failures: 0/5
-runs where #115 healed an F5 omission: 0
+runs where #115 healed an F5 omission: 2
 ```
 
-## The failure, and why #115 did not heal it
+**#115 is doing real work.** Two of the four completions required it: without
+auto-completion those runs would have hit the F5 retry path, and the measured
+rate would have been at best 2/5. This is the first evidence that the mechanism
+fires against a real model at all.
+
+## A voided first round, and what it hid
+
+The first five runs used **hand-authored keyword retrieval queries** (e.g.
+`"billing service elevated error rate deployment rollback"`). Review caught
+that the deployed path does something different —
+`apps/api/src/execution/retrieval-input.ts`:
+
+```ts
+export function buildRetrievalInput(job: AgentJobRecord): RetrievalInput {
+  return { query: job.ticketContext.summary, topK: RETRIEVAL_TOP_K };
+}
+```
+
+The ticket summary **verbatim**. A tuned keyword query hands the model better
+evidence than any visitor can supply, so that round was not an end-to-end rate
+and not comparable to the 2/8 baseline. It was **voided and re-run**, not
+patched up.
+
+The headline number happened to be 4/5 both times, which is exactly why this
+matters: the difference was invisible in the summary statistic and showed up
+only in the mechanism underneath. The void round recorded `healed=0` and
+concluded "#115 never fires" — **that conclusion was an artifact of the wrong
+retrieval path**. With the deployed query the same mechanism fires twice in
+five runs. A better-retrieved run apparently gives the model enough material to
+ground actions on evidence it then forgets to list, which is precisely #115's
+target shape.
+
+## The remaining failure, and why #115 did not heal it
 
 `TICKET-4002` failed with three validation issues:
 
@@ -56,25 +88,24 @@ SUFFICIENT evidence requires at least one distinct grounded evidence entry.
 
 That is F5 (`GROUNDED_BY_NOT_IN_EVIDENCE`) **co-occurring** with
 `SUFFICIENT_REQUIRES_EVIDENCE`. #115 is eligible only when F5 is the *sole*
-violated invariant (`agent-orchestrator.ts`, `tryAutoCompleteGroundedByOmission`
-§2.2), so it declined — correctly, per its own design.
+violated invariant (`tryAutoCompleteGroundedByOmission` §2.2), so it declined —
+correctly, per its own design.
 
-**But the two invariants are not independent, and that is the finding.**
+**The two invariants are not independent, and that is the finding.**
 `SUFFICIENT_REQUIRES_EVIDENCE` fires on
-`countDistinctEvidenceLocators(report.evidence) < 1` — i.e. an effectively
-empty `evidence` array. So a report that grounds an action while listing *no*
-evidence at all necessarily trips **both**, from one underlying mistake.
+`countDistinctEvidenceLocators(report.evidence) < 1` — an effectively empty
+`evidence` array. So a report that grounds an action while listing *no*
+evidence necessarily trips **both**, from one underlying mistake:
 
-The consequence, stated plainly:
-
-> #115 heals a **partial** evidence omission, but not a **total** one — even
+> #115 heals a **partial** evidence omission but not a **total** one — even
 > though the total omission is the more complete expression of the same defect.
 
 `evidence-auto-completion-eligibility.test.ts` pins this with four cases: the
 empty-array case trips both invariants; the same omission under `INSUFFICIENT`
 trips F5 alone (so #115 *would* apply); a partial omission under `SUFFICIENT`
-trips F5 alone (the case #115 does heal); and listing the omitted entry clears
-both, confirming the single root cause.
+trips F5 alone (the healed case); and listing the omitted entry clears both,
+confirming the single root cause. Written against the production classifier
+(`classifyReportInvariants`), not a reimplementation.
 
 This is characterization, **not** a proposal to loosen the eligibility rule.
 Widening it to a *set* of invariants would mean auto-completion reasoning about
@@ -83,9 +114,12 @@ rejected. Whether to revisit it is an owner decision.
 
 ## What this measurement does and does not support
 
-**Supports:** the completion rate on this ticket set is materially better than
-the 25% baseline. A 25% → 80% shift is large enough that it is unlikely to be
-entirely sampling noise, even at n=5.
+**Supports:**
+
+- The completion rate on this ticket set is materially better than the 25%
+  baseline. A 25% → 80% shift is large enough to be unlikely to be entirely
+  sampling noise, even at n=5.
+- #115 fires against a real model and carried two of the four completions.
 
 **Does not support:**
 
@@ -93,26 +127,42 @@ entirely sampling noise, even at n=5.
   60% still yields ≥4/5 about 34% of the time, and a true rate of 80% yields
   ≤3/5 about 26% of the time. The threshold was met; "80% measured" is not a
   claim this design can make.
-- **That #115 is responsible.** It did not fire once (`healed=0`). The
-  improvement is more plausibly #107's wider turn budget or #101's corrective
-  retry, but this measurement cannot separate them — that is an untested
-  hypothesis, not a conclusion.
+- **That the improvement is attributable to any one fix.** #115 demonstrably
+  helped twice, but #107's wider budget and #101's corrective retry are also in
+  play and this measurement cannot separate them.
 - **That visitor traffic behaves this way.** These are five hand-authored
-  tickets run through the in-process orchestrator, not deployed traffic. The
-  validation path is identical (`agent-run-service.ts` calls the same
-  `runAgentOrchestrator` and only reads the failure code afterwards), but the
-  ticket distribution is not.
+  tickets through the in-process orchestrator. The validation path and the
+  retrieval input rule are now identical to deployed, but the ticket
+  distribution is not.
 
 ## Why this ran locally rather than against the deployment
 
-The deployed path consumes the public-trial visitor quota, which at the time of
-this measurement showed `visitorRunsRemaining: 1`. Report validation and the
-F5 auto-completion both live in `runAgentOrchestrator`, which both paths share,
-so the same logic is exercised without spending the last visitor slot.
+The deployed path consumes the public-trial visitor quota, which showed
+`visitorRunsRemaining: 1` (checked twice during this work). Report validation
+and the F5 auto-completion both live in `runAgentOrchestrator`, which both
+paths share — `agent-run-service.ts` calls the same function and only reads the
+failure code afterwards — so the same logic is exercised without spending the
+last visitor slot.
 
-A deployed re-measurement is still the only way to compare like-for-like
-against #105's 8 runs. That remains open and is an owner decision, since it
-costs visitor quota.
+A deployed re-measurement is still the only like-for-like comparison against
+#105's 8 runs. That remains open and is an owner decision, since it costs
+visitor quota.
+
+## Measurement integrity
+
+Two defects in the script itself were caught in review; both would have
+corrupted the number rather than failing loudly, which is the worst outcome for
+an artifact whose only job is to report a trustworthy rate:
+
+- **A catch-all swallowed code defects.** Any throw was recorded as a
+  provider-side failure, so a four-completion/one-crash run would still have
+  read as meeting the threshold. Now only a genuine `LlmProviderError` is a
+  ledger row; anything else rethrows and voids the run.
+- **`RUN_COUNT` was unvalidated.** `RUN_COUNT=0` or `abc` would have skipped
+  the loop and printed `0/0 COMPLETED` as a clean success. Now validated to an
+  integer in `1..25`.
+
+`measure-completion-rate.test.ts` covers both.
 
 ## Reproducing
 

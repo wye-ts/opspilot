@@ -59,6 +59,35 @@ import {
 const { runAgentOrchestrator, LlmProviderError } = opspilotAgentRuntime;
 const { ClaudeLlmProvider, requireSupportedClaudeModel } = opspilotProviderClaude;
 
+/** Hard ceiling on billed runs per invocation. */
+export const MAX_RUN_COUNT = 25;
+
+/**
+ * A NaN, zero, negative or fractional RUN_COUNT would skip the loop and print
+ * "0/0 COMPLETED" as a clean success — a measurement that silently measured
+ * nothing. An unbounded one would bill without a ceiling. Both are rejected.
+ */
+export function parseRunCount(raw: string | undefined): number {
+  const trimmed = raw?.trim();
+  const value = trimmed === undefined || trimmed === "" ? 5 : Number(trimmed);
+  if (!Number.isInteger(value) || value < 1 || value > MAX_RUN_COUNT) {
+    throw new Error(`RUN_COUNT must be an integer in 1..${MAX_RUN_COUNT}`);
+  }
+  return value;
+}
+
+/**
+ * Whether a thrown value is a real provider outage (a legitimate ledger row)
+ * or a defect in this repository (which must void the measurement instead of
+ * being counted as an ordinary failure).
+ */
+export function isProviderOutage(error: unknown): error is InstanceType<typeof LlmProviderError> {
+  return error instanceof LlmProviderError;
+}
+
+/** Mirrors RETRIEVAL_TOP_K in apps/api/src/execution/retrieval-input.ts. */
+const DEPLOYED_RETRIEVAL_TOP_K = 3;
+
 function requireEnv(name: string): string {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`${name} must be set`);
@@ -75,42 +104,36 @@ function requireEnv(name: string): string {
 const TICKETS: ReadonlyArray<{
   readonly id: string;
   readonly summary: string;
-  readonly retrievalQuery: string;
 }> = [
   {
     id: "TICKET-4001",
     summary:
       "Customers on one tenant report outbound notification emails arriving late or not at all. " +
       "The notification worker pool looks healthy and no release has been announced.",
-    retrievalQuery: "notification delivery delay provider rate limit throttled tenant",
   },
   {
     id: "TICKET-4002",
     summary:
       "Billing service API calls are returning elevated 5xx rates since this morning. " +
       "On-call wants to know whether a recent deployment is involved before paging the team.",
-    retrievalQuery: "billing service elevated error rate deployment rollback",
   },
   {
     id: "TICKET-4003",
     summary:
       "Search results are showing stale data for some customers — records updated an hour ago " +
       "are still missing from search. No alerts have fired on the search service itself.",
-    retrievalQuery: "search index staleness delayed reindex records missing",
   },
   {
     id: "TICKET-4004",
     summary:
       "Several customers cannot sign in this morning and report their credentials being rejected. " +
       "The identity provider status page shows no incident.",
-    retrievalQuery: "authentication failures sign in rejected identity provider",
   },
   {
     id: "TICKET-4005",
     summary:
       "Uploads to the storage service are failing intermittently for one tenant with quota errors, " +
       "even though the account should be well under its limit.",
-    retrievalQuery: "storage upload failure quota exhaustion tenant limit",
   },
 ];
 
@@ -127,7 +150,7 @@ interface RunOutcome {
 async function main(): Promise<void> {
   const apiKey = requireEnv("ANTHROPIC_API_KEY");
   const model = requireSupportedClaudeModel(process.env.ANTHROPIC_MODEL?.trim() ?? "claude-sonnet-5");
-  const runCount = Number(process.env.RUN_COUNT?.trim() ?? "5");
+  const runCount = parseRunCount(process.env.RUN_COUNT);
 
   const { chunks } = await loadDefaultRunbookCorpus();
   const retriever = new InMemoryKeywordRunbookRetriever(chunks, DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE);
@@ -160,7 +183,13 @@ async function main(): Promise<void> {
           } satisfies AgentConversationMessage,
         ],
         retriever,
-        retrievalInput: { query: ticket.retrievalQuery, topK: 3 },
+        // EXACTLY what the deployed path does — apps/api/src/execution/
+        // retrieval-input.ts: buildRetrievalInput() passes the ticket summary
+        // verbatim with topK 3. A hand-tuned keyword query would hand the
+        // model better evidence than any visitor can supply and make the
+        // measured rate incomparable to the deployed baseline (caught in
+        // review, after a first version did exactly that).
+        retrievalInput: { query: ticket.summary, topK: DEPLOYED_RETRIEVAL_TOP_K },
       });
 
       const validationMessages =
@@ -188,17 +217,20 @@ async function main(): Promise<void> {
       );
       for (const message of validationMessages) console.log(`  invariant: ${message}`);
     } catch (error) {
-      // A provider-level failure is NOT a report-validation failure, and
-      // conflating them would corrupt the very rate being measured.
-      const code = error instanceof LlmProviderError ? error.category : "UNKNOWN_THROWN";
+      // A genuine provider outage is a real-world outcome and belongs in the
+      // ledger. ANY other throw is a defect in this repo, and folding it into
+      // "provider-side failures" would let a crash pass as an ordinary outage
+      // — a 4-completion/1-crash run would still read as meeting the
+      // threshold. Rethrow so the measurement fails loudly instead.
+      if (!isProviderOutage(error)) throw error;
       outcomes.push({
         ticketId: ticket.id,
         status: "threw",
-        failureCode: code,
+        failureCode: error.category,
         validationMessages: [],
         autoCompletedEvidence: 0,
       });
-      console.log(`status=threw code=${code}`);
+      console.log(`status=threw code=${error.category}`);
     }
   }
 
@@ -231,9 +263,22 @@ async function main(): Promise<void> {
   );
 }
 
-main().catch(() => {
-  // Deliberately generic — never print the caught value, which could carry
-  // request bodies, headers, or API keys.
-  console.error("[completion-rate] The measurement failed to run. No details are printed.");
-  process.exitCode = 1;
-});
+// Only run the measurement when invoked as a script — the exported helpers
+// above are imported by tests, which must never bill a provider call.
+const isMainModule = process.argv[1] !== undefined && process.argv[1].endsWith("measure-completion-rate.ts");
+if (isMainModule) {
+  main().catch((error: unknown) => {
+  // Never print the caught VALUE — it could carry request bodies, headers or
+  // API keys. The constructor name is safe (a fixed class identifier, not
+  // model- or network-derived) and is the difference between "a defect in
+  // this script" and "an outage", which the rethrow above now surfaces here
+  // rather than burying in the sample.
+  const kind = error instanceof Error ? error.constructor.name : typeof error;
+  console.error(
+    `[completion-rate] The measurement failed to run (${kind}). ` +
+      "No further details are printed. A non-provider failure here is a defect, " +
+      "not a measurement outcome — the run is void, not a recorded failure.",
+  );
+    process.exitCode = 1;
+  });
+}
