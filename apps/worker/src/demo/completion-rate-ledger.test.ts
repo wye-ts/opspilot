@@ -150,3 +150,30 @@ describe("stated percentages match their stated denominators", () => {
     expect(paragraph).not.toMatch(/gave\s+50% and 80%/);
   });
 });
+
+describe("the excluded run is accounted for in both denominators", () => {
+  // The prose said TICKET-4004 was "excluded from the denominator" while the
+  // headline figures counted it in 2/5 and 6/10 — the document contradicting
+  // its own ledger.
+  it("states which denominator excludes it and which counts it", () => {
+    // Anchored on the sentence itself: TICKET-4004 first appears in the
+    // per-ticket table, so "first occurrence + N chars" read the wrong passage.
+    const anchor = REVIEW.indexOf("`TICKET-4004` in round A failed");
+    expect(anchor).toBeGreaterThan(-1);
+    const passage = REVIEW.slice(anchor, anchor + 500);
+    expect(passage).toMatch(/counted in\s+the end-to-end denominator/i);
+    expect(passage).toMatch(/excluded from the report-bearing denominator/i);
+    expect(passage).not.toMatch(/\*\*excluded\s+from the denominator\*\*/i);
+  });
+});
+
+describe("round 2 is compared against the deployed retry policy", () => {
+  // The deployed LIVE path is pinned to ZERO retries by a boot assertion;
+  // DEFAULT_MAX_RETRIES = 1 is the non-live default. Citing the latter
+  // understated the correction as 2 -> 1 when it was 2 -> 0.
+  it("cites the zero-retry requirement, not the non-live default", () => {
+    const passage = REVIEW.slice(REVIEW.indexOf("**Round 2 —"), REVIEW.indexOf("**Round 2 —") + 700);
+    expect(passage).toMatch(/assertNoOpaqueRetriesOnProtectedLivePath/);
+    expect(passage).toMatch(/2 -> 0, not 2 -> 1|zero/i);
+  });
+});

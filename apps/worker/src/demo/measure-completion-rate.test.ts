@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import opspilotAgentRuntime from "@opspilot/agent-runtime";
 
 import {
+  NON_REPORT_BEARING_CODES,
   LIVE_RUN_MAX_RETRIES,
   LIVE_RUN_OUTPUT_BUDGET,
   LIVE_RUN_PROVIDER_DEADLINE_MS,
@@ -183,5 +184,20 @@ describe("configuration errors are actionable without leaking secrets", () => {
 
   it("applies to RUN_COUNT too", () => {
     expect(() => parseRunCount("0")).toThrow(MeasurementConfigurationError);
+  });
+});
+
+describe("exclusion codes are not named as provider faults", () => {
+  // Issue #123: PROVIDER_UNAVAILABLE collapses AUTHENTICATION, BILLING and
+  // REQUEST_INVALID together with real outages, and a timeout may be our own
+  // deadline. This investigation already reported a spend-limit rejection as
+  // an upstream outage once. The set is sound for "did not reach a report"
+  // and unsound as a claim about fault.
+  it("covers the three codes that mean no report was produced", () => {
+    expect([...NON_REPORT_BEARING_CODES].sort()).toEqual([
+      "PROVIDER_CANCELLED",
+      "PROVIDER_TIMEOUT",
+      "PROVIDER_UNAVAILABLE",
+    ]);
   });
 });

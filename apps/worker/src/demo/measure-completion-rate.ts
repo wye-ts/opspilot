@@ -106,14 +106,23 @@ export class MeasurementConfigurationError extends Error {
 }
 
 /**
- * Codes meaning the run failed for provider-side reasons.
+ * Codes meaning the run did not produce a report for reasons OUTSIDE report
+ * quality.
+ *
+ * Deliberately NOT called "provider-side": PROVIDER_UNAVAILABLE collapses
+ * AUTHENTICATION, BILLING and REQUEST_INVALID together with genuine outages
+ * (see issue #123), and PROVIDER_TIMEOUT/PROVIDER_CANCELLED can be a local
+ * deadline rather than an upstream fault. This investigation already made that
+ * mistake once, reporting a spend-limit rejection as an upstream outage. The
+ * set is sound for its ACTUAL purpose — these runs cannot speak to report
+ * quality — and unsound as a claim about whose fault it was.
  *
  * Module scope because the exclusion branch and the tally MUST use one
  * predicate: when they diverged, a PROVIDER_TIMEOUT was excluded from the
  * sample while the tally still read 0 provider issues — a billed run visible
  * nowhere.
  */
-const PROVIDER_SIDE_CODES = new Set([
+export const NON_REPORT_BEARING_CODES = new Set([
   "PROVIDER_UNAVAILABLE",
   "PROVIDER_TIMEOUT",
   "PROVIDER_CANCELLED",
@@ -373,7 +382,8 @@ async function main(): Promise<void> {
       completed: 'orchestrator status === "completed"',
       excluded:
         "PROVIDER_UNAVAILABLE / PROVIDER_TIMEOUT / PROVIDER_CANCELLED — the run did not produce " +
-        "a report for provider-side reasons, so it cannot speak to report quality. " +
+        "a report for reasons outside report quality (the cause is NOT established " +
+        "as upstream — issue #123). " +
         "PROVIDER_UNAVAILABLE additionally collapses AUTHENTICATION/BILLING/REQUEST_INVALID, " +
         "so such a run cannot even be shown to have reached the model.",
       voided: "any non-LlmProviderError throw is a defect in this repo, not a measurement outcome",
@@ -451,10 +461,10 @@ async function main(): Promise<void> {
       //   PROVIDER_UNAVAILABLE — ambiguous. Collapses real outages together
       //     with AUTHENTICATION/BILLING/REQUEST_INVALID, so a run carrying it
       //     cannot be shown to have reached the model. EXCLUDED.
-      //   PROVIDER_TIMEOUT / PROVIDER_CANCELLED — unambiguous, and both mean
-      //     the run did not finish for reasons outside report quality.
-      //     EXCLUDED, and counted as provider-side rather than silently
-      //     dropped (PROVIDER_TIMEOUT was previously invisible in the
+      //   PROVIDER_TIMEOUT / PROVIDER_CANCELLED — the run did not finish.
+      //     May be a LOCAL deadline rather than an upstream fault, so it is
+      //     recorded as "did not reach a report", not as a provider failure.
+      //     EXCLUDED, and counted rather than silently dropped (PROVIDER_TIMEOUT was previously invisible in the
       //     tallies, and PROVIDER_CANCELLED was counted as an ordinary
       //     report failure).
       // The deployed path resolves an abort-derived code through the context
@@ -465,7 +475,7 @@ async function main(): Promise<void> {
           ? resolveAbortProvenance(result.code, abortContext)
           : undefined;
 
-      if (resolvedCode !== undefined && PROVIDER_SIDE_CODES.has(resolvedCode)) {
+      if (resolvedCode !== undefined && NON_REPORT_BEARING_CODES.has(resolvedCode)) {
         // Recorded as a full outcome, not just an id: an excluded run can
         // still have retrieved chunks and executed tool calls before the
         // provider failed, and that trajectory is billed evidence. Dropping it
@@ -485,8 +495,9 @@ async function main(): Promise<void> {
         });
         console.log(
           `status=failed code=${resolvedCode} — EXCLUDED from the sample. ` +
-            "The run did not produce a report for provider-side reasons, so it cannot " +
-            "speak to report quality either way.",
+            "The run did not produce a report. The cause is NOT established as " +
+            "upstream: this code also covers auth, billing and malformed requests " +
+            "(issue #123). Excluded because it cannot speak to report quality.",
         );
         excluded.push(`${ticket.id} (${resolvedCode})`);
         writeArtefact(artefact);
@@ -534,7 +545,8 @@ async function main(): Promise<void> {
     } catch (error) {
       // A genuine provider outage is a real-world outcome and belongs in the
       // ledger. ANY other throw is a defect in this repo, and folding it into
-      // "provider-side failures" would let a crash pass as an ordinary outage
+      // folding a crash into the excluded set would let it pass as an ordinary
+      // non-report-bearing run
       // — a 4-completion/1-crash run would still read as meeting the
       // threshold. Rethrow so the measurement fails loudly instead.
       if (!isProviderOutage(error)) {
@@ -587,10 +599,10 @@ async function main(): Promise<void> {
   // only PROVIDER_UNAVAILABLE, so a PROVIDER_TIMEOUT was excluded from the
   // sample yet invisible in the tally — a run that cost money and appeared
   // nowhere.
-  const providerIssues = outcomes.filter(
+  const nonReportBearing = outcomes.filter(
     (o) =>
       o.status === "threw" ||
-      (o.failureCode !== undefined && PROVIDER_SIDE_CODES.has(o.failureCode)),
+      (o.failureCode !== undefined && NON_REPORT_BEARING_CODES.has(o.failureCode)),
   ).length;
   const healed = outcomes.filter((o) => o.autoCompletedEvidence > 0).length;
 
@@ -615,10 +627,13 @@ async function main(): Promise<void> {
   console.log(`END-TO-END COMPLETED:   ${completed}/${outcomes.length} (comparable to the 2/8 baseline)`);
   console.log(
     `REPORT-BEARING:         ${completed}/${reportBearing.length} ` +
-      "(excludes provider-side failures; not a completion rate)",
+      "(excludes runs that never reached a report; not a completion rate)",
   );
   console.log(`REPORT_SCHEMA_INVALID:  ${schemaInvalid}/${outcomes.length}`);
-  console.log(`provider-side failures: ${providerIssues}/${outcomes.length}`);
+  console.log(
+    `did not reach a report:  ${nonReportBearing}/${outcomes.length} ` +
+      "(cause NOT attributable to the provider — see issue #123)",
+  );
   console.log(`runs where #115 healed an F5 omission: ${healed}`);
   // PERSIST. Four earlier rounds left no artefact: their only record was
   // terminal output that a `tail` truncated, so the per-failure attribution
@@ -635,7 +650,7 @@ async function main(): Promise<void> {
     reportBearing: reportBearing.length,
     completed,
     schemaInvalid,
-    providerIssues,
+    nonReportBearing,
     healed,
     excluded: excluded.length,
   };

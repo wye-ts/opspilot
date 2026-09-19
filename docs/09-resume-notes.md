@@ -22,7 +22,7 @@ claims.
 | Portfolio-ready deliverable checklist and the rule that claims use measured results only | `docs/03-technical-design.md` §31 |
 | Engineering decisions worth discussing in an interview (including rejected alternatives) | `docs/10-engineering-challenges.md` |
 | Recorded retriever comparison and the decision it bound | `docs/reviews/31-issue-76-comparison-decision.md` |
-| A measurement that produced four wrong numbers before producing a usable one, and the apparatus discipline that followed | `docs/10-engineering-challenges.md` Challenge 15 |
+| A measurement whose apparatus was corrected four times, voiding three rounds, before its numbers could be trusted | `docs/10-engineering-challenges.md` Challenge 15 |
 | Live real-model validation evidence | `docs/15-live-demo-evidence.md`, `README.md` → Live validation evidence |
 
 ## The one rule to carry out of this document
@@ -36,7 +36,7 @@ but only one of them is from the five that bullet describes — a second tool sh
 make a `Designed`-verb bullet more earned), and one is partly earned (the evaluation harness
 measures deterministic tool correctness but not classification accuracy, latency, cost, or
 model tool-*selection* quality). `Designed` is not `Built`;
-`Built` is not `Measured`; `records a decision` is not `gates execution`. And `Measured` itself is only earned once the measuring apparatus has been checked against production — Challenge 15 records four consecutive rounds whose numbers were reported before being invalidated, each failing silently in the favourable direction. Strengthen a bullet
+`Built` is not `Measured`; `records a decision` is not `gates execution`. And `Measured` itself is only earned once the measuring apparatus has been checked against production — Challenge 15 records four apparatus defects — each failing silently in the favourable direction — which voided three of six rounds; the surviving rounds are usable only for the narrower question they can actually answer. Strengthen a bullet
 only when the code and the measurement both exist, and prefer the narrower claim that cites a
 real number (a 40-query labeled retrieval set, a recorded three-way comparison) over the
 broader claim that cites none.

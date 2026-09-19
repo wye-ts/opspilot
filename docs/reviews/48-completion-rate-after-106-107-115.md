@@ -48,13 +48,16 @@ Round B: COMPLETED 4/5,                                            healed 1
 Pooled:  COMPLETED 6/10 end-to-end; 6/9 report-bearing (rounds A+B only — same code)
 ```
 
-`TICKET-4004` in round A failed with `PROVIDER_UNAVAILABLE` and is **excluded
-from the denominator**, not counted as a failure. The orchestrator collapses
+`TICKET-4004` in round A failed with `PROVIDER_UNAVAILABLE`. It is **counted in
+the end-to-end denominator** (making round A 2/5, comparable to the 2/8
+baseline) and **excluded from the report-bearing denominator** (2/4), which is
+the figure used to judge report quality. The orchestrator collapses
 `AUTHENTICATION`, `BILLING` and `REQUEST_INVALID` into that same code alongside
 genuine outages (`agent-orchestrator.ts`'s category switch), so a run carrying
-it cannot be shown to have reached the model at all. Counting it would let a
-configuration problem depress a rate that is supposed to measure report
-quality.
+it cannot be shown to have reached the model at all — so it must not depress a
+figure meant to measure report quality. It must equally not vanish from the
+end-to-end rate, which is what a visitor experiences and what the baseline
+counts. Hence two denominators rather than a choice between them.
 
 **The spread between two identical five-run rounds is the primary result.**
 The same tickets, the same configuration, and the same model produced 2/4 and
@@ -62,7 +65,8 @@ The same tickets, the same configuration, and the same model produced 2/4 and
 and `TICKET-4002` failed in A and passed in B; `TICKET-4005` did the reverse.
 
 So the owner threshold (at most one failure in five) was **met in round B and
-missed in round A** (2 failures in the 4 usable runs). A single round of five cannot distinguish these, which is
+missed in round A** — 2 failures among round A's 4 report-bearing runs, and 3
+of 5 end to end once the excluded run is counted as a non-completion. A single round of five cannot distinguish these, which is
 what the design's stated weakness looks like when it actually bites: at a true
 rate of 60%, five runs yield ≥4 completions about 34% of the time and ≤2 about
 32% of the time. Both rounds are consistent with one underlying rate.
@@ -120,9 +124,13 @@ enough material to ground actions on evidence it then forgets to list, which is
 exactly #115's target shape.
 
 **Round 2 — provider policy more permissive than deployment.** It hardcoded
-`maxRetries: 2` with no timeout, while deployment applies
-`DEFAULT_MAX_RETRIES = 1` and `DEFAULT_TIMEOUT_MS = 45_000`
-(`packages/provider-claude/src/claude-config.ts`). A completion obtained under
+`maxRetries: 2` with no timeout. The protected deployed LIVE path requires
+**zero** retries — `assertNoOpaqueRetriesOnProtectedLivePath()` in
+`apps/api/src/execution/run-execution-config.ts` refuses to boot otherwise —
+with `DEFAULT_TIMEOUT_MS = 45_000` per call. (`DEFAULT_MAX_RETRIES = 1` in
+`packages/provider-claude/src/claude-config.ts` is the NON-live default; this
+document previously cited it as though it were the deployed policy, which
+understated the gap: the correction was 2 -> 0, not 2 -> 1.) A completion obtained under
 a more forgiving retry budget is not one the deployed path would necessarily
 reach, so that round was voided too.
 
