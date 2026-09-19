@@ -577,7 +577,8 @@ async function main(): Promise<void> {
   if (excluded.length > 0) {
     console.log(
       `\nEXCLUDED ${excluded.length} run(s) that never produced a report ` +
-        `(${excluded.join(", ")}). The rate below is over the remaining ${outcomes.length}.`,
+        `(${excluded.join(", ")}). outcomes.length now INCLUDES excluded runs, so the ` +
+          `report-bearing figure below is over ${reportBearing.length}, not ${outcomes.length}.`,
     );
   }
   const completed = outcomes.filter((o) => o.status === "completed").length;

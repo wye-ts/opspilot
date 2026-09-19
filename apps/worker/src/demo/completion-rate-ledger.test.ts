@@ -115,3 +115,25 @@ describe("the round table accounts for every billed round", () => {
     expect(CHALLENGE).toContain("Thirty billed runs across six rounds");
   });
 });
+
+describe("denominators are labelled, not conflated", () => {
+  // Excluding provider failures is right for judging report quality and wrong
+  // for a completion rate. Review found 2/4 and a pooled 6/9 compared directly
+  // against the 2/8 baseline, which counts every invocation — a comparison
+  // between two differently-built denominators.
+  it("never compares a pooled report-bearing figure to the baseline", () => {
+    const conflated = /6\/9[^.]{0,60}(baseline|2\/8)/i.test(REVIEW);
+    expect(conflated).toBe(false);
+  });
+
+  it("labels the round table's figures as report-bearing", () => {
+    expect(CHALLENGE).toMatch(/Reported \(report-bearing\)/);
+    // Hard-wrapped prose: "not" and "comparable" sit on different lines, so
+    // the pattern has to tolerate the newline. Checked against the real file.
+    expect(CHALLENGE).toMatch(/not\s+comparable to the 2\/8 deployed baseline/i);
+  });
+
+  it("states the end-to-end pooled figure against the baseline", () => {
+    expect(REVIEW).toMatch(/6\/10 \(60%\)/);
+  });
+});

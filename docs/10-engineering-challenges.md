@@ -2633,7 +2633,12 @@ tickets, and count completions.
 The measurement produced four consecutive results that looked authoritative and
 were not:
 
-| Round | Reported | Fate |
+Reported figures below are REPORT-BEARING (runs that reached the model;
+provider-side failures removed). They are not completion rates and are not
+comparable to the 2/8 deployed baseline, which counts every invocation. Rounds
+A and D each excluded one provider failure, so end-to-end they are 2/5.
+
+| Round | Reported (report-bearing) | Fate |
 | --- | --- | --- |
 | 1 | 4/5 | Voided — retrieval input differed from deployment |
 | 2 | 4/5 | Voided — retry policy more permissive than deployment |

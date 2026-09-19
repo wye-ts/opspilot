@@ -5,7 +5,7 @@
 | Script | `apps/worker/src/demo/measure-completion-rate.ts` (`RUN_COUNT=5 pnpm --filter @opspilot/worker run measure:completion-rate`) |
 | Date | 2026-09-18 |
 | Model | `claude-sonnet-5` |
-| Result | Pre-fix, on the deployed zero-retry policy: **2/4 then 4/5**, pooled **6/9 (67%)**. Baseline **2/8 (25%)**. Post-fix: one void round (`maxRetries: 2`) and one 2/4 whose attribution was lost — **no usable post-fix observation**. |
+| Result | Pre-fix, deployed zero-retry policy, **end-to-end** (every billed invocation, the denominator the 2/8 baseline uses): **2/5 then 4/5**, pooled **6/10 (60%)** against the **2/8 (25%)** baseline. Report-bearing (provider failures removed — NOT a completion rate): 2/4, 4/5, pooled 6/9. Post-fix: one void round and one 2/5 whose attribution was lost — **no usable post-fix observation**. |
 | Cost | 30 billed runs across six rounds, ≈ $4.8. Three voided for apparatus defects (wrong retrieval input, then `maxRetries: 2` twice), rounds A and B usable, round D usable but with its attribution truncated away. |
 | Owner threshold | 5 runs, at most 1 failure — **met in one round, missed in the other**. Not established. |
 
@@ -39,12 +39,13 @@ Two rounds of five, same corrected configuration, run back to back:
 | `TICKET-4003` search staleness | `completed` (auto-completed 3) | `completed` (auto-completed 3) |
 | `TICKET-4004` sign-in failures | `PROVIDER_UNAVAILABLE` — **excluded** | `completed` |
 | `TICKET-4005` storage quota | `completed` | `REPORT_SCHEMA_INVALID` |
-| **Completed** | **2/4** (one excluded) | **4/5** |
+| **Completed (end-to-end)** | **2/5** (one provider failure) | **4/5** |
+| Completed (report-bearing) | 2/4 | 4/5 |
 
 ```
-Round A: COMPLETED 2/4  (1 run excluded — never reached a report), healed 1
+Round A: COMPLETED 2/5 end-to-end; 2/4 report-bearing (1 run excluded), healed 1
 Round B: COMPLETED 4/5,                                            healed 1
-Pooled:  COMPLETED 6/9   (rounds A+B only — same code)
+Pooled:  COMPLETED 6/10 end-to-end; 6/9 report-bearing (rounds A+B only — same code)
 ```
 
 `TICKET-4004` in round A failed with `PROVIDER_UNAVAILABLE` and is **excluded
@@ -66,7 +67,7 @@ what the design's stated weakness looks like when it actually bites: at a true
 rate of 60%, five runs yield ≥4 completions about 34% of the time and ≤2 about
 32% of the time. Both rounds are consistent with one underlying rate.
 
-**What is reasonably supported:** the pooled 6/9 (67%) is above the 2/8 (25%)
+**What is reasonably supported:** the pooled end-to-end 6/10 (60%) is above the 2/8 (25%)
 baseline, but at this sample size the intervals still overlap — suggestive, not
 a demonstrated improvement.
 
@@ -237,7 +238,7 @@ this change enables, and what no round so far has produced.
   time — the only reproducible outcome observed.
 - #106's attribution works: every failure here names the invariant that caused
   it, which #105 explicitly could not do for 4 of its 5 failures.
-- A pooled 6/9 (67%) sits above the 2/8 (25%) baseline, though the intervals
+- A pooled end-to-end 6/10 (60%) sits above the 2/8 (25%) baseline, though the intervals
   still overlap at this sample size.
 
 **Does not support:**
