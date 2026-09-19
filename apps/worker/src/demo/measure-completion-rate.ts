@@ -45,7 +45,7 @@ import { resolve } from "node:path";
 
 import Anthropic from "@anthropic-ai/sdk";
 import opspilotAgentRuntime from "@opspilot/agent-runtime";
-import type { AgentConversationMessage } from "@opspilot/agent-runtime";
+import type { AgentConversationMessage, RunAbortContext } from "@opspilot/agent-runtime";
 import opspilotProviderClaude, { DEFAULT_TIMEOUT_MS } from "@opspilot/provider-claude";
 import { generateTickets, TICKET_COMBINATION_COUNT } from "./completion-rate-tickets";
 import {
@@ -60,7 +60,8 @@ import {
   DIAGNOSTIC_TOOL_CATALOG,
 } from "../tools";
 
-const { runAgentOrchestrator, LlmProviderError } = opspilotAgentRuntime;
+const { runAgentOrchestrator, LlmProviderError, resolveAbortProvenance } =
+  opspilotAgentRuntime;
 const { ClaudeLlmProvider, requireSupportedClaudeModel } = opspilotProviderClaude;
 
 /** Hard ceiling on billed runs per invocation. */
@@ -103,6 +104,20 @@ export class MeasurementConfigurationError extends Error {
     this.name = "MeasurementConfigurationError";
   }
 }
+
+/**
+ * Codes meaning the run failed for provider-side reasons.
+ *
+ * Module scope because the exclusion branch and the tally MUST use one
+ * predicate: when they diverged, a PROVIDER_TIMEOUT was excluded from the
+ * sample while the tally still read 0 provider issues — a billed run visible
+ * nowhere.
+ */
+const PROVIDER_SIDE_CODES = new Set([
+  "PROVIDER_UNAVAILABLE",
+  "PROVIDER_TIMEOUT",
+  "PROVIDER_CANCELLED",
+]);
 
 /** Production bounds for ANTHROPIC_TIMEOUT_MS (claude-config.ts). */
 export const MIN_TIMEOUT_MS = 1_000;
@@ -216,12 +231,38 @@ interface RunOutcome {
   readonly validationMessages: readonly string[];
   /** Evidence entries #115 synthesized; a non-empty list means F5 was healed. */
   readonly autoCompletedEvidence: number;
-  /** What the model was actually shown — "only a full trajectory distinguishes
+  /** Retrieved chunk ids — part of what the model was shown. "Only a full
+   *  trajectory distinguishes
    *  a harness defect from a model regression" (evaluation ch.7). */
   readonly retrievedChunkIds: readonly string[];
   readonly toolCallsMade: readonly string[];
 }
 
+
+/**
+ * Summarises tool activity from a trace.
+ *
+ * KNOWN LIMIT, stated because the artefact must not overclaim: the trace
+ * contract (packages/contracts/src/agent-trace-event.ts) carries only
+ * `toolCallId` and `toolName` on TOOL_REQUESTED/TOOL_COMPLETED. Tool INPUTS
+ * and OUTPUTS are not in it. So two runs where the model queried different
+ * services are indistinguishable here, and this is a call LEDGER rather than
+ * the full trajectory. Recording the ids at least distinguishes "called the
+ * same tool twice" from "called it once", which the bare name list did not.
+ *
+ * Widening the contract is a product change affecting persisted rows, out of
+ * scope for a measurement script — noted in docs/reviews/48 instead of being
+ * papered over here.
+ */
+function summarizeToolCalls(
+  trace: readonly { readonly type: string; readonly toolName?: string; readonly toolCallId?: string }[],
+): string[] {
+  return trace.flatMap((event) =>
+    event.type === "TOOL_COMPLETED" && event.toolName !== undefined
+      ? [`${event.toolName}#${event.toolCallId ?? "unknown"}`]
+      : [],
+  );
+}
 
 /**
  * Writes the artefact and returns its path.
@@ -349,6 +390,17 @@ async function main(): Promise<void> {
     process.stdout.write(`\n--- run ${i + 1}/${runCount} — ${ticket.id} ---\n`);
 
     try {
+      // Rebuilt per run: the deadline bounds one investigation, not the round.
+      const deadlineSignal = AbortSignal.timeout(LIVE_RUN_PROVIDER_DEADLINE_MS);
+      const abortContext: RunAbortContext = {
+        deadlineSignal,
+        // No HTTP client here, so nothing can disconnect. A never-aborting
+        // signal keeps the shape identical to deployment without inventing an
+        // event that cannot occur locally.
+        disconnectSignal: new AbortController().signal,
+        signal: deadlineSignal,
+      };
+
       const result = await runAgentOrchestrator({
         provider,
         toolRegistry: registry,
@@ -363,10 +415,14 @@ async function main(): Promise<void> {
         // The deployed LIVE ceilings, not agent-runtime's more generous
         // 4096/4096 defaults.
         outputBudget: LIVE_RUN_OUTPUT_BUDGET,
-        // The deployed per-RUN deadline. A fresh signal per run, because it
-        // bounds the whole investigation rather than one call — the SDK
-        // timeout above only bounds a single request.
-        signal: AbortSignal.timeout(LIVE_RUN_PROVIDER_DEADLINE_MS),
+        // The deployed per-RUN deadline, carried in a RunAbortContext exactly
+        // as apps/api does. A bare AbortSignal.timeout is NOT equivalent: the
+        // deployed path keeps the deadline signal distinguishable from a
+        // client disconnect, so resolveAbortProvenance reports a blown
+        // deadline as PROVIDER_TIMEOUT. Without the context the same event
+        // reaches the tally as PROVIDER_CANCELLED — a mislabelled cause on a
+        // measurement whose whole purpose is attribution.
+        signal: abortContext.signal,
         // EXACTLY what the deployed path does — apps/api/src/execution/
         // retrieval-input.ts: buildRetrievalInput() passes the ticket summary
         // verbatim with topK 3. A hand-tuned keyword query would hand the
@@ -401,12 +457,15 @@ async function main(): Promise<void> {
       //     dropped (PROVIDER_TIMEOUT was previously invisible in the
       //     tallies, and PROVIDER_CANCELLED was counted as an ordinary
       //     report failure).
-      const PROVIDER_SIDE_CODES = new Set([
-        "PROVIDER_UNAVAILABLE",
-        "PROVIDER_TIMEOUT",
-        "PROVIDER_CANCELLED",
-      ]);
-      if (result.status === "failed" && PROVIDER_SIDE_CODES.has(result.code)) {
+      // The deployed path resolves an abort-derived code through the context
+      // before recording it; without this a blown deadline is recorded as
+      // PROVIDER_CANCELLED instead of PROVIDER_TIMEOUT.
+      const resolvedCode =
+        result.status === "failed"
+          ? resolveAbortProvenance(result.code, abortContext)
+          : undefined;
+
+      if (resolvedCode !== undefined && PROVIDER_SIDE_CODES.has(resolvedCode)) {
         // Recorded as a full outcome, not just an id: an excluded run can
         // still have retrieved chunks and executed tool calls before the
         // provider failed, and that trajectory is billed evidence. Dropping it
@@ -418,20 +477,18 @@ async function main(): Promise<void> {
           retrievedChunkIds: (result.trace ?? [])
             .filter((event) => event.type === "RETRIEVAL_COMPLETED")
             .flatMap((event) => event.chunks.map((chunk) => chunk.chunkId)),
-          toolCallsMade: (result.trace ?? [])
-            .filter((event) => event.type === "TOOL_COMPLETED")
-            .map((event) => event.toolName),
+          toolCallsMade: summarizeToolCalls(result.trace ?? []),
           status: "excluded",
-          failureCode: result.code,
+          failureCode: resolvedCode,
           validationMessages: [],
           autoCompletedEvidence: 0,
         });
         console.log(
-          `status=failed code=${result.code} — EXCLUDED from the sample. ` +
+          `status=failed code=${resolvedCode} — EXCLUDED from the sample. ` +
             "The run did not produce a report for provider-side reasons, so it cannot " +
             "speak to report quality either way.",
         );
-        excluded.push(`${ticket.id} (${result.code})`);
+        excluded.push(`${ticket.id} (${resolvedCode})`);
         writeArtefact(artefact);
         continue;
       }
@@ -450,9 +507,7 @@ async function main(): Promise<void> {
       const retrievalChunks = trace.flatMap((event) =>
         event.type === "RETRIEVAL_COMPLETED" ? event.chunks.map((chunk) => chunk.chunkId) : [],
       );
-      const toolCalls = trace.flatMap((event) =>
-        event.type === "TOOL_COMPLETED" ? [event.toolName] : [],
-      );
+      const toolCalls = summarizeToolCalls(trace);
 
       outcomes.push({
         ticketId: ticket.id,
@@ -527,8 +582,14 @@ async function main(): Promise<void> {
   }
   const completed = outcomes.filter((o) => o.status === "completed").length;
   const schemaInvalid = outcomes.filter((o) => o.failureCode === "REPORT_SCHEMA_INVALID").length;
+  // Must use the same predicate as the exclusion branch. It previously counted
+  // only PROVIDER_UNAVAILABLE, so a PROVIDER_TIMEOUT was excluded from the
+  // sample yet invisible in the tally — a run that cost money and appeared
+  // nowhere.
   const providerIssues = outcomes.filter(
-    (o) => o.failureCode === "PROVIDER_UNAVAILABLE" || o.status === "threw",
+    (o) =>
+      o.status === "threw" ||
+      (o.failureCode !== undefined && PROVIDER_SIDE_CODES.has(o.failureCode)),
   ).length;
   const healed = outcomes.filter((o) => o.autoCompletedEvidence > 0).length;
 
@@ -578,7 +639,9 @@ async function main(): Promise<void> {
     excluded: excluded.length,
   };
   const outputPath = writeArtefact(artefact);
-  console.log(`\nFull trajectory written to ${outputPath}`);
+  // Deliberately not "full trajectory": tool inputs/outputs are absent from
+  // the trace contract, so this is a run record, not a replayable trajectory.
+  console.log(`\nRun record written to ${outputPath}`);
 
   console.log(
     `\nBaseline for comparison: 2/8 COMPLETED (25%) on deployed runs, 2026-09-14/15 (#105).`,

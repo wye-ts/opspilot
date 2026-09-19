@@ -2639,7 +2639,8 @@ were not:
 | 2 | 4/5 | Voided — retry policy more permissive than deployment |
 | 3 (A) | 2/4 | Valid |
 | 4 (B) | 4/5 | Valid, and contradicts round A |
-| 5 | 5/5 | Voided — still on the wrong retry policy |
+| 5 (C) | 5/5 | Voided — still on the wrong retry policy |
+| 6 (D) | 2/4 | Valid, post-`.describe()`, but its per-failure attribution was lost to output truncation |
 
 Thirty billed runs across six rounds, roughly $4.8 — three of those rounds
 voided for apparatus defects. Every defect was found by independent

@@ -99,3 +99,19 @@ describe("the entry does not claim guards it lacks", () => {
     expect(CHALLENGE).toMatch(/No equivalent test covers this\s+document's figures/i);
   });
 });
+
+describe("the round table accounts for every billed round", () => {
+  // Review found the table listing five rounds directly above a claim of six.
+  // The table is the ledger; if it disagrees with the total, one of the
+  // rounds someone paid for is missing from the record.
+  it("lists six rounds totalling thirty invocations", () => {
+    // Rounds 1-2 have no letter; 3-6 do. Built against the actual table text.
+    const rows = [...CHALLENGE.matchAll(/^\| (\d)(?: \([A-D]\))? \| (\d)\/(\d) \|/gm)];
+    expect(rows).toHaveLength(6);
+    const invocations = rows.reduce((sum, row) => sum + Number(row[3]), 0);
+    // Rounds A and D excluded one provider-side run each from their
+    // denominators, so the denominators sum to 28 across 30 invocations.
+    expect(invocations).toBe(28);
+    expect(CHALLENGE).toContain("Thirty billed runs across six rounds");
+  });
+});

@@ -271,6 +271,26 @@ A deployed re-measurement is still the only like-for-like comparison against
 #105's 8 runs. That remains open and is an owner decision, since it costs
 visitor quota.
 
+## What the run record does NOT contain
+
+The artefact is a run record, not a replayable trajectory.
+
+`packages/contracts/src/agent-trace-event.ts` carries only `toolCallId` and
+`toolName` on `TOOL_REQUESTED`/`TOOL_COMPLETED`. **Tool inputs and outputs are
+not in the trace at all.** Two runs where the model queried different services
+are indistinguishable in the record, and retrieved evidence appears only as
+chunk ids pointing into a mutable corpus.
+
+This bounds attribution: if a future round shows the empty-evidence shape
+recurring, the record shows WHICH tools ran but not WHAT they returned, so
+"the model ignored good evidence" and "the tool returned nothing useful" stay
+indistinguishable from the artefact alone.
+
+Widening the trace contract changes persisted rows and belongs in its own
+issue. It is recorded here rather than papered over, because an earlier version
+of this script called its output the "full trajectory" — a claim the contract
+does not support.
+
 ## Measurement integrity
 
 Two defects in the script itself were caught in review; both would have
