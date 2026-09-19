@@ -8,6 +8,7 @@ import {
   MAX_RUN_COUNT,
   MAX_TIMEOUT_MS,
   MIN_TIMEOUT_MS,
+  MeasurementConfigurationError,
   isProviderOutage,
   parseBoundedEnvInteger,
   parseRunCount,
@@ -154,5 +155,33 @@ describe("parseBoundedEnvInteger", () => {
 
   it("names the offending variable so the failure is actionable", () => {
     expect(() => parseBoundedEnvInteger("abc", 1, 0, 10, "TICKET_SEED")).toThrow(/TICKET_SEED/);
+  });
+});
+
+describe("configuration errors are actionable without leaking secrets", () => {
+  // The handler refuses to print caught error values because a provider error
+  // can carry request bodies, headers or an API key. These messages are
+  // authored here from a variable NAME and numeric bounds, never from the
+  // environment value or the network, so they are safe to surface.
+  it("uses a dedicated class the handler can safely print", () => {
+    const error = (() => {
+      try {
+        parseBoundedEnvInteger("abc", 1, 0, 10, "TICKET_SEED");
+        return null;
+      } catch (caught) {
+        return caught;
+      }
+    })();
+    expect(error).toBeInstanceOf(MeasurementConfigurationError);
+  });
+
+  it("never interpolates the offending VALUE into the message", () => {
+    expect(() => parseBoundedEnvInteger("sk-ant-secret", 1, 0, 10, "TICKET_SEED")).toThrow(
+      /^TICKET_SEED must be an integer in 0\.\.10$/,
+    );
+  });
+
+  it("applies to RUN_COUNT too", () => {
+    expect(() => parseRunCount("0")).toThrow(MeasurementConfigurationError);
   });
 });

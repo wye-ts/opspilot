@@ -40,7 +40,7 @@
  *   RUN_COUNT=5 ... (default 5)
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -86,6 +86,24 @@ export const LIVE_RUN_OUTPUT_BUDGET = {
  */
 export const LIVE_RUN_PROVIDER_DEADLINE_MS = 120_000;
 
+/**
+ * A configuration error whose message this file authors in full.
+ *
+ * The top-level handler refuses to print caught error VALUES because a
+ * provider error can carry request bodies, headers or an API key. That rule is
+ * right, but it was also swallowing the validators' own messages, so
+ * `TICKET_SEED=abc` reported only "an Error occurred" while the actionable
+ * text — which variable, which bounds — was discarded. Messages of this class
+ * are string literals built from the variable NAME and its numeric bounds:
+ * never from the environment value, the provider, or the network.
+ */
+export class MeasurementConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MeasurementConfigurationError";
+  }
+}
+
 /** Production bounds for ANTHROPIC_TIMEOUT_MS (claude-config.ts). */
 export const MIN_TIMEOUT_MS = 1_000;
 export const MAX_TIMEOUT_MS = 600_000;
@@ -108,7 +126,9 @@ export function parseBoundedEnvInteger(
   if (trimmed === undefined || trimmed === "") return fallback;
   const value = Number(trimmed);
   if (!Number.isInteger(value) || value < min || value > max) {
-    throw new Error(`${name} must be an integer in ${min}..${max}`);
+    throw new MeasurementConfigurationError(
+      `${name} must be an integer in ${min}..${max}`,
+    );
   }
   return value;
 }
@@ -132,7 +152,9 @@ export function parseRunCount(raw: string | undefined): number {
   const trimmed = raw?.trim();
   const value = trimmed === undefined || trimmed === "" ? 5 : Number(trimmed);
   if (!Number.isInteger(value) || value < 1 || value > MAX_RUN_COUNT) {
-    throw new Error(`RUN_COUNT must be an integer in 1..${MAX_RUN_COUNT}`);
+    throw new MeasurementConfigurationError(
+      `RUN_COUNT must be an integer in 1..${MAX_RUN_COUNT}`,
+    );
   }
   return value;
 }
@@ -166,7 +188,8 @@ const DEPLOYED_RETRIEVAL_TOP_K = 3;
 
 function requireEnv(name: string): string {
   const value = process.env[name]?.trim();
-  if (!value) throw new Error(`${name} must be set`);
+  // The NAME of a missing variable, never its value.
+  if (!value) throw new MeasurementConfigurationError(`${name} must be set`);
   return value;
 }
 
@@ -216,7 +239,15 @@ function writeArtefact(artefact: { readonly startedAt: string }): string {
     outputDir,
     `completion-rate-${artefact.startedAt.replace(/[:.]/g, "-")}.json`,
   );
-  writeFileSync(outputPath, JSON.stringify(artefact, null, 2), "utf8");
+  // Write to a sibling temp file, then rename. writeFileSync truncates the
+  // destination BEFORE writing, so an in-place rewrite that fails midway (disk
+  // full, process killed between flushes) destroys the last good snapshot —
+  // the persistence added to prevent data loss would itself become a way to
+  // lose it. rename(2) within a directory is atomic, so a reader sees either
+  // the previous complete artefact or the new one, never a truncated file.
+  const tempPath = `${outputPath}.tmp`;
+  writeFileSync(tempPath, JSON.stringify(artefact, null, 2), "utf8");
+  renameSync(tempPath, outputPath);
   return outputPath;
 }
 
@@ -461,7 +492,9 @@ async function main(): Promise<void> {
   // unvalidated RUN_COUNT. A measurement with no usable runs is void.
   if (outcomes.length === 0) {
     writeArtefact(artefact);
-    throw new Error(
+    // A count and literal text — no provider-derived content — so this is
+    // safe to surface, and it is the one message the operator most needs.
+    throw new MeasurementConfigurationError(
       `No usable runs: all ${excluded.length} invocation(s) failed before producing a report. ` +
         "This measures nothing — check credentials, credit and connectivity.",
     );
@@ -525,6 +558,12 @@ if (isMainModule) {
   // model- or network-derived) and is the difference between "a defect in
   // this script" and "an outage", which the rethrow above now surfaces here
   // rather than burying in the sample.
+  if (error instanceof MeasurementConfigurationError) {
+    // Safe by construction: see the class doc.
+    console.error(`[completion-rate] Configuration error: ${error.message}`);
+    process.exitCode = 1;
+    return;
+  }
   const kind = error instanceof Error ? error.constructor.name : typeof error;
   console.error(
     `[completion-rate] The measurement failed to run (${kind}). ` +
