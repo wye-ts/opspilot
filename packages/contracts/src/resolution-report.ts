@@ -135,11 +135,36 @@ const DraftCustomerReplyPayloadSchema = z
 // provider's generated strict tool schema carries groundedBy in each branch's
 // `required` array rather than relying on a default making the input key
 // optional (Issue #60 §4b).
+// Issue #48 follow-up (docs/reviews/48-completion-rate-after-106-107-115.md):
+// the F5 pairing GROUNDED_BY_NOT_IN_EVIDENCE + SUFFICIENT_REQUIRES_EVIDENCE was
+// the single largest observed cause of REPORT_SCHEMA_INVALID, and the reports
+// that tripped it grounded their actions correctly while leaving `evidence`
+// empty. The rule was already stated — but only in the report tool's prose
+// description, not on the fields the model actually fills. `.describe()`
+// survives z.toJSONSchema() and stripUnsupported(), so these two constants put
+// the constraint where the grammar shows it.
+//
+// This changes NO invariant and relaxes NO validation: applyReportEvidenceInvariants
+// below remains the sole authority. It only makes an existing requirement
+// visible at the point of authoring.
+const GROUNDED_BY_DESCRIPTION =
+  "Evidence locators this action rests on. EVERY entry here must ALSO appear as " +
+  "a full entry in this report's top-level `evidence` array — copy the " +
+  "`evidenceId`/`sourceType` pair exactly. Citing a locator you did not also " +
+  "list in `evidence` is the most common reason a report is rejected.";
+
+const EVIDENCE_ARRAY_DESCRIPTION =
+  "Every observation this report relies on, each with its own finding. This is " +
+  "the report's ONLY evidence list: if a suggested action cites a locator in " +
+  "`groundedBy`, the matching entry MUST be present here as well. Leave it " +
+  "empty only when the run genuinely gathered nothing — an empty array with " +
+  "evidenceState SUFFICIENT, or with any grounded suggested action, is invalid.";
+
 const UpdateTicketStatusWriteActionSchema = z
   .object({
     type: z.literal("UPDATE_TICKET_STATUS"),
     payload: UpdateTicketStatusPayloadSchema,
-    groundedBy: z.array(EvidenceLocatorSchema).min(1).max(10),
+    groundedBy: z.array(EvidenceLocatorSchema).min(1).max(10).describe(GROUNDED_BY_DESCRIPTION),
   })
   .strict();
 
@@ -147,7 +172,7 @@ const CreateEscalationWriteActionSchema = z
   .object({
     type: z.literal("CREATE_ESCALATION"),
     payload: CreateEscalationPayloadSchema,
-    groundedBy: z.array(EvidenceLocatorSchema).min(1).max(10),
+    groundedBy: z.array(EvidenceLocatorSchema).min(1).max(10).describe(GROUNDED_BY_DESCRIPTION),
   })
   .strict();
 
@@ -155,7 +180,7 @@ const DraftCustomerReplyWriteActionSchema = z
   .object({
     type: z.literal("DRAFT_CUSTOMER_REPLY"),
     payload: DraftCustomerReplyPayloadSchema,
-    groundedBy: z.array(EvidenceLocatorSchema).min(1).max(10),
+    groundedBy: z.array(EvidenceLocatorSchema).min(1).max(10).describe(GROUNDED_BY_DESCRIPTION),
   })
   .strict();
 
@@ -233,7 +258,7 @@ const RESOLUTION_REPORT_SHAPE = {
   confidence: z.number().min(0).max(1),
   // No .min(1): a truthful zero-evidence INSUFFICIENT report must be able to
   // exist (P1-3). Cardinality is conditional on evidenceState below.
-  evidence: z.array(EvidenceReferenceSchema).max(10),
+  evidence: z.array(EvidenceReferenceSchema).max(10).describe(EVIDENCE_ARRAY_DESCRIPTION),
   // WRITE element (structurally-required groundedBy). The read schema below
   // overrides this with the legacy-normalizing read element via
   // spread-and-override, matching the #58 evidenceState pattern (Issue #60 §4c).

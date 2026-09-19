@@ -1,6 +1,7 @@
 import { getServiceStatusTool } from "@opspilot/agent-runtime";
 import { ResolutionReportSchema } from "@opspilot/contracts";
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import {
   SUBMIT_RESOLUTION_REPORT_TOOL,
@@ -261,6 +262,48 @@ describe("toClaudeDiagnosticTool", () => {
     // be a second, logically-unreachable copy of the check the orchestrator
     // already runs authoritatively.
     expect(JSON.stringify(claudeTool.input_schema)).not.toContain("minItems");
+  });
+});
+
+describe("evidence/groundedBy grammar descriptions (issue #48 follow-up)", () => {
+  // The F5 pairing (GROUNDED_BY_NOT_IN_EVIDENCE + SUFFICIENT_REQUIRES_EVIDENCE)
+  // was the largest observed cause of REPORT_SCHEMA_INVALID, and the rule it
+  // violates existed ONLY in the tool's prose description — not on the fields
+  // the model fills. These assertions pin that the constraint reaches the
+  // grammar: `description` is not in UNSUPPORTED_KEYS, but nothing else stops
+  // someone adding it there, which would silently undo this.
+  const schema = SUBMIT_RESOLUTION_REPORT_TOOL.input_schema as unknown as {
+    properties: Record<string, { description?: string; items?: Record<string, unknown> }>;
+  };
+
+  it("tells the model, on the evidence field itself, that groundedBy locators must appear there", () => {
+    const description = schema.properties["evidence"]?.description;
+    expect(description).toBeTypeOf("string");
+    expect(description).toMatch(/groundedBy/);
+    expect(description).toMatch(/MUST be present here/i);
+  });
+
+  it("tells the model, on every action variant's groundedBy, that entries must also be in evidence", () => {
+    const actions = schema.properties["suggestedActions"] as unknown as {
+      items?: { anyOf?: ReadonlyArray<{ properties?: Record<string, { description?: string }> }> };
+    };
+    const branches = actions.items?.anyOf ?? [];
+    // All three write variants (UPDATE_TICKET_STATUS, CREATE_ESCALATION,
+    // DRAFT_CUSTOMER_REPLY) — a description on only some would leave a gap.
+    expect(branches).toHaveLength(3);
+    for (const [index, branch] of branches.entries()) {
+      const description = branch.properties?.["groundedBy"]?.description;
+      expect(description, `branch ${index} has no groundedBy description`).toBeTypeOf("string");
+      expect(description).toMatch(/`evidence`/);
+    }
+  });
+
+  it("keeps `description` out of the stripped-key set", () => {
+    // Direct guard on the mechanism the two assertions above depend on.
+    const stripped = toStrictInputSchema(
+      z.object({ field: z.string().describe("kept") }).strict(),
+    ) as unknown as { properties: { field: { description?: string } } };
+    expect(stripped.properties.field.description).toBe("kept");
   });
 });
 
