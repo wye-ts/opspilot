@@ -43,7 +43,10 @@
 import Anthropic from "@anthropic-ai/sdk";
 import opspilotAgentRuntime from "@opspilot/agent-runtime";
 import type { AgentConversationMessage } from "@opspilot/agent-runtime";
-import opspilotProviderClaude from "@opspilot/provider-claude";
+import opspilotProviderClaude, {
+  DEFAULT_TIMEOUT_MS,
+  DEFAULT_MAX_RETRIES,
+} from "@opspilot/provider-claude";
 import {
   InMemoryKeywordRunbookRetriever,
   DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE,
@@ -155,13 +158,27 @@ async function main(): Promise<void> {
   const { chunks } = await loadDefaultRunbookCorpus();
   const retriever = new InMemoryKeywordRunbookRetriever(chunks, DEFAULT_KEYWORD_RETRIEVER_MIN_SCORE);
 
-  const anthropicClient = new Anthropic({ apiKey, logLevel: "off" });
+  // Match the DEPLOYED provider policy exactly. An earlier version hardcoded
+  // maxRetries: 2 with no timeout — more permissive than deployment, so a
+  // completion this script recorded could be one the deployed path would have
+  // given up on. The defaults come from provider-claude's own config module
+  // (DEFAULT_TIMEOUT_MS / DEFAULT_MAX_RETRIES), the same constants
+  // loadClaudeConfig() applies when the env vars are unset.
+  const timeoutMs = Number(process.env.ANTHROPIC_TIMEOUT_MS?.trim() ?? DEFAULT_TIMEOUT_MS);
+  const maxRetries = Number(process.env.ANTHROPIC_MAX_RETRIES?.trim() ?? DEFAULT_MAX_RETRIES);
+  const anthropicClient = new Anthropic({
+    apiKey,
+    logLevel: "off",
+    timeout: timeoutMs,
+    maxRetries,
+  });
   const provider = new ClaudeLlmProvider({
     client: anthropicClient,
     model,
-    configuredMaxRetries: 2,
+    configuredMaxRetries: maxRetries,
     diagnosticTools: DIAGNOSTIC_TOOL_CATALOG,
   });
+  console.log(`provider policy: timeoutMs=${timeoutMs} maxRetries=${maxRetries} (deployed defaults)`);
 
   const outcomes: RunOutcome[] = [];
 
