@@ -41,12 +41,24 @@ describe("parseRunCount", () => {
 });
 
 describe("isProviderOutage", () => {
-  it("treats a real provider error as a recordable outage", () => {
-    // A real category from LlmProviderErrorCategory — PROVIDER_UNAVAILABLE is
-    // the ORCHESTRATOR's failure code, a different layer.
-    const error = new LlmProviderError("SERVER_ERROR", "upstream is down");
-    expect(isProviderOutage(error)).toBe(true);
-  });
+  // Genuinely transient upstream problems a deployed run could also hit.
+  it.each(["RATE_LIMIT", "CONNECTION", "TIMEOUT", "SERVER_ERROR"] as const)(
+    "records %s as a real outage",
+    (category) => {
+      // NB: PROVIDER_UNAVAILABLE is the ORCHESTRATOR's failure code, a
+      // different layer from LlmProviderErrorCategory.
+      expect(isProviderOutage(new LlmProviderError(category, "upstream problem"))).toBe(true);
+    },
+  );
+
+  // Our own configuration or code — counting these would let a broken setup
+  // masquerade as a measured completion-rate sample.
+  it.each(["AUTHENTICATION", "BILLING", "REQUEST_INVALID", "CANCELLED", "UNKNOWN"] as const)(
+    "voids the measurement on %s rather than recording it",
+    (category) => {
+      expect(isProviderOutage(new LlmProviderError(category, "our problem"))).toBe(false);
+    },
+  );
 
   // A plain Error is a defect in this repo. Counting it as a provider-side
   // failure would let a crash pass as an ordinary outage, so a

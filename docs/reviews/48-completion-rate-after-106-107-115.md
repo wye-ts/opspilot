@@ -5,7 +5,7 @@
 | Script | `apps/worker/src/demo/measure-completion-rate.ts` (`RUN_COUNT=5 pnpm --filter @opspilot/worker run measure:completion-rate`) |
 | Date | 2026-09-18 |
 | Model | `claude-sonnet-5` |
-| Result | **2/5 then 4/5** across two rounds on the corrected provider policy. Pooled: **6/10 (60%)**. Baseline **2/8 (25%)**. |
+| Result | **2/4 then 4/5** across two rounds on the corrected provider policy. Pooled: **6/9 (67%)**. Baseline **2/8 (25%)**. |
 | Cost | 20 billed runs across four rounds, ≈ $3.2 (two rounds voided — see "Two voided rounds") |
 | Owner threshold | 5 runs, at most 1 failure — **met in one round, missed in the other**. Not established. |
 
@@ -37,30 +37,38 @@ Two rounds of five, same corrected configuration, run back to back:
 | `TICKET-4001` notification delay | `REPORT_SCHEMA_INVALID` | `completed` |
 | `TICKET-4002` billing 5xx | `REPORT_SCHEMA_INVALID` | `completed` |
 | `TICKET-4003` search staleness | `completed` (auto-completed 3) | `completed` (auto-completed 3) |
-| `TICKET-4004` sign-in failures | `PROVIDER_UNAVAILABLE` | `completed` |
+| `TICKET-4004` sign-in failures | `PROVIDER_UNAVAILABLE` — **excluded** | `completed` |
 | `TICKET-4005` storage quota | `completed` | `REPORT_SCHEMA_INVALID` |
-| **Completed** | **2/5** | **4/5** |
+| **Completed** | **2/4** (one excluded) | **4/5** |
 
 ```
-Round A: COMPLETED 2/5, REPORT_SCHEMA_INVALID 2/5, provider-side 1/5, healed 1
-Round B: COMPLETED 4/5, REPORT_SCHEMA_INVALID 1/5, provider-side 0/5, healed 1
-Pooled:  COMPLETED 6/10
+Round A: COMPLETED 2/4  (1 run excluded — never reached a report), healed 1
+Round B: COMPLETED 4/5,                                            healed 1
+Pooled:  COMPLETED 6/9
 ```
+
+`TICKET-4004` in round A failed with `PROVIDER_UNAVAILABLE` and is **excluded
+from the denominator**, not counted as a failure. The orchestrator collapses
+`AUTHENTICATION`, `BILLING` and `REQUEST_INVALID` into that same code alongside
+genuine outages (`agent-orchestrator.ts`'s category switch), so a run carrying
+it cannot be shown to have reached the model at all. Counting it would let a
+configuration problem depress a rate that is supposed to measure report
+quality.
 
 **The spread between two identical five-run rounds is the primary result.**
-The same tickets, the same configuration, and the same model produced 2/5 and
+The same tickets, the same configuration, and the same model produced 2/4 and
 4/5 — and the per-ticket outcomes disagree in four of five slots. `TICKET-4001`
 and `TICKET-4002` failed in A and passed in B; `TICKET-4005` did the reverse.
 
 So the owner threshold (at most one failure in five) was **met in round B and
-missed in round A**. A single round of five cannot distinguish these, which is
+missed in round A** (2 failures in the 4 usable runs). A single round of five cannot distinguish these, which is
 what the design's stated weakness looks like when it actually bites: at a true
 rate of 60%, five runs yield ≥4 completions about 34% of the time and ≤2 about
 32% of the time. Both rounds are consistent with one underlying rate.
 
-**What is reasonably supported:** the pooled 6/10 (60%) is above the 2/8 (25%)
-baseline, but with n=10 the two intervals still overlap — this is suggestive,
-not a demonstrated improvement.
+**What is reasonably supported:** the pooled 6/9 (67%) is above the 2/8 (25%)
+baseline, but at this sample size the intervals still overlap — suggestive, not
+a demonstrated improvement.
 
 **What is not supported:** any single-round headline. Reporting round B's 4/5
 alone would have been a selection artifact, and this document originally did
@@ -118,7 +126,7 @@ a more forgiving retry budget is not one the deployed path would necessarily
 reach, so that round was voided too.
 
 It had produced 4/5, and this document briefly recorded that as the threshold
-being met. **Re-running under the deployed policy produced 2/5 — the opposite
+being met. **Re-running under the deployed policy produced 2/4 — the opposite
 verdict.** The number that survived review was not the number the corrected
 configuration produces, which is the strongest argument in this document for
 not treating a single five-run round as a result.
@@ -167,7 +175,7 @@ rejected. Whether to revisit it is an owner decision.
   time — the only reproducible outcome observed.
 - #106's attribution works: every failure here names the invariant that caused
   it, which #105 explicitly could not do for 4 of its 5 failures.
-- A pooled 6/10 (60%) sits above the 2/8 (25%) baseline, though the intervals
+- A pooled 6/9 (67%) sits above the 2/8 (25%) baseline, though the intervals
   still overlap at this sample size.
 
 **Does not support:**
@@ -176,7 +184,7 @@ rejected. Whether to revisit it is an owner decision.
   nothing distinguishes the two. On this evidence the threshold is *unresolved*,
   not passed.
 - **Any point estimate of the rate.** Two rounds of the same configuration gave
-  40% and 80%. Pooled 60% is the best available reading, and it is not precise
+  50% and 80%. Pooled 67% is the best available reading, and it is not precise
   enough to gate a public trial on.
 - **That the improvement is attributable to any one fix.** #115 engaged twice,
   but #107's wider budget and #101's corrective retry are also in play, and

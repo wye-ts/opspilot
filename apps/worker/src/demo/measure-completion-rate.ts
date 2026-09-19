@@ -80,12 +80,27 @@ export function parseRunCount(raw: string | undefined): number {
 }
 
 /**
- * Whether a thrown value is a real provider outage (a legitimate ledger row)
- * or a defect in this repository (which must void the measurement instead of
- * being counted as an ordinary failure).
+ * Categories that represent a genuine, transient upstream problem — the only
+ * ones a completion-rate sample may legitimately contain, since a deployed run
+ * could hit them too.
+ *
+ * Everything else in LlmProviderErrorCategory is a CONFIGURATION or CODE
+ * problem on our side: AUTHENTICATION (bad key), BILLING (no credit),
+ * REQUEST_INVALID (a malformed request we built), CANCELLED (we aborted),
+ * UNKNOWN (unclassified — by definition not a confirmed outage). Recording
+ * those as ordinary failures would let a broken setup masquerade as a measured
+ * result, which is the same fail-quietly defect the rethrow above exists to
+ * prevent.
+ */
+const TRANSIENT_OUTAGE_CATEGORIES = new Set(["RATE_LIMIT", "CONNECTION", "TIMEOUT", "SERVER_ERROR"]);
+
+/**
+ * Whether a thrown value is a real, transient provider outage (a legitimate
+ * ledger row). Anything else — including a non-transient LlmProviderError —
+ * must void the measurement rather than be counted as an ordinary failure.
  */
 export function isProviderOutage(error: unknown): error is InstanceType<typeof LlmProviderError> {
-  return error instanceof LlmProviderError;
+  return error instanceof LlmProviderError && TRANSIENT_OUTAGE_CATEGORIES.has(error.category);
 }
 
 /** Mirrors RETRIEVAL_TOP_K in apps/api/src/execution/retrieval-input.ts. */
@@ -181,6 +196,7 @@ async function main(): Promise<void> {
   console.log(`provider policy: timeoutMs=${timeoutMs} maxRetries=${maxRetries} (deployed defaults)`);
 
   const outcomes: RunOutcome[] = [];
+  const excluded: string[] = [];
 
   for (let i = 0; i < runCount; i += 1) {
     const ticket = TICKETS[i % TICKETS.length]!;
@@ -208,6 +224,28 @@ async function main(): Promise<void> {
         // review, after a first version did exactly that).
         retrievalInput: { query: ticket.summary, topK: DEPLOYED_RETRIEVAL_TOP_K },
       });
+
+      // The orchestrator collapses AUTHENTICATION / BILLING / REQUEST_INVALID /
+      // UNKNOWN into the SAME PROVIDER_UNAVAILABLE code it uses for genuine
+      // outages (agent-orchestrator.ts's category switch). So the failure code
+      // alone cannot tell a real outage from a broken API key, and the
+      // isProviderOutage() guard on the throw path does not help here — this
+      // is the orchestrator's normal RETURN path, not a throw.
+      //
+      // A completion-rate sample must not silently absorb a configuration
+      // problem, so a PROVIDER_UNAVAILABLE result is surfaced loudly and
+      // EXCLUDED from the denominator rather than recorded as a failed run.
+      // Under-reporting the sample size is recoverable; a rate computed over
+      // runs that never reached the model is not.
+      if (result.status === "failed" && result.code === "PROVIDER_UNAVAILABLE") {
+        console.log(
+          "status=failed code=PROVIDER_UNAVAILABLE — EXCLUDED from the sample. " +
+            "This code covers both real outages and our own AUTHENTICATION/BILLING/" +
+            "REQUEST_INVALID problems, which are indistinguishable here.",
+        );
+        excluded.push(ticket.id);
+        continue;
+      }
 
       const validationMessages =
         result.status === "failed"
@@ -251,6 +289,12 @@ async function main(): Promise<void> {
     }
   }
 
+  if (excluded.length > 0) {
+    console.log(
+      `\nEXCLUDED ${excluded.length} run(s) that never produced a report ` +
+        `(${excluded.join(", ")}). The rate below is over the remaining ${outcomes.length}.`,
+    );
+  }
   const completed = outcomes.filter((o) => o.status === "completed").length;
   const schemaInvalid = outcomes.filter((o) => o.failureCode === "REPORT_SCHEMA_INVALID").length;
   const providerIssues = outcomes.filter(
