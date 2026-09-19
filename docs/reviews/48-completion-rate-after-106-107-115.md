@@ -5,7 +5,7 @@
 | Script | `apps/worker/src/demo/measure-completion-rate.ts` (`RUN_COUNT=5 pnpm --filter @opspilot/worker run measure:completion-rate`) |
 | Date | 2026-09-18 |
 | Model | `claude-sonnet-5` |
-| Result | **2/4 then 4/5** across two rounds on the corrected provider policy. Pooled: **6/9 (67%)**. Baseline **2/8 (25%)**. |
+| Result | Pre-fix, on the corrected provider policy: **2/4 then 4/5**, pooled **6/9 (67%)**. Baseline **2/8 (25%)**. A later round on the `.describe()` change gave **5/5** but is a DIFFERENT code version and is deliberately not pooled with the two above. |
 | Cost | 20 billed runs across four rounds, ≈ $3.2 (two rounds voided — see "Two voided rounds") |
 | Owner threshold | 5 runs, at most 1 failure — **met in one round, missed in the other**. Not established. |
 
@@ -44,7 +44,7 @@ Two rounds of five, same corrected configuration, run back to back:
 ```
 Round A: COMPLETED 2/4  (1 run excluded — never reached a report), healed 1
 Round B: COMPLETED 4/5,                                            healed 1
-Pooled:  COMPLETED 6/9
+Pooled:  COMPLETED 6/9   (rounds A+B only — same code)
 ```
 
 `TICKET-4004` in round A failed with `PROVIDER_UNAVAILABLE` and is **excluded
@@ -166,6 +166,56 @@ Widening it to a *set* of invariants would mean auto-completion reasoning about
 invariants it was not built for, which #114's review rounds deliberately
 rejected. Whether to revisit it is an owner decision.
 
+## The root cause, and why this PR does not touch #115
+
+Relaxing #115's eligibility would have been symptom repair. Reading the grammar
+Claude actually receives shows why the omission happens at all:
+
+```json
+"evidence": {
+  "type": "array",
+  "items": { ... }
+}
+```
+
+**No `description`, no `minItems`.** The rule — every `groundedBy` locator must
+also appear in `evidence` — lived ONLY in the report tool's ~1700-character
+prose description. The model fills the JSON Schema, and that schema never
+stated the requirement. An empty `evidence` array is also deliberately legal (a
+truthful zero-evidence INSUFFICIENT report must be submittable), so nothing
+objects at authoring time; it fails later in cross-field validation, by which
+point the model has no signal it erred.
+
+This PR adds `.describe()` to the evidence array and to `groundedBy` on all
+three write-action variants. **No invariant changes and no validation is
+relaxed** — `applyReportEvidenceInvariants` remains the sole authority. The
+constraint simply becomes visible where the report is written.
+
+The shape of this defect matches the AndroidWorld T3A attribution reversal: a
+missing observation channel in the harness, not a model-capability problem. The
+tempting alternatives — widen the auto-completion rule, or swap models — both
+target the symptom.
+
+### One supporting observation, not a verified fix
+
+| Round | Provider policy | Result | Empty-evidence shape |
+|---|---|---|---|
+| A | deployed | 2/4 | present |
+| B | deployed | 4/5 | present |
+| C (after `.describe()`) | deployed | **5/5** | **absent** |
+
+Round C is a single n=5 observation and **does not establish** that the change
+improves the completion rate. Experiment 7-7 is the direct warning: three
+context representations scored an identical 6/11 while failing in different
+places — *changing a context representation does not automatically repair an
+application policy*. Rounds A and B already demonstrated the same hazard here,
+both reading 4/5 on the surface while differing underneath.
+
+What round C does support is narrower and still useful: the specific failure
+shape that caused 3 of the 4 observed `REPORT_SCHEMA_INVALID` results did not
+recur. Confirming the effect needs the trajectory-prefix regression set
+described below, not more five-run rounds.
+
 ## What this measurement does and does not support
 
 **Supports:**
@@ -224,6 +274,35 @@ an artifact whose only job is to report a trustworthy rate:
   integer in `1..25`.
 
 `measure-completion-rate.test.ts` covers both.
+
+## Why the next measurement should not be another five-run round
+
+Rounds A and B, identical in configuration, disagreed in four of five slots.
+Five end-to-end runs cannot separate a real effect from sampling noise at any
+plausible underlying rate, and each round bills five full investigations to
+observe one report-submission step.
+
+The failure being studied happens at the **last** turn: retrieval, tool calls
+and the multi-turn loop are irrelevant to whether `evidence` gets populated,
+yet they account for most of the tokens.
+
+A trajectory-prefix regression set is the better instrument: freeze the
+conversation at the point where the model must submit its report — retrieval
+done, tool results present — and require only that next step. One billed call
+per sample instead of five, so the same budget buys roughly 5x the sample size,
+and the variable is isolated.
+
+Two design constraints, if this is built:
+
+- **The expected answer is a set of acceptable actions, not one action.** A
+  report can be valid in more than one shape; pinning a single output would
+  measure conformity to a fixture rather than correctness.
+- **It measures the report-submission policy, not the end-to-end completion
+  rate.** It cannot replace the public-trial gate, which is defined in
+  end-to-end terms (#105).
+
+This remains a proposal. No such set exists yet, and building one is an owner
+decision.
 
 ## Reproducing
 
