@@ -71,9 +71,33 @@ describe("round C is recorded as void in both documents", () => {
     }
   });
 
-  it("says plainly that the fix has no supporting observation", () => {
-    expect(REVIEW).toMatch(/no supporting observation/i);
-    expect(CHALLENGE).toMatch(/no supporting observation/i);
+  // This assertion used to require both documents to say the fix had NO
+  // supporting observation. That was true when written and is now false: the
+  // change has since been measured. The guard is rewritten rather than
+  // deleted, because the claim that actually needs pinning is the boundary of
+  // what the measurement shows — a shape that stopped recurring, NOT a
+  // completion rate.
+  it("records that the fix shipped before it was measured", () => {
+    // Hard-wrapped prose: tolerate a newline anywhere inside the phrase.
+    expect(REVIEW).toMatch(/no\s+supporting\s+observation\s+at\s+all/i);
+    expect(CHALLENGE).toMatch(/shipped with no supporting observation/i);
+  });
+
+  it("never presents the post-fix runs as a completion rate", () => {
+    // Each document words the boundary differently; pin each to its own text
+    // rather than forcing a shared phrase.
+    expect(REVIEW).toMatch(/\*\*A completion rate\.\*\*/);
+    expect(REVIEW).toMatch(/not\s+comparable\s+to\s+the\s+2\/8\s+deployed\s+baseline/i);
+    expect(CHALLENGE).toMatch(/it\s+is\s+not\s+a\s+completion\s+rate/i);
+  });
+
+  it("states how many invocations never reached the model", () => {
+    // `toContain("35")` passed even with the table zeroed, because 35 appears
+    // elsewhere in the document — a guard that cannot fail is not a guard.
+    // Pin the ledger row itself.
+    expect(REVIEW).toMatch(/issue #125\) \| 35 \|/);
+    expect(REVIEW).toMatch(/\*\*Reached the model\*\* \| \*\*14\*\* \|/);
+    expect(CHALLENGE).toMatch(/35 of the 49/);
   });
 });
 

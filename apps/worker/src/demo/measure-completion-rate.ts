@@ -441,16 +441,20 @@ async function main(): Promise<void> {
   const maxRetries = LIVE_RUN_MAX_RETRIES;
   // Rebuilt on a connection-class failure rather than constructed once.
   //
-  // The SDK keeps an HTTP/2 session on the client. One TLS record fault
-  // destroys that session, and every later request on the same client then
-  // fails in about a millisecond, forever — two measurement rounds each lost
-  // 11 of 15 runs to exactly this (issue #125). Reusing the client would make
-  // a round's result depend on whether a transient fault happened to land in
-  // it, which is not a property of the thing being measured.
+  // KNOWN INSUFFICIENT — kept deliberately, with its result recorded.
   //
-  // This does NOT fix the deployed path, which has the same shape; it stops
-  // the measurement from silently inheriting the defect. Runs lost before a
-  // rebuild stay excluded and visible.
+  // A TLS record fault destroys the SDK's HTTP/2 session, after which requests
+  // fail in about a millisecond without leaving the machine (issue #125).
+  // Rebuilding the client was the obvious remedy and it DOES NOT WORK: a
+  // measured round rebuilt three times and still failed at 5.1ms and 3.9ms.
+  // The broken state is therefore not owned by the client object — every fetch
+  // in the process shares Node's global undici dispatcher regardless of how
+  // many clients exist.
+  //
+  // Left in place because it is harmless and because removing it would delete
+  // the evidence that this approach was tried and measured. The fault is also
+  // INTERMITTENT: some rounds never hit it, one hit it from run 1, several
+  // from run 5. What triggers it is not known.
   const buildClient = (): Anthropic =>
     new Anthropic({
       apiKey,
@@ -591,8 +595,9 @@ async function main(): Promise<void> {
     lastRunStartedAt = Date.now();
 
     if (sawConnectionFault) {
-      // Rebuilding the client discards the destroyed HTTP/2 session; the
-      // provider holds the client by reference, so it is rebuilt too.
+      // Rebuilds the client and the provider that references it. Measured as
+      // insufficient (see above) — retained so a round's artefact records
+      // that recovery was attempted and did not help.
       anthropicClient = buildClient();
       provider = buildProvider();
       clientRebuilds += 1;

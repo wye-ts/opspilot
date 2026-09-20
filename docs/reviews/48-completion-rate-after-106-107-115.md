@@ -220,9 +220,12 @@ deployed policy (round D) gave 2/4, and that round's per-failure attribution
 was lost to output truncation, so it is not known whether the targeted shape
 recurred.
 
-**The `.describe()` change therefore has no supporting observation at all.** It
-is well-motivated by source inspection — the rule genuinely was absent from the
-schema the model fills — and unverified by measurement. Treating round C as
+**At the time this section was written, the `.describe()` change had no
+supporting observation at all** — it rested purely on source inspection. It has
+since been measured on the corrected apparatus: the targeted shape did not
+recur in 14 runs that reached the model (see "Post-fix measurement" above).
+Round C remains void regardless; the supporting evidence comes from the later
+rounds, not from it. Treating round C as
 evidence would be selecting the round that ran under the most permissive
 configuration, which is the error this document exists to record. Experiment 7-7 is the direct warning: three
 context representations scored an identical 6/11 while failing in different
@@ -281,6 +284,51 @@ last visitor slot.
 A deployed re-measurement is still the only like-for-like comparison against
 #105's 8 runs. That remains open and is an owner decision, since it costs
 visitor quota.
+
+## Post-fix measurement: the targeted shape did not recur
+
+Seven rounds were run after the `.describe()` change, on the corrected
+apparatus (zero retries, deployed output budget, deployed per-run deadline,
+paced to 2 requests per 60s, generated tickets).
+
+| | Count |
+|---|---|
+| Invocations attempted | 49 |
+| Lost to a connection fault before reaching the model (issue #125) | 35 |
+| **Reached the model** | **14** |
+| — completed | 12 |
+| — `REPORT_SCHEMA_INVALID` | 2 |
+
+**`GROUNDED_BY_NOT_IN_EVIDENCE` occurred 0 times.**
+
+Neither schema failure was the targeted shape. One omitted evidence,
+suggested actions and root-cause support together — an empty report rather
+than a report citing evidence it failed to list. The other was missing only
+suggested actions (`ACTIONABLE_REQUIRES_ACTION`).
+
+Before the change, 3 of the 10 attributable runs carried the targeted shape.
+If the change had no effect and the underlying rate were still ~30%, seeing it
+zero times in 14 runs has probability ≈0.7%.
+
+### What this does and does not establish
+
+**Supports:** the specific failure shape the `.describe()` change targeted —
+grounding an action on a locator absent from `report.evidence` — did not recur.
+
+**Does not support:**
+
+- **A completion rate.** 12/14 is not comparable to the 2/8 deployed baseline:
+  different tickets, a different sampling process, and 35 excluded invocations.
+- **Independence.** The 35 connection failures arrive in contiguous stretches,
+  not at random, so the 14 usable runs come from a handful of healthy windows
+  rather than 14 independent draws. No evidence suggests failure shape
+  correlates with those windows, and none rules it out.
+- **Representativeness.** Tickets are generated from a 75-combination template
+  space, not sampled from real traffic.
+
+### Cost
+
+≈$2.5 across the seven rounds; only 14 invocations produced tokens.
 
 ## What the run record does NOT contain
 

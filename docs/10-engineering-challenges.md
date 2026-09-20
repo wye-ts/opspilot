@@ -2817,12 +2817,20 @@ three write-action variants. **No invariant changes and no validation is
 relaxed** — `applyReportEvidenceInvariants` remains the sole authority. The
 constraint becomes visible where the report is written.
 
-**This fix currently has no supporting observation.** The one round that
-produced 5/5 ran under the incorrect retry policy and was voided with the rest.
-Re-running under zero retries gave 2/4, and the per-failure attribution for
-that round was lost to output truncation, so it is not known whether the
-targeted failure shape recurred. The change is well-motivated by source
-inspection and unverified by measurement, and is recorded that way.
+**The fix shipped with no supporting observation and was measured afterwards.**
+The round that produced 5/5 ran under the incorrect retry policy and was voided
+with the rest; re-running under zero retries gave 2/4 whose per-failure
+attribution was lost to output truncation. Only after the apparatus was
+corrected again — deployed output budget, deployed deadline, paced requests,
+error diagnostics attached — did seven further rounds put 14 invocations in
+front of the model. The targeted shape occurred 0 times, against 3 of 10
+attributable runs before the change.
+
+That is evidence the specific shape stopped recurring, and it is not a
+completion rate: 35 of the 49 invocations never reached the model because of a
+connection defect found along the way (issue #125), and the survivors come from
+a few healthy windows rather than independent draws. The change remains
+well-motivated by source inspection, and is recorded that way.
 
 ### Testing Strategy
 
