@@ -385,6 +385,16 @@ describe("our own configuration failing voids the round", () => {
     );
   });
 
+  // UNKNOWN means unclassified: the cause is not established, so excluding it
+  // would let an unexplained failure shrink the denominator. The one exception
+  // is APIConnectionError, whose cause IS understood (#125) and which is
+  // handled by rebuilding — voiding on it would void every round, since it was
+  // 35 of 49 invocations.
+  it("voids on an unclassified UNKNOWN but not on the known connection fault", () => {
+    expect(SOURCE).toMatch(/record\.terminalErrorCategory === "UNKNOWN" &&/);
+    expect(SOURCE).toMatch(/record\.errorClass !== "APIConnectionError"/);
+  });
+
   it("reads the category from the logger, not the collapsed code", () => {
     expect(SOURCE).toContain("OUR_FAULT_CATEGORIES.has(record.terminalErrorCategory)");
   });

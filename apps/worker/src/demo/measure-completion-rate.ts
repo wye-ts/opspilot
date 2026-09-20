@@ -557,6 +557,20 @@ async function main(): Promise<void> {
       // outage. With the category in hand there is no excuse for it.
       if (OUR_FAULT_CATEGORIES.has(record.terminalErrorCategory)) {
         sawOurFault = record.terminalErrorCategory;
+      } else if (
+        record.terminalErrorCategory === "UNKNOWN" &&
+        record.errorClass !== "APIConnectionError"
+      ) {
+        // UNKNOWN means the adapter could NOT classify the failure — it may be
+        // ours or the provider's. Excluding it would let an unexplained
+        // failure silently shrink the denominator, which is the same error as
+        // excluding a billing failure, one step further out.
+        //
+        // APIConnectionError is the exception: it is UNKNOWN by category but
+        // its cause IS understood (issue #125) and it is handled by rebuilding.
+        // Voiding on it would make every round void, since it accounted for 35
+        // of 49 invocations.
+        sawOurFault = `UNKNOWN (${String(record.errorClass)}) — unclassified, cause not established`;
       }
       console.log(
         `  provider error: category=${record.terminalErrorCategory} ` +
