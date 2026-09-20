@@ -3,6 +3,8 @@ import opspilotAgentRuntime from "@opspilot/agent-runtime";
 
 import {
   NON_REPORT_BEARING_CODES,
+  LIVE_RUN_RATE_LIMIT,
+  MIN_RUN_INTERVAL_MS,
   LIVE_RUN_MAX_RETRIES,
   LIVE_RUN_OUTPUT_BUDGET_DEFAULTS,
   LIVE_RUN_PROVIDER_DEADLINE_DEFAULT_MS,
@@ -252,5 +254,22 @@ describe("exclusion codes are not named as provider faults", () => {
       "PROVIDER_TIMEOUT",
       "PROVIDER_UNAVAILABLE",
     ]);
+  });
+});
+
+describe("request pacing matches the deployed rate", () => {
+  // A 15-run round fired in 85 seconds — about ten times the deployed rate —
+  // and 11 runs never reached the model. A visitor cannot produce that burst,
+  // so the round measured a request pattern deployment does not permit.
+  it("mirrors LIVE_RUN_DEFAULTS' rate limit", () => {
+    expect(LIVE_RUN_RATE_LIMIT).toEqual({ max: 2, windowMs: 60_000 });
+  });
+
+  it("derives a 30s minimum interval from it", () => {
+    expect(MIN_RUN_INTERVAL_MS).toBe(30_000);
+  });
+
+  it("keeps the interval consistent with the rate", () => {
+    expect(MIN_RUN_INTERVAL_MS).toBe(LIVE_RUN_RATE_LIMIT.windowMs / LIVE_RUN_RATE_LIMIT.max);
   });
 });

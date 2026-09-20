@@ -196,6 +196,19 @@ export const NON_REPORT_BEARING_CODES = new Set([
   "PROVIDER_CANCELLED",
 ]);
 
+/**
+ * The deployed request rate (LIVE_RUN_DEFAULTS in apps/api): rateLimitMax 2
+ * per rateLimitWindowMs 60_000, with maxConcurrency 1.
+ *
+ * Omitting this let a 15-run round fire in 85 seconds — roughly ten times the
+ * deployed rate. A visitor cannot produce that burst, so the round measured a
+ * request pattern deployment does not allow.
+ */
+export const LIVE_RUN_RATE_LIMIT = { max: 2, windowMs: 60_000 } as const;
+
+/** Minimum spacing between runs implied by that rate. */
+export const MIN_RUN_INTERVAL_MS = LIVE_RUN_RATE_LIMIT.windowMs / LIVE_RUN_RATE_LIMIT.max;
+
 /** Production bounds for ANTHROPIC_TIMEOUT_MS (claude-config.ts). */
 export const MIN_TIMEOUT_MS = 1_000;
 export const MAX_TIMEOUT_MS = 600_000;
@@ -304,6 +317,17 @@ interface RunOutcome {
   readonly ticketParameters: Record<string, unknown>;
   readonly status: string;
   readonly failureCode?: string;
+  /**
+   * The provider's own message.
+   *
+   * PROVIDER_UNAVAILABLE collapses RATE_LIMIT, BILLING, AUTHENTICATION,
+   * CONNECTION, SERVER_ERROR and REQUEST_INVALID (issue #123), so the code
+   * alone cannot say why a run was excluded. A round where 11 of 15 runs were
+   * excluded could not be diagnosed from the artefact at all — the cause had
+   * to be guessed. The orchestrator already returns this message; the
+   * measurement simply was not keeping it.
+   */
+  readonly failureMessage?: string;
   /** Which invariant Zod rejected — the capability #106 added. */
   readonly validationMessages: readonly string[];
   /** Evidence entries #115 synthesized; a non-empty list means F5 was healed. */
@@ -419,6 +443,7 @@ async function main(): Promise<void> {
 
   const outcomes: RunOutcome[] = [];
   const excluded: string[] = [];
+  let lastRunStartedAt = 0;
 
   // Built before the loop and flushed after EVERY run, so a crash on run 12 of
   // 15 still leaves eleven billed runs on disk. `completedAt` stays null until
@@ -445,6 +470,8 @@ async function main(): Promise<void> {
       // which budget a given round actually ran under.
       providerDeadlineMs,
       outputBudget,
+      rateLimit: LIVE_RUN_RATE_LIMIT,
+      minRunIntervalMs: MIN_RUN_INTERVAL_MS,
       retrievalTopK: DEPLOYED_RETRIEVAL_TOP_K,
       retrievalQueryRule: "ticket summary verbatim (apps/api/src/execution/retrieval-input.ts)",
       ticketSeed: TICKET_SEED,
@@ -468,6 +495,18 @@ async function main(): Promise<void> {
   for (let i = 0; i < runCount; i += 1) {
     const ticket = tickets[i]!;
     const registry = new InMemoryToolRegistry([getServiceStatusTool, getRecentDeploymentsTool]);
+
+    // Pace to the deployed rate. Measured from the START of the previous run,
+    // so a slow run consumes its own interval rather than adding to it.
+    if (i > 0) {
+      const sinceLastStart = Date.now() - lastRunStartedAt;
+      const waitMs = MIN_RUN_INTERVAL_MS - sinceLastStart;
+      if (waitMs > 0) {
+        process.stdout.write(`(pacing to the deployed rate: waiting ${Math.ceil(waitMs / 1000)}s)\n`);
+        await new Promise((resolveWait) => setTimeout(resolveWait, waitMs));
+      }
+    }
+    lastRunStartedAt = Date.now();
 
     process.stdout.write(`\n--- run ${i + 1}/${runCount} — ${ticket.id} ---\n`);
 
@@ -547,7 +586,11 @@ async function main(): Promise<void> {
           ? resolveAbortProvenance(result.code, abortContext)
           : undefined;
 
-      if (resolvedCode !== undefined && NON_REPORT_BEARING_CODES.has(resolvedCode)) {
+      if (
+        result.status === "failed" &&
+        resolvedCode !== undefined &&
+        NON_REPORT_BEARING_CODES.has(resolvedCode)
+      ) {
         // Recorded as a full outcome, not just an id: an excluded run can
         // still have retrieved chunks and executed tool calls before the
         // provider failed, and that trajectory is billed evidence. Dropping it
@@ -562,9 +605,11 @@ async function main(): Promise<void> {
           toolCallsMade: summarizeToolCalls(result.trace ?? []),
           status: "excluded",
           failureCode: resolvedCode,
+          failureMessage: result.message,
           validationMessages: [],
           autoCompletedEvidence: 0,
         });
+        console.log(`  provider message: ${result.message}`);
         console.log(
           `status=failed code=${resolvedCode} — EXCLUDED from the sample. ` +
             "The run did not produce a report. The cause is NOT established as " +
@@ -599,7 +644,9 @@ async function main(): Promise<void> {
         retrievedChunkIds: retrievalChunks,
         toolCallsMade: toolCalls,
         status: result.status,
-        ...(result.status === "failed" ? { failureCode: result.code } : {}),
+        ...(result.status === "failed"
+          ? { failureCode: result.code, failureMessage: result.message }
+          : {}),
         validationMessages,
         autoCompletedEvidence:
           result.status === "completed" ? result.autoCompletedEvidence.length : 0,
@@ -636,6 +683,7 @@ async function main(): Promise<void> {
         toolCallsMade: [],
         status: "threw",
         failureCode: error.category,
+        failureMessage: error.message,
         validationMessages: [],
         autoCompletedEvidence: 0,
       });
