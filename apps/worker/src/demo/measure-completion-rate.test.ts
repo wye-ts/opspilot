@@ -395,6 +395,15 @@ describe("our own configuration failing voids the round", () => {
     expect(SOURCE).toMatch(/record\.errorClass !== "APIConnectionError"/);
   });
 
+  // A deadline expiry surfaces as CANCELLED too (the SDK raises
+  // APIUserAbortError either way), so voiding on the category alone would
+  // discard legitimate timeout rounds. The deadline signal is the only
+  // cancellation source here, which makes it the discriminator.
+  it("voids on a cancellation nobody requested, not on a deadline expiry", () => {
+    expect(SOURCE).toMatch(/record\.terminalErrorCategory === "CANCELLED" &&/);
+    expect(SOURCE).toMatch(/!currentDeadlineSignal\?\.aborted/);
+  });
+
   it("reads the category from the logger, not the collapsed code", () => {
     expect(SOURCE).toContain("OUR_FAULT_CATEGORIES.has(record.terminalErrorCategory)");
   });
@@ -444,6 +453,12 @@ describe("a connection failure is unobserved, not proven absent", () => {
   // AUTHENTICATION, REQUEST_INVALID, unclassified UNKNOWN and an empty sample.
   it("persists a scoring rule matching the real voiding policy", () => {
     const rule = SOURCE.slice(SOURCE.indexOf("voided:"), SOURCE.indexOf("voided:") + 700);
+    // The excluded rule must not claim the connection defect is the only
+    // allowed exclusion: RATE_LIMIT, SERVER_ERROR and deadline expiry are
+    // excluded too.
+    const excludedRule = SOURCE.slice(SOURCE.indexOf("excluded:"), SOURCE.indexOf("voided:"));
+    expect(excludedRule).toMatch(/RATE_LIMIT/);
+    expect(excludedRule).toMatch(/SERVER_ERROR/);
     for (const cause of ["BILLING", "AUTHENTICATION", "REQUEST_INVALID", "UNKNOWN"]) {
       expect(rule).toContain(cause);
     }

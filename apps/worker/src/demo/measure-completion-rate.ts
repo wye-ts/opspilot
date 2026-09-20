@@ -521,6 +521,9 @@ async function main(): Promise<void> {
   // consumed by the loop to rebuild the client before the next run.
   let sawConnectionFault = false;
   let sawOurFault: string | null = null;
+  // The deadline signal of the run in flight, so the logger can tell an
+  // expected timeout from an abort nobody requested.
+  let currentDeadlineSignal: AbortSignal | undefined;
 
   const buildProvider = (): InstanceType<typeof ClaudeLlmProvider> =>
     new ClaudeLlmProvider({
@@ -563,6 +566,20 @@ async function main(): Promise<void> {
       // outage. With the category in hand there is no excuse for it.
       if (OUR_FAULT_CATEGORIES.has(record.terminalErrorCategory)) {
         sawOurFault = record.terminalErrorCategory;
+      } else if (
+        record.terminalErrorCategory === "CANCELLED" &&
+        !currentDeadlineSignal?.aborted
+      ) {
+        // A deadline expiry ALSO surfaces as CANCELLED — the SDK raises
+        // APIUserAbortError either way — so the category alone cannot tell an
+        // expected timeout from an unexplained abort. The deadline signal can:
+        // it is the only cancellation source here, since the disconnect signal
+        // never fires without an HTTP client.
+        //
+        // If it did not fire, nothing asked for this cancellation, and
+        // excluding it would shrink the denominator for a reason nobody
+        // understands — the same defect as excluding a billing failure.
+        sawOurFault = `CANCELLED (${String(record.errorClass)}) — no cancellation was requested`;
       } else if (
         record.terminalErrorCategory === "UNKNOWN" &&
         record.errorClass !== "APIConnectionError"
@@ -637,10 +654,12 @@ async function main(): Promise<void> {
     scoringRule: {
       completed: 'orchestrator status === "completed"',
       excluded:
-        "PROVIDER_UNAVAILABLE / PROVIDER_TIMEOUT / PROVIDER_CANCELLED where the cause is the " +
-        "known connection defect (APIConnectionError, issue #125): no report was OBSERVED. " +
-        "Note these may still have been billed and may even have produced a report that was " +
-        "lost with the response — the outcome is unobserved, not absent.",
+        "PROVIDER_UNAVAILABLE / PROVIDER_TIMEOUT / PROVIDER_CANCELLED — no report was " +
+        "OBSERVED. This covers the known connection defect (APIConnectionError, issue #125) " +
+        "and genuine provider-side conditions such as RATE_LIMIT, SERVER_ERROR and deadline " +
+        "expiry. It does NOT cover causes that void the round; see `voided`. Excluded runs " +
+        "may still have been billed and may even have produced a report lost with the " +
+        "response — the outcome is unobserved, not absent.",
       voided:
         "the round is VOID, not merely reduced, when the provider reports BILLING, " +
         "AUTHENTICATION or REQUEST_INVALID (our configuration failing, collapsed into " +
@@ -706,6 +725,7 @@ async function main(): Promise<void> {
     try {
       // Rebuilt per run: the deadline bounds one investigation, not the round.
       const deadlineSignal = AbortSignal.timeout(providerDeadlineMs);
+      currentDeadlineSignal = deadlineSignal;
       const abortContext: RunAbortContext = {
         deadlineSignal,
         // No HTTP client here, so nothing can disconnect. A never-aborting
