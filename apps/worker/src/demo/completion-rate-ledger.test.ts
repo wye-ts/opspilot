@@ -207,3 +207,22 @@ describe("round 2 is compared against the deployed retry policy", () => {
     expect(passage).toMatch(/2 -> 0, not 2 -> 1|zero/i);
   });
 });
+
+describe("the summary agrees with the post-fix section", () => {
+  // Review found the summary row and the "one supporting observation" section
+  // both saying no usable post-fix observation existed, while the same
+  // document reported seven corrected-apparatus rounds and 14 model-reaching
+  // runs. A reader takes whichever they hit first.
+  it("does not claim there is no usable post-fix observation", () => {
+    expect(REVIEW).not.toMatch(/\*\*no usable post-fix observation\*\*/i);
+  });
+
+  it("points the summary at the post-fix measurement", () => {
+    const summary = REVIEW.slice(0, REVIEW.indexOf("## Why this was measured"));
+    expect(summary).toMatch(/targeted shape 0 times/i);
+  });
+
+  it("dates the 'no round has produced one' statement to when it was written", () => {
+    expect(REVIEW).toMatch(/at the time this\s+section was written/i);
+  });
+});

@@ -5,7 +5,7 @@
 | Script | `apps/worker/src/demo/measure-completion-rate.ts` (`RUN_COUNT=5 pnpm --filter @opspilot/worker run measure:completion-rate`) |
 | Date | 2026-09-18 |
 | Model | `claude-sonnet-5` |
-| Result | Pre-fix, deployed zero-retry policy, **end-to-end** (every billed invocation, the denominator the 2/8 baseline uses): **2/5 then 4/5**, pooled **6/10 (60%)** against the **2/8 (25%)** baseline. Report-bearing (provider failures removed — NOT a completion rate): 2/4, 4/5, pooled 6/9. Post-fix: one void round and one 2/5 whose attribution was lost — **no usable post-fix observation**. |
+| Result | Pre-fix, deployed zero-retry policy, **end-to-end** (every billed invocation, the denominator the 2/8 baseline uses): **2/5 then 4/5**, pooled **6/10 (60%)** against the **2/8 (25%)** baseline. Report-bearing (provider failures removed — NOT a completion rate): 2/4, 4/5, pooled 6/9. Post-fix, first attempt: one void round and one 2/5 whose attribution was lost. Post-fix, after the apparatus was corrected again: 7 rounds, 14 runs reached the model, **targeted shape 0 times** (see "Post-fix measurement"). |
 | Cost | 30 billed runs across six rounds, ≈ $4.8. Three voided for apparatus defects (wrong retrieval input, then `maxRetries: 2` twice), rounds A and B usable, round D usable but with its attribution truncated away. |
 | Owner threshold | 5 runs, at most 1 failure — **met in one round, missed in the other**. Not established. |
 
@@ -236,9 +236,10 @@ VOIDED rounds both read 4/5 on the surface while differing underneath
 despite running on corrected code. Identical headline figures here have
 repeatedly concealed different mechanisms.
 
-Confirming the effect needs a round on the corrected apparatus, with the
-per-failure attribution persisted — which is what the artefact writing added in
-this change enables, and what no round so far has produced.
+Confirming the effect needed a round on the corrected apparatus with the
+per-failure attribution persisted. No round had produced one *at the time this
+section was written*; seven such rounds were run afterwards and are reported
+under "Post-fix measurement" above.
 
 ## What this measurement does and does not support
 

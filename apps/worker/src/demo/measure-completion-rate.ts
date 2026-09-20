@@ -190,6 +190,17 @@ export class MeasurementConfigurationError extends Error {
  * sample while the tally still read 0 provider issues — a billed run visible
  * nowhere.
  */
+export /**
+ * Categories meaning the fault is OURS, not the provider's.
+ *
+ * A run failing for these reasons says nothing about report quality AND
+ * invalidates the round: continuing would produce a rate computed over
+ * whichever runs happened to precede a billing or auth failure. They are
+ * indistinguishable from a real outage at the orchestrator's error code and
+ * distinguishable only in the adapter's log event.
+ */
+const OUR_FAULT_CATEGORIES = new Set(["BILLING", "AUTHENTICATION", "REQUEST_INVALID"]);
+
 export const NON_REPORT_BEARING_CODES = new Set([
   "PROVIDER_UNAVAILABLE",
   "PROVIDER_TIMEOUT",
@@ -204,10 +215,43 @@ export const NON_REPORT_BEARING_CODES = new Set([
  * deployed rate. A visitor cannot produce that burst, so the round measured a
  * request pattern deployment does not allow.
  */
-export const LIVE_RUN_RATE_LIMIT = { max: 2, windowMs: 60_000 } as const;
+export const LIVE_RUN_RATE_LIMIT_DEFAULTS = { max: 2, windowMs: 60_000 } as const;
 
-/** Minimum spacing between runs implied by that rate. */
-export const MIN_RUN_INTERVAL_MS = LIVE_RUN_RATE_LIMIT.windowMs / LIVE_RUN_RATE_LIMIT.max;
+/**
+ * Resolves the rate the way apps/api does.
+ *
+ * Hardcoding 2/60s made the measurement ignore the overrides deployment
+ * honours: with LIVE_RUN_RATE_LIMIT_MAX=1 configured, production allows one
+ * request a minute while the measurement kept firing every 30 seconds. Same
+ * shape as the budget and deadline defects before it — parity with a DEFAULT
+ * is not parity with a CONFIGURATION.
+ */
+export function resolveRateLimit(env: NodeJS.ProcessEnv = process.env): {
+  max: number;
+  windowMs: number;
+} {
+  return {
+    max: parseBoundedEnvInteger(
+      env.LIVE_RUN_RATE_LIMIT_MAX,
+      LIVE_RUN_RATE_LIMIT_DEFAULTS.max,
+      1,
+      60,
+      "LIVE_RUN_RATE_LIMIT_MAX",
+    ),
+    windowMs: parseBoundedEnvInteger(
+      env.LIVE_RUN_RATE_LIMIT_WINDOW_MS,
+      LIVE_RUN_RATE_LIMIT_DEFAULTS.windowMs,
+      1_000,
+      3_600_000,
+      "LIVE_RUN_RATE_LIMIT_WINDOW_MS",
+    ),
+  };
+}
+
+/** Minimum spacing between runs implied by a resolved rate. */
+export function minRunIntervalMs(rate: { max: number; windowMs: number }): number {
+  return Math.ceil(rate.windowMs / rate.max);
+}
 
 /** Production bounds for ANTHROPIC_TIMEOUT_MS (claude-config.ts). */
 export const MIN_TIMEOUT_MS = 1_000;
@@ -429,6 +473,8 @@ async function main(): Promise<void> {
   // provider and been billed without being observable, so a live run's cost
   // could not be reported honestly. Every deployed LIVE run therefore has
   // exactly one provider attempt, and this measurement must too.
+  const rateLimit = resolveRateLimit();
+  const runIntervalMs = minRunIntervalMs(rateLimit);
   const outputBudget = resolveOutputBudget();
   const providerDeadlineMs = resolveProviderDeadlineMs();
   const timeoutMs = parseBoundedEnvInteger(
@@ -474,6 +520,7 @@ async function main(): Promise<void> {
   // Set by the logger when the adapter reports a connection-class failure, and
   // consumed by the loop to rebuild the client before the next run.
   let sawConnectionFault = false;
+  let sawOurFault: string | null = null;
 
   const buildProvider = (): InstanceType<typeof ClaudeLlmProvider> =>
     new ClaudeLlmProvider({
@@ -502,6 +549,15 @@ async function main(): Promise<void> {
       // client that is terminal: the HTTP/2 session is gone and will not come
       // back (issue #125).
       if (record.errorClass === "APIConnectionError") sawConnectionFault = true;
+      // OUR OWN configuration failing is not a measurement outcome. The
+      // orchestrator reports all of these as PROVIDER_UNAVAILABLE (issue
+      // #123), so without the logger's category the round would quietly
+      // exclude them and report a rate — the exact mistake this investigation
+      // made once already, reading a spend-limit rejection as an upstream
+      // outage. With the category in hand there is no excuse for it.
+      if (OUR_FAULT_CATEGORIES.has(record.terminalErrorCategory)) {
+        sawOurFault = record.terminalErrorCategory;
+      }
       console.log(
         `  provider error: category=${record.terminalErrorCategory} ` +
           `source=${record.errorSource} class=${String(record.errorClass)} ` +
@@ -551,8 +607,8 @@ async function main(): Promise<void> {
       // which budget a given round actually ran under.
       providerDeadlineMs,
       outputBudget,
-      rateLimit: LIVE_RUN_RATE_LIMIT,
-      minRunIntervalMs: MIN_RUN_INTERVAL_MS,
+      rateLimit,
+      minRunIntervalMs: runIntervalMs,
       retrievalTopK: DEPLOYED_RETRIEVAL_TOP_K,
       retrievalQueryRule: "ticket summary verbatim (apps/api/src/execution/retrieval-input.ts)",
       ticketSeed: TICKET_SEED,
@@ -586,13 +642,23 @@ async function main(): Promise<void> {
     // so a slow run consumes its own interval rather than adding to it.
     if (i > 0) {
       const sinceLastStart = Date.now() - lastRunStartedAt;
-      const waitMs = MIN_RUN_INTERVAL_MS - sinceLastStart;
+      const waitMs = runIntervalMs - sinceLastStart;
       if (waitMs > 0) {
         process.stdout.write(`(pacing to the deployed rate: waiting ${Math.ceil(waitMs / 1000)}s)\n`);
         await new Promise((resolveWait) => setTimeout(resolveWait, waitMs));
       }
     }
     lastRunStartedAt = Date.now();
+
+    if (sawOurFault !== null) {
+      // Void, not "excluded". Persist first so the paid runs survive.
+      writeArtefact(artefact);
+      throw new MeasurementConfigurationError(
+        `Round VOID: the provider reported ${sawOurFault}, which is our configuration ` +
+          "failing, not a measurement outcome. Fix it and re-run; a rate computed over " +
+          "the runs that happened to precede it would be meaningless.",
+      );
+    }
 
     if (sawConnectionFault) {
       // Rebuilds the client and the provider that references it. Measured as
@@ -601,6 +667,11 @@ async function main(): Promise<void> {
       anthropicClient = buildClient();
       provider = buildProvider();
       clientRebuilds += 1;
+      // Updated on the artefact immediately: it was previously assigned only
+      // in the finalization block, so a round that crashed mid-flight
+      // persisted clientRebuilds: 0 while having rebuilt several times —
+      // under-reporting the very defect the field exists to surface.
+      artefact.clientRebuilds = clientRebuilds;
       sawConnectionFault = false;
       console.log("(rebuilding the Anthropic client after a connection fault — issue #125)");
     }
@@ -793,6 +864,16 @@ async function main(): Promise<void> {
   // empty the sample: 0 of 0 completions would print as a flawless result
   // while measuring nothing at all — the same fail-quietly shape as the
   // unvalidated RUN_COUNT. A measurement with no usable runs is void.
+  // Also checked AFTER the loop: a fault on the final run would otherwise
+  // never be seen, since the pre-run check cannot run again.
+  if (sawOurFault !== null) {
+    writeArtefact(artefact);
+    throw new MeasurementConfigurationError(
+      `Round VOID: the provider reported ${sawOurFault}, which is our configuration ` +
+        "failing, not a measurement outcome. Fix it and re-run.",
+    );
+  }
+
   const reportBearing = outcomes.filter((outcome) => outcome.status !== "excluded");
   if (reportBearing.length === 0) {
     writeArtefact(artefact);

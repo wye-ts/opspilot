@@ -6,8 +6,9 @@ import opspilotAgentRuntime from "@opspilot/agent-runtime";
 
 import {
   NON_REPORT_BEARING_CODES,
-  LIVE_RUN_RATE_LIMIT,
-  MIN_RUN_INTERVAL_MS,
+  LIVE_RUN_RATE_LIMIT_DEFAULTS,
+  resolveRateLimit,
+  minRunIntervalMs,
   LIVE_RUN_MAX_RETRIES,
   LIVE_RUN_OUTPUT_BUDGET_DEFAULTS,
   LIVE_RUN_PROVIDER_DEADLINE_DEFAULT_MS,
@@ -265,15 +266,29 @@ describe("request pacing matches the deployed rate", () => {
   // and 11 runs never reached the model. A visitor cannot produce that burst,
   // so the round measured a request pattern deployment does not permit.
   it("mirrors LIVE_RUN_DEFAULTS' rate limit", () => {
-    expect(LIVE_RUN_RATE_LIMIT).toEqual({ max: 2, windowMs: 60_000 });
+    expect(resolveRateLimit({})).toEqual({ max: 2, windowMs: 60_000 });
+    expect(LIVE_RUN_RATE_LIMIT_DEFAULTS).toEqual({ max: 2, windowMs: 60_000 });
   });
 
   it("derives a 30s minimum interval from it", () => {
-    expect(MIN_RUN_INTERVAL_MS).toBe(30_000);
+    expect(minRunIntervalMs(resolveRateLimit({}))).toBe(30_000);
   });
 
-  it("keeps the interval consistent with the rate", () => {
-    expect(MIN_RUN_INTERVAL_MS).toBe(LIVE_RUN_RATE_LIMIT.windowMs / LIVE_RUN_RATE_LIMIT.max);
+  // Deployment honours these overrides; hardcoding 2/60s meant a configured
+  // 1/min still got a request every 30 seconds.
+  it("honours the overrides apps/api reads", () => {
+    const rate = resolveRateLimit({
+      LIVE_RUN_RATE_LIMIT_MAX: "1",
+      LIVE_RUN_RATE_LIMIT_WINDOW_MS: "60000",
+    });
+    expect(rate).toEqual({ max: 1, windowMs: 60_000 });
+    expect(minRunIntervalMs(rate)).toBe(60_000);
+  });
+
+  it("rejects a rate outside the production range", () => {
+    expect(() => resolveRateLimit({ LIVE_RUN_RATE_LIMIT_MAX: "0" })).toThrow(
+      /LIVE_RUN_RATE_LIMIT_MAX/,
+    );
   });
 });
 
@@ -348,5 +363,47 @@ describe("the measurement survives a destroyed HTTP/2 session", () => {
   // say so rather than reading as a clean round.
   it("records the rebuild count in the artefact", () => {
     expect(SOURCE).toMatch(/artefact\.clientRebuilds = clientRebuilds/);
+  });
+});
+
+describe("our own configuration failing voids the round", () => {
+  const SOURCE = readFileSync(
+    resolve(import.meta.dirname, "measure-completion-rate.ts"),
+    "utf8",
+  );
+
+  // The orchestrator reports BILLING, AUTHENTICATION and REQUEST_INVALID as
+  // PROVIDER_UNAVAILABLE (issue #123). Before the logger was attached that was
+  // all the script could see, and it excluded them like any outage — which is
+  // how a spend-limit rejection was once read as an upstream failure. With
+  // terminalErrorCategory available, excluding them would be a choice, not a
+  // limitation: the round would report a rate computed over whichever runs
+  // happened to precede the billing failure.
+  it("classifies our-fault categories separately from outages", () => {
+    expect(SOURCE).toMatch(
+      /OUR_FAULT_CATEGORIES = new Set\(\["BILLING", "AUTHENTICATION", "REQUEST_INVALID"\]\)/,
+    );
+  });
+
+  it("reads the category from the logger, not the collapsed code", () => {
+    expect(SOURCE).toContain("OUR_FAULT_CATEGORIES.has(record.terminalErrorCategory)");
+  });
+
+  it("voids the round rather than excluding the run", () => {
+    expect(SOURCE).toMatch(/Round VOID: the provider reported/);
+    expect(SOURCE).toMatch(/throw new MeasurementConfigurationError\(\s*`Round VOID/);
+  });
+
+  // A fault on the final run would never be seen by a pre-run check alone.
+  it("checks after the loop as well as before each run", () => {
+    const occurrences = SOURCE.match(/Round VOID: the provider reported/g) ?? [];
+    expect(occurrences.length).toBe(2);
+  });
+
+  // The field exists to surface the defect; a crashed round previously
+  // persisted 0 while having rebuilt several times.
+  it("updates the rebuild count on the artefact immediately", () => {
+    const rebuildBlock = SOURCE.slice(SOURCE.indexOf("clientRebuilds += 1;"));
+    expect(rebuildBlock.slice(0, 400)).toMatch(/artefact\.clientRebuilds = clientRebuilds/);
   });
 });
