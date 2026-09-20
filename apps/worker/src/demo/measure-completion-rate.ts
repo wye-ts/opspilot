@@ -520,7 +520,7 @@ async function main(): Promise<void> {
   // Set by the logger when the adapter reports a connection-class failure, and
   // consumed by the loop to rebuild the client before the next run.
   let sawConnectionFault = false;
-  let sawOurFault: string | null = null;
+  let sawVoidingFault: string | null = null;
   // The deadline signal of the run in flight, so the logger can tell an
   // expected timeout from an abort nobody requested.
   let currentDeadlineSignal: AbortSignal | undefined;
@@ -565,7 +565,7 @@ async function main(): Promise<void> {
       // made once already, reading a spend-limit rejection as an upstream
       // outage. With the category in hand there is no excuse for it.
       if (OUR_FAULT_CATEGORIES.has(record.terminalErrorCategory)) {
-        sawOurFault = record.terminalErrorCategory;
+        sawVoidingFault = `the provider reported ${record.terminalErrorCategory} — our configuration failing`;
       } else if (
         record.terminalErrorCategory === "CANCELLED" &&
         !currentDeadlineSignal?.aborted
@@ -579,7 +579,7 @@ async function main(): Promise<void> {
         // If it did not fire, nothing asked for this cancellation, and
         // excluding it would shrink the denominator for a reason nobody
         // understands — the same defect as excluding a billing failure.
-        sawOurFault = `CANCELLED (${String(record.errorClass)}) — no cancellation was requested`;
+        sawVoidingFault = `the request was CANCELLED (${String(record.errorClass)}) with no cancellation requested — cause unexplained`;
       } else if (
         record.terminalErrorCategory === "UNKNOWN" &&
         record.errorClass !== "APIConnectionError"
@@ -593,7 +593,7 @@ async function main(): Promise<void> {
         // its cause IS understood (issue #125) and it is handled by rebuilding.
         // Voiding on it would make every round void, since it accounted for 35
         // of 49 invocations.
-        sawOurFault = `UNKNOWN (${String(record.errorClass)}) — unclassified, cause not established`;
+        sawVoidingFault = `the adapter could not classify the failure (UNKNOWN / ${String(record.errorClass)}) — cause not established`;
       }
       console.log(
         `  provider error: category=${record.terminalErrorCategory} ` +
@@ -663,8 +663,11 @@ async function main(): Promise<void> {
       voided:
         "the round is VOID, not merely reduced, when the provider reports BILLING, " +
         "AUTHENTICATION or REQUEST_INVALID (our configuration failing, collapsed into " +
-        "PROVIDER_UNAVAILABLE by issue #123), when it reports an unclassified UNKNOWN whose " +
-        "errorClass is not APIConnectionError, when no run reached a report at all, or when " +
+        "PROVIDER_UNAVAILABLE by issue #123), when it reports CANCELLED while the run's own " +
+        "deadline signal did NOT fire (nothing here cancels, so the cause is unexplained; a " +
+        "genuine deadline expiry is excluded, not voided), when it reports an unclassified " +
+        "UNKNOWN whose errorClass is not APIConnectionError, when no run reached a report at " +
+        "all, or when " +
         "a non-LlmProviderError throw indicates a defect in this repo. A rate computed over " +
         "whichever runs happened to precede one of these would be meaningless.",
     },
@@ -694,13 +697,13 @@ async function main(): Promise<void> {
     }
     lastRunStartedAt = Date.now();
 
-    if (sawOurFault !== null) {
+    if (sawVoidingFault !== null) {
       // Void, not "excluded". Persist first so the paid runs survive.
       writeArtefact(artefact);
       throw new MeasurementConfigurationError(
-        `Round VOID: the provider reported ${sawOurFault}, which is our configuration ` +
-          "failing, not a measurement outcome. Fix it and re-run; a rate computed over " +
-          "the runs that happened to precede it would be meaningless.",
+        `Round VOID: ${sawVoidingFault}. This is not a measurement outcome — either our ` +
+          "configuration failed, or something happened that nobody here can explain. " +
+          "A rate computed over the runs that happened to precede it would be meaningless.",
       );
     }
 
@@ -911,11 +914,11 @@ async function main(): Promise<void> {
   // unvalidated RUN_COUNT. A measurement with no usable runs is void.
   // Also checked AFTER the loop: a fault on the final run would otherwise
   // never be seen, since the pre-run check cannot run again.
-  if (sawOurFault !== null) {
+  if (sawVoidingFault !== null) {
     writeArtefact(artefact);
     throw new MeasurementConfigurationError(
-      `Round VOID: the provider reported ${sawOurFault}, which is our configuration ` +
-        "failing, not a measurement outcome. Fix it and re-run.",
+      `Round VOID: ${sawVoidingFault}. This is not a measurement outcome — either our ` +
+        "configuration failed, or something happened that nobody here can explain.",
     );
   }
 

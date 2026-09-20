@@ -408,14 +408,23 @@ describe("our own configuration failing voids the round", () => {
     expect(SOURCE).toContain("OUR_FAULT_CATEGORIES.has(record.terminalErrorCategory)");
   });
 
+  // Only BILLING/AUTHENTICATION/REQUEST_INVALID are provably ours. An
+  // unexplained cancellation or an unclassified failure voids the round too,
+  // but calling those "our configuration failing" asserts a cause nobody
+  // established.
+  it("does not attribute every voiding cause to our configuration", () => {
+    expect(SOURCE).not.toMatch(/which is our configuration\s*` \+/);
+    expect(SOURCE).toMatch(/or something happened that nobody here can explain/);
+  });
+
   it("voids the round rather than excluding the run", () => {
-    expect(SOURCE).toMatch(/Round VOID: the provider reported/);
+    expect(SOURCE).toMatch(/Round VOID: \$\{sawVoidingFault\}/);
     expect(SOURCE).toMatch(/throw new MeasurementConfigurationError\(\s*`Round VOID/);
   });
 
   // A fault on the final run would never be seen by a pre-run check alone.
   it("checks after the loop as well as before each run", () => {
-    const occurrences = SOURCE.match(/Round VOID: the provider reported/g) ?? [];
+    const occurrences = SOURCE.match(/Round VOID: \$\{sawVoidingFault\}/g) ?? [];
     expect(occurrences.length).toBe(2);
   });
 
@@ -459,8 +468,11 @@ describe("a connection failure is unobserved, not proven absent", () => {
     const excludedRule = SOURCE.slice(SOURCE.indexOf("excluded:"), SOURCE.indexOf("voided:"));
     expect(excludedRule).toMatch(/RATE_LIMIT/);
     expect(excludedRule).toMatch(/SERVER_ERROR/);
-    for (const cause of ["BILLING", "AUTHENTICATION", "REQUEST_INVALID", "UNKNOWN"]) {
+    for (const cause of ["BILLING", "AUTHENTICATION", "REQUEST_INVALID", "UNKNOWN", "CANCELLED"]) {
       expect(rule).toContain(cause);
     }
+    // And it must distinguish the two CANCELLED cases, or a reader concludes
+    // every timeout voids the round.
+    expect(rule).toMatch(/deadline expiry is excluded, not voided/i);
   });
 });
