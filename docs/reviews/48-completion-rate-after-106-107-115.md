@@ -327,9 +327,28 @@ grounding an action on a locator absent from `report.evidence` — did not recur
 - **Representativeness.** Tickets are generated from a 75-combination template
   space, not sampled from real traffic.
 
+### The run records for these rounds were not kept
+
+The artefact writing added in this change exists so a round's evidence survives
+in the repository. **These seven rounds are reported without it.** The JSON
+files were deleted between rounds to keep the working tree clean for commits,
+which is exactly the failure the persistence was built to prevent — the same
+mistake as the `tail -22` that destroyed round D's attribution, made again by
+hand.
+
+What that costs: the numbers above are transcription. They were read off the
+artefacts at the time, and the per-run classifications (which invariant, which
+tool calls, which retrieved chunks) can no longer be re-checked by anyone,
+including me. This document's earlier ledger drift was caught precisely because
+the underlying records could be consulted; that is not possible here.
+
+The figures are reported anyway, marked as what they are, because deleting the
+result would be worse than recording it with its provenance stated. The next
+round must commit its artefact before anything else touches the tree.
+
 ### Cost
 
-≈$2.5 across the seven rounds; only 14 invocations produced tokens.
+roughly $2.5 across the seven rounds; only 14 invocations produced tokens.
 
 ## What the run record does NOT contain
 

@@ -51,7 +51,10 @@ describe("billed-run ledger agrees across both documents", () => {
       // Full figure, not a fixed-width slice: `slice(-4)` compared only the
       // first decimal digit, so $4.8 and $4.89 read as equal.
       ...new Set(
-        [...text.matchAll(/(?:≈|roughly) \$(\d+\.\d+)/g)].flatMap((m) =>
+        // Whitespace after the symbol is optional: "≈$2.5" was invisible to
+        // the earlier pattern, so a cost present in one document and absent
+        // from the other still compared equal.
+        [...text.matchAll(/(?:≈|roughly)\s*\$(\d+\.\d+)/g)].flatMap((m) =>
           m[1] === undefined ? [] : [m[1]],
         ),
       ),
@@ -224,5 +227,19 @@ describe("the summary agrees with the post-fix section", () => {
 
   it("dates the 'no round has produced one' statement to when it was written", () => {
     expect(REVIEW).toMatch(/at the time this\s+section was written/i);
+  });
+});
+
+describe("results are not reported as if their records survived", () => {
+  // The artefact writing exists so a round's evidence lives in the repository.
+  // These seven rounds were run and their JSON deleted between rounds to keep
+  // the tree clean — the same data loss the persistence was built to prevent.
+  // Reporting them silently would present transcription as auditable record.
+  it("states plainly that the run records were not kept", () => {
+    expect(REVIEW).toMatch(/run records for these rounds were not kept/i);
+  });
+
+  it("says the per-run classifications can no longer be re-checked", () => {
+    expect(REVIEW).toMatch(/can no longer be re-checked/i);
   });
 });

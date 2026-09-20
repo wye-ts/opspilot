@@ -2648,7 +2648,10 @@ A and D each excluded one provider failure, so end-to-end they are 2/5.
 | 6 (D) | 2/4 | Valid, post-`.describe()`, but its per-failure attribution was lost to output truncation |
 
 Thirty billed runs across six rounds, roughly $4.8 — three of those rounds
-voided for apparatus defects. Every defect was found by independent
+voided for apparatus defects. A further seven rounds after the fix cost roughly
+$2.5 for 49 invocations, of which 35 never reached the model (#125); their run
+records were not kept, so those figures are transcription rather than
+auditable record. Every defect was found by independent
 review rather than by the author. The first three rounds each produced a
 headline number that was reported before being invalidated.
 
