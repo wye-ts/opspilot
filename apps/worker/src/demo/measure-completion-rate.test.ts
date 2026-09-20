@@ -417,3 +417,35 @@ describe("our own configuration failing voids the round", () => {
     expect(rebuildBlock.slice(0, 400)).toMatch(/artefact\.clientRebuilds = clientRebuilds/);
   });
 });
+
+describe("a connection failure is unobserved, not proven absent", () => {
+  const SOURCE = readFileSync(
+    resolve(import.meta.dirname, "measure-completion-rate.ts"),
+    "utf8",
+  );
+
+  // run-provider-usage-collector.ts documents that CONNECTION may mean the
+  // request WAS processed and the response is what got lost. Claiming such a
+  // run never reached the model overstates what the error proves — and the
+  // same run may have been billed.
+  it("does not claim the request never reached Anthropic", () => {
+    expect(SOURCE).not.toMatch(/request never reached Anthropic/);
+    expect(SOURCE).not.toMatch(/never leave the machine/);
+  });
+
+  it("states that the outcome is unobserved rather than absent", () => {
+    expect(SOURCE).toMatch(/UNOBSERVED outcome|outcome is UNOBSERVED|unobserved, not absent/i);
+    expect(SOURCE).toMatch(/RESPONSE is what got lost/i);
+  });
+
+  // The artefact's own scoring rule must describe the policy the script
+  // actually applies: it said PROVIDER_UNAVAILABLE is excluded and only
+  // non-LlmProviderError throws void, while the script voids on BILLING,
+  // AUTHENTICATION, REQUEST_INVALID, unclassified UNKNOWN and an empty sample.
+  it("persists a scoring rule matching the real voiding policy", () => {
+    const rule = SOURCE.slice(SOURCE.indexOf("voided:"), SOURCE.indexOf("voided:") + 700);
+    for (const cause of ["BILLING", "AUTHENTICATION", "REQUEST_INVALID", "UNKNOWN"]) {
+      expect(rule).toContain(cause);
+    }
+  });
+});

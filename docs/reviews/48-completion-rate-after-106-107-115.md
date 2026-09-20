@@ -295,7 +295,7 @@ paced to 2 requests per 60s, generated tickets).
 | | Count |
 |---|---|
 | Invocations attempted | 49 |
-| Lost to a connection fault before reaching the model (issue #125) | 35 |
+| Lost to a connection fault — outcome unobserved (issue #125) | 35 |
 | **Reached the model** | **14** |
 | — completed | 12 |
 | — `REPORT_SCHEMA_INVALID` | 2 |
@@ -320,6 +320,10 @@ grounding an action on a locator absent from `report.evidence` — did not recur
 
 - **A completion rate.** 12/14 is not comparable to the 2/8 deployed baseline:
   different tickets, a different sampling process, and 35 excluded invocations.
+- **That the 35 lost runs produced nothing.** `CONNECTION` can mean the
+  request was processed and the *response* was lost
+  (`run-provider-usage-collector.ts`), so some may have been billed and may
+  even have produced reports no one saw. They are unobserved, not absent.
 - **Independence.** The 35 connection failures arrive in contiguous stretches,
   not at random, so the 14 usable runs come from a handful of healthy windows
   rather than 14 independent draws. No evidence suggests failure shape

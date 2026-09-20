@@ -2649,7 +2649,7 @@ A and D each excluded one provider failure, so end-to-end they are 2/5.
 
 Thirty billed runs across six rounds, roughly $4.8 — three of those rounds
 voided for apparatus defects. A further seven rounds after the fix cost roughly
-$2.5 for 49 invocations, of which 35 never reached the model (#125); their run
+$2.5 for 49 invocations, of which 35 produced no observed report (#125); their run
 records were not kept, so those figures are transcription rather than
 auditable record. Every defect was found by independent
 review rather than by the author. The first three rounds each produced a
@@ -2830,8 +2830,10 @@ front of the model. The targeted shape occurred 0 times, against 3 of 10
 attributable runs before the change.
 
 That is evidence the specific shape stopped recurring, and it is not a
-completion rate: 35 of the 49 invocations never reached the model because of a
-connection defect found along the way (issue #125), and the survivors come from
+completion rate: 35 of the 49 invocations produced no observed report because of
+a connection defect found along the way (issue #125) — and `CONNECTION` can mean
+the request was processed while the response was lost, so those outcomes are
+unobserved rather than absent, and the survivors come from
 a few healthy windows rather than independent draws. The change remains
 well-motivated by source inspection, and is recorded that way.
 

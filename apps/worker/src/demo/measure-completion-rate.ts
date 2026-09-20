@@ -545,9 +545,15 @@ async function main(): Promise<void> {
         latencyMs: event.latencyMs,
       };
       providerErrors.push(record);
-      // APIConnectionError means the request never reached Anthropic. On this
-      // client that is terminal: the HTTP/2 session is gone and will not come
-      // back (issue #125).
+      // APIConnectionError means the exchange did not complete. It does NOT
+      // establish that the request never arrived: run-provider-usage-collector.ts
+      // documents that CONNECTION may mean the request WAS processed and the
+      // RESPONSE is what got lost — so such a run may have been billed and may
+      // even have produced a report nobody saw.
+      //
+      // The handling is unchanged (the session is gone either way, issue
+      // #125), but the claim is weaker: these runs have an UNOBSERVED outcome,
+      // not a provably absent one.
       if (record.errorClass === "APIConnectionError") sawConnectionFault = true;
       // OUR OWN configuration failing is not a measurement outcome. The
       // orchestrator reports all of these as PROVIDER_UNAVAILABLE (issue
@@ -631,12 +637,17 @@ async function main(): Promise<void> {
     scoringRule: {
       completed: 'orchestrator status === "completed"',
       excluded:
-        "PROVIDER_UNAVAILABLE / PROVIDER_TIMEOUT / PROVIDER_CANCELLED — the run did not produce " +
-        "a report for reasons outside report quality (the cause is NOT established " +
-        "as upstream — issue #123). " +
-        "PROVIDER_UNAVAILABLE additionally collapses AUTHENTICATION/BILLING/REQUEST_INVALID, " +
-        "so such a run cannot even be shown to have reached the model.",
-      voided: "any non-LlmProviderError throw is a defect in this repo, not a measurement outcome",
+        "PROVIDER_UNAVAILABLE / PROVIDER_TIMEOUT / PROVIDER_CANCELLED where the cause is the " +
+        "known connection defect (APIConnectionError, issue #125): no report was OBSERVED. " +
+        "Note these may still have been billed and may even have produced a report that was " +
+        "lost with the response — the outcome is unobserved, not absent.",
+      voided:
+        "the round is VOID, not merely reduced, when the provider reports BILLING, " +
+        "AUTHENTICATION or REQUEST_INVALID (our configuration failing, collapsed into " +
+        "PROVIDER_UNAVAILABLE by issue #123), when it reports an unclassified UNKNOWN whose " +
+        "errorClass is not APIConnectionError, when no run reached a report at all, or when " +
+        "a non-LlmProviderError throw indicates a defect in this repo. A rate computed over " +
+        "whichever runs happened to precede one of these would be meaningless.",
     },
     tallies: null,
     excludedTickets: excluded,
