@@ -318,3 +318,35 @@ describe("provider errors are diagnosable from the artefact", () => {
     expect(loggerBlock).not.toMatch(/event\.message|errorMessage/);
   });
 });
+
+describe("the measurement survives a destroyed HTTP/2 session", () => {
+  // Issue #125: one TLS fault destroys the SDK's HTTP/2 session, after which
+  // every request on that client fails in ~1ms forever. Two rounds each lost
+  // 11 of 15 runs to it. Reusing the client would make a round's result depend
+  // on whether a transient fault landed inside it.
+  const SOURCE = readFileSync(
+    resolve(import.meta.dirname, "measure-completion-rate.ts"),
+    "utf8",
+  );
+
+  it("builds the client through a factory rather than once", () => {
+    expect(SOURCE).toMatch(/const buildClient = \(\): Anthropic =>/);
+    expect(SOURCE).toMatch(/let anthropicClient = buildClient\(\)/);
+  });
+
+  it("detects the connection-class failure by errorClass", () => {
+    expect(SOURCE).toContain('record.errorClass === "APIConnectionError"');
+  });
+
+  it("rebuilds the provider too, since it holds the client by reference", () => {
+    const rebuildBlock = SOURCE.slice(SOURCE.indexOf("if (sawConnectionFault)"));
+    expect(rebuildBlock.slice(0, 400)).toMatch(/anthropicClient = buildClient\(\)/);
+    expect(rebuildBlock.slice(0, 400)).toMatch(/provider = buildProvider\(\)/);
+  });
+
+  // A round that needed a rebuild hit the defect mid-flight; the artefact must
+  // say so rather than reading as a clean round.
+  it("records the rebuild count in the artefact", () => {
+    expect(SOURCE).toMatch(/artefact\.clientRebuilds = clientRebuilds/);
+  });
+});

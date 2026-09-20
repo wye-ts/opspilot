@@ -439,12 +439,27 @@ async function main(): Promise<void> {
     "ANTHROPIC_TIMEOUT_MS",
   );
   const maxRetries = LIVE_RUN_MAX_RETRIES;
-  const anthropicClient = new Anthropic({
-    apiKey,
-    logLevel: "off",
-    timeout: timeoutMs,
-    maxRetries,
-  });
+  // Rebuilt on a connection-class failure rather than constructed once.
+  //
+  // The SDK keeps an HTTP/2 session on the client. One TLS record fault
+  // destroys that session, and every later request on the same client then
+  // fails in about a millisecond, forever — two measurement rounds each lost
+  // 11 of 15 runs to exactly this (issue #125). Reusing the client would make
+  // a round's result depend on whether a transient fault happened to land in
+  // it, which is not a property of the thing being measured.
+  //
+  // This does NOT fix the deployed path, which has the same shape; it stops
+  // the measurement from silently inheriting the defect. Runs lost before a
+  // rebuild stay excluded and visible.
+  const buildClient = (): Anthropic =>
+    new Anthropic({
+      apiKey,
+      logLevel: "off",
+      timeout: timeoutMs,
+      maxRetries,
+    });
+
+  let anthropicClient = buildClient();
   // Every provider error event of the round, in order. The adapter puts the
   // only fields that can classify a PROVIDER_UNAVAILABLE here —
   // terminalErrorCategory, errorSource, errorClass, errorStatus — and the
@@ -452,7 +467,12 @@ async function main(): Promise<void> {
   // runs failed could not say why any of them did.
   const providerErrors: ProviderErrorRecord[] = [];
 
-  const provider = new ClaudeLlmProvider({
+  // Set by the logger when the adapter reports a connection-class failure, and
+  // consumed by the loop to rebuild the client before the next run.
+  let sawConnectionFault = false;
+
+  const buildProvider = (): InstanceType<typeof ClaudeLlmProvider> =>
+    new ClaudeLlmProvider({
     client: anthropicClient,
     model,
     configuredMaxRetries: maxRetries,
@@ -474,6 +494,10 @@ async function main(): Promise<void> {
         latencyMs: event.latencyMs,
       };
       providerErrors.push(record);
+      // APIConnectionError means the request never reached Anthropic. On this
+      // client that is terminal: the HTTP/2 session is gone and will not come
+      // back (issue #125).
+      if (record.errorClass === "APIConnectionError") sawConnectionFault = true;
       console.log(
         `  provider error: category=${record.terminalErrorCategory} ` +
           `source=${record.errorSource} class=${String(record.errorClass)} ` +
@@ -481,6 +505,9 @@ async function main(): Promise<void> {
       );
     },
   });
+
+  let provider = buildProvider();
+  let clientRebuilds = 0;
   console.log(`provider policy: timeoutMs=${timeoutMs} maxRetries=${maxRetries} (deployed defaults)`);
 
   const tickets = generateTickets(runCount, TICKET_SEED);
@@ -506,6 +533,7 @@ async function main(): Promise<void> {
     tallies: Record<string, number> | null;
     excludedTickets: string[];
     providerErrors: ProviderErrorRecord[];
+    clientRebuilds: number;
     runs: RunOutcome[];
   } = {
     schemaVersion: 2,
@@ -540,6 +568,9 @@ async function main(): Promise<void> {
     excludedTickets: excluded,
     // Persisted so a failing round is diagnosable from the artefact alone.
     providerErrors,
+    // A round that needed rebuilds hit issue #125 mid-flight. Recorded so the
+    // result is never read as if the apparatus ran cleanly.
+    clientRebuilds: 0,
     runs: outcomes,
   };
 
@@ -558,6 +589,16 @@ async function main(): Promise<void> {
       }
     }
     lastRunStartedAt = Date.now();
+
+    if (sawConnectionFault) {
+      // Rebuilding the client discards the destroyed HTTP/2 session; the
+      // provider holds the client by reference, so it is rebuilt too.
+      anthropicClient = buildClient();
+      provider = buildProvider();
+      clientRebuilds += 1;
+      sawConnectionFault = false;
+      console.log("(rebuilding the Anthropic client after a connection fault — issue #125)");
+    }
 
     process.stdout.write(`\n--- run ${i + 1}/${runCount} — ${ticket.id} ---\n`);
 
@@ -827,6 +868,7 @@ async function main(): Promise<void> {
   // The execution protocol and scoring rule are stored ALONGSIDE the results,
   // not just in prose: two rounds of this measurement were voided precisely
   // because the configuration they ran under was not recorded with them.
+  artefact.clientRebuilds = clientRebuilds;
   artefact.completedAt = new Date().toISOString();
   artefact.tallies = {
     invocations: outcomes.length,
