@@ -48,7 +48,13 @@ describe("billed-run ledger agrees across both documents", () => {
 
   it("states the same cost in each", () => {
     const costs = (text: string): string[] => [
-      ...new Set([...text.matchAll(/≈ \$\d\.\d|roughly \$\d\.\d/g)].map((m) => m[0].slice(-4))),
+      // Full figure, not a fixed-width slice: `slice(-4)` compared only the
+      // first decimal digit, so $4.8 and $4.89 read as equal.
+      ...new Set(
+        [...text.matchAll(/(?:≈|roughly) \$(\d+\.\d+)/g)].flatMap((m) =>
+          m[1] === undefined ? [] : [m[1]],
+        ),
+      ),
     ];
     expect(costs(CHALLENGE)).toEqual(costs(REVIEW));
   });

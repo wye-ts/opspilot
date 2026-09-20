@@ -141,6 +141,35 @@ describe("deployed LIVE parity", () => {
     expect(resolveProviderDeadlineMs({ AGENT_RUN_PROVIDER_DEADLINE_MS: "5000" })).toBe(5000);
   });
 
+  // Production's default finalization ceiling is max(3072, investigation), so
+  // raising investigation alone raises finalization with it. A flat 3072 made
+  // the measurement STRICTER than deployment — the one apparatus defect in
+  // this file that erred in the unfavourable direction.
+  it("tracks production's max(3072, investigation) default", () => {
+    expect(
+      resolveOutputBudget({ LIVE_RUN_MAX_OUTPUT_TOKENS: "4096" }).finalizationMaxOutputTokens,
+    ).toBe(4096);
+    expect(
+      resolveOutputBudget({ LIVE_RUN_MAX_OUTPUT_TOKENS: "512" }).finalizationMaxOutputTokens,
+    ).toBe(3072);
+  });
+
+  it("refuses a finalization ceiling below investigation, as production does", () => {
+    expect(() =>
+      resolveOutputBudget({
+        LIVE_RUN_MAX_OUTPUT_TOKENS: "4096",
+        LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS: "1024",
+      }),
+    ).toThrow(/must be greater than or equal to/);
+  });
+
+  it("uses production's 5000ms deadline floor, not a looser one", () => {
+    expect(() => resolveProviderDeadlineMs({ AGENT_RUN_PROVIDER_DEADLINE_MS: "1000" })).toThrow(
+      /AGENT_RUN_PROVIDER_DEADLINE_MS/,
+    );
+    expect(resolveProviderDeadlineMs({ AGENT_RUN_PROVIDER_DEADLINE_MS: "5000" })).toBe(5000);
+  });
+
   it("rejects an override outside the production range", () => {
     expect(() => resolveProviderDeadlineMs({ AGENT_RUN_PROVIDER_DEADLINE_MS: "0" })).toThrow(
       /AGENT_RUN_PROVIDER_DEADLINE_MS/,

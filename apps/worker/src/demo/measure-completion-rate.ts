@@ -32,7 +32,8 @@
  * It therefore measures the completion rate of THESE tickets, not of real
  * visitor traffic. The tickets below are ordinary operational reports written
  * to match the deployed composer's shape, not adversarial probes — but they
- * are still hand-authored, and a rate measured on them is evidence about the
+ * are generated from a fixed template space rather than sampled from real
+ * traffic, and a rate measured on them is evidence about the
  * validation path, not a forecast of visitor behavior.
  *
  * Usage:
@@ -92,22 +93,45 @@ export function resolveOutputBudget(env: NodeJS.ProcessEnv = process.env): {
   investigationMaxOutputTokens: number;
   finalizationMaxOutputTokens: number;
 } {
-  return {
-    investigationMaxOutputTokens: parseBoundedEnvInteger(
-      env.LIVE_RUN_MAX_OUTPUT_TOKENS,
-      LIVE_RUN_OUTPUT_BUDGET_DEFAULTS.investigationMaxOutputTokens,
-      256,
-      4096,
-      "LIVE_RUN_MAX_OUTPUT_TOKENS",
-    ),
-    finalizationMaxOutputTokens: parseBoundedEnvInteger(
-      env.LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS,
-      LIVE_RUN_OUTPUT_BUDGET_DEFAULTS.finalizationMaxOutputTokens,
-      1024,
-      8192,
-      "LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS",
-    ),
-  };
+  const investigationMaxOutputTokens = parseBoundedEnvInteger(
+    env.LIVE_RUN_MAX_OUTPUT_TOKENS,
+    LIVE_RUN_OUTPUT_BUDGET_DEFAULTS.investigationMaxOutputTokens,
+    256,
+    4096,
+    "LIVE_RUN_MAX_OUTPUT_TOKENS",
+  );
+
+  const raw = env.LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS?.trim();
+  if (raw === undefined || raw === "") {
+    // Production's default is max(3072, investigation), NOT a flat 3072: the
+    // forced finalization turn must never get a smaller ceiling than an
+    // investigation turn. Resolving it as a constant made the measurement
+    // stricter than deployment when investigation was raised.
+    return {
+      investigationMaxOutputTokens,
+      finalizationMaxOutputTokens: Math.max(
+        LIVE_RUN_OUTPUT_BUDGET_DEFAULTS.finalizationMaxOutputTokens,
+        investigationMaxOutputTokens,
+      ),
+    };
+  }
+
+  const finalizationMaxOutputTokens = parseBoundedEnvInteger(
+    raw,
+    LIVE_RUN_OUTPUT_BUDGET_DEFAULTS.finalizationMaxOutputTokens,
+    1024,
+    8192,
+    "LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS",
+  );
+  if (finalizationMaxOutputTokens < investigationMaxOutputTokens) {
+    // Production refuses this combination at boot; accepting it would measure
+    // a configuration that cannot be deployed.
+    throw new MeasurementConfigurationError(
+      "LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS must be greater than or equal to " +
+        "LIVE_RUN_MAX_OUTPUT_TOKENS",
+    );
+  }
+  return { investigationMaxOutputTokens, finalizationMaxOutputTokens };
 }
 
 /**
@@ -123,7 +147,9 @@ export function resolveProviderDeadlineMs(env: NodeJS.ProcessEnv = process.env):
   return parseBoundedEnvInteger(
     env.AGENT_RUN_PROVIDER_DEADLINE_MS,
     LIVE_RUN_PROVIDER_DEADLINE_DEFAULT_MS,
-    1_000,
+    // MIN_PROVIDER_DEADLINE_MS in apps/api — a 1000ms floor would accept
+    // deadlines production rejects at boot.
+    5_000,
     600_000,
     "AGENT_RUN_PROVIDER_DEADLINE_MS",
   );
@@ -709,7 +735,8 @@ async function main(): Promise<void> {
     `\nBaseline for comparison: 2/8 COMPLETED (25%) on deployed runs, 2026-09-14/15 (#105).`,
   );
   console.log(
-    `This run is n=${outcomes.length} on hand-authored tickets through the in-process ` +
+    `This run is n=${outcomes.length} on GENERATED tickets (a ${TICKET_COMBINATION_COUNT}-combination ` +
+      `template space, not real traffic) through the in-process ` +
       `orchestrator — the same validation path as deployed, but not deployed traffic.`,
   );
 }
