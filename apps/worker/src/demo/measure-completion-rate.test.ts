@@ -4,8 +4,10 @@ import opspilotAgentRuntime from "@opspilot/agent-runtime";
 import {
   NON_REPORT_BEARING_CODES,
   LIVE_RUN_MAX_RETRIES,
-  LIVE_RUN_OUTPUT_BUDGET,
-  LIVE_RUN_PROVIDER_DEADLINE_MS,
+  LIVE_RUN_OUTPUT_BUDGET_DEFAULTS,
+  LIVE_RUN_PROVIDER_DEADLINE_DEFAULT_MS,
+  resolveOutputBudget,
+  resolveProviderDeadlineMs,
   MAX_RUN_COUNT,
   MAX_TIMEOUT_MS,
   MIN_TIMEOUT_MS,
@@ -120,14 +122,36 @@ describe("deployed LIVE parity", () => {
   // both turns — so omitting outputBudget lets the model produce a report the
   // deployed path would have truncated.
   it("uses the deployed output ceilings, not agent-runtime's defaults", () => {
-    expect(LIVE_RUN_OUTPUT_BUDGET.investigationMaxOutputTokens).toBe(1024);
-    expect(LIVE_RUN_OUTPUT_BUDGET.finalizationMaxOutputTokens).toBe(3072);
+    const budget = resolveOutputBudget({});
+    expect(budget.investigationMaxOutputTokens).toBe(1024);
+    expect(budget.finalizationMaxOutputTokens).toBe(3072);
+    expect(budget).toEqual({ ...LIVE_RUN_OUTPUT_BUDGET_DEFAULTS });
+  });
+
+  // Deployment honours these overrides; hardcoding the defaults meant a report
+  // needing 2500 tokens completed here and truncated in production.
+  it("honours the same overrides apps/api reads", () => {
+    expect(
+      resolveOutputBudget({ LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS: "2048" })
+        .finalizationMaxOutputTokens,
+    ).toBe(2048);
+    expect(
+      resolveOutputBudget({ LIVE_RUN_MAX_OUTPUT_TOKENS: "512" }).investigationMaxOutputTokens,
+    ).toBe(512);
+    expect(resolveProviderDeadlineMs({ AGENT_RUN_PROVIDER_DEADLINE_MS: "5000" })).toBe(5000);
+  });
+
+  it("rejects an override outside the production range", () => {
+    expect(() => resolveProviderDeadlineMs({ AGENT_RUN_PROVIDER_DEADLINE_MS: "0" })).toThrow(
+      /AGENT_RUN_PROVIDER_DEADLINE_MS/,
+    );
   });
 
   // A per-CALL timeout does not reproduce this: three 41s turns each clear a
   // 45s call timeout while busting a shared 120s run budget.
   it("carries the deployed per-run provider deadline", () => {
-    expect(LIVE_RUN_PROVIDER_DEADLINE_MS).toBe(120_000);
+    expect(resolveProviderDeadlineMs({})).toBe(120_000);
+    expect(LIVE_RUN_PROVIDER_DEADLINE_DEFAULT_MS).toBe(120_000);
   });
 });
 

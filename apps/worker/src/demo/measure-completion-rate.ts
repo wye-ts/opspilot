@@ -74,10 +74,41 @@ export const MAX_RUN_COUNT = 25;
  * produce a report the deployed path would have truncated. Same failure
  * direction as every other apparatus defect found here: silently favourable.
  */
-export const LIVE_RUN_OUTPUT_BUDGET = {
+export const LIVE_RUN_OUTPUT_BUDGET_DEFAULTS = {
   investigationMaxOutputTokens: 1024,
   finalizationMaxOutputTokens: 3072,
 } as const;
+
+/**
+ * Resolves the budget the way apps/api does.
+ *
+ * Hardcoding the defaults made the measurement ignore the same overrides
+ * deployment honours: with LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS=2048 set,
+ * a report needing 2500 tokens completes here and truncates in production.
+ * Same failure direction as every other apparatus defect in this file —
+ * quietly more generous than the thing being measured.
+ */
+export function resolveOutputBudget(env: NodeJS.ProcessEnv = process.env): {
+  investigationMaxOutputTokens: number;
+  finalizationMaxOutputTokens: number;
+} {
+  return {
+    investigationMaxOutputTokens: parseBoundedEnvInteger(
+      env.LIVE_RUN_MAX_OUTPUT_TOKENS,
+      LIVE_RUN_OUTPUT_BUDGET_DEFAULTS.investigationMaxOutputTokens,
+      256,
+      4096,
+      "LIVE_RUN_MAX_OUTPUT_TOKENS",
+    ),
+    finalizationMaxOutputTokens: parseBoundedEnvInteger(
+      env.LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS,
+      LIVE_RUN_OUTPUT_BUDGET_DEFAULTS.finalizationMaxOutputTokens,
+      1024,
+      8192,
+      "LIVE_RUN_FINALIZATION_MAX_OUTPUT_TOKENS",
+    ),
+  };
+}
 
 /**
  * The deployed per-run provider deadline (DEFAULT_PROVIDER_DEADLINE_MS in
@@ -85,7 +116,18 @@ export const LIVE_RUN_OUTPUT_BUDGET = {
  * call: three 41-second turns each clear a 45s per-call timeout while busting a
  * shared 120s budget, so a per-call timeout alone does not reproduce it.
  */
-export const LIVE_RUN_PROVIDER_DEADLINE_MS = 120_000;
+export const LIVE_RUN_PROVIDER_DEADLINE_DEFAULT_MS = 120_000;
+
+/** Resolves the per-run deadline from the same variable apps/api reads. */
+export function resolveProviderDeadlineMs(env: NodeJS.ProcessEnv = process.env): number {
+  return parseBoundedEnvInteger(
+    env.AGENT_RUN_PROVIDER_DEADLINE_MS,
+    LIVE_RUN_PROVIDER_DEADLINE_DEFAULT_MS,
+    1_000,
+    600_000,
+    "AGENT_RUN_PROVIDER_DEADLINE_MS",
+  );
+}
 
 /**
  * A configuration error whose message this file authors in full.
@@ -319,6 +361,8 @@ async function main(): Promise<void> {
   // provider and been billed without being observable, so a live run's cost
   // could not be reported honestly. Every deployed LIVE run therefore has
   // exactly one provider attempt, and this measurement must too.
+  const outputBudget = resolveOutputBudget();
+  const providerDeadlineMs = resolveProviderDeadlineMs();
   const timeoutMs = parseBoundedEnvInteger(
     process.env.ANTHROPIC_TIMEOUT_MS,
     DEFAULT_TIMEOUT_MS,
@@ -371,8 +415,10 @@ async function main(): Promise<void> {
       model,
       maxRetries,
       timeoutMs,
-      providerDeadlineMs: LIVE_RUN_PROVIDER_DEADLINE_MS,
-      outputBudget: LIVE_RUN_OUTPUT_BUDGET,
+      // The RESOLVED values, not the defaults: a reader must be able to tell
+      // which budget a given round actually ran under.
+      providerDeadlineMs,
+      outputBudget,
       retrievalTopK: DEPLOYED_RETRIEVAL_TOP_K,
       retrievalQueryRule: "ticket summary verbatim (apps/api/src/execution/retrieval-input.ts)",
       ticketSeed: TICKET_SEED,
@@ -401,7 +447,7 @@ async function main(): Promise<void> {
 
     try {
       // Rebuilt per run: the deadline bounds one investigation, not the round.
-      const deadlineSignal = AbortSignal.timeout(LIVE_RUN_PROVIDER_DEADLINE_MS);
+      const deadlineSignal = AbortSignal.timeout(providerDeadlineMs);
       const abortContext: RunAbortContext = {
         deadlineSignal,
         // No HTTP client here, so nothing can disconnect. A never-aborting
@@ -424,7 +470,7 @@ async function main(): Promise<void> {
         retriever,
         // The deployed LIVE ceilings, not agent-runtime's more generous
         // 4096/4096 defaults.
-        outputBudget: LIVE_RUN_OUTPUT_BUDGET,
+        outputBudget,
         // The deployed per-RUN deadline, carried in a RunAbortContext exactly
         // as apps/api does. A bare AbortSignal.timeout is NOT equivalent: the
         // deployed path keeps the deadline signal distinguishable from a
