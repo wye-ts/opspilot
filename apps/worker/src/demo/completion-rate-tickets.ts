@@ -107,7 +107,33 @@ export function generateTickets(count: number, seed: number): GeneratedTicket[] 
     combinations[j] = a;
   }
 
-  return combinations.slice(0, count).map(([s, y, c], index) => {
+  // Stratify by service before slicing.
+  //
+  // An unbiased shuffle does NOT guarantee coverage: seed 0 with count 5
+  // produced five tickets all on notification-service, and the diversity test
+  // missed it because it only ever exercised one seed. A round that happens to
+  // measure one service is measuring something narrower than it claims, and
+  // nothing in the output would say so.
+  //
+  // Round-robin over the services in shuffled order: still seeded, still
+  // reproducible, still without replacement, but every service appears before
+  // any service repeats.
+  const byService = new Map<number, Array<[number, number, number]>>();
+  for (const combination of combinations) {
+    const bucket = byService.get(combination[0]);
+    if (bucket === undefined) byService.set(combination[0], [combination]);
+    else bucket.push(combination);
+  }
+  const buckets = [...byService.keys()].sort((a, b) => a - b).map((key) => byService.get(key) ?? []);
+  const stratified: Array<[number, number, number]> = [];
+  for (let round = 0; stratified.length < combinations.length; round += 1) {
+    for (const bucket of buckets) {
+      const next = bucket[round];
+      if (next !== undefined) stratified.push(next);
+    }
+  }
+
+  return stratified.slice(0, count).map(([s, y, c], index) => {
     const service = SEEDED_SERVICES[s] as (typeof SEEDED_SERVICES)[number];
     const symptom = SYMPTOMS[y] as (typeof SYMPTOMS)[number];
     const context = CONTEXTS[c] as (typeof CONTEXTS)[number];

@@ -57,3 +57,34 @@ describe("generateTickets", () => {
     expect(slugs.size).toBeGreaterThan(1);
   });
 });
+
+describe("service coverage holds across seeds, not just one", () => {
+  // seed 0 / count 5 produced five tickets on notification-service. The
+  // existing diversity test passed because it only ever ran one seed — a test
+  // that exercises a single input cannot report the property it claims.
+  const SEEDS = [0, 1, 2, 3, 7, 42, 999, 20260919];
+
+  it.each(SEEDS)("covers every service at count 5 (seed %i)", (seed) => {
+    const services = new Set(generateTickets(5, seed).map((t) => t.parameters.serviceSlug));
+    expect(services.size).toBe(3);
+  });
+
+  it.each(SEEDS)("covers every service at count 15 (seed %i)", (seed) => {
+    const services = new Set(generateTickets(15, seed).map((t) => t.parameters.serviceSlug));
+    expect(services.size).toBe(3);
+  });
+
+  // Coverage must not come at the cost of the properties already relied on.
+  it.each(SEEDS)("stays distinct and reproducible (seed %i)", (seed) => {
+    const first = generateTickets(15, seed);
+    const keys = new Set(first.map((t) => JSON.stringify(t.parameters)));
+    expect(keys.size).toBe(15);
+    expect(generateTickets(15, seed)).toEqual(first);
+  });
+
+  it("still differs between seeds", () => {
+    const a = generateTickets(15, 1).map((t) => JSON.stringify(t.parameters));
+    const b = generateTickets(15, 2).map((t) => JSON.stringify(t.parameters));
+    expect(a).not.toEqual(b);
+  });
+});

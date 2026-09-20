@@ -936,7 +936,15 @@ async function main(): Promise<void> {
   //   Report-bearing — runs that reached the model. Provider failures cannot
   //     speak to report quality, so this is the figure the .describe() change
   //     is judged against. It is NOT a completion rate.
-  console.log(`END-TO-END COMPLETED:   ${completed}/${outcomes.length} (comparable to the 2/8 baseline)`);
+  // NOT labelled comparable to the deployed baseline. Building the denominator
+  // the same way is necessary but not sufficient: these are generated tickets
+  // through an in-process path, the baseline is deployed visitor traffic. The
+  // documents retracted that claim several rounds ago; the console had kept
+  // asserting it.
+  console.log(
+    `END-TO-END COMPLETED:   ${completed}/${outcomes.length} ` +
+      "(generated tickets, in-process — NOT comparable to the deployed 2/8 baseline)",
+  );
   console.log(
     `REPORT-BEARING:         ${completed}/${reportBearing.length} ` +
       "(excludes runs that never reached a report; not a completion rate)",
