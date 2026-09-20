@@ -311,6 +311,24 @@ const TICKET_SEED = parseBoundedEnvInteger(
   "TICKET_SEED",
 );
 
+/**
+ * One provider-level error, captured from the adapter's log channel.
+ *
+ * PROVIDER_UNAVAILABLE collapses six categories (issue #123), so the
+ * orchestrator code alone cannot explain an excluded run. These fields can:
+ * errorSource separates an unclassified SDK exception from a 200 response
+ * missing _request_id, and errorClass/errorStatus name the exception without
+ * including any message text.
+ */
+interface ProviderErrorRecord {
+  readonly at: string;
+  readonly errorSource: string;
+  readonly terminalErrorCategory: string;
+  readonly errorClass: string | null;
+  readonly errorStatus: number | null;
+  readonly latencyMs: number;
+}
+
 interface RunOutcome {
   readonly ticketId: string;
   readonly ticketSummary: string;
@@ -427,11 +445,41 @@ async function main(): Promise<void> {
     timeout: timeoutMs,
     maxRetries,
   });
+  // Every provider error event of the round, in order. The adapter puts the
+  // only fields that can classify a PROVIDER_UNAVAILABLE here —
+  // terminalErrorCategory, errorSource, errorClass, errorStatus — and the
+  // measurement previously configured no logger, so a round where 11 of 15
+  // runs failed could not say why any of them did.
+  const providerErrors: ProviderErrorRecord[] = [];
+
   const provider = new ClaudeLlmProvider({
     client: anthropicClient,
     model,
     configuredMaxRetries: maxRetries,
     diagnosticTools: DIAGNOSTIC_TOOL_CATALOG,
+    logger: (event) => {
+      if (event.outcome !== "error") return;
+      const record: ProviderErrorRecord = {
+        at: new Date().toISOString(),
+        // Distinguishes an unclassified SDK exception from an HTTP 200 whose
+        // body omitted _request_id — both terminate as UNKNOWN and were
+        // otherwise indistinguishable.
+        errorSource: event.errorSource,
+        terminalErrorCategory: event.terminalErrorCategory,
+        // A constructor name only. The adapter deliberately never logs
+        // error.message, which for an APIError can embed the raw response
+        // body, so this stays safe to persist.
+        errorClass: event.errorClass,
+        errorStatus: event.errorStatus,
+        latencyMs: event.latencyMs,
+      };
+      providerErrors.push(record);
+      console.log(
+        `  provider error: category=${record.terminalErrorCategory} ` +
+          `source=${record.errorSource} class=${String(record.errorClass)} ` +
+          `status=${String(record.errorStatus)} latencyMs=${record.latencyMs}`,
+      );
+    },
   });
   console.log(`provider policy: timeoutMs=${timeoutMs} maxRetries=${maxRetries} (deployed defaults)`);
 
@@ -457,6 +505,7 @@ async function main(): Promise<void> {
     scoringRule: Record<string, string>;
     tallies: Record<string, number> | null;
     excludedTickets: string[];
+    providerErrors: ProviderErrorRecord[];
     runs: RunOutcome[];
   } = {
     schemaVersion: 2,
@@ -489,6 +538,8 @@ async function main(): Promise<void> {
     },
     tallies: null,
     excludedTickets: excluded,
+    // Persisted so a failing round is diagnosable from the artefact alone.
+    providerErrors,
     runs: outcomes,
   };
 
@@ -750,6 +801,18 @@ async function main(): Promise<void> {
       "(excludes runs that never reached a report; not a completion rate)",
   );
   console.log(`REPORT_SCHEMA_INVALID:  ${schemaInvalid}/${outcomes.length}`);
+  if (providerErrors.length > 0) {
+    const byCause = new Map<string, number>();
+    for (const record of providerErrors) {
+      const key = `${record.terminalErrorCategory}/${record.errorSource}/${String(record.errorClass)}/${String(record.errorStatus)}`;
+      byCause.set(key, (byCause.get(key) ?? 0) + 1);
+    }
+    console.log("\nProvider errors by cause (category/source/class/status):");
+    for (const [cause, count] of [...byCause].sort((a, b) => b[1] - a[1])) {
+      console.log(`  ${count}x  ${cause}`);
+    }
+  }
+
   console.log(
     `did not reach a report:  ${nonReportBearing}/${outcomes.length} ` +
       "(cause NOT attributable to the provider — see issue #123)",

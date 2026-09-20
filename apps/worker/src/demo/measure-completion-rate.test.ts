@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 import opspilotAgentRuntime from "@opspilot/agent-runtime";
 
@@ -271,5 +274,47 @@ describe("request pacing matches the deployed rate", () => {
 
   it("keeps the interval consistent with the rate", () => {
     expect(MIN_RUN_INTERVAL_MS).toBe(LIVE_RUN_RATE_LIMIT.windowMs / LIVE_RUN_RATE_LIMIT.max);
+  });
+});
+
+describe("provider errors are diagnosable from the artefact", () => {
+  // A round where 11 of 15 runs failed recorded only PROVIDER_UNAVAILABLE,
+  // which collapses six categories (issue #123). Three separate probes were
+  // needed to investigate, all written after the fact, none of which
+  // reproduced the failure. The adapter had the answer in its log channel the
+  // whole time; the measurement configured no logger.
+  const SOURCE = readFileSync(
+    resolve(import.meta.dirname, "measure-completion-rate.ts"),
+    "utf8",
+  );
+
+  it("attaches a logger to the provider", () => {
+    expect(SOURCE).toMatch(/logger:\s*\(event\)\s*=>/);
+  });
+
+  it("captures the four fields that classify an UNKNOWN failure", () => {
+    for (const field of [
+      "errorSource",
+      "terminalErrorCategory",
+      "errorClass",
+      "errorStatus",
+    ]) {
+      expect(SOURCE).toContain(field);
+    }
+  });
+
+  it("persists the records rather than only printing them", () => {
+    expect(SOURCE).toMatch(/providerErrors,/);
+  });
+
+  // The adapter deliberately never logs error.message, because an APIError's
+  // text can embed the raw provider response body. Persisting it here would
+  // defeat that choice.
+  it("never records the exception message", () => {
+    const loggerBlock = SOURCE.slice(
+      SOURCE.indexOf("logger: (event)"),
+      SOURCE.indexOf("providerErrors.push(record)"),
+    );
+    expect(loggerBlock).not.toMatch(/event\.message|errorMessage/);
   });
 });
