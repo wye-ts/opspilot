@@ -94,24 +94,34 @@ calling a `CONNECTION` loss "a run that did not happen", just inverted.
 
 The truthful reading is a three-way unknown, and every surface must carry it:
 
-| What is known | What is NOT known |
+An entry can be read in three different states, and the wording must be true in **all** of them:
+
+| State | What is true |
 | --- | --- |
-| this run was about to be attempted, with these ticket facts | whether the request left the machine |
-| the process did not survive to record an outcome | whether the provider received or billed it |
+| the process is alive and this run is executing | the entry exists; no outcome yet |
+| killed after the provisional write, before the orchestrator call (case 9) | **nothing was attempted at all** |
+| killed during the orchestrator call | a request may have reached the provider and may have been billed |
+
+The only statement true across all three: **this run was recorded before execution, and no outcome
+was recorded for it.** Anything stronger is false in at least one state — "was attempted" is false
+in state 2, "the process did not survive" is false in state 1, and any billing claim is false in
+state 2.
 
 Wording to use throughout — entry semantics, `scoringRule`, the summary line, acceptance criteria
 and tests:
 
-> **"A run was attempted. Whether the request reached the provider, and its billing status, are
-> both unknown."**
+> **"A run was recorded before execution and no outcome was recorded for it. Whether execution
+> began, whether a request reached the provider, and its billing status are all unknown. Such an
+> entry marks where a round stopped; it is not evidence that a run happened, and not evidence that
+> one did not."**
 
-Note the phrasing avoids the words `dispatched` and `billed` in their verb forms deliberately —
-see §1.3b for why that is a constraint on the text and not just a style choice.
+The phrasing avoids `attempted`, `dispatched`, `billed` and any claim about the process's liveness
+deliberately — see §1.3b for why that is a constraint on the text, not a style choice.
 
 This also means the entry cannot be used to derive a spend figure in either direction. It marks
 where the round died and bounds the uncertainty; it settles nothing about cost.
 
-### 1.3b The wording guard must ban the AFFIRMATIVE claim, not the word (round-2 review, MAJOR — accepted)
+### 1.3b The wording guard must ban the AFFIRMATIVE claim, not the word (round-2 MAJOR; extended round-3)
 
 Round 2 caught the previous draft demanding two things at once: `scoringRule.in_flight` had to read
 "…whether it **was billed**, is unknown", while test case 7 asserted the text must **not** contain
@@ -131,8 +141,14 @@ Both halves are fixed:
 
   | Must be present | Must be absent |
   | --- | --- |
-  | `billing status` … `unknown` | `was billed` / `were billed` / `request was sent` |
-  | `A run was attempted` | `did not happen` / `never happened` |
+  | `no outcome was recorded` | `was attempted` / `was dispatched` / `request was sent` |
+  | `billing status` … `unknown` | `was billed` / `were billed` |
+  | `execution began` | `did not survive` / `crashed` |
+  |  | `did not happen` / `never happened` |
+
+  The `did not survive` / `crashed` bans are round 3's addition: the artefact is readable **while
+  the process is still running**, so any text asserting the process died is false at exactly the
+  moment an operator is most likely to be reading it.
 
   The negative list is checked against the **approved sentence itself** first, as its own test: if
   the mandated wording trips its own guard, the guard is wrong. That assertion is what makes this
@@ -156,14 +172,9 @@ worth noting: nothing stops a typo'd status. Out of scope here (§4).
 
 `:660-680` persists a `scoringRule` object that a later reader trusts over the source. It currently
 describes `completed` / `excluded` / `voided`. It must gain `in_flight`, carrying the §1.3a sentence
-verbatim:
-
-> **"A run was attempted. Whether the request reached the provider, and its billing status, are
-> both unknown."**
-
-plus the reason it exists — the process did not survive to record an outcome. Guarded per §1.3b: a
-positive assertion on the required sentence, and a negative assertion aimed at affirmative claims
-only.
+verbatim and **nothing stronger** — in particular it must not say the process died, since the
+artefact is readable while the round is still running. Guarded per §1.3b: a positive assertion on
+the required sentence, and a negative assertion aimed at affirmative claims only.
 
 ### 1.5 `schemaVersion`
 
@@ -192,11 +203,12 @@ filtering on `status` will now see a value that did not previously exist. Bump t
 | 3 | Resolution replaces in place, never appends | the SAME array slot transitions `in_flight` → resolved status for that ticket, and `outcomes.length === N` (both halves asserted; see below) |
 | 4 | Crash mid-run | the surviving artefact carries `in_flight` for exactly the interrupted run, and the runs before it unchanged |
 | 5 | `in_flight` excluded from denominators | a hand-built outcome list containing one `in_flight` yields tallies computed over `resolved` only |
-| 6 | Unresolved entries are reported | summary names the count and states the outcome is unknown — without claiming the request was sent or billed |
-| 7 | `scoringRule.in_flight` present and correctly worded | **positive**: contains the §1.3a sentence (`billing status` … `unknown`, `A run was attempted`). **negative**: contains none of `was billed` / `were billed` / `request was sent` / `did not happen` / `never happened` |
+| 6 | Unresolved entries are reported | summary names the count and states no outcome was recorded — without claiming a run was attempted, sent, or billed |
+| 7 | `scoringRule.in_flight` present and correctly worded | **positive**: `no outcome was recorded`, `billing status`, `unknown`, `execution began` (matched case-insensitively — the sentence capitalises it mid-text). **negative**: none of `was attempted` / `was dispatched` / `request was sent` / `was billed` / `were billed` / `did not survive` / `crashed` / `did not happen` / `never happened` |
 | 8 | `schemaVersion` is 3 | pinned |
-| 9 | Killed after the provisional write, before the provider call | the artefact makes no claim that a request was sent or billed (§1.3a) |
+| 9 | Killed after the provisional write, before the provider call | the artefact claims neither that a run was attempted nor that anything was sent or billed (§1.3a state 2) |
 | 10 | The guard does not contradict its own mandated wording (§1.3b) | the approved §1.3a sentence is run through case 7's negative list and trips none of it |
+| 11 | Artefact read while the round is STILL RUNNING | from inside a blocking fake provider, the persisted `scoringRule` asserts nothing about the process having died (§1.3a state 1) |
 
 Case 4 is the one that actually proves the issue is fixed, and it must simulate the crash for real
 (a provider that kills the loop mid-run), not assert the code path by inspection.
@@ -232,7 +244,7 @@ artefact from asserting them.
 1. Add the `in_flight` push + flush before `:747`; replace by index at all three resolution sites.
 2. Hoist `resolved` and route every denominator and tally through it (§1.2).
 3. `scoringRule.in_flight` + `schemaVersion: 3`, worded per §1.3a.
-4. Tests 1–10. Prove 2, 3 and 5 red against pre-change behaviour — case 3 via its transition
+4. Tests 1–11. Prove 2, 3 and 5 red against pre-change behaviour — case 3 via its transition
    assertion, since its length assertion passes before the change. Write case 10 (§1.3b's
    self-check) FIRST: if the mandated wording trips its own guard, stop and fix the plan.
 5. `pnpm --filter @opspilot/worker run test`, `typecheck`, `build`, bundle guard, `lint` — on
@@ -255,8 +267,9 @@ report it as such rather than as this branch's result, and run the steps it skip
 4. An artefact surviving a mid-run crash carries `in_flight` for exactly the interrupted run.
 5. The summary reports unresolved entries rather than dropping them silently.
 6. `scoringRule` carries the §1.3a sentence verbatim, and **no line anywhere** — entry, scoring
-   rule, summary, commit message or write-up — makes the affirmative claim that the request was
-   sent, that it was billed, or that the run did not happen (§1.3a).
+   rule, summary, commit message or write-up — claims that a run was attempted, that a request was
+   sent, that it was billed, that the process died, or that the run did not happen. The wording
+   must be true in all three read states of §1.3a, including while the round is still running.
 6a. The wording guard is a positive+negative pair and is proven not to contradict the sentence it
    mandates (§1.3b, test case 10).
 7. `schemaVersion` is 3.
