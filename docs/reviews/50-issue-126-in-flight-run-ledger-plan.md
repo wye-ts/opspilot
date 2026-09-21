@@ -76,9 +76,9 @@ and use `resolved` for `reportBearing`, both denominators, and all four tallies.
 filter, hoisted, not repeated inline five times.
 
 If `resolved.length !== outcomes.length` at summary time, that is a real anomaly: print how many
-entries are unresolved and state that **a request was attempted for each, and whether it reached the
-provider or was billed is unknown**. Do not silently drop them, and do not assert that they were
-sent (§1.3a).
+entries are unresolved and state, per §1.3a, that **no outcome has been recorded for them, and
+whether execution began is unknown**. Do not silently drop them, and do not characterise them as
+attempts (§1.3a state 2 may be the real one).
 
 ### 1.3a The entry marks an ATTEMPT, not a confirmed dispatch (round-1 review, MINOR — accepted)
 
@@ -103,23 +103,22 @@ An entry can be read in three different states, and the wording must be true in 
 | killed during the orchestrator call | a request may have reached the provider and may have been billed |
 
 The only statement true across all three: **this run was recorded before execution, and no outcome
-was recorded for it.** Anything stronger is false in at least one state — "was attempted" is false
+has been recorded for it.** Anything stronger is false in at least one state — "was attempted" is false
 in state 2, "the process did not survive" is false in state 1, and any billing claim is false in
 state 2.
 
 Wording to use throughout — entry semantics, `scoringRule`, the summary line, acceptance criteria
 and tests:
 
-> **"A run was recorded before execution and no outcome was recorded for it. Whether execution
-> began, whether a request reached the provider, and its billing status are all unknown. Such an
-> entry marks where a round stopped; it is not evidence that a run happened, and not evidence that
-> one did not."**
+> **"A run was recorded before execution and no outcome has been recorded for it. Whether
+> execution began, whether a request reached the provider, and its billing status are all unknown.
+> The entry alone does not indicate whether the round is still in progress."**
 
 The phrasing avoids `attempted`, `dispatched`, `billed` and any claim about the process's liveness
 deliberately — see §1.3b for why that is a constraint on the text, not a style choice.
 
 This also means the entry cannot be used to derive a spend figure in either direction. It marks
-where the round died and bounds the uncertainty; it settles nothing about cost.
+where a round has an unresolved run, and bounds the uncertainty; it settles nothing about cost.
 
 ### 1.3b The wording guard must ban the AFFIRMATIVE claim, not the word (round-2 MAJOR; extended round-3)
 
@@ -135,15 +134,17 @@ a bare word the retraction itself must use.
 Both halves are fixed:
 
 - **The approved sentence avoids the collision by construction** — "its billing status" rather than
-  "whether it was billed", "a run was attempted" rather than "was dispatched".
+  "whether it was billed", and it makes no claim about whether execution began or whether the
+  round is still running.
 - **The guard is a pair, not a blanklist.** A positive assertion that the required uncertainty
   sentence is present, plus a negative assertion aimed only at affirmative claims:
 
   | Must be present | Must be absent |
   | --- | --- |
-  | `no outcome was recorded` | `was attempted` / `was dispatched` / `request was sent` |
+  | `no outcome has been recorded` | `was attempted` / `was dispatched` / `request was sent` |
   | `billing status` … `unknown` | `was billed` / `were billed` |
-  | `execution began` | `did not survive` / `crashed` |
+  | `execution began` | `did not survive` / `crashed` / `died` |
+  | `whether the round is still in progress` | `stopped` / `ended` / `abandoned` |
   |  | `did not happen` / `never happened` |
 
   The `did not survive` / `crashed` bans are round 3's addition: the artefact is readable **while
@@ -153,6 +154,12 @@ Both halves are fixed:
   The negative list is checked against the **approved sentence itself** first, as its own test: if
   the mandated wording trips its own guard, the guard is wrong. That assertion is what makes this
   class of contradiction impossible to reintroduce silently.
+
+  **Match on word boundaries, not bare substrings.** `ended` occurs inside `recommended`, `died`
+  inside `studied`, `billed` is a substring of nothing here but `billing` must NOT trip a `billed`
+  ban. Use `\b<word>\b` with the case-insensitive flag. A bare `includes()` guard would fire on
+  innocent prose and push the implementer toward weakening the text — the same pressure round 2
+  identified, arriving by a different route.
 
 ### 1.3 What the entry carries
 
@@ -187,7 +194,7 @@ filtering on `status` will now see a value that did not previously exist. Bump t
 
 - **No product-code change.** This is the measurement apparatus. No contract, reducer, persistence,
   or orchestrator edit is reachable from this scope.
-- **No retry or recovery of an interrupted run.** The entry records that the round died there; it
+- **No retry or recovery of an interrupted run.** The entry records an unresolved run; it
   does not attempt to resume. Resuming would re-dispatch a possibly-billed request.
 - **No change to the exclusion/voiding dispositions** established in #122.
 - **No LIVE run.** The behaviour is verifiable with a fake provider and a simulated crash.
@@ -203,12 +210,12 @@ filtering on `status` will now see a value that did not previously exist. Bump t
 | 3 | Resolution replaces in place, never appends | the SAME array slot transitions `in_flight` → resolved status for that ticket, and `outcomes.length === N` (both halves asserted; see below) |
 | 4 | Crash mid-run | the surviving artefact carries `in_flight` for exactly the interrupted run, and the runs before it unchanged |
 | 5 | `in_flight` excluded from denominators | a hand-built outcome list containing one `in_flight` yields tallies computed over `resolved` only |
-| 6 | Unresolved entries are reported | summary names the count and states no outcome was recorded — without claiming a run was attempted, sent, or billed |
-| 7 | `scoringRule.in_flight` present and correctly worded | **positive**: `no outcome was recorded`, `billing status`, `unknown`, `execution began` (matched case-insensitively — the sentence capitalises it mid-text). **negative**: none of `was attempted` / `was dispatched` / `request was sent` / `was billed` / `were billed` / `did not survive` / `crashed` / `did not happen` / `never happened` |
+| 6 | Unresolved entries are reported | the REAL summary formatter, fed a case-9 provisional entry, names the count and states no outcome has been recorded — containing none of `attempted` / `dispatched` / `sent` / `billed` |
+| 7 | `scoringRule.in_flight` present and correctly worded | **positive**: `no outcome has been recorded`, `billing status`, `unknown`, `execution began`, `still in progress`. **negative**: none of `attempted` / `dispatched` / `was sent` / `billed` / `survive` / `crashed` / `died` / `stopped` / `ended` / `abandoned` / `did not happen` / `never happened`. All matched case-insensitively |
 | 8 | `schemaVersion` is 3 | pinned |
 | 9 | Killed after the provisional write, before the provider call | the artefact claims neither that a run was attempted nor that anything was sent or billed (§1.3a state 2) |
 | 10 | The guard does not contradict its own mandated wording (§1.3b) | the approved §1.3a sentence is run through case 7's negative list and trips none of it |
-| 11 | Artefact read while the round is STILL RUNNING | from inside a blocking fake provider, the persisted `scoringRule` asserts nothing about the process having died (§1.3a state 1) |
+| 11 | Artefact read while the round is STILL RUNNING | from inside a blocking fake provider, the persisted `scoringRule` contains no termination claim — none of `stopped` / `ended` / `died` / `crashed` / `abandoned` / `survive` — while still carrying the required uncertainty wording (§1.3a state 1) |
 
 Case 4 is the one that actually proves the issue is fixed, and it must simulate the crash for real
 (a provider that kills the loop mid-run), not assert the code path by inspection.
@@ -261,15 +268,17 @@ report it as such rather than as this branch's result, and run the steps it skip
 1. A provisional entry is on disk before the provider is invoked for that run, observable from
    inside the provider itself.
 2. Resolution replaces that entry **in the same array slot** — the slot's status transitions
-   `in_flight` → resolved — and `outcomes.length` equals the number of runs attempted.
+   `in_flight` → resolved — and `outcomes.length` equals the number of runs RECORDED (one slot per
+   run reached by the loop), never a count of attempts.
 3. No `in_flight` entry contributes to the end-to-end denominator, the report-bearing denominator,
    or any tally.
 4. An artefact surviving a mid-run crash carries `in_flight` for exactly the interrupted run.
 5. The summary reports unresolved entries rather than dropping them silently.
 6. `scoringRule` carries the §1.3a sentence verbatim, and **no line anywhere** — entry, scoring
    rule, summary, commit message or write-up — claims that a run was attempted, that a request was
-   sent, that it was billed, that the process died, or that the run did not happen. The wording
-   must be true in all three read states of §1.3a, including while the round is still running.
+   sent, that it was billed, that the process died, that the round stopped, or that the run did not
+   happen. The wording must be true in all three read states of §1.3a, including while the round is
+   still running and reading its own artefact.
 6a. The wording guard is a positive+negative pair and is proven not to contradict the sentence it
    mandates (§1.3b, test case 10).
 7. `schemaVersion` is 3.
