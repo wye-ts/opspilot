@@ -21,6 +21,11 @@ import {
   isProviderOutage,
   parseBoundedEnvInteger,
   parseRunCount,
+  IN_FLIGHT_DESCRIPTION,
+  partitionResolved,
+  claimRunSlot,
+  provisionalOutcome,
+  type RunOutcome,
 } from "./measure-completion-rate";
 
 const { LlmProviderError } = opspilotAgentRuntime;
@@ -474,5 +479,253 @@ describe("a connection failure is unobserved, not proven absent", () => {
     // And it must distinguish the two CANCELLED cases, or a reader concludes
     // every timeout voids the round.
     expect(rule).toMatch(/deadline expiry is excluded, not voided/i);
+  });
+});
+
+/**
+ * Issue #126 — a billed in-flight run must leave a ledger entry.
+ *
+ * Plan: docs/reviews/50-issue-126-in-flight-run-ledger-plan.md.
+ */
+describe("in-flight run ledger (#126)", () => {
+  // Every affirmative claim the entry may NOT make. Each was written into an
+  // earlier draft of the wording and removed by a separate review round, so
+  // this list is a record of four real mistakes, not hypothetical ones.
+  //
+  // Matched on WORD BOUNDARIES: "ended" occurs inside "recommended" and
+  // "billing" must not trip a "billed" ban. A bare includes() guard fires on
+  // innocent prose and pressures the next author to weaken the text.
+  const FORBIDDEN = [
+    "attempted",   // false when the process died before the orchestrator call
+    "dispatched",
+    "sent",
+    "billed",      // "billing status" is required; asserting it WAS billed is not
+    "survive",
+    "crashed",
+    "died",
+    "stopped",     // false while the round is still running
+    "ended",
+    "abandoned",
+  ];
+
+  const REQUIRED = [
+    "no outcome has been recorded",
+    "billing status",
+    "unknown",
+    "execution began",
+    "still in progress",
+  ];
+
+  function forbiddenHits(text: string): string[] {
+    return FORBIDDEN.filter((word) => new RegExp(`\\b${word}\\b`, "i").test(text));
+  }
+
+  // CASE 10 — the guard must not contradict the wording it mandates.
+  //
+  // Sequenced first deliberately. Round 2 of plan review caught a version
+  // demanding the text say "whether it WAS BILLED, is unknown" while asserting
+  // it must not contain "was billed" — unsatisfiable, and the cheapest repair
+  // would have been deleting the billing-uncertainty sentence, destroying the
+  // honesty the rule exists to enforce.
+  it("case 10: the approved description does not trip its own guard", () => {
+    expect(forbiddenHits(IN_FLIGHT_DESCRIPTION)).toEqual([]);
+    for (const phrase of REQUIRED) {
+      expect(IN_FLIGHT_DESCRIPTION.toLowerCase()).toContain(phrase);
+    }
+  });
+
+  it("case 10b: the guard still rejects an affirmative claim", () => {
+    // Falsification: if the regex were inert, this would pass vacuously.
+    expect(forbiddenHits("the request was billed and the round stopped")).toEqual([
+      "billed",
+      "stopped",
+    ]);
+    // Word-boundary proof — these must NOT match despite containing the letters.
+    expect(forbiddenHits("the recommended billing status is unknown")).toEqual([]);
+  });
+
+  // CASE 5 — an in_flight entry must never reach a denominator.
+  //
+  // Uses the PRODUCTION predicate (partitionResolved), which main() itself
+  // calls. A reimplementation here would pass while main() stayed wrong.
+  describe("case 5: in_flight is excluded from every figure", () => {
+    function outcome(status: string, ticketId: string): RunOutcome {
+      return {
+        ticketId,
+        ticketSummary: "summary",
+        ticketParameters: {},
+        status,
+        validationMessages: [],
+        autoCompletedEvidence: 0,
+        retrievedChunkIds: [],
+        toolCallsMade: [],
+      };
+    }
+
+    it("splits resolved from unresolved", () => {
+      const { resolved, unresolved } = partitionResolved([
+        outcome("completed", "T1"),
+        outcome("in_flight", "T2"),
+        outcome("excluded", "T3"),
+      ]);
+
+      expect(resolved.map((o) => o.ticketId)).toEqual(["T1", "T3"]);
+      expect(unresolved).toBe(1);
+    });
+
+    it("an in_flight entry does not inflate the report-bearing denominator", () => {
+      // This is the defect the hoisted filter prevents: in_flight satisfies
+      // `status !== "excluded"`, so filtering raw outcomes would count it as
+      // report-bearing and understate the completion rate.
+      const outcomes = [outcome("completed", "T1"), outcome("in_flight", "T2")];
+
+      const naive = outcomes.filter((o) => o.status !== "excluded").length;
+      const { resolved } = partitionResolved(outcomes);
+      const correct = resolved.filter((o) => o.status !== "excluded").length;
+
+      expect(naive).toBe(2); // what the pre-#126 expression would have produced
+      expect(correct).toBe(1); // what it must produce
+    });
+
+    it("reports zero unresolved for a normal round", () => {
+      const { resolved, unresolved } = partitionResolved([
+        outcome("completed", "T1"),
+        outcome("excluded", "T2"),
+      ]);
+      expect(resolved).toHaveLength(2);
+      expect(unresolved).toBe(0);
+    });
+  });
+});
+
+/**
+ * Issue #126 — the ordering guarantee, exercised against the same helper
+ * `main` uses. These are the cases that actually prove the defect is fixed:
+ * an entry must be DURABLE before anything can spend, and resolution must
+ * replace that entry rather than append a second one.
+ */
+describe("in-flight ordering (#126)", () => {
+  const ticket = {
+    id: "TICKET-9001",
+    summary: "elevated error rate on billing-service",
+    parameters: { service: "billing-service" },
+  };
+
+  function resolvedOutcome(): RunOutcome {
+    return {
+      ticketId: ticket.id,
+      ticketSummary: ticket.summary,
+      ticketParameters: ticket.parameters,
+      status: "completed",
+      validationMessages: [],
+      autoCompletedEvidence: 0,
+      retrievedChunkIds: ["chunk-1"],
+      toolCallsMade: ["get_service_status#1"],
+    };
+  }
+
+  // CASE 2 — the entry is durable BEFORE the caller can dispatch.
+  it("case 2: flushes the provisional entry before returning the resolver", () => {
+    const outcomes: RunOutcome[] = [];
+    // What the artefact looked like at the moment flush() was called. This is
+    // the crash window: everything visible here survives a kill.
+    let flushedSnapshot: RunOutcome[] | null = null;
+
+    claimRunSlot(outcomes, provisionalOutcome(ticket), () => {
+      flushedSnapshot = outcomes.map((o) => ({ ...o }));
+    });
+
+    expect(flushedSnapshot).not.toBeNull();
+    expect(flushedSnapshot!).toHaveLength(1);
+    expect(flushedSnapshot![0]!.status).toBe("in_flight");
+    expect(flushedSnapshot![0]!.ticketId).toBe(ticket.id);
+  });
+
+  // CASE 3 — the transition, not the length, is the evidence.
+  //
+  // Plan review round 1 caught an earlier version asserting only
+  // `outcomes.length === N`. That passes against the PRE-change code too,
+  // which pushes exactly once per run, so it could not distinguish
+  // append-only from replace-in-place and would have been trusted green
+  // having proven nothing.
+  it("case 3: the same slot transitions in_flight -> resolved, without appending", () => {
+    const outcomes: RunOutcome[] = [];
+    const resolve1 = claimRunSlot(outcomes, provisionalOutcome(ticket), () => {});
+
+    // State A: provisional.
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.status).toBe("in_flight");
+
+    resolve1(resolvedOutcome());
+
+    // State B: same slot, resolved, length unchanged.
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.status).toBe("completed");
+    expect(outcomes[0]!.ticketId).toBe(ticket.id);
+    expect(outcomes[0]!.toolCallsMade).toEqual(["get_service_status#1"]);
+  });
+
+  it("case 3b: several runs each occupy exactly one slot, in order", () => {
+    const outcomes: RunOutcome[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const t = { ...ticket, id: `TICKET-900${i}` };
+      const resolveRun = claimRunSlot(outcomes, provisionalOutcome(t), () => {});
+      resolveRun({ ...resolvedOutcome(), ticketId: t.id });
+    }
+
+    expect(outcomes).toHaveLength(3);
+    expect(outcomes.map((o) => o.ticketId)).toEqual([
+      "TICKET-9000",
+      "TICKET-9001",
+      "TICKET-9002",
+    ]);
+    expect(partitionResolved(outcomes).unresolved).toBe(0);
+  });
+
+  // CASE 4 — the one that proves the issue is fixed. A round that dies
+  // mid-run must leave the interrupted run visible, with earlier runs intact.
+  it("case 4: a crash mid-run leaves in_flight for exactly that run", () => {
+    const outcomes: RunOutcome[] = [];
+    let persisted: RunOutcome[] = [];
+    const flush = (): void => {
+      persisted = outcomes.map((o) => ({ ...o }));
+    };
+
+    // Run 1 completes normally.
+    const resolve1 = claimRunSlot(outcomes, provisionalOutcome({ ...ticket, id: "T1" }), flush);
+    resolve1({ ...resolvedOutcome(), ticketId: "T1" });
+    flush();
+
+    // Run 2 claims its slot, then the process dies — nothing else runs.
+    claimRunSlot(outcomes, provisionalOutcome({ ...ticket, id: "T2" }), flush);
+
+    // What a later reader finds on disk:
+    expect(persisted).toHaveLength(2);
+    expect(persisted[0]!.status).toBe("completed");
+    expect(persisted[0]!.ticketId).toBe("T1");
+    expect(persisted[1]!.status).toBe("in_flight");
+    expect(persisted[1]!.ticketId).toBe("T2");
+
+    // Pre-#126 this artefact would have held ONE entry and read as complete.
+    const { resolved, unresolved } = partitionResolved(persisted);
+    expect(resolved).toHaveLength(1);
+    expect(unresolved).toBe(1);
+  });
+
+  // CASE 9 — killed after the provisional write, before the provider call.
+  // Nothing was attempted at all, so the record must not say otherwise.
+  it("case 9: the persisted entry makes no claim that a run was attempted", () => {
+    const outcomes: RunOutcome[] = [];
+    claimRunSlot(outcomes, provisionalOutcome(ticket), () => {});
+
+    const entry = outcomes[0]!;
+    expect(entry.status).toBe("in_flight");
+    // Carries only facts known before execution.
+    expect(entry.toolCallsMade).toEqual([]);
+    expect(entry.retrievedChunkIds).toEqual([]);
+    expect(entry.validationMessages).toEqual([]);
+    expect(entry.autoCompletedEvidence).toBe(0);
+    expect(entry.failureCode).toBeUndefined();
+    expect(entry.failureMessage).toBeUndefined();
   });
 });

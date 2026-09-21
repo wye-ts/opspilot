@@ -374,7 +374,7 @@ interface ProviderErrorRecord {
   readonly latencyMs: number;
 }
 
-interface RunOutcome {
+export interface RunOutcome {
   readonly ticketId: string;
   readonly ticketSummary: string;
   readonly ticketParameters: Record<string, unknown>;
@@ -426,6 +426,97 @@ function summarizeToolCalls(
       ? [`${event.toolName}#${event.toolCallId ?? "unknown"}`]
       : [],
   );
+}
+
+/**
+ * The one description of an `in_flight` entry, used by the persisted
+ * scoringRule and the unresolved-entry summary alike.
+ *
+ * WORDING IS LOAD-BEARING (issue #126, docs/reviews/50 §1.3a). An entry can be
+ * read in three states, and this sentence must be true in ALL of them:
+ *
+ *   1. the process is alive and this run is executing  -> entry exists, no outcome yet
+ *   2. killed after this was written, before the        -> NOTHING was attempted
+ *      orchestrator call
+ *   3. killed during the orchestrator call              -> a request may have reached the
+ *                                                          provider and may have been billed
+ *
+ * So it may not say the run was "attempted" (false in 2), may not say the
+ * process "did not survive" or the round "stopped" (false in 1), and may not
+ * claim anything about billing (false in 2). Four rounds of independent review
+ * were spent removing exactly those claims one at a time; the guard in
+ * measure-completion-rate.test.ts now pins it.
+ */
+export const IN_FLIGHT_DESCRIPTION =
+  "A run was recorded before execution and no outcome has been recorded for it. " +
+  "Whether execution began, whether a request reached the provider, and its billing status " +
+  "are all unknown. The entry alone does not indicate whether the round is still in progress.";
+
+/**
+ * Splits the ledger into runs with a recorded outcome and those without.
+ *
+ * Exported and used by `main` itself — not a reimplementation — so the test
+ * that proves an `in_flight` entry cannot reach a denominator is exercising
+ * the production predicate. Issue #126 §1.2: `in_flight` satisfies
+ * `status !== "excluded"`, so a provisional entry that survived would
+ * otherwise inflate the report-bearing denominator, which IS the completion
+ * rate.
+ */
+export function partitionResolved(outcomes: readonly RunOutcome[]): {
+  readonly resolved: readonly RunOutcome[];
+  readonly unresolved: number;
+} {
+  const resolved = outcomes.filter((outcome) => outcome.status !== "in_flight");
+  return { resolved, unresolved: outcomes.length - resolved.length };
+}
+
+/**
+ * Claims a ledger slot for a run and flushes it, BEFORE the caller does
+ * anything that can spend.
+ *
+ * This function exists to make the ORDERING testable, which is the whole of
+ * issue #126: the provisional entry must be durable before a provider request
+ * can be dispatched, and the outcome must REPLACE that slot rather than append
+ * a second one. `main` calls this; a test asserting the ordering against a
+ * reimplementation would prove nothing about `main`.
+ *
+ * Returns the resolver. Calling it twice overwrites the same slot — there is
+ * no path that produces two entries for one run.
+ */
+export function claimRunSlot(
+  outcomes: RunOutcome[],
+  provisional: RunOutcome,
+  flush: () => void,
+): (resolvedOutcome: RunOutcome) => void {
+  const slot = outcomes.length;
+  outcomes.push(provisional);
+  // Durable before the caller can spend. A crash after this point leaves the
+  // entry behind, which is the marker the round died with this run unresolved.
+  flush();
+  return (resolvedOutcome: RunOutcome): void => {
+    outcomes[slot] = resolvedOutcome;
+  };
+}
+
+/** The provisional entry for a run that has not executed yet. */
+export function provisionalOutcome(ticket: {
+  readonly id: string;
+  readonly summary: string;
+  readonly parameters: Record<string, unknown>;
+}): RunOutcome {
+  return {
+    ticketId: ticket.id,
+    ticketSummary: ticket.summary,
+    ticketParameters: ticket.parameters,
+    status: "in_flight",
+    // Empty rather than optional: these describe a result that does not exist
+    // yet, and making them optional on RunOutcome would let a RESOLVED outcome
+    // omit them by accident.
+    validationMessages: [],
+    autoCompletedEvidence: 0,
+    retrievedChunkIds: [],
+    toolCallsMade: [],
+  };
 }
 
 /**
@@ -639,7 +730,10 @@ async function main(): Promise<void> {
     clientRebuilds: number;
     runs: RunOutcome[];
   } = {
-    schemaVersion: 2,
+    // 3 (was 2): `runs[]` can now carry `status: "in_flight"`, a value no
+    // earlier artefact contains. A consumer that switches on status must
+    // handle it — see scoringRule.in_flight and issue #126.
+    schemaVersion: 3,
     startedAt: new Date().toISOString(),
     completedAt: null,
     executionProtocol: {
@@ -676,6 +770,9 @@ async function main(): Promise<void> {
         "all, or when " +
         "a non-LlmProviderError throw indicates a defect in this repo. A rate computed over " +
         "whichever runs happened to precede one of these would be meaningless.",
+      in_flight:
+        IN_FLIGHT_DESCRIPTION +
+        " Such entries are excluded from every denominator and tally; see issue #126.",
     },
     tallies: null,
     excludedTickets: excluded,
@@ -730,6 +827,20 @@ async function main(): Promise<void> {
     }
 
     process.stdout.write(`\n--- run ${i + 1}/${runCount} — ${ticket.id} ---\n`);
+
+    // Issue #126: claim this run's ledger slot and flush BEFORE anything can
+    // spend. Until now the outcome was pushed only after the orchestrator
+    // returned, so a process killed in between left an artefact showing runs
+    // 1..N-1 that read as complete while a possibly-billed invocation appeared
+    // nowhere. Flushing after every run bounded that loss to one run; it did
+    // not remove it.
+    //
+    // claimRunSlot returns a resolver that REPLACES this slot by index. A
+    // second push would count one run twice in every denominator — the inverse
+    // of the defect being fixed.
+    const resolveRun = claimRunSlot(outcomes, provisionalOutcome(ticket), () =>
+      writeArtefact(artefact),
+    );
 
     try {
       // Rebuilt per run: the deadline bounds one investigation, not the round.
@@ -817,7 +928,7 @@ async function main(): Promise<void> {
         // still have retrieved chunks and executed tool calls before the
         // provider failed, and that trajectory is billed evidence. Dropping it
         // is the data loss this artefact exists to prevent.
-        outcomes.push({
+        resolveRun({
           ticketId: ticket.id,
           ticketSummary: ticket.summary,
           ticketParameters: ticket.parameters,
@@ -859,7 +970,7 @@ async function main(): Promise<void> {
       );
       const toolCalls = summarizeToolCalls(trace);
 
-      outcomes.push({
+      resolveRun({
         ticketId: ticket.id,
         ticketSummary: ticket.summary,
         ticketParameters: ticket.parameters,
@@ -897,7 +1008,7 @@ async function main(): Promise<void> {
         writeArtefact(artefact);
         throw error;
       }
-      outcomes.push({
+      resolveRun({
         ticketId: ticket.id,
         ticketSummary: ticket.summary,
         ticketParameters: ticket.parameters,
@@ -928,39 +1039,62 @@ async function main(): Promise<void> {
     );
   }
 
-  const reportBearing = outcomes.filter((outcome) => outcome.status !== "excluded");
+  // Issue #126 §1.2: every figure below is derived from RESOLVED runs only.
+  //
+  // An `in_flight` entry satisfies `status !== "excluded"`, so routing the
+  // report-bearing filter straight off `outcomes` would let a surviving
+  // provisional entry silently inflate the denominator that IS the completion
+  // rate. No `in_flight` survives on the normal path — each is replaced before
+  // this point — but this block is also reached from the void and
+  // empty-sample throw paths, and correctness must not rest on "it cannot
+  // happen". One hoisted filter, per the repo's rule that the tally predicate
+  // and the exclusion predicate be the same expression.
+  const { resolved, unresolved } = partitionResolved(outcomes);
+
+  const reportBearing = resolved.filter((outcome) => outcome.status !== "excluded");
   if (reportBearing.length === 0) {
     writeArtefact(artefact);
     // A count and literal text — no provider-derived content — so this is
     // safe to surface, and it is the one message the operator most needs.
     throw new MeasurementConfigurationError(
-      `No usable runs: all ${outcomes.length} invocation(s) failed before producing a report. ` +
+      `No usable runs: all ${resolved.length} invocation(s) failed before producing a report. ` +
         "This measures nothing — check credentials, credit and connectivity.",
+    );
+  }
+  if (unresolved > 0) {
+    // Reported, never dropped. The wording is IN_FLIGHT_DESCRIPTION's, because
+    // an unresolved entry may represent a run that never started (docs/reviews/50
+    // §1.3a state 2) — calling these "attempts" would assert execution
+    // evidence the apparatus does not have.
+    console.log(
+      `\n${unresolved} run(s) have no recorded outcome. ${IN_FLIGHT_DESCRIPTION} ` +
+        `They are excluded from every figure below, which is computed over ${resolved.length} ` +
+        "resolved run(s).",
     );
   }
   if (excluded.length > 0) {
     console.log(
       `\nEXCLUDED ${excluded.length} run(s) that never produced a report ` +
-        `(${excluded.join(", ")}). outcomes.length now INCLUDES excluded runs, so the ` +
-          `report-bearing figure below is over ${reportBearing.length}, not ${outcomes.length}.`,
+        `(${excluded.join(", ")}). resolved.length now INCLUDES excluded runs, so the ` +
+          `report-bearing figure below is over ${reportBearing.length}, not ${resolved.length}.`,
     );
   }
-  const completed = outcomes.filter((o) => o.status === "completed").length;
-  const schemaInvalid = outcomes.filter((o) => o.failureCode === "REPORT_SCHEMA_INVALID").length;
+  const completed = resolved.filter((o) => o.status === "completed").length;
+  const schemaInvalid = resolved.filter((o) => o.failureCode === "REPORT_SCHEMA_INVALID").length;
   // Must use the same predicate as the exclusion branch. It previously counted
   // only PROVIDER_UNAVAILABLE, so a PROVIDER_TIMEOUT was excluded from the
   // sample yet invisible in the tally — a run that cost money and appeared
   // nowhere.
-  const nonReportBearing = outcomes.filter(
+  const nonReportBearing = resolved.filter(
     (o) =>
       o.status === "threw" ||
       (o.failureCode !== undefined && NON_REPORT_BEARING_CODES.has(o.failureCode)),
   ).length;
-  const healed = outcomes.filter((o) => o.autoCompletedEvidence > 0).length;
+  const healed = resolved.filter((o) => o.autoCompletedEvidence > 0).length;
 
   console.log("\n=== Completion rate ===");
   console.table(
-    outcomes.map((o) => ({
+    resolved.map((o) => ({
       ticket: o.ticketId,
       status: o.status,
       code: o.failureCode ?? "",
@@ -982,14 +1116,14 @@ async function main(): Promise<void> {
   // documents retracted that claim several rounds ago; the console had kept
   // asserting it.
   console.log(
-    `END-TO-END COMPLETED:   ${completed}/${outcomes.length} ` +
+    `END-TO-END COMPLETED:   ${completed}/${resolved.length} ` +
       "(generated tickets, in-process — NOT comparable to the deployed 2/8 baseline)",
   );
   console.log(
     `REPORT-BEARING:         ${completed}/${reportBearing.length} ` +
       "(excludes runs that never reached a report; not a completion rate)",
   );
-  console.log(`REPORT_SCHEMA_INVALID:  ${schemaInvalid}/${outcomes.length}`);
+  console.log(`REPORT_SCHEMA_INVALID:  ${schemaInvalid}/${resolved.length}`);
   if (providerErrors.length > 0) {
     const byCause = new Map<string, number>();
     for (const record of providerErrors) {
@@ -1003,7 +1137,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `did not reach a report:  ${nonReportBearing}/${outcomes.length} ` +
+    `did not reach a report:  ${nonReportBearing}/${resolved.length} ` +
       "(cause NOT attributable to the provider — see issue #123)",
   );
   console.log(`runs where #115 healed an F5 omission: ${healed}`);
@@ -1019,7 +1153,7 @@ async function main(): Promise<void> {
   artefact.clientRebuilds = clientRebuilds;
   artefact.completedAt = new Date().toISOString();
   artefact.tallies = {
-    invocations: outcomes.length,
+    invocations: resolved.length,
     reportBearing: reportBearing.length,
     completed,
     schemaInvalid,
@@ -1036,7 +1170,7 @@ async function main(): Promise<void> {
     `\nBaseline for comparison: 2/8 COMPLETED (25%) on deployed runs, 2026-09-14/15 (#105).`,
   );
   console.log(
-    `This run is n=${outcomes.length} on GENERATED tickets (a ${TICKET_COMBINATION_COUNT}-combination ` +
+    `This run is n=${resolved.length} on GENERATED tickets (a ${TICKET_COMBINATION_COUNT}-combination ` +
       `template space, not real traffic) through the in-process ` +
       `orchestrator — the same validation path as deployed, but not deployed traffic.`,
   );
