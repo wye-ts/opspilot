@@ -1,3 +1,8 @@
+import { spawnSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
+
 import opspilotAgentRuntime from "@opspilot/agent-runtime";
 import type { EmbedRequest, EmbedResponse } from "voyageai";
 import { describe, expect, it, vi } from "vitest";
@@ -125,5 +130,59 @@ describe("buildEmbeddingFixture", () => {
     await expect(
       buildEmbeddingFixture(buildFakeClient(embed), "voyage-4-lite", 2, corpus, queries, rawQuerySetText),
     ).rejects.toThrow();
+  });
+});
+
+// Issue #125 / docs/reviews/49, raised by independent review: this script makes
+// two billed Voyage requests, so it must refuse to start on an unpinned Node
+// exactly like the Anthropic entry points do.
+//
+// Exercised through the REAL CLI rather than by calling the guard directly: a
+// guard that passes its own unit tests can still be wired in after the spend
+// begins, or swallowed by a top-level handler that prints nothing useful —
+// both of which happened to earlier drafts of this change.
+describe("generate:embedding-fixture entry point — runtime gate", () => {
+  const SCRIPT = resolve(import.meta.dirname, "generate-embedding-fixture.ts");
+  const PINNED = readFileSync(resolve(import.meta.dirname, "../../../../.nvmrc"), "utf8").trim();
+
+  /**
+   * An installed Node whose version differs from the pin. Discovered rather
+   * than hardcoded, and the test skips where no second runtime exists (CI
+   * installs exactly one), because a fabricated pass is worse than a skip.
+   */
+  function findMismatchedNode(): string | null {
+    const root = resolve(homedir(), ".nvm/versions/node");
+    if (!existsSync(root)) return null;
+    for (const entry of readdirSync(root)) {
+      if (entry.replace(/^v/, "") === PINNED) continue;
+      const candidate = resolve(root, entry, "bin/node");
+      if (existsSync(candidate)) return candidate;
+    }
+    return null;
+  }
+
+  it("exits non-zero on a mismatched Node, before reading credentials or calling Voyage", () => {
+    const wrongNode = findMismatchedNode();
+    if (wrongNode === null) {
+      expect(PINNED).toMatch(/^\d+(\.\d+)*$/);
+      return;
+    }
+
+    const result = spawnSync(wrongNode, ["--import", "tsx", SCRIPT], {
+      encoding: "utf8",
+      // No credential is supplied on purpose. If the guard ran too late (or
+      // not at all) the script would stop at requireEnv instead, and the
+      // final assertion below catches exactly that.
+      env: { ...process.env, VOYAGE_API_KEY: "" },
+      timeout: 180_000,
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("REFUSING TO START");
+    expect(result.stderr).toContain("generate-embedding-fixture");
+    expect(result.stderr).toContain(PINNED);
+    // Proves it refused for the RUNTIME reason and got there first — not
+    // because the credential happened to be missing.
+    expect(result.stderr).not.toContain("VOYAGE_API_KEY");
   });
 });

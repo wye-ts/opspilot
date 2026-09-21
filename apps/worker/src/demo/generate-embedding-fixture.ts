@@ -36,6 +36,7 @@ import type { StoredRunbookChunk } from "@opspilot/agent-runtime";
 import { parseQuerySet, QUERY_SET_PATH, type QueryRecord } from "../../../../runbooks-eval/validate-query-set";
 import type { VoyageEmbeddingClient } from "../rag/voyage-embedding-client";
 import { extractValidatedEmbeddings } from "../rag/voyage-runbook-retriever";
+import { NodeVersionGateError, assertPinnedNodeVersion } from "../live/pinned-node-version";
 
 const { computeCorpusContentHash, sha256, loadDefaultRunbookCorpus } = opspilotAgentRuntime;
 
@@ -155,6 +156,13 @@ function serializeFixture(fixture: EmbeddingFixture): string {
 }
 
 async function main(): Promise<void> {
+  // Before anything that can spend — see issue #125 / docs/reviews/49. This
+  // script makes two billed Voyage requests, so it belongs behind the same
+  // runtime gate as the Anthropic scripts even though its provider differs:
+  // the fault is in the process's shared connection handling, not in one
+  // vendor's SDK. Independent review caught this entry point being left out.
+  assertPinnedNodeVersion("generate-embedding-fixture");
+
   const voyageApiKey = requireEnv("VOYAGE_API_KEY");
   const embeddingModel = resolveEmbeddingModel();
   const embeddingDimensions = resolveEmbeddingDimensions();
@@ -191,5 +199,23 @@ async function main(): Promise<void> {
 // module object) — only runs main() when executed directly via `tsx`, never
 // when buildEmbeddingFixture is imported for testing.
 if (import.meta.url === `file://${process.argv[1]}`) {
-  void main();
+  main().catch((error: unknown) => {
+    // NodeVersionGateError is safe by construction — its message is assembled
+    // solely from .nvmrc and process.versions.node, carries no provider,
+    // network or credential data, and names the remedy. A guard whose reason
+    // is swallowed teaches the operator only that the script is broken.
+    if (error instanceof NodeVersionGateError) {
+      console.error(error.message);
+      process.exitCode = 1;
+      return;
+    }
+    // Everything else: the caught value could embed a request body, headers or
+    // an API key, so only the constructor name is printed.
+    const kind = error instanceof Error ? error.constructor.name : typeof error;
+    console.error(
+      `[generate-embedding-fixture] Fixture generation failed (${kind}). No further details are ` +
+        "printed to avoid leaking sensitive information.",
+    );
+    process.exitCode = 1;
+  });
 }

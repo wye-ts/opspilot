@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 /**
- * Refuses to start a PAID live script when the running Node major version does
- * not match the repository's pinned one.
+ * Refuses to start a PAID live script when the running Node version does not
+ * match the one this repository pins.
  *
  * WHY THIS EXISTS (issue #125, docs/reviews/49):
  *
@@ -12,9 +12,9 @@ import { resolve } from "node:path";
  * `globalThis.fetch` and inherits the process's global dispatcher. Probed
  * against the real endpoint:
  *
- *   node 22.21.0 (.nvmrc, Dockerfile, CI)  -> ALPN http/1.1
- *   node 24.18.0                           -> ALPN http/1.1
- *   node 26.7.0                            -> ALPN h2
+ *   node 22.21.0 (.nvmrc, Dockerfile, CI)  -> undici 6.22.0 -> ALPN http/1.1
+ *   node 24.18.0                           -> undici 7.28.0 -> ALPN http/1.1
+ *   node 26.7.0                            -> undici 8.9.0  -> ALPN h2
  *
  * Under h2 every request shares one session, so a single TLS record fault
  * ("bad record mac") destroys the session and every subsequent request fails in
@@ -37,9 +37,9 @@ import { resolve } from "node:path";
  * behaviour at all — the evaluation harness scripts every provider turn from a
  * fixture, so a LIVE run is the only thing that can produce that evidence.
  *
- * WHAT THIS DOES NOT CLAIM: that Node 22 prevents TLS faults. It prevents one
- * failure chain that requires an h2 session. A TLS fault on HTTP/1.1 is still
- * possible and costs one socket.
+ * WHAT THIS DOES NOT CLAIM: that the pinned version prevents TLS faults. It
+ * prevents one failure chain that requires an h2 session. A TLS fault on
+ * HTTP/1.1 is still possible and costs one socket.
  */
 
 export class NodeVersionGateError extends Error {
@@ -50,7 +50,6 @@ export class NodeVersionGateError extends Error {
 }
 
 export interface NodeVersionGateResult {
-  readonly expectedMajor: number;
   readonly expectedVersion: string;
   readonly runningVersion: string;
 }
@@ -63,40 +62,47 @@ export interface NodeVersionGateResult {
  */
 const REPO_ROOT = resolve(import.meta.dirname, "../../../..");
 
+export interface PinnedVersion {
+  /** The components .nvmrc actually declares, e.g. [22, 21, 0]. */
+  readonly components: readonly number[];
+  /** The normalized version string, e.g. "22.21.0". */
+  readonly version: string;
+}
+
 /**
- * Parses the contents of a .nvmrc into a major version number.
+ * Parses the contents of a .nvmrc into its version components.
  *
  * Accepts the forms nvm itself writes — a bare version, a `v` prefix, and
  * surrounding whitespace/newline. Anything else throws rather than guessing: a
  * gate that silently accepts an unparseable pin is worse than no gate, because
- * it reports safety it never checked.
+ * it reports safety it never checked. An alias (`lts/*`, `node`) is precisely
+ * such a case — it is a legitimate .nvmrc value that this gate cannot resolve.
  */
-export function parseNvmrcMajor(contents: string): { major: number; version: string } {
+export function parseNvmrcVersion(contents: string): PinnedVersion {
   const version = contents.trim().replace(/^v/i, "");
 
   // Deliberately not a full semver parse. The file is a version pin written by
   // nvm; a shape it never produces means something is wrong and the caller
   // should hear about it, not have it normalized away.
-  const match = /^(\d+)(?:\.\d+)*$/.exec(version);
-  if (match === null) {
+  if (!/^\d+(?:\.\d+)*$/.test(version)) {
     throw new NodeVersionGateError(
       `Could not read a Node version from .nvmrc (found: ${JSON.stringify(contents.trim())}). ` +
         "This gate cannot confirm the runtime is safe for a paid live run, so it refuses to start.",
     );
   }
 
-  return { major: Number(match[1]), version };
+  return { components: version.split(".").map(Number), version };
 }
 
-/** The running major version, from `process.versions.node` (e.g. "22.21.0" -> 22). */
-export function parseRunningMajor(nodeVersion: string): number {
-  const major = Number(nodeVersion.split(".")[0]);
-  if (!Number.isInteger(major)) {
+/** The running version's components, from `process.versions.node`. */
+export function parseRunningVersion(nodeVersion: string): readonly number[] {
+  const normalized = nodeVersion.trim().replace(/^v/i, "");
+  if (!/^\d+(?:\.\d+)*$/.test(normalized)) {
     throw new NodeVersionGateError(
       `Could not read the running Node version (found: ${JSON.stringify(nodeVersion)}).`,
     );
   }
-  return major;
+  return normalized.split(".").map(Number);
 }
 
 export interface AssertPinnedNodeOptions {
@@ -106,12 +112,22 @@ export interface AssertPinnedNodeOptions {
 }
 
 /**
- * Throws unless the running Node's MAJOR version matches .nvmrc's.
+ * Throws unless the running Node matches every version component `.nvmrc`
+ * declares.
  *
- * Major only, deliberately. A patch-level difference does not change the
- * bundled undici and therefore cannot change the transport this gate exists to
- * protect; failing on one would make the gate fire for reasons it cannot
- * justify, and a gate that cries wolf gets bypassed.
+ * EXACT, not major-only. An earlier draft of this guard compared the major
+ * version alone, reasoning that "a patch difference cannot change the bundled
+ * undici". Independent review refuted it, and the release history confirms the
+ * refutation: Node 22.21.0 bundles undici 6.22.0, while later 22.x releases
+ * ship 6.24.1, 6.27.0 and 6.28.0. The undici version — the thing that actually
+ * decides the transport this guard exists to protect — moves across MINOR
+ * releases, so a major-only comparison admits an unverified network stack while
+ * reporting that the runtime matched the pin.
+ *
+ * Exact matching costs nothing in practice: `.nvmrc` pins one version, the
+ * Dockerfile pins the same one, and `nvm use` reads `.nvmrc` and selects
+ * exactly it. Comparing only the components `.nvmrc` declares keeps a
+ * coarser pin (a bare `22`) meaningful rather than unsatisfiable.
  */
 export function assertPinnedNodeVersion(
   scriptName: string,
@@ -123,7 +139,7 @@ export function assertPinnedNodeVersion(
   let contents: string;
   try {
     contents = readNvmrc();
-  } catch (cause) {
+  } catch {
     // Fails CLOSED, and distinguishably from a version mismatch. The cause is
     // deliberately not printed: it carries a filesystem path, and the remedy
     // does not depend on it.
@@ -133,21 +149,25 @@ export function assertPinnedNodeVersion(
     );
   }
 
-  const { major: expectedMajor, version: expectedVersion } = parseNvmrcMajor(contents);
+  const { components: expected, version: expectedVersion } = parseNvmrcVersion(contents);
   const runningVersion = options.runningVersion ?? process.versions.node;
-  const runningMajor = parseRunningMajor(runningVersion);
+  const running = parseRunningVersion(runningVersion);
 
-  if (runningMajor !== expectedMajor) {
+  const matches = expected.every((component, index) => running[index] === component);
+
+  if (!matches) {
     throw new NodeVersionGateError(
       `[${scriptName}] REFUSING TO START: this script spends real money, and the running Node ` +
         `version is not the one this repository pins.\n` +
-        `  expected: v${expectedVersion} (major ${expectedMajor}, from .nvmrc)\n` +
-        `  running:  v${runningVersion} (major ${runningMajor})\n` +
+        `  expected: v${expectedVersion} (from .nvmrc)\n` +
+        `  running:  v${runningVersion}\n` +
         `\n` +
-        `Node 26+ negotiates HTTP/2 to the Anthropic API, where one TLS fault destroys the ` +
-        `shared session and every later request fails in under a millisecond for the life of ` +
-        `the process. That cost a previous measurement 35 of 49 billed invocations ` +
-        `(issue #125, docs/reviews/49).\n` +
+        `The Anthropic SDK uses globalThis.fetch, so the network transport is chosen by the undici ` +
+        `bundled with Node, not by this repository. Node 26+ negotiates HTTP/2, where one TLS fault ` +
+        `destroys the shared session and every later request fails in under a millisecond for the ` +
+        `life of the process — that cost a previous measurement 35 of 49 billed invocations ` +
+        `(issue #125, docs/reviews/49). The bundled undici also moves across Node MINOR releases, ` +
+        `so only the pinned version has actually been verified.\n` +
         `\n` +
         `Fix:  nvm use            # reads .nvmrc\n` +
         `  or:  export PATH="$HOME/.nvm/versions/node/v${expectedVersion}/bin:$PATH"\n` +
@@ -155,5 +175,5 @@ export function assertPinnedNodeVersion(
     );
   }
 
-  return { expectedMajor, expectedVersion, runningVersion };
+  return { expectedVersion, runningVersion };
 }

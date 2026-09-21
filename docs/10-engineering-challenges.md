@@ -3011,9 +3011,9 @@ deployment reuses its connection pool, and the fault that would punish it is
 unreachable on the pinned runtime. Hardening it would be speculative work
 against a state the deployment cannot enter.
 
-Instead, close the gap where it actually is: the four `apps/worker` scripts that
-can spend money refuse to start unless the running Node's **major** version
-matches `.nvmrc` (`apps/worker/src/live/pinned-node-version.ts`).
+Instead, close the gap where it actually is: the five `apps/worker` scripts that
+can spend money refuse to start unless the running Node matches `.nvmrc`
+exactly (`apps/worker/src/live/pinned-node-version.ts`).
 
 ### Alternatives Considered
 
@@ -3037,10 +3037,23 @@ are exactly what drifts. The guard reads `.nvmrc` at runtime.
 
 ### Tradeoffs
 
-The guard is major-version-only. A patch difference cannot change the bundled
-undici, so failing on one would make the gate fire for a reason it cannot
-justify — and a gate that cries wolf gets bypassed. It is also applied only to
-the four scripts that spend money; widening it to `eval`, `demo`, and the test
+The guard compares the **exact** pinned version, not just the major. An earlier
+draft compared majors only, arguing that "a patch difference cannot change the
+bundled undici" — independent review refuted it, and the release history
+confirms the refutation: Node 22.21.0 bundles undici 6.22.0, while later 22.x
+releases ship 6.24.1, 6.27.0 and 6.28.0. The undici version moves across MINOR
+releases, so a major-only comparison admits an unverified network stack while
+reporting a match. That draft also shipped a test asserting `22.9.0` passes,
+mislabelling a minor difference as a patch one — the comment and the test
+reinforced each other's error, which is what made it survive self-review.
+
+Exact matching costs nothing in practice: `.nvmrc` pins one version, the
+Dockerfile pins the same one, and `nvm use` selects exactly it. Only the
+components `.nvmrc` actually declares are compared, so a coarser pin stays
+meaningful rather than unsatisfiable.
+
+The guard is applied only to the scripts that can spend; widening it to `eval`,
+`demo`, and the test
 suites would make it ambient friction rather than a spend control.
 
 It does **not** prevent TLS faults. It prevents one failure chain that requires
@@ -3058,14 +3071,15 @@ and had to be corrected.
 
 ### Testing Strategy
 
-Unit tests cover the pinned major passing, a differing patch passing, a
-mismatched major failing with both versions and the remedy in the message, an
-unreadable `.nvmrc` failing closed *distinguishably*, and an unresolvable alias
-(`lts/*`) failing closed. One test reads the real `.nvmrc` so the suite tracks
-the pin rather than a literal beside it. The mismatch assertions were proven to
-fail against a neutered guard before being trusted.
+Unit tests cover the exact pinned version passing, every near-miss failing
+(`22.9.0`, `22.20.0`, `22.21.1`, `22.22.0`, and other majors), a coarser
+major-only pin still being honoured, an unreadable `.nvmrc` failing closed
+*distinguishably*, and an unresolvable alias (`lts/*`) failing closed. One test
+reads the real `.nvmrc` so the suite tracks the pin rather than a literal beside
+it. The mismatch assertions were proven to fail against a neutered guard before
+being trusted.
 
-End to end, each of the four scripts was run under Node 26 and exited 1 before
+End to end, each of the paid scripts was run under Node 26 and exited 1 before
 any provider call, and `measure-completion-rate` was run under Node 22 with an
 invalid key to confirm the guard passes through and the request genuinely
 reaches Anthropic.
