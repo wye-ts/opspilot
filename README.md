@@ -367,4 +367,7 @@ A calibration threshold in one adversarial scenario rested on a premise the scen
 
 **What this milestone does not establish:** whether a real model *chooses* the right tool — and the live run is what settled that it **cannot be established here**. `evaluation-runner.ts` builds a `FakeLlmProvider` per case, so every tool request in all 26 cases is scripted by the fixture; the spike does let a real model choose, but it is manual, non-deterministic, and single-*scenario* — its four recorded runs agree while varying nothing, since all four use one ticket, one prompt and one retrieval result. An early draft of the spike write-up did read a catalog-sizing conclusion out of it; it was withdrawn during review, because the ticket's "no release has been announced" does not rule a deployment out, so checking the deployment record was ordinary differential diagnosis rather than waste. The generalizable part: **expanding a capability whose quality is unmeasurable does not make it measurable — it only widens the surface no one can assess.** Reasoning and the mechanism-by-mechanism breakdown live in `docs/06-tool-design.md` ("What this milestone did not settle").
 
-No milestone is currently open and there are no open issues. Tabs/workspace navigation and a historical run list remain deferred with no active issue.
+No milestone is currently open. Four issues are open (#123–#126), all recorded during the
+completion-rate investigation and deliberately deferred at the time; see the issue tracker for their
+current state. Tabs/workspace navigation and a historical run list remain deferred with no active
+issue.

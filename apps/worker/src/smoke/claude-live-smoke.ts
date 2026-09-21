@@ -12,6 +12,8 @@ import type {
   LiveProviderConfig,
 } from "@opspilot/provider-claude";
 
+import { NodeVersionGateError, assertPinnedNodeVersion } from "../live/pinned-node-version";
+
 const { runAgentOrchestrator, InMemoryToolRegistry, GET_SERVICE_STATUS_CATALOG_ENTRY, LlmProviderError } =
   opspilotAgentRuntime;
 const { parseProviderConfig, createLlmProviderFactory } = opspilotProviderClaude;
@@ -195,6 +197,24 @@ export async function main(
   env: EnvRecord = process.env,
   log: (line: string) => void = console.log,
 ): Promise<number> {
+  // Checked before the opt-in gate, and therefore before any paid call: the
+  // Anthropic transport is chosen by the Node version, not by this script
+  // (issue #125, docs/reviews/49). Reported through this function's own
+  // exit-code convention rather than as a throw, so it reads like every other
+  // refusal here.
+  try {
+    assertPinnedNodeVersion("claude-live-smoke");
+  } catch (error) {
+    // The gate's message already carries its own [claude-live-smoke] prefix,
+    // so it is printed as-is rather than re-prefixed.
+    console.error(
+      error instanceof NodeVersionGateError
+        ? error.message
+        : "[claude-live-smoke] Node version could not be verified.",
+    );
+    return 1;
+  }
+
   const gate = evaluateSmokeGate(env);
   if (!gate.ok) {
     console.error(`[claude-live-smoke] ${gate.reason}`);

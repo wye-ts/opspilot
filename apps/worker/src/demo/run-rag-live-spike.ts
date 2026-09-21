@@ -23,6 +23,7 @@ import {
   selectionNeedsVoyage,
   type SpikeScenarioResult,
 } from "./run-rag-live-spike-scenarios";
+import { NodeVersionGateError, assertPinnedNodeVersion } from "../live/pinned-node-version";
 
 const { GET_SERVICE_STATUS_CATALOG_ENTRY, GET_RECENT_DEPLOYMENTS_CATALOG_ENTRY } =
   opspilotAgentRuntime;
@@ -140,6 +141,10 @@ function printSummary(results: readonly SpikeScenarioResult[]): void {
 }
 
 async function main(): Promise<void> {
+  // Before anything that can spend — see issue #125 / docs/reviews/49: the
+  // Anthropic transport is chosen by the Node version, not by this script.
+  assertPinnedNodeVersion("run-rag-live-spike");
+
   // Fail closed: every required value — including which scenario(s) to run
   // — is validated before any client is constructed. Scenario selection is
   // resolved FIRST, before requiring VOYAGE_API_KEY: tool-output-override
@@ -269,7 +274,16 @@ async function main(): Promise<void> {
 
 const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
 if (isMainModule) {
-  main().catch(() => {
+  main().catch((error: unknown) => {
+    // NodeVersionGateError is safe by construction — its message is entirely
+    // application-authored from .nvmrc and process.versions.node, carries no
+    // provider/network/credential data, and names the remedy. A guard whose
+    // reason is swallowed teaches the operator only that the script is broken.
+    if (error instanceof NodeVersionGateError) {
+      console.error(error.message);
+      process.exitCode = 1;
+      return;
+    }
     // Deliberately generic and fixed — never print the caught value, since
     // it could leak request bodies, headers, API keys, or stack traces.
     console.error(
