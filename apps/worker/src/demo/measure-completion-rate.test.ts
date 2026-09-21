@@ -729,3 +729,60 @@ describe("in-flight ordering (#126)", () => {
     expect(entry.failureMessage).toBeUndefined();
   });
 });
+
+/**
+ * Issue #126 — the PRODUCTION path's ordering.
+ *
+ * Raised by independent review against the first implementation: the cases
+ * above prove `claimRunSlot`'s local ordering, but nothing tied that to `main`.
+ * Moving the call below `runAgentOrchestrator`, or disconnecting its flush
+ * callback from `writeArtefact`, would have left every one of them green while
+ * restoring the billed-run loss.
+ *
+ * WHAT THIS IS: a structural assertion on `main`'s source — the slot is claimed
+ * before the orchestrator is invoked, and the flush callback is the real
+ * `writeArtefact`.
+ *
+ * WHAT THIS IS NOT: a live crash test. `main` builds a real `ClaudeLlmProvider`
+ * from `ANTHROPIC_API_KEY`, so exercising the true dispatch-to-disk path needs
+ * provider injection — a refactor of the composition root, not a rider on this
+ * fix. Filed rather than faked; see the commit message. A source assertion
+ * cannot prove the artefact survives a real SIGKILL, and must not be described
+ * as if it does.
+ */
+describe("production path ordering (#126)", () => {
+  const SOURCE = readFileSync(
+    resolve(import.meta.dirname, "measure-completion-rate.ts"),
+    "utf8",
+  );
+
+  // Everything inside main()'s per-run loop body, which is where the ordering
+  // has to hold.
+  const loopBody = SOURCE.slice(SOURCE.indexOf("for (let i = 0; i < runCount; i += 1)"));
+
+  it("claims the ledger slot BEFORE invoking the orchestrator", () => {
+    const claimAt = loopBody.indexOf("claimRunSlot(");
+    const dispatchAt = loopBody.indexOf("await runAgentOrchestrator(");
+
+    expect(claimAt).toBeGreaterThan(-1);
+    expect(dispatchAt).toBeGreaterThan(-1);
+    // If this inverts, a billed request can be sent with nothing on disk.
+    expect(claimAt).toBeLessThan(dispatchAt);
+  });
+
+  it("wires the flush callback to the real writeArtefact", () => {
+    // A claim whose flush does nothing is durable in name only.
+    const claimCall = loopBody.slice(
+      loopBody.indexOf("claimRunSlot("),
+      loopBody.indexOf("await runAgentOrchestrator("),
+    );
+    expect(claimCall).toContain("writeArtefact(artefact)");
+  });
+
+  it("resolves through the returned resolver, never a second push", () => {
+    // outcomes.push must appear nowhere in the loop body: the only push is
+    // inside claimRunSlot itself.
+    expect(loopBody).not.toContain("outcomes.push(");
+    expect(loopBody).toContain("resolveRun(");
+  });
+});
