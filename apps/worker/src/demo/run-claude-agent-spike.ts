@@ -12,6 +12,7 @@ import {
   runToolThenReportScenario,
   type SpikeScenarioResult,
 } from "./claude-agent-spike-scenarios";
+import { NodeVersionGateError, assertPinnedNodeVersion } from "../live/pinned-node-version";
 
 const { GET_SERVICE_STATUS_CATALOG_ENTRY } = opspilotAgentRuntime;
 const { ClaudeLlmProvider, requireSupportedClaudeModel } = opspilotProviderClaude;
@@ -54,6 +55,10 @@ function printSummary(results: readonly SpikeScenarioResult[]): void {
 }
 
 async function main(): Promise<void> {
+  // Before anything that can spend — see issue #125 / docs/reviews/49: the
+  // Anthropic transport is chosen by the Node version, not by this script.
+  assertPinnedNodeVersion("run-claude-agent-spike");
+
   // Fail closed: both must be present before the client is ever constructed.
   const apiKey = requireEnv("ANTHROPIC_API_KEY");
   // Validated through the same supported-model policy the configuration-
@@ -91,7 +96,16 @@ async function main(): Promise<void> {
 
 const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
 if (isMainModule) {
-  main().catch(() => {
+  main().catch((error: unknown) => {
+    // NodeVersionGateError is safe by construction — its message is entirely
+    // application-authored from .nvmrc and process.versions.node, carries no
+    // provider/network/credential data, and names the remedy. A guard whose
+    // reason is swallowed teaches the operator only that the script is broken.
+    if (error instanceof NodeVersionGateError) {
+      console.error(error.message);
+      process.exitCode = 1;
+      return;
+    }
     // Deliberately generic and fixed: the caught value could be anything
     // (an unwrapped SDK error, a bug, a rejected promise from deep in the
     // call stack) and must never be printed directly here, since that could

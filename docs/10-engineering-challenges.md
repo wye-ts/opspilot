@@ -2933,3 +2933,175 @@ not met. Two identical five-run rounds gave 2/4 and 4/5. At n=5 that is what
 noise looks like, and reporting the better round would have been selection, not
 measurement.
 
+
+---
+
+## 18. Challenge 16 — The Runtime, Not the Code, Chose the Network Transport
+
+### Context
+
+Issue #125 reported that a single TLS fault destroyed the HTTP/2 session shared
+by every Anthropic request in a process, after which every later call failed in
+under a millisecond without leaving the machine — for the life of the process.
+It was filed as a production defect on the grounds that
+`apps/api/src/execution/api-provider-factory.ts` builds one client and reuses it
+for every run, so a deployed instance has the same shape.
+
+The observation was real. Seven measurement rounds lost **35 of 49 billed
+invocations** to it.
+
+### Problem
+
+The filed diagnosis pointed at the wrong layer, and so did the first two
+proposed remedies.
+
+`ERR_HTTP2_INVALID_SESSION` requires an h2 session. Whether one is ever
+negotiated is decided by the undici bundled with **Node**, not by the Anthropic
+SDK — the SDK calls `globalThis.fetch` (`@anthropic-ai/sdk/src/client.ts`,
+`this.fetch = options.fetch ?? Shims.getDefaultFetch()`) and inherits whatever
+global dispatcher the process has.
+
+Probed against the real endpoint by subscribing to undici's
+`undici:client:connected` diagnostics channel and reading `socket.alpnProtocol`
+(three consecutive attempts per version, no variation):
+
+| Runtime | bundled undici | negotiated ALPN |
+| --- | --- | --- |
+| Node 22.21.0 — `.nvmrc`, `Dockerfile`, CI `node-version-file` | 6.22.0 | `http/1.1` |
+| Node 24.18.0 | 7.28.0 | `http/1.1` |
+| Node 26.7.0 — the local shell's default `node` | 8.9.0 | `h2` |
+
+**The deployed API negotiates HTTP/1.1 and cannot enter the failure state at
+all.** On HTTP/1.1 a TLS fault costs one socket; the next request opens another.
+
+The exposure was entirely local, and specifically in `apps/worker`: its paid
+scripts are invoked with a bare `node` (`apps/worker/package.json`), which takes
+whatever the shell's default happens to be.
+
+### Why It Is Difficult
+
+Three separate investigation probes produced three wrong answers (rate
+limiting, quota exhaustion, a product logic defect), each disproved by
+reproduction. The fault is intermittent — some rounds never trigger it, one
+triggered from run 1, several from run 5 — so absence of failure proves nothing
+about the runtime under test.
+
+The decisive property is invisible from application code. Nothing in the repo,
+the SDK's public surface, or the error message names HTTP/2; `alpnProtocol` is
+only reachable through a diagnostics channel. And because the failing behaviour
+is a *property of the interpreter*, reading the source for a bug finds nothing —
+the source is identical in both cases.
+
+### Failure Modes
+
+- A "production defect" filed against code that the deployed runtime never
+  executes in the reported configuration.
+- The first proposed remedy (rebuild the SDK client on a connection failure)
+  was implemented and measured, and **did not work** — after rebuilding,
+  requests still failed at 5.1 ms and 3.9 ms. The broken state is not owned by
+  the client object.
+- Paid invocations consumed with no usable result, and — worse — the *only*
+  evidence channel that can observe real model behaviour silently reduced to a
+  handful of contiguous healthy windows, which are not independent samples.
+
+### Decision
+
+Do not change `api-provider-factory.ts`. The shared client exists so a live
+deployment reuses its connection pool, and the fault that would punish it is
+unreachable on the pinned runtime. Hardening it would be speculative work
+against a state the deployment cannot enter.
+
+Instead, close the gap where it actually is: the four `apps/worker` scripts that
+can spend money refuse to start unless the running Node's **major** version
+matches `.nvmrc` (`apps/worker/src/live/pinned-node-version.ts`).
+
+### Alternatives Considered
+
+#### Alternative A — force HTTP/1.1 with `setGlobalDispatcher({ allowH2: false })`
+
+Rejected. Node 22 already negotiates `http/1.1`, so this pins the current
+default as though it were an invariant, and it adds a direct `undici` dependency
+the repository does not otherwise have.
+
+#### Alternative B — recreate the Anthropic client on a connection-class failure
+
+Rejected on evidence, not on reasoning: it was implemented in the measurement
+script and measured failing. Every `fetch` in the process shares the same global
+dispatcher regardless of how many SDK clients exist. The code was left in place
+with a comment recording that it is insufficient, so the disproof is not lost.
+
+#### Alternative C — pin the version in each script
+
+Rejected. Two independently-written copies of a version number that agree today
+are exactly what drifts. The guard reads `.nvmrc` at runtime.
+
+### Tradeoffs
+
+The guard is major-version-only. A patch difference cannot change the bundled
+undici, so failing on one would make the gate fire for a reason it cannot
+justify — and a gate that cries wolf gets bypassed. It is also applied only to
+the four scripts that spend money; widening it to `eval`, `demo`, and the test
+suites would make it ambient friction rather than a spend control.
+
+It does **not** prevent TLS faults. It prevents one failure chain that requires
+an h2 session.
+
+### Implementation Notes
+
+`NodeVersionGateError` is printed in full by each script's top-level handler,
+which otherwise deliberately swallows error text to avoid leaking request
+bodies, headers, or credentials. The exception is safe by construction: the
+message is assembled entirely from `.nvmrc` and `process.versions.node`, and it
+carries the remedy. A guard whose reason is swallowed teaches the operator only
+that the script is broken — the first version of this change did exactly that
+and had to be corrected.
+
+### Testing Strategy
+
+Unit tests cover the pinned major passing, a differing patch passing, a
+mismatched major failing with both versions and the remedy in the message, an
+unreadable `.nvmrc` failing closed *distinguishably*, and an unresolvable alias
+(`lts/*`) failing closed. One test reads the real `.nvmrc` so the suite tracks
+the pin rather than a literal beside it. The mismatch assertions were proven to
+fail against a neutered guard before being trusted.
+
+End to end, each of the four scripts was run under Node 26 and exited 1 before
+any provider call, and `measure-completion-rate` was run under Node 22 with an
+invalid key to confirm the guard passes through and the request genuinely
+reaches Anthropic.
+
+### Observability
+
+The deployed path already distinguishes these causes in its logs:
+`provider-event-log.ts` emits `terminalErrorCategory`, `errorSource`,
+`errorClass`, and `errorStatus` per failed turn, which is what made
+`APIConnectionError` identifiable at all. What remains absent is a *persisted*
+distinction — `agent_runs.failure_code` stores the collapsed
+`PROVIDER_UNAVAILABLE` — so an aggregate over historical runs still cannot
+separate an upstream outage from our own misconfiguration. That is issue #123,
+deliberately left open with no consumer for it yet.
+
+**Trigger to revisit:** bumping the base image to Node ≥26 would introduce `h2`
+into a path that shares one client across every run. At that point the shared
+client becomes a real exposure and this decision must be re-derived.
+
+### Interview Explanation
+
+A measurement lost 35 of 49 paid API calls to a connection fault, and the issue
+filed against it named a production defect in our shared HTTP client. It wasn't.
+The Anthropic SDK uses `globalThis.fetch`, so the transport is chosen by the
+undici bundled with Node — not by our code. I probed the real endpoint through
+undici's diagnostics channel and read the negotiated ALPN: Node 22 gets
+HTTP/1.1, Node 26 gets HTTP/2. Our Dockerfile and CI pin Node 22, so production
+was never exposed; the failing runs were on my shell's default Node 26, where
+one TLS fault kills the shared h2 session and every later request dies in under
+a millisecond.
+
+So the real defect was that scripts which spend money ran on an unpinned
+runtime, and the fix is a guard that reads `.nvmrc` and refuses to start on a
+mismatch. What makes this worth telling is what I *didn't* do: I didn't harden
+the shared client, because that would have been defending against a state the
+deployment can't reach. And it was the second time the same Node-version
+mismatch produced a wrong conclusion about the repo — the first cost a
+misattributed milestone prerequisite, this one cost real money and the only
+evidence channel that can observe live model behaviour.

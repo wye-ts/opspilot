@@ -60,6 +60,7 @@ import {
   getRecentDeploymentsTool,
   DIAGNOSTIC_TOOL_CATALOG,
 } from "../tools";
+import { NodeVersionGateError, assertPinnedNodeVersion } from "../live/pinned-node-version";
 
 const { runAgentOrchestrator, LlmProviderError, resolveAbortProvenance } =
   opspilotAgentRuntime;
@@ -456,6 +457,11 @@ function writeArtefact(artefact: { readonly startedAt: string }): string {
 }
 
 async function main(): Promise<void> {
+  // Before anything that can spend: the transport this process will use is
+  // decided by the Node version, and an unpinned one cost a previous round of
+  // this very script 35 of 49 billed invocations (issue #125, docs/reviews/49).
+  assertPinnedNodeVersion("measure-completion-rate");
+
   const apiKey = requireEnv("ANTHROPIC_API_KEY");
   const model = requireSupportedClaudeModel(process.env.ANTHROPIC_MODEL?.trim() ?? "claude-sonnet-5");
   const runCount = parseRunCount(process.env.RUN_COUNT);
@@ -1049,6 +1055,16 @@ if (isMainModule) {
   if (error instanceof MeasurementConfigurationError) {
     // Safe by construction: see the class doc.
     console.error(`[completion-rate] Configuration error: ${error.message}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (error instanceof NodeVersionGateError) {
+    // Safe by construction, on the same grounds as MeasurementConfigurationError
+    // above: the message is entirely application-authored from .nvmrc and
+    // process.versions.node, and carries no provider, network, or credential
+    // data. It MUST be printed — it names the remedy, and a guard whose reason
+    // is swallowed teaches the operator only that the script is broken.
+    console.error(error.message);
     process.exitCode = 1;
     return;
   }
