@@ -76,8 +76,35 @@ and use `resolved` for `reportBearing`, both denominators, and all four tallies.
 filter, hoisted, not repeated inline five times.
 
 If `resolved.length !== outcomes.length` at summary time, that is a real anomaly: print how many
-entries are unresolved and state that they were dispatched and may have been billed. Do not
-silently drop them.
+entries are unresolved and state that **a request was attempted for each, and whether it reached the
+provider or was billed is unknown**. Do not silently drop them, and do not assert that they were
+sent (§1.3a).
+
+### 1.3a The entry marks an ATTEMPT, not a confirmed dispatch (round-1 review, MINOR — accepted)
+
+The first draft of this plan described the entry as meaning "the run was dispatched and may have
+been billed". **That is withdrawn**, because it overclaims in the same direction the plan exists to
+prevent.
+
+The provisional entry is written and flushed *before* `runAgentOrchestrator` is called. A process
+killed between the artefact's `rename` and the first byte leaving the machine leaves an entry for a
+request that was **never sent**. The window is small but it is exactly the window this feature
+instruments, and the artefact must not assert something it cannot observe — the identical error to
+calling a `CONNECTION` loss "a run that did not happen", just inverted.
+
+The truthful reading is a three-way unknown, and every surface must carry it:
+
+| What is known | What is NOT known |
+| --- | --- |
+| this run was about to be attempted, with these ticket facts | whether the request left the machine |
+| the process did not survive to record an outcome | whether the provider received or billed it |
+
+Wording to use throughout — entry semantics, `scoringRule`, the summary line, acceptance criteria
+and tests: **"a run was attempted; whether the request reached the provider, and whether it was
+billed, is unknown."** Never "was dispatched", never "was billed", never "did not happen".
+
+This also means the entry cannot be used to derive a spend figure in either direction. It marks
+where the round died and bounds the uncertainty; it settles nothing about cost.
 
 ### 1.3 What the entry carries
 
@@ -96,9 +123,10 @@ worth noting: nothing stops a typo'd status. Out of scope here (§4).
 ### 1.4 The scoring rule in the artefact must describe this
 
 `:660-680` persists a `scoringRule` object that a later reader trusts over the source. It currently
-describes `completed` / `excluded` / `voided`. It must gain `in_flight`, worded to state what such
-an entry means: **the run was dispatched and may have been billed; its outcome is unknown because
-the process did not survive to record it.** Never "the run did not happen."
+describes `completed` / `excluded` / `voided`. It must gain `in_flight`, worded per §1.3a: **a run
+was attempted and the process did not survive to record its outcome; whether the request reached
+the provider, and whether it was billed, is unknown.** Never "was dispatched", never "was billed",
+never "did not happen."
 
 ### 1.5 `schemaVersion`
 
@@ -123,21 +151,31 @@ filtering on `status` will now see a value that did not previously exist. Bump t
 | # | Case | Expect |
 | --- | --- | --- |
 | 1 | Normal run | exactly one entry per run; no `in_flight` in the final artefact |
-| 2 | Entry exists before dispatch | artefact on disk at dispatch time contains an `in_flight` entry for that ticket |
-| 3 | Resolution replaces, never appends | after N runs, `outcomes.length === N` |
+| 2 | Entry exists before the provider is called | artefact on disk, read from inside a fake provider's first turn, already contains an `in_flight` entry for that ticket |
+| 3 | Resolution replaces in place, never appends | the SAME array slot transitions `in_flight` → resolved status for that ticket, and `outcomes.length === N` (both halves asserted; see below) |
 | 4 | Crash mid-run | the surviving artefact carries `in_flight` for exactly the interrupted run, and the runs before it unchanged |
 | 5 | `in_flight` excluded from denominators | a hand-built outcome list containing one `in_flight` yields tallies computed over `resolved` only |
-| 6 | Unresolved entries are reported | summary states how many were dispatched-but-unresolved rather than dropping them |
-| 7 | `scoringRule.in_flight` present and correctly worded | asserts "may have been billed", and that it is not described as a run that did not happen |
+| 6 | Unresolved entries are reported | summary names the count and states the outcome is unknown — without claiming the request was sent or billed |
+| 7 | `scoringRule.in_flight` present and correctly worded | states outcome unknown; asserts the text does NOT contain "was dispatched"/"was billed"/"did not happen" |
 | 8 | `schemaVersion` is 3 | pinned |
+| 9 | Killed after the provisional write, before the provider call | the artefact makes no claim that a request was sent or billed (§1.3a) |
 
 Case 4 is the one that actually proves the issue is fixed, and it must simulate the crash for real
-(dispatch a provider that kills the loop mid-run), not assert the code path by inspection.
+(a provider that kills the loop mid-run), not assert the code path by inspection.
 
-Cases 3 and 5 must be shown to **fail** against pre-change behaviour before being trusted green.
+**Case 3's length assertion alone is worthless — round-1 review, MINOR, accepted.** The current
+code already performs exactly one `push` per run, so `outcomes.length === N` passes *before* the
+change and cannot distinguish append-only from replace-in-place. The distinguishing observation is
+the **transition**: one slot must be `in_flight` while the provider is executing and the resolved
+outcome afterwards, with the length unchanged across both. Assert both states from inside a
+controlled fake provider; the length check is a guard against a second push, not the evidence.
 
-**What this cannot prove:** whether an interrupted run was in fact billed. Nothing client-side can
-establish that — which is precisely why the entry must be worded as *unobserved*.
+Cases 2, 3 and 5 must be shown to **fail** against pre-change behaviour before being trusted green —
+case 3 via its transition assertion, not its length assertion.
+
+**What this cannot prove:** whether an interrupted run was billed, or even whether its request left
+the machine. Nothing client-side can establish either — which is precisely why §1.3a forbids the
+artefact from asserting them.
 
 ---
 
@@ -155,8 +193,9 @@ establish that — which is precisely why the entry must be worded as *unobserve
 
 1. Add the `in_flight` push + flush before `:747`; replace by index at all three resolution sites.
 2. Hoist `resolved` and route every denominator and tally through it (§1.2).
-3. `scoringRule.in_flight` + `schemaVersion: 3`.
-4. Tests 1–8. Prove 3 and 5 red against pre-change behaviour.
+3. `scoringRule.in_flight` + `schemaVersion: 3`, worded per §1.3a.
+4. Tests 1–9. Prove 2, 3 and 5 red against pre-change behaviour — case 3 via its transition
+   assertion, since its length assertion passes before the change.
 5. `pnpm --filter @opspilot/worker run test`, `typecheck`, `build`, bundle guard, `lint` — on
    `.nvmrc`'s Node 22.21.0.
 6. `agent:review-bundle` + `agent:codex-review`; adjudicate; re-review to zero findings.
@@ -168,14 +207,17 @@ report it as such rather than as this branch's result, and run the steps it skip
 
 ## 6. Acceptance criteria
 
-1. A provisional entry is on disk before any provider request for that run is dispatched.
-2. Resolution replaces that entry in place; `outcomes.length` equals the number of runs attempted.
+1. A provisional entry is on disk before the provider is invoked for that run, observable from
+   inside the provider itself.
+2. Resolution replaces that entry **in the same array slot** — the slot's status transitions
+   `in_flight` → resolved — and `outcomes.length` equals the number of runs attempted.
 3. No `in_flight` entry contributes to the end-to-end denominator, the report-bearing denominator,
    or any tally.
 4. An artefact surviving a mid-run crash carries `in_flight` for exactly the interrupted run.
 5. The summary reports unresolved entries rather than dropping them silently.
-6. `scoringRule` describes `in_flight` as dispatched-and-possibly-billed with an unknown outcome,
-   and no line anywhere describes it as a run that did not happen.
+6. `scoringRule` describes `in_flight` as a run whose outcome is unknown because the process did not
+   survive to record it, and **no line anywhere** — entry, scoring rule, summary, commit message or
+   write-up — claims the request was dispatched, was billed, or did not happen (§1.3a).
 7. `schemaVersion` is 3.
 8. No file outside `apps/worker/src/demo/` and `docs/` is modified.
 9. Independent review reaches zero findings against the final head SHA.
