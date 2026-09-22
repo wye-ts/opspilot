@@ -43,7 +43,7 @@ export function ActionRequiredBanner({ suggestedActionCount }: ActionRequiredBan
           <p className="action-required-banner-title">Human approval required</p>
           <p className="action-required-banner-subtitle">
             {suggestedActionCount} proposed action{suggestedActionCount === 1 ? "" : "s"}{" "}
-            {suggestedActionCount === 1 ? "requires" : "require"} review before execution.
+            {suggestedActionCount === 1 ? "requires" : "require"} a human decision.
           </p>
         </div>
       </div>
