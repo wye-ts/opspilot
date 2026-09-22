@@ -122,28 +122,28 @@ mechanism, not of which way the decision went.
 One test asserting that no user-visible string in either module matches, case-insensitively and
 on **word boundaries**:
 
-Matched as word-boundary alternatives, covering the grammatical variants of each prohibited
-claim — not only the one form that happens to ship today:
+Matched as **word-boundary alternatives over the complete inflected form of each claim family** —
+verb, third-person, past, gerund, and noun. Not a list of phrasings:
 
 ```
-execution:    before execution | will be executed | will execute | executes | executed
-scheduling:   schedules | scheduled | will schedule
-dispatch:     dispatch | dispatches | dispatched
-simulation:   simulates | simulated | simulation
-notification: notifies | notified | will notify
-escalation:   escalates | escalated | will escalate
+execution:    execute | executes | executed | executing | execution | executions
+scheduling:   schedule | schedules | scheduled | scheduling
+dispatch:     dispatch | dispatches | dispatched | dispatching
+simulation:   simulate | simulates | simulated | simulating | simulation
+notification: notify | notifies | notified | notifying | notification | notifications
+escalation:   escalate | escalates | escalated | escalating | escalation
 ```
 
-The earlier draft listed only `executes the action` / `will be executed`, which let
-`Approved actions are executed`, `OpsPilot schedules the actions`, `The action was dispatched`
-and `The reviewer is notified` through — every one of them the exact claim the plan forbids.
-Caught by independent review.
+**Why forms and not phrases.** Two earlier drafts of this guard listed concrete phrasings, and
+independent review broke each one with a variant the list had not anticipated — first
+`Approved actions are executed` / `OpsPilot schedules the actions`, then `Approved actions
+execute after approval` / `Execution follows approval` / `A notification is sent after approval`.
+Enumerating phrasings is unbounded; enumerating a word family's forms is finite and closes the
+class. A guard that a reviewer can defeat with ordinary grammar is not a guard.
 
-**Word boundaries are load-bearing, not pedantry.** A bare substring check for `execut` would
-match nothing today but would fire on any future legitimate use ("no execution path exists");
-`dispatch` as a substring would match `dispatcher`. A guard that misfires on innocent text
-creates pressure to weaken the guard — the same failure mode that cost four review rounds on
-#126 (`docs/reviews/50` §1.3b).
+The word boundary remains load-bearing: `dispatcher`, `scheduler` and `executive` all contain a
+listed token and must stay green. A guard that misfires on innocent text creates pressure to
+weaken it — the failure mode that cost four review rounds on #126 (`docs/reviews/50` §1.3b).
 
 Collect the strings to check from the module's own exports (all four `presentApproval` results
 plus the rendered banner), never from a copy of the literals — a guard reading a duplicate of
@@ -156,12 +156,15 @@ Each assertion must be shown red before it is trusted:
 - restore `before execution` in the banner → test 1 and the guard go red
 - set either `hint` back to `null` → test 2 / 3 go red
 - insert `will be executed` into any `copy` → guard goes red
-- insert each prohibited variant in turn (`executed`, `schedules`, `dispatched`, `notified`,
-  `simulated`) → guard goes red for every one
-- insert `dispatcher queue` → guard stays **green**. This is the real word-boundary control:
-  `dispatcher` CONTAINS the guarded token `dispatch`, so a bare-substring guard would fire on it.
-  An earlier draft used `recommended`, which contains no guarded token at all and therefore stays
-  green with or without word boundaries — it proved nothing. Caught by independent review.
+- parameterized over every claim family, each must turn the guard red:
+  `Approved actions are executed` · `Approved actions execute after approval` ·
+  `Execution follows approval` · `OpsPilot schedules the actions` ·
+  `The action was dispatched` · `The reviewer is notified` ·
+  `A notification is sent after approval` · `requires review before execution`
+- insert `dispatcher queue`, `scheduler thread`, `executive summary` → guard stays **green**.
+  These are the real word-boundary controls: each CONTAINS a guarded token, so a bare-substring
+  guard fires on them. An earlier draft used `recommended`, which contains no guarded token at
+  all and stays green with or without word boundaries — it proved nothing. Caught by review.
 
 ## 6. Explicitly out of scope
 
