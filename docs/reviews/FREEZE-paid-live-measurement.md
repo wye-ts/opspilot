@@ -19,11 +19,19 @@ A model switch changes `SUPPORTED_CLAUDE_MODEL` and the pricing table, so any sa
 is spent on a model being replaced. The completion-rate question and the public-trial gate stay
 blocked on the model choice.
 
-## Related open item
+## Related item — RESOLVED
 
-`fix/133-sonnet-5-standard-pricing` (local branch, unmerged, commit `b0f6bfa`) corrects
-claude-sonnet-5 pricing $3/$15 → $2/$10 (#133). Whether it should merge or be discarded depends
-on whether sonnet-5 remains the model — do not merge it as a matter of course during the freeze.
+#133 (sonnet-5 pricing $3/$15 → $2/$10) was merged during the freeze on explicit owner
+go-ahead. It spends nothing and corrects a 1.5x accounting error that was distorting every
+cost judgement, including the model comparison the freeze exists to inform.
+
+**Merging it does NOT lift the freeze.** The model decision is still open.
+
+The freeze's own rationale was examined while comparing candidates, and one framing correction
+belongs here: the daily spend is bounded by `LIVE_RUN_DAILY_COST_CEILING_USD` (1.00), a config
+constant — NOT by the model's unit price. A cheaper model does not reduce spending under that
+ceiling; it buys more runs per day. "I want to spend less" and "I want more trial throughput"
+are different questions with different answers.
 
 ## What IS fine during the freeze
 
