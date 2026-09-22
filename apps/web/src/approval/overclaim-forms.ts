@@ -20,7 +20,7 @@ export const OVERCLAIM_FORMS = [
   "execute", "executes", "executed", "executing", "execution", "executions",
   "schedule", "schedules", "scheduled", "scheduling",
   "dispatch", "dispatches", "dispatched", "dispatching",
-  "simulate", "simulates", "simulated", "simulating", "simulation",
+  "simulate", "simulates", "simulated", "simulating", "simulation", "simulations",
   "notify", "notifies", "notified", "notifying", "notification", "notifications",
-  "escalate", "escalates", "escalated", "escalating", "escalation",
+  "escalate", "escalates", "escalated", "escalating", "escalation", "escalations",
 ] as const;
