@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
+import { OVERCLAIM_FORMS } from "../approval/overclaim-forms";
 import { ActionRequiredBanner } from "./ActionRequiredBanner";
 
 /**
@@ -28,19 +29,9 @@ describe("ActionRequiredBanner", () => {
 
   it("never claims execution, scheduling, dispatch, simulation, notification or escalation", () => {
     // Same claim-family guard as approval-presentation.test.ts, applied to the
-    // other surface that carried the overclaim. Guards inflected forms rather
-    // than phrasings: enumerating sentences is unbounded, and two earlier
-    // drafts of this guard were defeated by ordinary grammar. Word boundaries
-    // keep "dispatcher"/"scheduler"/"executive" green.
-    const FORBIDDEN = [
-      "execute", "executes", "executed", "executing", "execution", "executions",
-      "schedule", "schedules", "scheduled", "scheduling",
-      "dispatch", "dispatches", "dispatched", "dispatching",
-      "simulate", "simulates", "simulated", "simulating", "simulation",
-      "notify", "notifies", "notified", "notifying", "notification", "notifications",
-      "escalate", "escalates", "escalated", "escalating", "escalation",
-    ];
-    const pattern = new RegExp(`\\b(${FORBIDDEN.join("|")})\\b`, "i");
+    // other surface that carried the overclaim. The term list is SHARED (see
+    // approval/overclaim-forms.ts) so the two guards cannot drift apart.
+    const pattern = new RegExp(`\\b(${OVERCLAIM_FORMS.join("|")})\\b`, "i");
 
     // Read the rendered output, not a copy of the source literals.
     const { container } = render(<ActionRequiredBanner suggestedActionCount={2} />);
