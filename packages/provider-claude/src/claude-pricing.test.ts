@@ -23,12 +23,12 @@ describe("CLAUDE_PRICING_TABLE", () => {
     expect(CLAUDE_PRICING_TABLE["claude-sonnet-5"]).toEqual({
       pricingBasis: "ACTIVE_RATE",
       effectiveFrom: "2026-09-01",
-      validThrough: "2027-08-31",
-      inputNanoUsdPerToken: 3000,
-      outputNanoUsdPerToken: 15_000,
-      cacheReadNanoUsdPerToken: 300,
-      cacheCreation5mNanoUsdPerToken: 3750,
-      cacheCreation1hNanoUsdPerToken: 6000,
+      validThrough: "2027-09-22",
+      inputNanoUsdPerToken: 2000,
+      outputNanoUsdPerToken: 10_000,
+      cacheReadNanoUsdPerToken: 200,
+      cacheCreation5mNanoUsdPerToken: 2500,
+      cacheCreation1hNanoUsdPerToken: 4000,
     });
   });
 
@@ -51,11 +51,11 @@ describe("estimateClaudeCostUsd", () => {
       WITHIN_VALIDITY,
     );
 
-    // 5961*3000 + 1674*15000 = 17883000 + 25110000 = 42993000 nanoUSD.
+    // 5961*2000 + 1674*10000 = 11922000 + 16740000 = 28662000 nanoUSD.
     // The exact accounting value and its lossy display projection, asserted
     // together so a change to either is visible here.
-    expect(result.estimatedCostNanoUsd).toBe("42993000");
-    expect(result.estimatedCostUsd).toBe(0.042993);
+    expect(result.estimatedCostNanoUsd).toBe("28662000");
+    expect(result.estimatedCostUsd).toBe(0.028662);
     expect(result.pricingStatus).toBe("CURRENT");
     expect(result.pricingBasis).toBe("ACTIVE_RATE");
     expect(result.pricingBasisDate).toBe("2026-09-14");
@@ -73,8 +73,8 @@ describe("estimateClaudeCostUsd", () => {
       WITHIN_VALIDITY,
     );
 
-    // 0.30 + 3.75 + 6.00
-    expect(result.estimatedCostUsd).toBe(10.05);
+    // 0.20 + 2.50 + 4.00
+    expect(result.estimatedCostUsd).toBe(6.7);
   });
 
   it("returns null for a model outside the supported set", () => {
@@ -89,7 +89,7 @@ describe("estimateClaudeCostUsd", () => {
   });
 
   it("goes stale rather than silently applying an expired rate", () => {
-    // Past validThrough (2027-08-31). This is not merely a bookkeeping
+    // Past validThrough (2027-09-22). This is not merely a bookkeeping
     // nicety: a null cost increments live_run_budget.pricing_unknown_runs,
     // and the reservation gate in agent-run-repository.ts requires that
     // counter to be zero — so a stale table closes the LIVE budget gate for
@@ -99,11 +99,25 @@ describe("estimateClaudeCostUsd", () => {
     const result = estimateClaudeCostUsd(
       { ...EMPTY_USAGE, inputTokens: 1_000_000 },
       "claude-sonnet-5",
-      new Date("2027-09-01T00:00:00.000Z"),
+      new Date("2027-09-23T00:00:00.000Z"),
     );
 
     expect(result.estimatedCostUsd).toBeNull();
     expect(result.pricingStatus).toBe("STALE");
+  });
+
+  it("prices the last day of the validity window as CURRENT", () => {
+    // validThrough is inclusive, and it is a re-verification deadline rather
+    // than an announced rate change — so the boundary day itself must still
+    // price, or the table would fail loud one day early.
+    const result = estimateClaudeCostUsd(
+      { ...EMPTY_USAGE, inputTokens: 1_000_000 },
+      "claude-sonnet-5",
+      new Date("2027-09-22T00:00:00.000Z"),
+    );
+
+    expect(result.pricingStatus).toBe("CURRENT");
+    expect(result.estimatedCostUsd).toBe(2);
   });
 
   it("prices a run dated on the standard rate's first day", () => {
@@ -119,7 +133,7 @@ describe("estimateClaudeCostUsd", () => {
     );
 
     expect(result.pricingStatus).toBe("CURRENT");
-    expect(result.estimatedCostUsd).toBe(3);
+    expect(result.estimatedCostUsd).toBe(2);
   });
 
   it("refuses to price an unbroken-down cache write", () => {
