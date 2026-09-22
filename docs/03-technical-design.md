@@ -1243,9 +1243,18 @@ There is no single `AGENT_MAX_TURNS` variable — investigation turns, the reser
 
 ### 13.9 Prompt Caching
 
-Prompt caching may be enabled after the baseline implementation works. Stable system instructions and tool definitions are the best cache candidates. Cache token usage should be persisted with the run so cost and latency effects can be measured.
+Prompt caching may be enabled after the baseline implementation works. Cache token usage should be persisted with the run so cost and latency effects can be measured — that part is done: `toPricedUsage` records cache reads and both cache-write TTLs, and `CLAUDE_PRICING_TABLE` prices all three.
 
 Prompt caching is an optimization, not a correctness dependency.
+
+**Its stated premise no longer holds, verified 2026-09-21.** This section originally named stable system instructions and tool definitions as the best cache candidates. In the implementation as built, neither is stable across the turns of a single run, and Anthropic's caching matches a literal byte prefix:
+
+- The system prompt interpolates the turn's remaining diagnostic budget (`claude-message-mapping.ts`, "diagnosticCallsRemaining is N this turn"), added by #58 for constraint visibility. It changes every turn, and it sits at the very front of the prefix — so everything after it misses too.
+- The tool list narrows on the finalization turn (`claude-llm-provider.ts`, `canRequestDiagnostics`), which breaks the prefix a second time.
+
+Enabling caching is therefore **not** a free additive change. It requires moving the per-turn budget value out of the system prompt and holding the tool list constant — the latter against a deliberate coupling, since narrowing the list and forcing `tool_choice` move together on purpose (a narrowed list with `tool_choice: auto` lets the model return a text-only `end_turn`, which normalizes to `PROVIDER_PROTOCOL_INVALID`). Both change what the model is shown, so the saving cannot be claimed without a paid run to show behaviour did not regress.
+
+Recorded here rather than as a tracked issue: this is a constraint on a possible future optimization, not a defect anyone should be assigned to fix.
 
 ---
 
