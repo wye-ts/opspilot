@@ -73,20 +73,33 @@ Drops the execution promise; keeps the call to act, the count, and the singular/
 
 ## 4. Change 2 — the terminal states
 
-`approval-presentation.ts`, APPROVED and REJECTED branches.
+`approval-presentation.ts`, PENDING, APPROVED and REJECTED branches.
+
+**The disclosure must appear BEFORE the decision, not only after it.** An earlier draft of this
+plan put it only on the terminal states; independent review rejected that as preserving the exact
+misconception the change exists to remove. A reviewer would press an irreversible button still
+believing approval causes the actions to occur, and learn otherwise only afterwards. `hint`
+renders above `ApprovalDecisionForm` (`ApprovalPanel.tsx:59-62`), so the PENDING hint sits
+directly above the Approve/Reject controls.
 
 `copy` keeps its current sentence. The boundary goes in **`hint`**, which already renders at
 `ApprovalPanel.tsx:59` and is null on every branch today.
 
-- APPROVED `hint`: `OpsPilot records this decision; it does not carry the action out.`
-- REJECTED `hint`: `OpsPilot records this decision; it does not carry the action out.`
+- PENDING  `hint`: `OpsPilot records your decision; it does not carry out any suggested actions.`
+- APPROVED `hint`: `OpsPilot recorded this decision; it does not carry out any suggested actions.`
+- REJECTED `hint`: `OpsPilot recorded this decision; it does not carry out any suggested actions.`
+
+Wording note: **plural / set-wide**, not "the action". One decision covers the whole
+`suggestedActions` array, so singular wording would leave the boundary ambiguous for the
+remaining actions in a multi-action run — on the very screen being corrected to state that
+boundary. PENDING uses future-facing "your decision"; the terminal states use "recorded".
 
 Why `hint` rather than lengthening `copy`: `copy` sits beside the status badge as the state's
 one-line identity, and `hint` is the established slot for a qualifying note (its only prior use,
 the NOT_ELIGIBLE deep link, was removed as a product instruction — the channel stayed).
 
-Identical text on both branches is deliberate: the boundary is a property of the mechanism, not
-of which way the decision went.
+Identical text on the two terminal branches is deliberate: the boundary is a property of the
+mechanism, not of which way the decision went.
 
 ## 5. Tests
 
@@ -95,18 +108,36 @@ of which way the decision went.
 ### 5.1 Positive assertions
 
 1. Banner subtitle reads `requires a human decision` (n=1) and `require a human decision` (n=2).
-2. APPROVED `hint` is non-null and contains `does not carry the action out`.
-3. REJECTED `hint` is non-null and contains `does not carry the action out`.
+2. PENDING `hint` is non-null and contains `does not carry out any suggested actions`.
+3. APPROVED `hint` is non-null and contains `does not carry out any suggested actions`.
+4. REJECTED `hint` is non-null and contains `does not carry out any suggested actions`.
+5. **Rendered PENDING panel**: the disclosure is present in the DOM *before* the Approve/Reject
+   controls — asserted on render order, not merely on the string, since the whole point is that
+   the reviewer sees it while deciding.
+6. Terminal run with `suggestedActionCount > 1`: the rendered disclaimer applies to all
+   suggested actions (no singular "the action").
 
 ### 5.2 Negative guard — the overclaim cannot drift back
 
 One test asserting that no user-visible string in either module matches, case-insensitively and
 on **word boundaries**:
 
+Matched as word-boundary alternatives, covering the grammatical variants of each prohibited
+claim — not only the one form that happens to ship today:
+
 ```
-before execution | will be executed | will execute | executes the action
-| simulates | simulated | notifies | escalates | dispatch
+execution:    before execution | will be executed | will execute | executes | executed
+scheduling:   schedules | scheduled | will schedule
+dispatch:     dispatch | dispatches | dispatched
+simulation:   simulates | simulated | simulation
+notification: notifies | notified | will notify
+escalation:   escalates | escalated | will escalate
 ```
+
+The earlier draft listed only `executes the action` / `will be executed`, which let
+`Approved actions are executed`, `OpsPilot schedules the actions`, `The action was dispatched`
+and `The reviewer is notified` through — every one of them the exact claim the plan forbids.
+Caught by independent review.
 
 **Word boundaries are load-bearing, not pedantry.** A bare substring check for `execut` would
 match nothing today but would fire on any future legitimate use ("no execution path exists");
@@ -125,8 +156,12 @@ Each assertion must be shown red before it is trusted:
 - restore `before execution` in the banner → test 1 and the guard go red
 - set either `hint` back to `null` → test 2 / 3 go red
 - insert `will be executed` into any `copy` → guard goes red
-- insert the word `recommended` (contains `commend`, near-miss on no term) → guard stays **green**,
-  proving the word-boundary matching does not misfire
+- insert each prohibited variant in turn (`executed`, `schedules`, `dispatched`, `notified`,
+  `simulated`) → guard goes red for every one
+- insert `dispatcher queue` → guard stays **green**. This is the real word-boundary control:
+  `dispatcher` CONTAINS the guarded token `dispatch`, so a bare-substring guard would fire on it.
+  An earlier draft used `recommended`, which contains no guarded token at all and therefore stays
+  green with or without word boundaries — it proved nothing. Caught by independent review.
 
 ## 6. Explicitly out of scope
 
@@ -141,7 +176,9 @@ Each assertion must be shown red before it is trusted:
 ## 7. Acceptance
 
 - [ ] Banner no longer contains `before execution`
-- [ ] APPROVED and REJECTED both render a hint stating OpsPilot does not carry the action out
+- [ ] PENDING, APPROVED and REJECTED all render a hint stating OpsPilot does not carry out any
+      suggested actions
+- [ ] On PENDING, that disclosure precedes the Approve/Reject controls in the DOM
 - [ ] No user-visible approval string claims execution, simulation, notification, or escalation
 - [ ] The negative guard matches on word boundaries and stays green on innocent text
 - [ ] Every new assertion shown red under its own falsification
