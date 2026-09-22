@@ -21,7 +21,10 @@ describe("presentApproval", () => {
     expect(result.glyph).toBe("●");
     expect(result.badgeLabel).toBe("Pending");
     expect(result.copy).toBe("This run has 1 suggested action awaiting a decision.");
-    expect(result.hint).toBeNull();
+    // Issue #131: the boundary is disclosed BEFORE the decision, so this is
+    // deliberately no longer null. ApprovalPanel renders hint above
+    // ApprovalDecisionForm.
+    expect(result.hint).toBe("OpsPilot records your decision; it does not carry out any suggested actions.");
     expect(result.showsDecisionForm).toBe(true);
   });
 

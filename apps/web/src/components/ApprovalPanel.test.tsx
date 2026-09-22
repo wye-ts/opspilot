@@ -147,3 +147,57 @@ describe("ApprovalPanel", () => {
     expect(screen.getByText("No note provided")).toBeInTheDocument();
   });
 });
+
+/**
+ * Issue #131 — the reviewer must read the execution boundary WHILE deciding.
+ *
+ * approval-presentation.test.ts pins the sentence; this pins its POSITION.
+ * A disclosure rendered only after an irreversible click preserves the very
+ * misconception it exists to remove, so asserting the string alone is not
+ * enough — an earlier draft of the plan placed it on the terminal states only
+ * and independent review rejected that as MAJOR.
+ */
+describe("ApprovalPanel — issue #131 disclosure placement", () => {
+  const DISCLOSURE = /does not carry out any suggested actions/i;
+
+  it("shows the no-execution disclosure BEFORE the decision controls on PENDING", () => {
+    const { container } = render(
+      <ApprovalPanel
+        approval={approval({ status: "PENDING" })}
+        suggestedActionCount={2}
+        decisionDisabled={false}
+        submittingDecision={false}
+        onDecide={vi.fn()}
+      />,
+    );
+
+    const hint = screen.getByText(DISCLOSURE);
+    const approve = screen.getByRole("button", { name: "Approve" });
+    expect(hint).toBeInTheDocument();
+
+    // DOM order, not merely presence: DOCUMENT_POSITION_FOLLOWING means the
+    // Approve button comes after the hint in document order, so a reviewer
+    // reads the boundary on the way to the controls.
+    const relation = hint.compareDocumentPosition(approve);
+    expect(relation & Node.DOCUMENT_POSITION_FOLLOWING, "disclosure must precede the Approve control").toBeTruthy();
+
+    // Guard against a DOM-order pass achieved by hiding the text.
+    expect(container.querySelector(".approval-panel-hint")).toBe(hint);
+  });
+
+  it("keeps the disclosure visible on both terminal states", () => {
+    for (const status of ["APPROVED", "REJECTED"] as const) {
+      const { unmount } = render(
+        <ApprovalPanel
+          approval={approval({ status, reviewerName: "Dana", decidedAt: "2026-09-22T10:00:00.000Z" })}
+          suggestedActionCount={2}
+          decisionDisabled={false}
+          submittingDecision={false}
+          onDecide={vi.fn()}
+        />,
+      );
+      expect(screen.getByText(DISCLOSURE), status).toBeInTheDocument();
+      unmount();
+    }
+  });
+});
